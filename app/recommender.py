@@ -295,25 +295,36 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             })
 
     if recs:
-    best_map: dict[tuple[str,str], dict[str, Any]] = {}
-    for r in recs:
-        key = (r["venue"], r["symbol"])
-        cur = best_map.get(key)
-        if (cur is None) or (r["confidence"] > cur["confidence"]) or (r["confidence"] == cur["confidence"] and r["score"] > cur["score"]):
-            best_map[key] = r
-    for r in recs:
-        key = (r["venue"], r["symbol"])
-        if best_map.get(key, {}).get("rec_id") != r["rec_id"]:
-            r["status"] = "suppressed"
+        # Publish only one best recommendation per (venue, symbol).
+        # Others are stored as 'suppressed' for audit/debug.
+        best_map: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in recs:
+            key = (r["venue"], r["symbol"])
+            cur = best_map.get(key)
+            if (cur is None) or (r["confidence"] > cur["confidence"]) or (
+                r["confidence"] == cur["confidence"] and r["score"] > cur["score"]
+            ):
+                best_map[key] = r
 
-    db.insert_recommendations(conn, recs)
-    db.log_decision(conn, "PUBLISH", None, None, {
-        "count_all": len(recs),
-        "count_best": len(best_map),
-        "model_version": model_version,
-        "regime": regime,
-        "global_sentiment": global_sent,
-        "calibrator_fitted": calibrator.fitted
-    })
+        for r in recs:
+            key = (r["venue"], r["symbol"])
+            if best_map.get(key, {}).get("rec_id") != r["rec_id"]:
+                r["status"] = "suppressed"
+
+        db.insert_recommendations(conn, recs)
+        db.log_decision(
+            conn,
+            "PUBLISH",
+            None,
+            None,
+            {
+                "count_all": len(recs),
+                "count_best": len(best_map),
+                "model_version": model_version,
+                "regime": regime,
+                "global_sentiment": global_sent,
+                "calibrator_fitted": calibrator.fitted,
+            },
+        )
 
     return {"regime": regime, "count": len(recs), "global_sentiment": global_sent, "calibrator_fitted": calibrator.fitted}

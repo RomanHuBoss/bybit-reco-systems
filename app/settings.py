@@ -48,8 +48,8 @@ def load_settings() -> Settings:
 
     master_key = os.getenv("MASTER_KEY", "") or None
 
-    outcome_horizon_sec = int(_env('OUTCOME_HORIZON_SEC','1800'))
-    calib_min_samples = int(_env('CALIB_MIN_SAMPLES','80'))
+    outcome_horizon_sec = int(_env("OUTCOME_HORIZON_SEC", "1800"))
+    calib_min_samples = int(_env("CALIB_MIN_SAMPLES", "80"))
 
     return Settings(
         db_path=_env("DB_PATH", "./data/app.db"),
@@ -61,7 +61,7 @@ def load_settings() -> Settings:
         symbols_spot=symbols_spot,
         symbols_linear=symbols_linear,
         risk_limits=risk_limits,
-        min_score_to_recommend=float(_env("MIN_SCORE_TO_RECOMMEND", "0.25")),
+        min_score_to_recommend=float(_env("MIN_SCORE_TO_RECOMMEND", "0.0")),
         min_conf_to_recommend=float(_env("MIN_CONF_TO_RECOMMEND", "0.30")),
         taker_fee_bps_spot=float(_env("TAKER_FEE_BPS_SPOT", "10")),
         taker_fee_bps_linear=float(_env("TAKER_FEE_BPS_LINEAR", "6")),

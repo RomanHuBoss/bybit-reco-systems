@@ -172,3 +172,54 @@ Confidence is calibrated online via **Platt scaling**:
 
 ### One best bot per (venue,symbol)
 Only the best recommendation per (venue,symbol) is marked as `recommended`. Others are stored as `suppressed`.
+
+
+## V2.1+ (operator-only, Bybit UI mapping)
+
+### What this project DOES
+- Collects public Bybit market data (tickers + 1m OHLCV) for configured symbols/venues.
+- Collects **real global crypto sentiment** (no keys):
+  - Fear & Greed Index (Alternative.me)
+  - RSS headlines lexicon sentiment (CoinDesk + Cointelegraph)
+  - stores aggregated point as `sentiment(scope='global', key='crypto')`
+- Produces **explicit recommendations in Bybit bot categories** (Scenario B):
+  - `spot_grid` -> Spot Grid Bot
+  - `futures_grid` -> Futures Grid Bot
+  - `dca_bot` -> DCA Bot
+  - `futures_martingale` -> Futures Martingale
+  - `futures_combo` -> Futures Combo (hedge/carry suggestion)
+- Shows reasons/explainability and Bybit-friendly parameter hints for operator copy/paste.
+
+### What this project DOES NOT do
+- Does not connect to your private Bybit account.
+- Does not start/stop Bybit built-in bots automatically.
+- Does not execute orders.
+
+### One best recommendation per (venue, symbol)
+For each `(venue, symbol)` the engine selects a single best bot recommendation:
+- primary key: higher `confidence`
+- tie-breaker: higher `score`
+All other candidates are stored as `suppressed` for audit.
+
+### Confidence (calibrated) and persistence
+- Raw scoring is rule-based (`score`).
+- `confidence` is calibrated using online Platt scaling on realized **forward returns**:
+  - default horizon: `OUTCOME_HORIZON_SEC` (default 1800 = 30 minutes)
+  - minimum samples to fit: `CALIB_MIN_SAMPLES` (default 80)
+- Calibration coefficients are persisted to SQLite `app_config` key `platt_bybit_v2` and reused after restart.
+
+### Operator UI
+- Table shows recommendations with status filters:
+  - `recommended`, `blocked`, `no_trade`, `suppressed`
+- Details panel is in Russian and includes:
+  - reasons (+/- factors)
+  - execution cost proxy (spread+fees in bps)
+  - Bybit category and parameter hints
+- Buttons:
+  - **Риски** -> `/api/v1/risk/status`
+  - **Журнал** -> `/api/v1/decisions`
+
+### Root entrypoint
+You can run either:
+- `python main.py` (root entrypoint)
+- or `python -m app.main`
