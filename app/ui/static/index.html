@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Bybit Recommender — Operator Panel</title>
+  <link rel="stylesheet" href="/static/styles.css"/>
+</head>
+<body>
+  <header class="header">
+    <div class="title">Bybit Recommender — Operator Panel</div>
+    <div class="meta">
+      <div id="regime"></div>
+      <button id="refreshBtn" class="btn">Refresh</button>
+    </div>
+  </header>
+
+  <section class="controls">
+    <div class="control">
+      <label>Venue</label>
+      <select id="venue">
+        <option value="">all</option>
+        <option value="spot">spot</option>
+        <option value="linear">linear</option>
+      </select>
+    </div>
+    <div class="control">
+      <label>Top N</label>
+      <input id="topN" type="number" value="20" min="1" max="200"/>
+    </div>
+    <div class="control">
+      <label>Min confidence</label>
+      <input id="minConf" type="number" value="0.30" step="0.05" min="0" max="1"/>
+    </div>
+    <div class="control">
+      <label></label>
+      <button id="loadBotsBtn" class="btn secondary">Bots</button>
+      <button id="riskBtn" class="btn secondary">Risk</button>
+    </div>
+  </section>
+
+  <main class="main">
+    <div id="noTrade" class="banner hidden">NO-TRADE: нет рекомендаций со статусом <b>recommended</b> по текущим фильтрам/гейтам.</div>
+
+    <div class="grid">
+      <div class="panel">
+        <div class="panel-title">Recommendations</div>
+        <table class="table" id="recoTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Venue</th>
+              <th>Symbol</th>
+              <th>Bot</th>
+              <th>Dir</th>
+              <th>Score</th>
+              <th>Conf</th>
+              <th>Exp.RR</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="recoBody"></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Details</div>
+        <div id="details" class="details muted">Выберите рекомендацию.</div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="modal">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div id="modalTitle" class="modal-title">Modal</div>
+          <button id="modalClose" class="btn tiny">Close</button>
+        </div>
+        <pre id="modalBody" class="pre"></pre>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
