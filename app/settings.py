@@ -48,7 +48,7 @@ def load_settings() -> Settings:
 
     master_key = os.getenv("MASTER_KEY", "") or None
 
-        outcome_horizon_sec = int(_env('OUTCOME_HORIZON_SEC','1800'))
+    outcome_horizon_sec = int(_env('OUTCOME_HORIZON_SEC','1800'))
     calib_min_samples = int(_env('CALIB_MIN_SAMPLES','80'))
 
     return Settings(
