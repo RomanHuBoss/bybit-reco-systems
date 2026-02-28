@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 from .settings import load_settings
 from .bybit_client import BybitPublicClient
 from .collector import collect_once
+from .sentiment import collect_sentiment_once
+from .outcomes import compute_outcomes_once
 from .recommender import run_recommender_once
 from . import db
 from .risk import get_risk_limits, compute_risk_status
@@ -62,8 +64,13 @@ def index() -> str:
     return (static_dir / "index.html").read_text(encoding="utf-8")
 
 @app.get("/api/v1/recommendations")
-def api_recommendations(venue: str | None = None, top_n: int = 20, min_conf: float = 0.0) -> dict[str, Any]:
-    items = db.get_recommendations(conn, venue=venue, top_n=top_n, min_conf=min_conf)
+def api_recommendations(venue: str | None = None, top_n: int = 20, min_conf: float = 0.0, show_recommended: bool = True, show_blocked: bool = False, show_no_trade: bool = False, show_suppressed: bool = False) -> dict[str, Any]:
+    statuses = []
+    if show_recommended: statuses.append('recommended')
+    if show_blocked: statuses.append('blocked')
+    if show_no_trade: statuses.append('no_trade')
+    if show_suppressed: statuses.append('suppressed')
+    items = db.get_recommendations(conn, venue=venue, top_n=top_n, min_conf=min_conf, statuses=statuses if statuses else None)
 
     # compute NO-TRADE flag if no items with status recommended
     has_recommended = any(it["status"] == "recommended" for it in items)
@@ -166,6 +173,24 @@ def api_update_risk_limits(req: UpdateRiskLimitsRequest) -> dict[str, Any]:
     db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": req.version, "limits": req.limits})
     return {"ok": True, "version": req.version}
 
+@app.get("/api/v1/decisions")
+def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT ts, action, rec_id, operator, details_json
+           FROM decision_log ORDER BY ts DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            "ts": r["ts"],
+            "action": r["action"],
+            "rec_id": r["rec_id"],
+            "operator": r["operator"],
+            "details": json.loads(r["details_json"]),
+        })
+    return out
+
 @app.post("/api/v1/sentiment")
 def api_sentiment_put(req: SentimentPointRequest) -> dict[str, Any]:
     ts = req.ts or int(time.time())
@@ -192,10 +217,22 @@ async def _collector_loop():
     finally:
         client.close()
 
+async def _sentiment_loop():
+    while True:
+        try:
+            pts = collect_sentiment_once()
+            for p in pts:
+                db.insert_sentiment_point(conn, p["scope"], p["key"], p["ts"], p["sentiment"], p["velocity"], p["volume"], p["sources"], p["tags"])
+            db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)})
+        except Exception as e:
+            db.log_decision(conn, "SENTIMENT_ERROR", None, None, {"err": str(e)})
+        await asyncio.sleep(60)
+
 async def _reco_loop():
     while True:
         try:
             run_recommender_once(conn, settings)
+            compute_outcomes_once(conn, horizon_sec=settings.outcome_horizon_sec)
         except Exception as e:
             db.log_decision(conn, "RECO_ERROR", None, None, {"err": str(e)})
         await asyncio.sleep(settings.reco_interval_sec)
@@ -204,6 +241,7 @@ async def _reco_loop():
 async def startup_event():
     # start background loops
     asyncio.create_task(_collector_loop())
+    asyncio.create_task(_sentiment_loop())
     asyncio.create_task(_reco_loop())
 
 def main():

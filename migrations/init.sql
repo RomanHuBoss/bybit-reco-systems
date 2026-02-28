@@ -129,3 +129,18 @@ CREATE TABLE IF NOT EXISTS risk_limits (
   created_ts INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS reco_outcomes (
+  rec_id TEXT PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  venue TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  bot_type TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  horizon_sec INTEGER NOT NULL,
+  entry_close REAL NOT NULL,
+  exit_close REAL NOT NULL,
+  ret REAL NOT NULL,
+  success INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcomes_ts ON reco_outcomes(ts DESC);

@@ -71,8 +71,6 @@ body {
   margin-bottom: 12px;
 }
 
-.hidden { display: none; }
-
 .grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
@@ -153,3 +151,10 @@ body {
   border-radius: 12px;
   padding: 10px;
 }
+
+/* Ensure hidden overrides other display rules */
+
+.hidden { display: none !important; }
+
+.checks { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding-top: 6px; }
+.check { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }

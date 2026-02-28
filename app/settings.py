@@ -15,6 +15,9 @@ def _env(key: str, default: str | None = None) -> str:
 
 @dataclass(frozen=True)
 class Settings:
+    outcome_horizon_sec: int
+    calib_min_samples: int
+
     db_path: str
     bybit_base_url: str
 
@@ -45,6 +48,9 @@ def load_settings() -> Settings:
 
     master_key = os.getenv("MASTER_KEY", "") or None
 
+        outcome_horizon_sec = int(_env('OUTCOME_HORIZON_SEC','1800'))
+    calib_min_samples = int(_env('CALIB_MIN_SAMPLES','80'))
+
     return Settings(
         db_path=_env("DB_PATH", "./data/app.db"),
         bybit_base_url=_env("BYBIT_BASE_URL", "https://api.bybit.com"),
@@ -60,4 +66,6 @@ def load_settings() -> Settings:
         taker_fee_bps_spot=float(_env("TAKER_FEE_BPS_SPOT", "10")),
         taker_fee_bps_linear=float(_env("TAKER_FEE_BPS_LINEAR", "6")),
         master_key=master_key,
+        outcome_horizon_sec=outcome_horizon_sec,
+        calib_min_samples=calib_min_samples,
     )

@@ -31,9 +31,18 @@ async function loadRecommendations() {
   const minConf = Number($("minConf").value || 0);
 
   const qs = new URLSearchParams();
+  const showRecommended = $("showRecommended")?.checked ?? true;
+  const showBlocked = $("showBlocked")?.checked ?? false;
+  const showNoTrade = $("showNoTrade")?.checked ?? false;
+  const showSuppressed = $("showSuppressed")?.checked ?? false;
+
   if (venue) qs.set("venue", venue);
   qs.set("top_n", String(topN));
   qs.set("min_conf", String(minConf));
+  qs.set("show_recommended", String(showRecommended));
+  qs.set("show_blocked", String(showBlocked));
+  qs.set("show_no_trade", String(showNoTrade));
+  qs.set("show_suppressed", String(showSuppressed));
 
   const res = await fetch(`/api/v1/recommendations?${qs.toString()}`);
   const data = await res.json();
@@ -62,8 +71,7 @@ async function loadRecommendations() {
       <td>${pillStatus(it.status)}</td>
       <td>
         <button class="btn tiny" data-act="details" data-id="${it.rec_id}">Details</button>
-        <button class="btn tiny secondary" data-act="dry" data-id="${it.rec_id}">Dry</button>
-        <button class="btn tiny secondary" data-act="prod" data-id="${it.rec_id}">Prod</button>
+        <button class="btn tiny secondary" data-act="json" data-id="${it.rec_id}">JSON</button>
       </td>
     `;
     body.appendChild(tr);
@@ -89,51 +97,32 @@ async function loadDetails(recId) {
   lines.push(`score=${fmt(it.score)} conf=${fmt(it.confidence)} expRR=${fmt(it.expected_rr)} riskScore=${fmt(it.risk_score)}`);
   lines.push(`status=${it.status}`);
   lines.push("");
-  lines.push("WHY:");
+  lines.push("ПОЧЕМУ:");
   lines.push(reasons.summary || "-");
   lines.push("");
-  lines.push("Top + factors:");
+  lines.push("Факторы +:");
   (reasons.top_positive_factors || []).forEach(f => lines.push(`  + ${f.text} (${f.feature}=${fmt(f.value,4)})`));
-  lines.push("Top - factors:");
+  lines.push("Факторы -:");
   (reasons.top_negative_factors || []).forEach(f => lines.push(`  - ${f.text} (${f.feature}=${fmt(f.value,4)})`));
   lines.push("");
-  lines.push("Cost model:");
+  lines.push("Стоимость исполнения (bps):");
   lines.push(JSON.stringify(reasons.cost_model || {}, null, 2));
   lines.push("");
-  lines.push("Risk checks / blocks:");
+  lines.push("Риск-гейты / блокировки:");
   if (!blocks.length) lines.push("  OK");
   else blocks.forEach(b => lines.push(`  - ${b.code}: ${b.msg}`));
   lines.push("");
-  lines.push("Suggested params (editable via activate override):");
+  lines.push("Параметры для Bybit (копируйте в UI):");
   lines.push(JSON.stringify(params, null, 2));
 
   $("details").textContent = lines.join("\n");
 }
 
-async function activate(recId, dryRun) {
-  const body = {
-    rec_id: recId,
-    dry_run: dryRun,
-    override_params: {},
-    operator: "operator"
-  };
-  const res = await fetch("/api/v1/bots/activate", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(body)
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    showModal("Activate failed", data);
-    return;
-  }
-  showModal("Bot activated", data);
-}
 
-async function loadBots() {
-  const res = await fetch("/api/v1/bots");
+async function loadDecisions() {
+  const res = await fetch("/api/v1/decisions?limit=200");
   const data = await res.json();
-  showModal("Bots", data);
+  showModal("Журнал решений", data);
 }
 
 async function loadRisk() {
@@ -148,15 +137,18 @@ document.addEventListener("click", async (e) => {
     const act = t.dataset.act;
     const id = t.dataset.id;
     if (act === "details") await loadDetails(id);
-    if (act === "dry") await activate(id, true);
-    if (act === "prod") await activate(id, false);
-  }
+    if (act === "json") {
+      const res = await fetch(`/api/v1/recommendations/${id}`);
+      const data = await res.json();
+      showModal("Recommendation JSON", data);
+    }
+      }
 });
 
 $("refreshBtn").addEventListener("click", loadRecommendations);
-$("loadBotsBtn").addEventListener("click", loadBots);
+$("decisionsBtn").addEventListener("click", loadDecisions);
 $("riskBtn").addEventListener("click", loadRisk);
-$("modalClose").addEventListener("click", hideModal);
+$("modalClose").addEventListener("click", (e) => { e.stopPropagation(); hideModal(); });
 $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") hideModal(); });
 
 loadRecommendations();

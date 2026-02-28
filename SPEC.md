@@ -146,3 +146,29 @@ Do not use production execution without:
 - position reconciliation, risk kill-switch, and audit logging
 - extensive backtesting and paper-trading
 
+
+
+## V2 (Scenario B) changes
+
+### V2.1 Bybit-style bot taxonomy
+Recommendations are now in Bybit UI categories:
+- `spot_grid` -> **Спотовый grid-бот**
+- `futures_grid` -> **Фьючерсный grid-бот**
+- `dca_bot` -> **DCA-бот**
+- `futures_martingale` -> **Фьючерсный Мартингейл**
+- `futures_combo` -> **Комбо фьючерсов** (в V2 трактуется как hedge/carry подсказка)
+
+### V2.3 Real sentiment (no keys)
+The system collects real global sentiment into `sentiment(scope='global', key='crypto')` using:
+- Fear & Greed Index (Alternative.me)
+- RSS headlines lexicon sentiment (CoinDesk + Cointelegraph RSS)
+
+### V2.4 Normal confidence
+Confidence is calibrated online via **Platt scaling**:
+- labels come from **30-minute forward returns** computed from OHLCV (direction-aware)
+- stored in `reco_outcomes`
+- calibrator is fitted from last ~2000 outcomes (if >=80 samples)
+
+
+### One best bot per (venue,symbol)
+Only the best recommendation per (venue,symbol) is marked as `recommended`. Others are stored as `suppressed`.

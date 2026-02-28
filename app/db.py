@@ -141,14 +141,20 @@ def stop_bot(conn: sqlite3.Connection, bot_id: str) -> bool:
     conn.commit()
     return True
 
-def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int, min_conf: float) -> list[dict[str, Any]]:
+def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int, min_conf: float, statuses: list[str] | None = None) -> list[dict[str, Any]]:
     q = """SELECT * FROM recommendations WHERE ts > ?"""
     params: list[Any] = [now_ts() - 3600]
     if venue:
         q += " AND venue=?"
         params.append(venue)
-    q += " AND confidence>=? ORDER BY score DESC LIMIT ?"
-    params.extend([min_conf, top_n])
+    q += " AND confidence>=?"
+    params.append(min_conf)
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        q += f" AND status IN ({placeholders})"
+        params.extend(statuses)
+    q += " ORDER BY score DESC LIMIT ?"
+    params.append(top_n)
     cur = conn.execute(q, params)
     rows = []
     for r in cur.fetchall():
@@ -247,3 +253,47 @@ def sum_daily_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
     cur = conn.execute("""SELECT COALESCE(SUM(pnl),0.0) AS s FROM trades WHERE ts>=?""", (day_start_ts,))
     return float(cur.fetchone()["s"])
 
+
+
+def get_latest_sentiment(conn: sqlite3.Connection, scope: str, key: str) -> dict[str, Any] | None:
+    cur = conn.execute(
+        """SELECT * FROM sentiment WHERE scope=? AND key=? ORDER BY ts DESC LIMIT 1""",
+        (scope, key),
+    )
+    r = cur.fetchone()
+    if not r:
+        return None
+    return {
+        "scope": r["scope"],
+        "key": r["key"],
+        "ts": r["ts"],
+        "sentiment": r["sentiment"],
+        "velocity": r["velocity"],
+        "volume": r["volume"],
+        "sources": json.loads(r["sources_json"]),
+        "tags": json.loads(r["tags_json"]),
+    }
+
+def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
+    conn.execute(
+        """INSERT OR REPLACE INTO reco_outcomes(
+            rec_id, ts, venue, symbol, bot_type, direction, horizon_sec,
+            entry_close, exit_close, ret, success
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            o["rec_id"], o["ts"], o["venue"], o["symbol"], o["bot_type"], o["direction"], o["horizon_sec"],
+            o["entry_close"], o["exit_close"], o["ret"], o["success"]
+        ),
+    )
+    conn.commit()
+
+def outcome_exists(conn: sqlite3.Connection, rec_id: str) -> bool:
+    cur = conn.execute("""SELECT 1 FROM reco_outcomes WHERE rec_id=? LIMIT 1""", (rec_id,))
+    return cur.fetchone() is not None
+
+def get_outcomes_recent(conn: sqlite3.Connection, limit: int = 2000) -> list[dict[str, Any]]:
+    cur = conn.execute("""SELECT * FROM reco_outcomes ORDER BY ts DESC LIMIT ?""", (limit,))
+    out = []
+    for r in cur.fetchall():
+        out.append({k: r[k] for k in r.keys()})
+    return out
