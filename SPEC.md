@@ -1,225 +1,237 @@
-# Bybit Recommender System (Spot + USDT Perpetual) — Local MVP (Ready-to-run)
+# Bybit Trading Bot Recommender (Scenario B) — Specification
 
-This repository contains a **ready-to-run local project** that:
-- Collects public market data from **Bybit v5 public API** (no API keys required for the collector)
-- Computes lightweight realtime features (volatility/trend/range, spread/fees proxy, volume anomaly)
-- Generates **Top-N ranked recommendations** (rules-based scoring) with:
-  - confidence, expected RR (heuristic), risk checks, explainability (reasons)
-  - **NO-TRADE** when gates block or scores are too low
-- Provides an operator UI (**Vanilla JS/HTML/CSS**) to view recommendations and activate bots (dry-run / production stub)
-- Stores everything in **SQLite**: features, recommendations, decisions, bot instances, (optional) orders/trades
+## 1. Purpose
 
-This is an MVP designed to be **extendable** into a full production stack.
+This system provides the operator with **explicit, unambiguous recommendations** mapped to **Bybit Trading Bot UI categories**:
+- which Bybit bot type to run,
+- on which symbol (`*/USDT`) and venue (Spot / USDT Perpetual),
+- which direction mode (long / short / neutral / hedge),
+- with parameter hints (grid spacing, levels, price range, leverage, DCA step, etc.),
+- with confidence, regime context, and explainability.
 
----
-
-## 1) Quickstart
-
-### 1.1 Requirements
-- Python **3.11+**
-- Windows/Linux/macOS
-
-### 1.2 Install & run
-```bash
-cd bybit_reco_system
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Start API + background collector + recommender loop
-python -m app.main
-```
-
-Open UI:
-- http://127.0.0.1:8000/
-
-API docs (Swagger):
-- http://127.0.0.1:8000/docs
-
-### 1.3 Configuration
-Copy environment example:
-```bash
-cp .env.example .env
-```
-
-Key config (see `.env.example`):
-- `DB_PATH` — path to sqlite file (default: `./data/app.db`)
-- `COLLECT_INTERVAL_SEC` — collector period (default 20 sec)
-- `RECO_INTERVAL_SEC` — recompute recommendations interval (default 20 sec)
-- `TOP_N` — how many recommendations to publish
-- `VENUES` — `spot,linear`
-- `SYMBOLS_LINEAR`, `SYMBOLS_SPOT` — comma-separated symbol list (default small set)
-- `RISK_LIMITS_JSON` — JSON string with risk gates (defaults in env example)
-- `MASTER_KEY` — used to encrypt API keys (optional; project runs without keys)
+**Scenario B:** the operator launches bots manually in the Bybit UI.  
+The project **does not** place orders, manage positions, or start Bybit bots via API.
 
 ---
 
-## 2) Architecture
+## 2. What the project does / does not do
 
-### 2.1 Runtime loop
-On startup, FastAPI launches two background loops:
-1) **Collector loop** (every `COLLECT_INTERVAL_SEC`):
-   - fetches tickers (bid/ask/last/volume) for configured symbols
-   - fetches klines (1m) for those symbols
-   - stores in `ohlcv` + `ticker_snap`
+### Does
+- Collects public Bybit market data:
+  - tickers (bid/ask/last/volume)
+  - OHLCV klines for: **1m, 15m, 30m, 1h, 4h, 1d**
+- Computes features and market regime snapshots.
+- Computes **direction** (long/short/neutral) using:
+  - multi-timeframe indicator aggregation (15m..1d)
+  - soft scoring + coherence + structural veto
+  - tactical vs structural direction scores
+- Collects **real global sentiment** (no keys):
+  - Alternative.me Fear & Greed Index
+  - RSS headlines sentiment (lexicon-based)
+- Builds **multi-horizon sentiment** (EWMA 1h/6h/1d/7d) and consolidates into:
+  - risk_on / neutral / risk_off regime + strength
+  - flags: panic/euphoria
+- Produces a **ranked** set of candidates, but publishes **only the best recommendation per (venue, symbol)**.
+- Provides a **Vanilla JS operator panel** and a JSON view for each recommendation.
+- Stores all data into SQLite (audit-ready).
 
-2) **Recommender loop** (every `RECO_INTERVAL_SEC`):
-   - loads latest data
-   - computes features per symbol/venue
-   - computes global regime snapshot
-   - generates candidate strategy recommendations
-   - applies risk gates
-   - writes `recommendations` + `decision_log`
-
-### 2.2 Modules
-- `app/bybit_client.py` — Bybit public REST (httpx)
-- `app/collector.py` — periodically pulls market data into SQLite
-- `app/features.py` — feature computation
-- `app/regime.py` — simple regime classification
-- `app/risk.py` — risk limits + gates (concurrent bots, DD/day, exposure proxy)
-- `app/recommender.py` — strategy universe + scoring rules + explainability
-- `app/db.py` — SQLite schema init + queries
-- `app/main.py` — FastAPI app + API routes + static UI
+### Does not
+- Does not connect to private Bybit account data (balances/positions).
+- Does not start/stop Bybit built-in bots automatically.
+- Does not execute trades.
 
 ---
 
-## 3) SQLite Schema (tables)
+## 3. Bybit bot taxonomy mapping
 
-Created automatically on first run (see `migrations/init.sql`).
+Recommendations are in Bybit-style categories:
+
+| Internal bot_type | Bybit UI category | Venue |
+|---|---|---|
+| `spot_grid` | Spot Grid Bot | spot |
+| `futures_grid` | Futures Grid Bot | linear |
+| `dca_bot` | DCA Bot | spot/linear |
+| `futures_martingale` | Futures Martingale | linear |
+| `futures_combo` | Futures Combo | linear |
+
+---
+
+## 4. Data model (SQLite)
+
+Database path: `DB_PATH` (default `./data/app.db`)
 
 Core tables:
 - `ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)`
 - `ticker_snap(venue, symbol, ts, last, bid, ask, vol24h, turnover24h)`
+- `sentiment(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)`
 - `features(venue, symbol, ts, features_json)`
 - `market_regime(ts, regime_json)`
-- `recommendations(rec_id, ts, venue, symbol, bot_type, direction, account_mode, margin_mode, score, confidence, expected_rr, risk_score, params_json, reasons_json, blocks_json, status, ttl_sec, model_version, features_ref_ts)`
+- `recommendations(rec_id, ts, venue, symbol, bot_type, direction, ... , params_json, reasons_json, status, ...)`
 - `decision_log(ts, action, rec_id, operator, details_json)`
-- `bot_instances(bot_id, started_ts, stopped_ts, venue, symbol, bot_type, mode_json, params_json, state_json, status, origin_rec_id)`
-- `trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)` (optional for DD/day tracking)
+- `reco_outcomes(...)` (forward-return labels for calibration)
+- `app_config(key, value_json, updated_ts)` (stores calibration coefficients)
+
+Status values:
+- `recommended` — best per (venue,symbol)
+- `suppressed` — other candidates (audit)
+- `blocked` — failed risk gates
+- `no_trade` — low confidence/score
 
 ---
 
-## 4) API (contracts)
+## 5. Market data collection
 
-### 4.1 Recommendations
-- `GET /api/v1/recommendations?venue=spot|linear&top_n=20&min_conf=0.0`
+Collector interval: `COLLECT_INTERVAL_SEC`.
+
+For each configured symbol:
+- tickers: `/v5/market/tickers`
+- klines: `/v5/market/kline` for intervals: 1, 15, 30, 60, 240, 1440
+
+All market endpoints are public (no keys).
+
+---
+
+## 6. Sentiment pipeline
+
+Collection loop: every 60 seconds.
+
+Inputs:
+- Fear & Greed Index (Alternative.me)
+- RSS feeds (CoinDesk, Cointelegraph) — lexicon-based polarity
+
+Output:
+- writes raw points (`crypto_fng`, `crypto_news_rss`) and combined point `crypto` to `sentiment` table.
+
+Multi-horizon features:
+- EWMA sentiment for 1h/6h/1d/7d (half-life = horizon)
+- consolidated `risk_on/risk_off/neutral` + strength
+- flags: `panic`, `euphoria`
+
+Exposed in `reasons.sentiment_agg`.
+
+---
+
+## 7. Direction engine (V2.9)
+
+Direction is determined from multi-timeframe indicator aggregation across:
+- 15m / 30m / 1h / 4h / 1d
+
+Indicators:
+- MA slope (SMA20–SMA60 normalized by ATR%)
+- MACD histogram (normalized)
+- RSI14 (soft centered vote)
+
+Key mechanisms:
+- **soft contributions** instead of hard thresholds
+- **tactical vs structural** direction scores
+- **coherence**: agreement with structural sign
+- **structural veto**: 4h/1d can override or neutralize if incoherent
+- outputs:
+  - `direction`: long/short/neutral
+  - `direction_confidence`
+  - `regime`: trend/range/transition
+  - `regime_confidence`
+
+Exposed in `reasons.direction_agg`.
+
+---
+
+## 8. Recommendation generation
+
+For each (venue, symbol):
+1) compute features (from 1m data) + direction aggregation (from 15m..1d)
+2) generate Bybit-bot candidates (taxonomy)
+3) apply feasibility rules and risk gates
+4) score candidates + compute confidence
+5) select **best** by:
+   1) higher confidence
+   2) tie-break by score
+6) store all candidates:
+   - best as `recommended`
+   - the rest as `suppressed` (audit)
+
+---
+
+## 9. Confidence and calibration
+
+Two calibrations exist:
+
+1) **Recommendation confidence**
+- Platt scaling on `score` -> success label
+- persisted key: `platt_bybit_v2`
+
+2) **Direction confidence**
+- Platt scaling on `direction_agg.scores.all` -> success label
+- persisted key: `platt_direction_v2`
+
+Outcome labeling:
+- horizon: `OUTCOME_HORIZON_SEC` (default 1800)
+- success: forward return sign aligned with direction
+
+---
+
+## 10. Grid-specific parameter hints (operator fills Bybit UI)
+
+For grid bots the recommender outputs:
+- `grid_spacing_pct` (>= cost-based floor)
+- `grid_levels` (derived from span/step; varies across symbols)
+- `price_range_lower`, `price_range_upper` (fill Bybit “Ценовой диапазон”)
+- `leverage` (futures)
+
+Notes:
+- Grid direction defaults to `neutral` in range regime. Bias and strength are also shown.
+
+---
+
+## 11. API
+
+### Recommendations
+- `GET /api/v1/recommendations`
+  Params:
+  - `venue` (optional)
+  - `top_n`
+  - `min_conf`
+  - status toggles: `show_recommended`, `show_blocked`, `show_no_trade`, `show_suppressed`
+  - `snapshot=latest` (default) — returns only the latest recommendation snapshot
+
 - `GET /api/v1/recommendations/{rec_id}`
 
-### 4.2 Bots
-- `POST /api/v1/bots/activate`
-  Body:
-  ```json
-  {"rec_id":"R-...","dry_run":true,"override_params":{...},"operator":"telefunken"}
-  ```
-- `POST /api/v1/bots/stop`
-  Body:
-  ```json
-  {"bot_id":"B-...","operator":"telefunken"}
-  ```
-- `GET /api/v1/bots`
-
-### 4.3 Risk
+### Risk
 - `GET /api/v1/risk/status`
-- `POST /api/v1/risk/limits` — activate a new risk limits JSON (versioned)
+- `POST /api/v1/risk/limits`
 
-### 4.4 Sentiment (MVP manual input)
-- `POST /api/v1/sentiment` — write manual sentiment points to DB
-- `GET /api/v1/sentiment?scope=global|symbol&key=...`
+### Journal
+- `GET /api/v1/decisions?limit=200`
 
----
-
-## 5) Extendability checklist
-To move from MVP to production:
-- add websocket streams (orderbook/trades/liquidations) and compute OFI/imbalances
-- add real sentiment pipeline (news/social) into `sentiment` table
-- add execution engine with Bybit private endpoints and safe key handling
-- add ML calibrator for confidence, track outcomes and labels
-- add monitoring: calibration, hitrate@N, drawdown, regime breakdown
+### Sentiment
+- `GET /api/v1/sentiment?scope=global&key=crypto`
 
 ---
 
-## 6) Safety / risk notes
-This project produces **recommendations only** and provides a stub for execution.
-Do not use production execution without:
-- robust order handling, retries, idempotency
-- position reconciliation, risk kill-switch, and audit logging
-- extensive backtesting and paper-trading
+## 12. UI
 
+Static UI at `/`:
+- status filters (recommended/blocked/no_trade/suppressed)
+- details pane in Russian
+- JSON button per recommendation
+- Buttons: Риски, Журнал
 
+---
 
-## V2 (Scenario B) changes
+## 13. Configuration (.env)
 
-### V2.1 Bybit-style bot taxonomy
-Recommendations are now in Bybit UI categories:
-- `spot_grid` -> **Спотовый grid-бот**
-- `futures_grid` -> **Фьючерсный grid-бот**
-- `dca_bot` -> **DCA-бот**
-- `futures_martingale` -> **Фьючерсный Мартингейл**
-- `futures_combo` -> **Комбо фьючерсов** (в V2 трактуется как hedge/carry подсказка)
+Key variables:
+- `DB_PATH`
+- `COLLECT_INTERVAL_SEC`, `RECO_INTERVAL_SEC`
+- `SYMBOLS_SPOT`, `SYMBOLS_LINEAR`
+- thresholds: `MIN_CONF_TO_RECOMMEND`, `MIN_SCORE_TO_RECOMMEND`
+- fees: `TAKER_FEE_BPS_SPOT`, `TAKER_FEE_BPS_LINEAR`
+- calibration: `OUTCOME_HORIZON_SEC`, `CALIB_MIN_SAMPLES`
 
-### V2.3 Real sentiment (no keys)
-The system collects real global sentiment into `sentiment(scope='global', key='crypto')` using:
-- Fear & Greed Index (Alternative.me)
-- RSS headlines lexicon sentiment (CoinDesk + Cointelegraph RSS)
+---
 
-### V2.4 Normal confidence
-Confidence is calibrated online via **Platt scaling**:
-- labels come from **30-minute forward returns** computed from OHLCV (direction-aware)
-- stored in `reco_outcomes`
-- calibrator is fitted from last ~2000 outcomes (if >=80 samples)
+## 14. Known limitations
+- Sentiment sources are limited and lexicon-based (no LLM/transformer).
+- No private account context (position-aware recommendations not available).
+- Confidence labels are simplistic (forward-return sign, no transaction costs/slippage).
 
-
-### One best bot per (venue,symbol)
-Only the best recommendation per (venue,symbol) is marked as `recommended`. Others are stored as `suppressed`.
-
-
-## V2.1+ (operator-only, Bybit UI mapping)
-
-### What this project DOES
-- Collects public Bybit market data (tickers + 1m OHLCV) for configured symbols/venues.
-- Collects **real global crypto sentiment** (no keys):
-  - Fear & Greed Index (Alternative.me)
-  - RSS headlines lexicon sentiment (CoinDesk + Cointelegraph)
-  - stores aggregated point as `sentiment(scope='global', key='crypto')`
-- Produces **explicit recommendations in Bybit bot categories** (Scenario B):
-  - `spot_grid` -> Spot Grid Bot
-  - `futures_grid` -> Futures Grid Bot
-  - `dca_bot` -> DCA Bot
-  - `futures_martingale` -> Futures Martingale
-  - `futures_combo` -> Futures Combo (hedge/carry suggestion)
-- Shows reasons/explainability and Bybit-friendly parameter hints for operator copy/paste.
-
-### What this project DOES NOT do
-- Does not connect to your private Bybit account.
-- Does not start/stop Bybit built-in bots automatically.
-- Does not execute orders.
-
-### One best recommendation per (venue, symbol)
-For each `(venue, symbol)` the engine selects a single best bot recommendation:
-- primary key: higher `confidence`
-- tie-breaker: higher `score`
-All other candidates are stored as `suppressed` for audit.
-
-### Confidence (calibrated) and persistence
-- Raw scoring is rule-based (`score`).
-- `confidence` is calibrated using online Platt scaling on realized **forward returns**:
-  - default horizon: `OUTCOME_HORIZON_SEC` (default 1800 = 30 minutes)
-  - minimum samples to fit: `CALIB_MIN_SAMPLES` (default 80)
-- Calibration coefficients are persisted to SQLite `app_config` key `platt_bybit_v2` and reused after restart.
-
-### Operator UI
-- Table shows recommendations with status filters:
-  - `recommended`, `blocked`, `no_trade`, `suppressed`
-- Details panel is in Russian and includes:
-  - reasons (+/- factors)
-  - execution cost proxy (spread+fees in bps)
-  - Bybit category and parameter hints
-- Buttons:
-  - **Риски** -> `/api/v1/risk/status`
-  - **Журнал** -> `/api/v1/decisions`
-
-### Root entrypoint
-You can run either:
-- `python main.py` (root entrypoint)
-- or `python -m app.main`

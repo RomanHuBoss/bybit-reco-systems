@@ -32,13 +32,7 @@ body {
 .title { font-weight: 700; letter-spacing: 0.2px; }
 .meta { display: flex; gap: 12px; align-items: center; color: var(--muted); font-size: 13px; }
 
-.controls {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 1fr));
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
+
 
 .control label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .control input, .control select {
@@ -158,3 +152,16 @@ body {
 
 .checks { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding-top: 6px; }
 .check { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+
+.controls {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr 0.9fr 2.0fr auto;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  align-items: end;
+}
+@media (max-width: 1100px) {
+  .controls { grid-template-columns: 1fr 1fr; }
+}
+.control { min-width: 0; }

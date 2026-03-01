@@ -3,21 +3,21 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Bybit Recommender — Operator Panel</title>
+  <title>Bybit Recommender — Панель оператора</title>
   <link rel="stylesheet" href="/static/styles.css"/>
 </head>
 <body>
   <header class="header">
-    <div class="title">Bybit Recommender — Operator Panel</div>
+    <div class="title">Bybit Recommender — Панель оператора</div>
     <div class="meta">
       <div id="regime"></div>
-      <button id="refreshBtn" class="btn">Refresh</button>
+      <button id="refreshBtn" class="btn">Обновить</button>
     </div>
   </header>
 
   <section class="controls">
     <div class="control">
-      <label>Venue</label>
+      <label>Площадка</label>
       <select id="venue">
         <option value="">all</option>
         <option value="spot">spot</option>
@@ -29,7 +29,7 @@
       <input id="topN" type="number" value="20" min="1" max="200"/>
     </div>
     <div class="control">
-      <label>Min confidence</label>
+      <label>Мин. уверенность (для recommended)</label>
       <input id="minConf" type="number" value="0.30" step="0.05" min="0" max="1"/>
     </div>
     <div class="control">
@@ -54,19 +54,19 @@
 
     <div class="grid">
       <div class="panel">
-        <div class="panel-title">Recommendations</div>
+        <div class="panel-title">Рекомендации</div>
         <table class="table" id="recoTable">
           <thead>
             <tr>
               <th>#</th>
-              <th>Venue</th>
+              <th>Площадка</th>
               <th>Symbol</th>
               <th>Bybit bot</th>
               <th>Напр</th>
-              <th>Score</th>
-              <th>Conf</th>
-              <th>Exp.RR</th>
-              <th>Status</th>
+              <th>Скор</th>
+              <th>Увер</th>
+              <th>Ож.RR</th>
+              <th>Статус</th>
               <th>Действия</th>
             </tr>
           </thead>
@@ -75,7 +75,7 @@
       </div>
 
       <div class="panel">
-        <div class="panel-title">Details</div>
+        <div class="panel-title">Детали</div>
         <div id="details" class="details muted">Выберите рекомендацию.</div>
       </div>
     </div>

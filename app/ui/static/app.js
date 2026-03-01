@@ -1,5 +1,9 @@
 const $ = (id) => document.getElementById(id);
 
+let recoAbort = null;
+let recoDebounce = null;
+
+
 function fmt(x, n=2) {
   if (x === null || x === undefined) return "-";
   const v = Number(x);
@@ -43,12 +47,16 @@ async function loadRecommendations() {
   qs.set("show_blocked", String(showBlocked));
   qs.set("show_no_trade", String(showNoTrade));
   qs.set("show_suppressed", String(showSuppressed));
+  qs.set("snapshot", "latest");
 
-  const res = await fetch(`/api/v1/recommendations?${qs.toString()}`);
-  const data = await res.json();
+  if (recoAbort) { try { recoAbort.abort(); } catch(e) {} }
+  recoAbort = new AbortController();
+  const res = await fetch(`/api/v1/recommendations?${qs.toString()}`, { signal: recoAbort.signal });
+  let data;
+  try { data = await res.json(); } catch(e) { return; }
 
   const regime = data.regime || {};
-  $("regime").textContent = `Regime: ${regime.risk_state || "?"} | vol=${regime.vol_state || "?"} | trend=${regime.trend_state || "?"}`;
+  $("regime").textContent = `Режим: ${regime.risk_state || "?"} | vol=${regime.vol_state || "?"} | trend=${regime.trend_state || "?"}`;
 
   const body = $("recoBody");
   body.innerHTML = "";
@@ -70,7 +78,7 @@ async function loadRecommendations() {
       <td>${fmt(it.expected_rr)}</td>
       <td>${pillStatus(it.status)}</td>
       <td>
-        <button class="btn tiny" data-act="details" data-id="${it.rec_id}">Details</button>
+        <button class="btn tiny" data-act="details" data-id="${it.rec_id}">Детали</button>
         <button class="btn tiny secondary" data-act="json" data-id="${it.rec_id}">JSON</button>
       </td>
     `;
@@ -98,6 +106,7 @@ async function loadDetails(recId) {
   lines.push(`status=${it.status}`);
   lines.push("");
   lines.push("ПОЧЕМУ:");
+  lines.push("Подсказка: детальный multi-horizon сентимент смотрите в JSON -> reasons.sentiment_agg. Консенсус направления: reasons.direction_agg.");
   lines.push(reasons.summary || "-");
   lines.push("");
   lines.push("Факторы +:");
@@ -113,6 +122,7 @@ async function loadDetails(recId) {
   else blocks.forEach(b => lines.push(`  - ${b.code}: ${b.msg}`));
   lines.push("");
   lines.push("Параметры для Bybit (копируйте в UI):");
+  lines.push("Подсказка: Grid — если в сильном флете, режим обычно Нейтральный; direction_bias показывает смещение. Диапазон: price_range_lower/price_range_upper.");
   lines.push(JSON.stringify(params, null, 2));
 
   $("details").textContent = lines.join("\n");
@@ -121,13 +131,15 @@ async function loadDetails(recId) {
 
 async function loadDecisions() {
   const res = await fetch("/api/v1/decisions?limit=200");
-  const data = await res.json();
+  let data;
+  try { data = await res.json(); } catch(e) { return; }
   showModal("Журнал решений", data);
 }
 
 async function loadRisk() {
   const res = await fetch("/api/v1/risk/status");
-  const data = await res.json();
+  let data;
+  try { data = await res.json(); } catch(e) { return; }
   showModal("Risk status", data);
 }
 
@@ -139,7 +151,8 @@ document.addEventListener("click", async (e) => {
     if (act === "details") await loadDetails(id);
     if (act === "json") {
       const res = await fetch(`/api/v1/recommendations/${id}`);
-      const data = await res.json();
+      let data;
+  try { data = await res.json(); } catch(e) { return; }
       showModal("Recommendation JSON", data);
     }
       }
@@ -153,3 +166,5 @@ $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") hideM
 
 loadRecommendations();
 setInterval(loadRecommendations, 5000);
+
+['venue','topN','minConf'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', () => { if (recoDebounce) clearTimeout(recoDebounce); recoDebounce = setTimeout(loadRecommendations, 200); }); });

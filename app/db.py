@@ -11,8 +11,12 @@ MIGRATION_INIT_SQL = Path(__file__).resolve().parent.parent / "migrations" / "in
 
 def connect(db_path: str) -> sqlite3.Connection:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout=5000;")
+    except Exception:
+        pass
     return conn
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -141,14 +145,19 @@ def stop_bot(conn: sqlite3.Connection, bot_id: str) -> bool:
     conn.commit()
     return True
 
-def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int, min_conf: float, statuses: list[str] | None = None) -> list[dict[str, Any]]:
-    q = """SELECT * FROM recommendations WHERE ts > ?"""
-    params: list[Any] = [now_ts() - 3600]
+def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int, min_conf: float, statuses: list[str] | None = None, snapshot_ts: int | None = None) -> list[dict[str, Any]]:
+    if snapshot_ts is not None:
+        q = """SELECT * FROM recommendations WHERE ts = ?"""
+        params: list[Any] = [snapshot_ts]
+    else:
+        q = """SELECT * FROM recommendations WHERE ts > ?"""
+        params: list[Any] = [now_ts() - 3600]
     if venue:
         q += " AND venue=?"
         params.append(venue)
-    q += " AND confidence>=?"
-    params.append(min_conf)
+    # Apply min_conf only to status=recommended so blocked/no_trade/suppressed are still visible.
+    q += " AND (status != ? OR confidence >= ?)"
+    params.extend(["recommended", min_conf])
     if statuses:
         placeholders = ",".join("?" for _ in statuses)
         q += f" AND status IN ({placeholders})"
@@ -297,3 +306,12 @@ def get_outcomes_recent(conn: sqlite3.Connection, limit: int = 2000) -> list[dic
     for r in cur.fetchall():
         out.append({k: r[k] for k in r.keys()})
     return out
+
+
+def get_latest_reco_ts(conn: sqlite3.Connection, venue: str | None = None) -> int | None:
+    if venue:
+        cur = conn.execute("""SELECT MAX(ts) AS m FROM recommendations WHERE venue=?""", (venue,))
+    else:
+        cur = conn.execute("""SELECT MAX(ts) AS m FROM recommendations""")
+    r = cur.fetchone()
+    return int(r["m"]) if r and r["m"] is not None else None

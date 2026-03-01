@@ -15,6 +15,8 @@ def _env(key: str, default: str | None = None) -> str:
 
 @dataclass(frozen=True)
 class Settings:
+    require_conf_gate: bool
+
     outcome_horizon_sec: int
     calib_min_samples: int
 

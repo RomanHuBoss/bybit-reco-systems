@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import math
+import time
+from typing import Any
+
+def _now_ts() -> int:
+    return int(time.time())
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+def ewma(points: list[tuple[int, float, float]], half_life_sec: int, now_ts: int) -> float:
+    # points: (ts, sentiment, weight)
+    # EWMA with exponential decay based on half-life.
+    if not points:
+        return 0.0
+    lam = math.log(2.0) / float(half_life_sec)
+    num = 0.0
+    den = 0.0
+    for ts, s, w in points:
+        age = max(0, now_ts - int(ts))
+        decay = math.exp(-lam * age)
+        ww = float(w) * decay
+        num += ww * float(s)
+        den += ww
+    return float(num / den) if den > 0 else 0.0
+
+def fetch_sentiment_points(conn, scope: str, key: str, since_ts: int, limit: int = 4000) -> list[dict[str, Any]]:
+    cur = conn.execute(
+        """SELECT ts, sentiment, volume, sources_json, tags_json
+           FROM sentiment
+           WHERE scope=? AND key=? AND ts>=?
+           ORDER BY ts ASC
+           LIMIT ?""",
+        (scope, key, since_ts, limit),
+    )
+    rows = cur.fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            "ts": int(r["ts"]),
+            "sentiment": float(r["sentiment"]),
+            "volume": int(r["volume"]),
+        })
+    return out
+
+def sentiment_vote(score: float) -> str:
+    # Map -1..1 to regime
+    if score <= -0.35:
+        return "risk_off"
+    if score >= 0.35:
+        return "risk_on"
+    return "neutral"
+
+def compute_sentiment_agg(conn, scope: str = "global", key: str = "crypto") -> dict[str, Any]:
+    now = _now_ts()
+    week = 7 * 24 * 3600
+    pts = fetch_sentiment_points(conn, scope, key, since_ts=now - week, limit=8000)
+
+    # If we don't have enough, fallback to 0
+    points = [(p["ts"], p["sentiment"], max(1.0, float(p["volume"]))) for p in pts]
+
+    s_1h  = ewma(points, half_life_sec=1*3600, now_ts=now)
+    s_6h  = ewma(points, half_life_sec=6*3600, now_ts=now)
+    s_1d  = ewma(points, half_life_sec=24*3600, now_ts=now)
+    s_7d  = ewma(points, half_life_sec=7*24*3600, now_ts=now)
+
+    v_1h = float(s_1h - s_6h)  # short-term impulse
+
+    # votes with weights (longer horizons weigh more)
+    votes = [
+        {"h":"1h", "score": float(s_1h), "vote": sentiment_vote(s_1h), "w": 0.8},
+        {"h":"6h", "score": float(s_6h), "vote": sentiment_vote(s_6h), "w": 1.2},
+        {"h":"1d", "score": float(s_1d), "vote": sentiment_vote(s_1d), "w": 1.8},
+        {"h":"7d", "score": float(s_7d), "vote": sentiment_vote(s_7d), "w": 2.2},
+    ]
+
+    score_map = {"risk_on": 0.0, "risk_off": 0.0, "neutral": 0.0}
+    for v in votes:
+        score_map[v["vote"]] += float(v["w"])
+
+    # choose regime
+    regime = max(score_map.items(), key=lambda kv: kv[1])[0]
+
+    # strength 0..1
+    sorted_vals = sorted(score_map.values(), reverse=True)
+    strength = 0.0
+    if sum(sorted_vals) > 0:
+        strength = float(_clamp((sorted_vals[0] - sorted_vals[1]) / sum(sorted_vals), 0.0, 1.0))
+
+    # panic/euphoria flags
+    panic = (s_1h <= -0.65 and v_1h < -0.10) or (s_6h <= -0.60)
+    euphoria = (s_1h >= 0.65 and v_1h > 0.10) or (s_6h >= 0.60)
+
+    return {
+        "ts": now,
+        "scope": scope,
+        "key": key,
+        "ewma": {
+            "1h": float(s_1h),
+            "6h": float(s_6h),
+            "1d": float(s_1d),
+            "7d": float(s_7d),
+        },
+        "impulse": {"v_1h": float(v_1h)},
+        "votes": votes,
+        "scores": score_map,
+        "regime": regime,  # risk_on / risk_off / neutral
+        "strength": strength,
+        "flags": {"panic": bool(panic), "euphoria": bool(euphoria)},
+        "n_points_7d": len(pts),
+    }
