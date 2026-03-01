@@ -259,6 +259,32 @@ async function loadDetails(recId) {
   (reasons.top_negative_factors || []).forEach(f =>
     lines.push(`  - ${f.text} (${f.feature}=${fmt(f.value, 4)})`));
 
+  // Liquidity + futures meta
+  const liq = reasons.liquidity || {};
+  const fr  = reasons.funding   || {};
+  const oi  = reasons.open_interest || {};
+
+  lines.push("");
+  lines.push("── Ликвидность ──");
+  const tierEmoji = {"high":"🟢","medium":"🟡","low":"🟠","micro":"🔴","unknown":"⚪"}[liq.tier] || "⚪";
+  lines.push(`${tierEmoji} Тир: ${liq.tier || "—"} | Оборот 24h: ${liq.turnover24h_usd ? "$" + Number(liq.turnover24h_usd).toLocaleString("ru") : "—"}`);
+
+  if (fr.value !== undefined && fr.value !== null) {
+    const frEmoji = {"bullish":"🟢","bearish":"🔴","neutral":"⚪","unknown":"⚪"}[fr.signal] || "⚪";
+    lines.push("");
+    lines.push("── Funding Rate ──");
+    lines.push(`${frEmoji} ${(fr.value * 100).toFixed(4)}% / 8ч | ${fr.annualized_pct?.toFixed(0)}% годовых | сигнал: ${fr.signal}`);
+    lines.push(`Carry cost: ${fr.carry_cost_bps_8h} bps / 8ч`);
+  }
+
+  if (oi.oi_now !== undefined && oi.oi_now !== null) {
+    const oiEmoji = {"bullish":"🟢","bearish":"🔴","caution":"🟠","neutral":"⚪","pending":"⚪","unknown":"⚪"}[oi.signal] || "⚪";
+    lines.push("");
+    lines.push("── Open Interest ──");
+    lines.push(`${oiEmoji} OI: ${Number(oi.oi_now).toLocaleString("ru")} | тренд: ${oi.trend} | сигнал: ${oi.signal}`);
+    lines.push(`Δ4h: ${oi.oi_4h_chg_pct !== null ? oi.oi_4h_chg_pct + "%" : "—"} | Δ24h: ${oi.oi_24h_chg_pct !== null ? oi.oi_24h_chg_pct + "%" : "—"}`);
+  }
+
   lines.push("");
   lines.push("── Стоимость исполнения (bps) ──");
   lines.push(JSON.stringify(reasons.cost_model || {}, null, 2));

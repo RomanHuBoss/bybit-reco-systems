@@ -108,3 +108,38 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
 
     if ohlcv_rows:
         db.upsert_ohlcv(conn, ohlcv_rows)
+
+
+def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
+    """Collect funding rate + open interest for all linear symbols.
+    Called once per collect cycle, only for futures venue.
+    Errors are logged per-symbol and never abort the cycle.
+    """
+    import time
+    ts_now = db.now_ts()
+    funding_rows: list[dict] = []
+
+    for sym in symbols_linear:
+        # Funding rate — reuse linear tickers (already fetched in collect_once,
+        # but fundingRate is in the ticker payload, so we grab it separately here
+        # to keep concerns separated and allow different call frequencies)
+        try:
+            fr = client.get_funding_rate(sym)
+            if fr:
+                fr["ts"] = ts_now
+                funding_rows.append(fr)
+        except Exception as e:
+            db.log_decision(conn, "COLLECT_ERROR", None, None,
+                            {"venue": "linear", "symbol": sym, "field": "funding_rate", "err": str(e)})
+
+        # Open interest — 48 × 1h candles
+        try:
+            oi_rows = client.get_open_interest(sym, interval="1h", limit=48)
+            if oi_rows:
+                db.upsert_open_interest(conn, sym, oi_rows)
+        except Exception as e:
+            db.log_decision(conn, "COLLECT_ERROR", None, None,
+                            {"venue": "linear", "symbol": sym, "field": "open_interest", "err": str(e)})
+
+    if funding_rows:
+        db.upsert_funding_rate(conn, funding_rows)

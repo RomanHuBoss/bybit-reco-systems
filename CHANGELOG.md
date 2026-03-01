@@ -1,5 +1,51 @@
 # Changelog
 
+## V3.4 — Funding rate, Open Interest, Liquidity tier
+
+### Новые данные
+
+**Funding rate (Bybit /v5/market/tickers)**
+- Собирается каждый цикл для всех linear символов
+- `funding_signal()`: bullish < -0.01% / bearish > 0.03% / neutral
+- В скоринге: bullish → +0.04, bearish → -0.06
+- Гейт FUNDING_EXTREME: > 0.06%/8h → блок рекомендации
+
+**Open Interest (Bybit /v5/market/open-interest)**
+- 48 × 1h свечей, upsert в таблицу `open_interest`
+- `oi_trend()`: Δ4h, Δ24h, trend=growing/falling/stable
+- Сигнал комбинируется с price direction:
+  price up + OI growing = bullish, price down + OI growing = bearish
+- OI caution (unwinding) → conf × 0.88
+
+**Ликвидность / тир**
+- `liquidity_tier(turnover24h_usd)`: high/medium/low/micro
+- Гейты:
+  micro (< $500K/day) → LIQUIDITY_TOO_LOW: grid запрещён
+  low (< $2M/day) + futures_martingale/combo → LIQUIDITY_LOW_FUTURES: запрещён
+
+### Новые таблицы (migrations/init.sql)
+- `funding_rate(symbol, ts, funding_rate, next_funding_ts)`
+- `open_interest(symbol, ts, oi)`
+
+### ⚠ Требуется пересоздание БД или применение миграции вручную:
+```sql
+CREATE TABLE IF NOT EXISTS funding_rate (
+  symbol TEXT NOT NULL, ts INTEGER NOT NULL,
+  funding_rate REAL NOT NULL, next_funding_ts INTEGER,
+  PRIMARY KEY (symbol, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_funding_ts ON funding_rate(ts DESC);
+
+CREATE TABLE IF NOT EXISTS open_interest (
+  symbol TEXT NOT NULL, ts INTEGER NOT NULL, oi REAL NOT NULL,
+  PRIMARY KEY (symbol, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_oi_ts ON open_interest(ts DESC);
+```
+
+### UI (Детали)
+Добавлены блоки: Ликвидность / Funding Rate / Open Interest с emoji-индикаторами.
+
 ## V3.3 — Per-symbol sentiment: RSS + Reddit + CoinGecko trending + momentum
 
 ### Проблема

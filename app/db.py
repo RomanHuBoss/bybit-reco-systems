@@ -315,3 +315,41 @@ def get_latest_reco_ts(conn: sqlite3.Connection, venue: str | None = None) -> in
         cur = conn.execute("""SELECT MAX(ts) AS m FROM recommendations""")
     r = cur.fetchone()
     return int(r["m"]) if r and r["m"] is not None else None
+
+
+# ── funding rate ──────────────────────────────────────────────────────────────
+
+def upsert_funding_rate(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    conn.executemany(
+        """INSERT OR REPLACE INTO funding_rate(symbol, ts, funding_rate, next_funding_ts)
+           VALUES(?,?,?,?)""",
+        [(r["symbol"], r["ts"], r["funding_rate"], r.get("next_funding_ts")) for r in rows],
+    )
+    conn.commit()
+
+def get_latest_funding_rate(conn: sqlite3.Connection, symbol: str) -> dict | None:
+    cur = conn.execute(
+        """SELECT * FROM funding_rate WHERE symbol=? ORDER BY ts DESC LIMIT 1""",
+        (symbol,),
+    )
+    r = cur.fetchone()
+    if not r:
+        return None
+    return {"symbol": r["symbol"], "ts": r["ts"], "funding_rate": r["funding_rate"],
+            "next_funding_ts": r["next_funding_ts"]}
+
+# ── open interest ─────────────────────────────────────────────────────────────
+
+def upsert_open_interest(conn: sqlite3.Connection, symbol: str, rows: list[dict]) -> None:
+    conn.executemany(
+        """INSERT OR REPLACE INTO open_interest(symbol, ts, oi) VALUES(?,?,?)""",
+        [(symbol, r["ts"], r["oi"]) for r in rows],
+    )
+    conn.commit()
+
+def get_oi_series(conn: sqlite3.Connection, symbol: str, limit: int = 48) -> list[dict]:
+    cur = conn.execute(
+        """SELECT ts, oi FROM open_interest WHERE symbol=? ORDER BY ts DESC LIMIT ?""",
+        (symbol, limit),
+    )
+    return [{"ts": r["ts"], "oi": r["oi"]} for r in cur.fetchall()]

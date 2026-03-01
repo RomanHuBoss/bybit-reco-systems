@@ -144,3 +144,22 @@ CREATE TABLE IF NOT EXISTS reco_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_outcomes_ts ON reco_outcomes(ts DESC);
+
+-- Funding rate snapshots (linear only)
+CREATE TABLE IF NOT EXISTS funding_rate (
+  symbol TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  funding_rate REAL NOT NULL,
+  next_funding_ts INTEGER,
+  PRIMARY KEY (symbol, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_funding_ts ON funding_rate(ts DESC);
+
+-- Open interest snapshots (linear only)
+CREATE TABLE IF NOT EXISTS open_interest (
+  symbol TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  oi REAL NOT NULL,
+  PRIMARY KEY (symbol, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_oi_ts ON open_interest(ts DESC);

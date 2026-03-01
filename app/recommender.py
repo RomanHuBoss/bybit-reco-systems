@@ -5,7 +5,7 @@ import secrets
 from typing import Any
 
 from . import db
-from .features import compute_features_from_ohlcv
+from .features import compute_features_from_ohlcv, liquidity_tier, funding_signal, oi_trend
 from .regime import classify_regime
 from .risk import gate_candidate
 from .direction import vote_for_tf, aggregate_direction
@@ -358,7 +358,47 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             atr_pct = float(f.get("atr_pct") or 0.0)
             trend = float(f.get("trend_strength") or 0.0)
 
+            # ── Liquidity tier ──
+            ticker_row = db.get_latest_ticker(conn, venue, sym)
+            turnover = float(ticker_row["turnover24h"]) if ticker_row and ticker_row["turnover24h"] else None
+            liq_tier = liquidity_tier(turnover)
+
+            # ── Funding rate + OI (futures only) ──
+            fr_data  = db.get_latest_funding_rate(conn, sym) if venue == "linear" else None
+            oi_rows  = db.get_oi_series(conn, sym, limit=48)  if venue == "linear" else []
+            fr_sig   = funding_signal(fr_data["funding_rate"] if fr_data else None)
+            oi_sig   = oi_trend(oi_rows)
+            # Combine OI trend with price direction for final signal
+            if oi_sig["trend"] == "growing":
+                dir_agg_tmp = f.get("_direction_agg", {})
+                price_dir = dir_agg_tmp.get("direction", "neutral")
+                if price_dir == "long":
+                    oi_sig["signal"] = "bullish"   # price up + OI up → healthy long
+                elif price_dir == "short":
+                    oi_sig["signal"] = "bearish"   # price down + OI up → shorts piling in
+                else:
+                    oi_sig["signal"] = "neutral"
+            elif oi_sig["trend"] == "falling":
+                oi_sig["signal"] = "caution"       # unwinding → reduced conviction
+            else:
+                oi_sig["signal"] = "neutral"
+
             feasibility_blocks = []
+
+            # ── Liquidity gates ──
+            if liq_tier == "micro":
+                feasibility_blocks.append({"code": "LIQUIDITY_TOO_LOW",
+                    "msg": f"turnover24h={turnover} USD < $500K — grid запрещён на неликвидных символах"})
+            if liq_tier == "low" and bot_type in ("futures_martingale", "futures_combo"):
+                feasibility_blocks.append({"code": "LIQUIDITY_LOW_FUTURES",
+                    "msg": f"turnover24h={turnover} USD < $2M — мартингейл/комбо запрещён на низколиквидных"})
+
+            # ── Funding rate gate (futures only) ──
+            if venue == "linear" and fr_sig["signal"] == "bearish" and fr_sig["value"] is not None:
+                if float(fr_sig["value"]) > 0.0006:   # > 0.06% per 8h = ~66% annualized — extreme
+                    feasibility_blocks.append({"code": "FUNDING_EXTREME",
+                        "msg": f"funding_rate={fr_sig['value']:.4f} ({fr_sig['annualized_pct']:.0f}%/year) — crowded long, высокий carry-cost"})
+
             if bot_type in ("spot_grid","futures_grid") and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
             if bot_type in ("spot_grid","futures_grid") and trend > 0.60:
@@ -376,9 +416,20 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             effective_sent = (0.5 * global_sent + 0.5 * sym_sent) if sym_sent is not None else global_sent
 
             score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=effective_sent)
+
+            # ── Funding + OI score adjustments ──
+            if venue == "linear":
+                if fr_sig["signal"] == "bullish":
+                    score = _clamp(score + 0.04, 0.0, 1.0)   # longs being paid → small bonus
+                elif fr_sig["signal"] == "bearish":
+                    score = _clamp(score - 0.06, 0.0, 1.0)   # crowded long → penalty
+
             conf_raw = float(conf0)
             conf_cal = float(calibrator.predict(score)) if calibrator.fitted else float(conf0)
             conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))
+            # OI unwinding → reduce confidence
+            if venue == "linear" and oi_sig["signal"] == "caution":
+                conf = float(_clamp(conf * 0.88, 0.0, 1.0))
 
             expected_rr = _expected_rr(bot_type, f)
             direction = _direction(bot_type, f.get('_direction_agg', {}))
@@ -401,6 +452,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             reasons2["regime"] = regime
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
             reasons2["sentiment_agg"] = sent_agg
+            reasons2["liquidity"] = {
+                "tier": liq_tier,
+                "turnover24h_usd": turnover,
+            }
+            if venue == "linear":
+                reasons2["funding"] = fr_sig
+                reasons2["open_interest"] = oi_sig
             reasons2["symbol_sentiment"] = {
                 "value": float(sym_sent) if sym_sent is not None else None,
                 "effective": float(effective_sent),

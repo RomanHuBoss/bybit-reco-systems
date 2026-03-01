@@ -16,7 +16,6 @@ class BybitPublicClient:
         r = self._client.get(url, params=params)
         r.raise_for_status()
         data = r.json()
-        # Bybit v5 standard fields: retCode, retMsg, result
         if isinstance(data, dict) and data.get("retCode", 0) != 0:
             raise RuntimeError(f"Bybit error {data.get('retCode')}: {data.get('retMsg')}")
         return data
@@ -29,8 +28,39 @@ class BybitPublicClient:
         return data.get("result", {}).get("list", []) or []
 
     def get_kline(self, category: str, symbol: str, interval: str = "1", limit: int = 200) -> list[list[str]]:
-        # interval: "1" = 1 minute
         params = {"category": category, "symbol": symbol, "interval": interval, "limit": str(limit)}
         data = self._get("/v5/market/kline", params=params)
-        # result.list: [ [startTime, open, high, low, close, volume, turnover], ... ] in reverse chronological order
         return data.get("result", {}).get("list", []) or []
+
+    def get_funding_rate(self, symbol: str) -> dict[str, Any] | None:
+        """Current funding rate from linear tickers endpoint."""
+        try:
+            data = self._get("/v5/market/tickers", {"category": "linear", "symbol": symbol})
+            items = data.get("result", {}).get("list", [])
+            if not items:
+                return None
+            t = items[0]
+            return {
+                "symbol": symbol,
+                "funding_rate": float(t.get("fundingRate") or 0.0),
+                "next_funding_ts": int(t.get("nextFundingTime") or 0),
+            }
+        except Exception:
+            return None
+
+    def get_open_interest(self, symbol: str, interval: str = "1h", limit: int = 48) -> list[dict[str, Any]]:
+        """Historical open interest for a linear perpetual.
+        interval: 5min / 15min / 30min / 1h / 4h / 1d
+        Returns list newest-first: [{ts, oi}, ...]
+        """
+        try:
+            data = self._get("/v5/market/open-interest", {
+                "category": "linear",
+                "symbol": symbol,
+                "intervalTime": interval,
+                "limit": str(limit),
+            })
+            items = data.get("result", {}).get("list", []) or []
+            return [{"ts": int(r["timestamp"]) // 1000, "oi": float(r["openInterest"])} for r in items]
+        except Exception:
+            return []

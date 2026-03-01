@@ -88,3 +88,117 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
         "ask": ask,
         "ts_last": int(ohlcv_rows[-1]["ts"]),
     }
+
+
+# ── Liquidity tier ────────────────────────────────────────────────────────────
+# vol24h in USD (turnover24h from ticker)
+
+LIQUIDITY_TIERS = {
+    "high":   20_000_000,   # > $20M/day  — all bots OK
+    "medium":  2_000_000,   # > $2M/day   — grid OK, martingale reduced
+    "low":       500_000,   # > $500K/day — spot grid only, small params
+    # below $500K → "micro": grid forbidden
+}
+
+def liquidity_tier(turnover24h_usd: float | None) -> str:
+    if turnover24h_usd is None:
+        return "unknown"
+    v = float(turnover24h_usd)
+    if v >= LIQUIDITY_TIERS["high"]:
+        return "high"
+    if v >= LIQUIDITY_TIERS["medium"]:
+        return "medium"
+    if v >= LIQUIDITY_TIERS["low"]:
+        return "low"
+    return "micro"
+
+
+# ── Funding rate signal ───────────────────────────────────────────────────────
+
+def funding_signal(funding_rate: float | None) -> dict[str, Any]:
+    """
+    funding_rate: raw Bybit value, e.g. 0.0001 = 0.01% per 8h
+    Returns:
+      value: raw funding rate
+      annualized_pct: rough annual cost (3×/day × 365)
+      signal: 'bullish' | 'bearish' | 'neutral'
+        bullish  = funding < -0.01%  (longs being paid)
+        bearish  = funding > +0.03%  (longs paying high premium)
+        neutral  = otherwise
+      carry_cost_bps_8h: abs(funding_rate) × 10000 — cost per 8h in bps
+    """
+    if funding_rate is None:
+        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_8h": None}
+
+    fr = float(funding_rate)
+    annualized = fr * 3 * 365 * 100  # % per year
+
+    if fr < -0.0001:
+        signal = "bullish"   # shorts overpaying → price pressure up
+    elif fr > 0.0003:
+        signal = "bearish"   # longs overpaying → crowded long, fragile
+    else:
+        signal = "neutral"
+
+    return {
+        "value": fr,
+        "annualized_pct": round(annualized, 2),
+        "signal": signal,
+        "carry_cost_bps_8h": round(abs(fr) * 10000, 4),
+    }
+
+
+# ── OI trend ──────────────────────────────────────────────────────────────────
+
+def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    oi_series: [{ts, oi}] newest-first (from db.get_oi_series)
+    Returns:
+      oi_now:    latest OI value
+      oi_24h_chg_pct: % change vs 24h ago
+      oi_4h_chg_pct:  % change vs 4h ago
+      trend:    'growing' | 'falling' | 'stable'
+      signal:   'bullish' | 'bearish' | 'neutral'
+        price up + OI growing  → healthy trend (bullish)
+        price down + OI growing → capitulation / shorts piling in (bearish)
+        OI falling             → position unwinding (neutral/caution)
+    """
+    empty = {"oi_now": None, "oi_24h_chg_pct": None, "oi_4h_chg_pct": None,
+             "trend": "unknown", "signal": "unknown"}
+    if not oi_series or len(oi_series) < 2:
+        return empty
+
+    # series is newest-first
+    oi_now = float(oi_series[0]["oi"])
+
+    def _pct_chg(old: float) -> float | None:
+        if old == 0:
+            return None
+        return (oi_now - old) / old * 100.0
+
+    oi_4h = float(oi_series[min(3, len(oi_series)-1)]["oi"])   # ~4h back
+    oi_24h = float(oi_series[min(23, len(oi_series)-1)]["oi"])  # ~24h back
+
+    chg_4h  = _pct_chg(oi_4h)
+    chg_24h = _pct_chg(oi_24h)
+
+    # trend based on 24h change
+    if chg_24h is not None:
+        if chg_24h > 3.0:
+            trend = "growing"
+        elif chg_24h < -3.0:
+            trend = "falling"
+        else:
+            trend = "stable"
+    else:
+        trend = "stable"
+
+    # signal requires price context — provided in recommender
+    # here we return raw; recommender combines with price direction
+    return {
+        "oi_now": oi_now,
+        "oi_24h_chg_pct": round(chg_24h, 2) if chg_24h is not None else None,
+        "oi_4h_chg_pct":  round(chg_4h, 2)  if chg_4h  is not None else None,
+        "trend": trend,
+        "signal": "pending",  # set in recommender after combining with price direction
+    }
