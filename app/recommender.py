@@ -5,7 +5,7 @@ import secrets
 from typing import Any
 
 from . import db
-from .features import compute_features_from_ohlcv, liquidity_tier, funding_signal, oi_trend
+from .features import compute_features_from_ohlcv, liquidity_tier, funding_signal, oi_trend, btc_beta
 from .regime import classify_regime
 from .risk import gate_candidate
 from .direction import vote_for_tf, aggregate_direction
@@ -302,6 +302,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     features_all: list[dict[str, Any]] = []
     symbol_feature_map: dict[tuple[str,str], dict[str, Any]] = {}
 
+    ts_now = db.now_ts()  # set here for stale gate use inside feature loop
+
+    # Load BTC 1h closes once — used for beta/correlation calculation per symbol
+    btc_1h_rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", tf_sec=3600, limit=50)
+    if not btc_1h_rows:
+        btc_1h_rows = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", tf_sec=3600, limit=50)
+    btc_1h_closes = [float(r["close"]) for r in btc_1h_rows] if btc_1h_rows else []
+
     for venue in settings.venues:
         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
         for sym in symbols:
@@ -311,6 +319,17 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             f = compute_features_from_ohlcv([dict(r) for r in rows], ticker)
             if not f:
                 continue
+
+            # ── Stale data gate ──────────────────────────────────────────
+            # If newest 1m candle is too old, data is unreliable — skip symbol
+            data_age_sec = ts_now - int(f["ts_last"])
+            if data_age_sec > settings.stale_data_max_sec:
+                db.log_decision(conn, "STALE_DATA_SKIP", None, None, {
+                    "venue": venue, "symbol": sym,
+                    "age_sec": data_age_sec, "max_sec": settings.stale_data_max_sec,
+                })
+                continue
+
             # Multi-timeframe direction voting (15m/30m/1h/4h/1d)
             tf_secs = [15*60, 30*60, 60*60, 240*60, 24*60*60]
             tf_map = {}
@@ -330,6 +349,24 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             agg = aggregate_direction(tf_map) if tf_map else {"direction":"neutral","bias":"neutral","direction_confidence":0.5,"scores":{"tactical":0,"structural":0,"all":0},"strength":{"tactical":0,"structural":0,"all":0},"coherence":0.5,"regime":"unknown","regime_confidence":0.0,"structural_veto_applied":False,"tf_used":[]}
             f["_direction_agg"] = agg
             f["_atr_pct_1h"] = atr_1h
+
+            # ── BTC beta ─────────────────────────────────────────────────
+            if sym != "BTCUSDT" and btc_1h_closes:
+                sym_1h_rows = tf_map.get(3600)
+                if sym_1h_rows is None:
+                    # fetch closes directly if not in tf_map
+                    _sym_rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=3600, limit=50)
+                    sym_1h_closes = [float(r["close"]) for r in _sym_rows] if _sym_rows else []
+                else:
+                    # tf_map contains vote_for_tf result, not raw rows — fetch closes
+                    _sym_rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=3600, limit=50)
+                    sym_1h_closes = [float(r["close"]) for r in _sym_rows] if _sym_rows else []
+                beta_info = btc_beta(sym_1h_closes, btc_1h_closes, window=24)
+            else:
+                beta_info = {"correlation": None, "beta": None,
+                             "is_btc_driven": False, "independent_signal": True, "window": 0}
+            f["_btc_beta"] = beta_info
+
             ts_f = int(f["ts_last"])
             db.insert_features(conn, venue, sym, ts_f, f)
             features_all.append(f)
@@ -340,7 +377,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
     limits = db.get_active_risk_limits(conn) or settings.risk_limits
     model_version = "bybit-taxonomy-v2"
-    ts_now = db.now_ts()
+    # ts_now already set above for stale gate — reuse it
 
     recs: list[dict[str, Any]] = []
 
@@ -405,6 +442,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 feasibility_blocks.append({"code":"TREND_TOO_STRONG", "msg": f"trend_strength={trend:.2f} слишком сильный тренд для grid"})
             dir_tmp = f.get("_direction_agg", {})
             dir_conf = float(dir_tmp.get("direction_confidence", 0.5))
+
+            # If symbol is highly correlated to BTC, direction is less independent
+            beta_info = f.get("_btc_beta", {})
+            if beta_info.get("is_btc_driven") and sym != "BTCUSDT":
+                dir_conf = float(_clamp(dir_conf * 0.88, 0.0, 0.99))
             if bot_type == "futures_martingale" and (atr_pct > 0.018 or sent_agg.get("flags", {}).get("panic") or (sent_agg.get("regime") == "risk_off" and sent_agg.get("strength", 0.0) >= 0.35) or effective_sent < -0.45 or dir_conf < 0.65):
                 code = "DIR_CONF_TOO_LOW" if dir_conf < 0.65 else "MARTINGALE_BLOCKED"
                 feasibility_blocks.append({"code": code, "msg": f"atr_pct={atr_pct:.4f}, sentiment6h={effective_sent:.2f}, dir_conf={dir_conf:.2f} => запрет"})
@@ -452,6 +494,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             reasons2["regime"] = regime
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
             reasons2["sentiment_agg"] = sent_agg
+            reasons2["btc_beta"] = f.get("_btc_beta", {})
             reasons2["liquidity"] = {
                 "tier": liq_tier,
                 "turnover24h_usd": turnover,

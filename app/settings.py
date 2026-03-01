@@ -22,6 +22,7 @@ class Settings:
     bybit_base_url: str
 
     collect_interval_sec: int
+    stale_data_max_sec: int  # skip symbol if newest 1m candle is older than this
     reco_interval_sec: int
     top_n: int
 
@@ -60,6 +61,7 @@ def load_settings() -> Settings:
         db_path=_env("DB_PATH", "./data/app.db"),
         bybit_base_url=_env("BYBIT_BASE_URL", "https://api.bybit.com"),
         collect_interval_sec=int(_env("COLLECT_INTERVAL_SEC", "20")),
+        stale_data_max_sec=int(_env("STALE_DATA_MAX_SEC", "300")),  # 5 min default
         reco_interval_sec=int(_env("RECO_INTERVAL_SEC", "20")),
         top_n=int(_env("TOP_N", "20")),
         venues=venues,

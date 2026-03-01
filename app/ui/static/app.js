@@ -231,6 +231,19 @@ async function loadDetails(recId) {
   else lines.push(`✓ conf откалибрована (Platt a=${fmt(confModel.a,3)} b=${fmt(confModel.b,3)})`);
 
   lines.push("");
+  // BTC beta block
+  const beta = reasons.btc_beta || {};
+  if (beta.correlation !== null && beta.correlation !== undefined) {
+    const btcEmoji = beta.is_btc_driven ? "🔗" : beta.independent_signal ? "🆓" : "〰";
+    const btcNote = beta.is_btc_driven
+      ? "сигнал отражает BTC, не сам актив"
+      : beta.independent_signal
+        ? "независимый сигнал"
+        : "частичная корреляция";
+    lines.push(`BTC beta: r=${beta.correlation} β=${beta.beta} ${btcEmoji} ${btcNote}`);
+    lines.push("");
+  }
+
   lines.push("── Направление ──");
   lines.push(`direction=${dirAgg.direction || "—"} bias=${dirAgg.bias || "—"}`);
   lines.push(`dir_conf=${fmt(dirAgg.direction_confidence)} cal=${fmt(dirAgg.direction_confidence_calibrated)}`);

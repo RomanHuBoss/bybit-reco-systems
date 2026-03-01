@@ -1,5 +1,54 @@
 # Changelog
 
+## V3.5 — Stale gate, outcomes fix, BTC beta
+
+### Fix 1: Stale data gate (recommender.py + settings.py)
+
+Если коллектор упал и данные по символу устарели — рекомендер
+молча строил решение на старых числах. Теперь:
+
+  if ts_now - f["ts_last"] > STALE_DATA_MAX_SEC: skip + log STALE_DATA_SKIP
+
+Порог: `STALE_DATA_MAX_SEC=300` (5 мин) в `.env`.
+Пропущенные символы видны в журнале как `STALE_DATA_SKIP`.
+
+### Fix 2: Outcomes — неверные лейблы для grid (outcomes.py)
+
+Старый код: `success = 1 if price_moved_in_direction else 0`
+Это верно для DCA/Martingale, но grid-бот зарабатывает на флете,
+а не на направленном движении. Калибратор обучался на мусорных лейблах.
+
+Новая логика:
+  Grid (spot_grid, futures_grid):
+    success = цена вышла из горизонта внутри рекомендованного диапазона
+              И не выбивала wick за range_lower/upper × 0.995/1.005
+    Fallback (если диапазон не записан): |ret| < 1.5% за горизонт = grid-friendly
+
+  Directional (dca_bot, futures_martingale, futures_combo):
+    success = ret > 0 в направлении (без изменений, это верно)
+
+Дополнительно: `_get_price_range_in_window()` — проверяет min/max
+за весь горизонт по 1m свечам, не только exit-цену.
+
+### Fix 3: BTC beta / correlation (features.py + recommender.py)
+
+`btc_beta(symbol_closes, btc_closes, window=24)`:
+  - Pearson correlation r за 24 × 1h log-returns
+  - Beta (slope symbol/BTC)
+  - is_btc_driven: |r| > 0.80 — сигнал отражает BTC, не актив
+  - independent_signal: |r| < 0.50 — актив торгуется самостоятельно
+
+В рекомендере:
+  - BTC 1h closes загружаются один раз на цикл
+  - Для каждого символа (кроме BTC) считается beta за 24h
+  - Если is_btc_driven: dir_conf × 0.88 (направление менее независимо)
+  - reasons.btc_beta: {correlation, beta, is_btc_driven, independent_signal}
+
+В UI деталей:
+  🔗 r=0.91 β=1.3 — сигнал отражает BTC, не сам актив
+  🆓 r=0.32 β=0.4 — независимый сигнал
+  〰 r=0.65 β=0.9 — частичная корреляция
+
 ## V3.4 — Funding rate, Open Interest, Liquidity tier
 
 ### Новые данные

@@ -202,3 +202,59 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
         "trend": trend,
         "signal": "pending",  # set in recommender after combining with price direction
     }
+
+
+# ── BTC beta / correlation ────────────────────────────────────────────────────
+
+def btc_beta(
+    symbol_closes: list[float],
+    btc_closes: list[float],
+    window: int = 24,
+) -> dict[str, Any]:
+    """
+    Rolling correlation and beta of symbol vs BTC over last `window` 1h candles.
+    Returns:
+      correlation: Pearson r [-1, 1]
+      beta:        price sensitivity (symbol_ret / btc_ret slope)
+      is_btc_driven: True if |correlation| > 0.80 — signal mostly reflects BTC
+      independent_signal: True if |correlation| < 0.50 — symbol has own driver
+    """
+    empty = {"correlation": None, "beta": None, "is_btc_driven": False,
+             "independent_signal": True, "window": window}
+
+    if len(symbol_closes) < window + 1 or len(btc_closes) < window + 1:
+        return empty
+
+    # log returns
+    def _rets(closes: list[float]) -> list[float]:
+        c = closes[-(window + 1):]
+        return [math.log(c[i] / c[i-1]) for i in range(1, len(c)) if c[i-1] > 0]
+
+    sym_r = _rets(symbol_closes)
+    btc_r = _rets(btc_closes)
+    n = min(len(sym_r), len(btc_r), window)
+    if n < 8:
+        return empty
+
+    sym_r = sym_r[-n:]
+    btc_r = btc_r[-n:]
+
+    mean_s = sum(sym_r) / n
+    mean_b = sum(btc_r) / n
+    cov = sum((s - mean_s) * (b - mean_b) for s, b in zip(sym_r, btc_r)) / n
+    var_s = sum((s - mean_s) ** 2 for s in sym_r) / n
+    var_b = sum((b - mean_b) ** 2 for b in btc_r) / n
+
+    std_s = math.sqrt(max(var_s, 1e-12))
+    std_b = math.sqrt(max(var_b, 1e-12))
+
+    corr = float(_clamp(cov / (std_s * std_b), -1.0, 1.0))
+    beta = float(cov / max(var_b, 1e-12))
+
+    return {
+        "correlation": round(corr, 3),
+        "beta": round(beta, 3),
+        "is_btc_driven": abs(corr) > 0.80,
+        "independent_signal": abs(corr) < 0.50,
+        "window": n,
+    }
