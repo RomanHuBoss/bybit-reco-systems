@@ -59,13 +59,15 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     if ticker_rows:
         db.insert_tickers(conn, ticker_rows)
 
+    # Bybit v5 API valid kline intervals: 1, 3, 5, 15, 30, 60, 120, 240, 360, 720, D, W, M
+    # "1440" is NOT valid — use "D" for daily candles
     intervals: dict[str, int] = {
         "1": 60,
         "15": 15 * 60,
         "30": 30 * 60,
         "60": 60 * 60,
         "240": 240 * 60,
-        "1440": 24 * 60 * 60,
+        "D": 24 * 60 * 60,
     }
 
     ohlcv_rows: list[dict[str, Any]] = []

@@ -1,5 +1,18 @@
 # Changelog
 
+## V3.1.1 — Hotfix: Invalid period + log analysis
+
+### Баг из журнала (COLLECT_ERROR: Invalid period!)
+
+**🔴 collector.py — неверный интервал `"1440"` для Bybit v5 API**
+Bybit v5 kline endpoint поддерживает: `1, 3, 5, 15, 30, 60, 120, 240, 360, 720, D, W, M`
+Значение `"1440"` не входит в список допустимых → `retCode 10001: Invalid period!`
+Исправлено: `"1440"` → `"D"` (дневная свеча), `tf_sec` остаётся `86400`.
+
+Ошибки в журнале до фикса:
+- `COLLECT_ERROR spot: Bybit error 10001: Invalid period!` — каждые 20 сек по всем символам
+- `COLLECT_ERROR linear: Bybit error 10001: symbol invalid` — ROBOUSDT pre-market (фикс в v3.1)
+
 ## V3.1 — Code Review + Symbol Verification
 
 ### Баги, найденные при ревью
