@@ -279,3 +279,20 @@ body {
 .check:hover { color: var(--text); }
 
 .hidden { display: none !important; }
+
+/* ── Operator action buttons ── */
+.op-exec  { background: rgba(51,209,122,0.12); border-color: rgba(51,209,122,0.40); color: var(--good); }
+.op-exec:hover  { background: rgba(51,209,122,0.25); }
+.op-ignore { background: rgba(255,90,122,0.10); border-color: rgba(255,90,122,0.35); color: var(--bad); }
+.op-ignore:hover { background: rgba(255,90,122,0.22); }
+
+.op-status-label {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.op-executed { color: var(--good); border-color: rgba(51,209,122,0.35); }
+.op-ignored  { color: var(--muted); }
+.op-expired  { color: #4a5568; border-color: #2d3748; }

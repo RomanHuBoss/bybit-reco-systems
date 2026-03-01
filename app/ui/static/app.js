@@ -190,6 +190,10 @@ async function loadRecommendations() {
       <td>
         <button class="btn tiny" data-act="details" data-id="${it.rec_id}">Детали</button>
         <button class="btn tiny secondary" data-act="json" data-id="${it.rec_id}">JSON</button>
+        ${it.status === "recommended" ? `
+        <button class="btn tiny op-exec" data-act="execute" data-id="${it.rec_id}" title="Отметить исполненной">✓</button>
+        <button class="btn tiny op-ignore" data-act="ignore" data-id="${it.rec_id}" title="Проигнорировать">✗</button>
+        ` : `<span class="op-status-label op-${it.status}">${it.status}</span>`}
       </td>
     `;
     body.appendChild(tr);
@@ -312,10 +316,64 @@ async function loadDetails(recId) {
   lines.push("Grid — флет: режим Нейтральный; direction_bias = смещение. Диапазон: price_range_lower/price_range_upper.");
   lines.push(JSON.stringify(params, null, 2));
 
+  // Store params for copy button
+  $("details").dataset.params = JSON.stringify(params, null, 2);
+  $("details").dataset.recId  = it.rec_id;
+  $("copyParamsBtn").classList.remove("hidden");
+
   $("details").textContent = lines.join("\n");
 }
 
 // ── decisions / risk ──────────────────────────────────────────────────────────
+
+async function loadOutcomes() {
+  const res = await fetch("/api/v1/outcomes/stats");
+  let data;
+  try { data = await res.json(); } catch(e) { return; }
+
+  const s = data.summary || {};
+  const lines = [];
+  lines.push(`Всего исходов: ${s.total || 0} | Win-rate: ${s.win_rate !== null && s.win_rate !== undefined ? (s.win_rate*100).toFixed(1)+"%" : "нет данных"}`);
+  lines.push("");
+
+  if ((data.by_bot || []).length > 0) {
+    lines.push("── По типу бота ──");
+    lines.push(["Бот", "Напр", "Всего", "Побед", "WR%", "Avg ret%"].join(" | "));
+    (data.by_bot || []).forEach(r => {
+      lines.push([
+        r.bot_type.padEnd(20),
+        (r.direction||"—").padEnd(7),
+        String(r.total).padStart(5),
+        String(r.wins).padStart(5),
+        (r.win_rate*100).toFixed(1).padStart(5)+"%",
+        (r.avg_ret >= 0 ? "+" : "") + r.avg_ret.toFixed(2)+"%",
+      ].join(" | "));
+    });
+    lines.push("");
+  }
+
+  if ((data.by_symbol || []).length > 0) {
+    lines.push("── По символу (топ 30) ──");
+    lines.push(["Символ", "Бот", "Всего", "WR%", "Avg ret%"].join(" | "));
+    (data.by_symbol || []).slice(0, 30).forEach(r => {
+      lines.push([
+        r.symbol.padEnd(12),
+        r.bot_type.padEnd(20),
+        String(r.total).padStart(5),
+        (r.win_rate*100).toFixed(1).padStart(5)+"%",
+        (r.avg_ret >= 0 ? "+" : "") + r.avg_ret.toFixed(2)+"%",
+      ].join(" | "));
+    });
+  }
+
+  if (s.total === 0) {
+    lines.push("Исходов пока нет. Данные появятся через ~15 мин после первых рекомендаций.");
+  }
+
+  showModal("Экран исходов (win-rate)", {_text: lines.join("\n")});
+  // Override modal body with pre-formatted text
+  $("modalBody").textContent = lines.join("\n");
+}
 
 async function loadDecisions() {
   const res = await fetch("/api/v1/decisions?limit=200");
@@ -374,6 +432,15 @@ document.addEventListener("click", async (e) => {
 $("refreshBtn").addEventListener("click", refreshAll);
 $("decisionsBtn").addEventListener("click", loadDecisions);
 $("riskBtn").addEventListener("click", loadRisk);
+$("outcomesBtn").addEventListener("click", loadOutcomes);
+$("copyParamsBtn").addEventListener("click", () => {
+  const params = $("details").dataset.params;
+  if (!params) return;
+  navigator.clipboard.writeText(params).then(() => {
+    $("copyParamsBtn").textContent = "✓ Скопировано";
+    setTimeout(() => { $("copyParamsBtn").textContent = "Скопировать параметры"; }, 2000);
+  });
+});
 $("modalClose").addEventListener("click", (e) => { e.stopPropagation(); hideModal(); });
 $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") hideModal(); });
 $("collectErrJournal").addEventListener("click", (e) => { e.preventDefault(); loadDecisions(); });

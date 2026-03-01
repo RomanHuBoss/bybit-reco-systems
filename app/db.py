@@ -353,3 +353,115 @@ def get_oi_series(conn: sqlite3.Connection, symbol: str, limit: int = 48) -> lis
         (symbol, limit),
     )
     return [{"ts": r["ts"], "oi": r["oi"]} for r in cur.fetchall()]
+
+
+# ── Operator actions ──────────────────────────────────────────────────────────
+
+OPERATOR_STATUSES = {"executed", "ignored", "recommended", "blocked", "no_trade", "suppressed", "expired"}
+
+def update_recommendation_status(
+    conn: sqlite3.Connection, rec_id: str, status: str, operator: str | None = None
+) -> bool:
+    if status not in OPERATOR_STATUSES:
+        return False
+    cur = conn.execute(
+        """UPDATE recommendations SET status=? WHERE rec_id=?""",
+        (status, rec_id),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        return False
+    log_decision(conn, "STATUS_UPDATE", rec_id, operator, {"new_status": status})
+    return True
+
+
+# ── TTL expiry ────────────────────────────────────────────────────────────────
+
+def expire_stale_recommendations(conn: sqlite3.Connection) -> int:
+    """Mark recommended recs as expired if ts + ttl_sec < now.
+    Only expires status='recommended' — operator-set statuses are preserved.
+    Returns count of expired rows.
+    """
+    ts_now = now_ts()
+    cur = conn.execute(
+        """UPDATE recommendations
+           SET status='expired'
+           WHERE status='recommended'
+             AND (ts + ttl_sec) < ?""",
+        (ts_now,),
+    )
+    conn.commit()
+    expired = cur.rowcount
+    if expired > 0:
+        log_decision(conn, "TTL_EXPIRED", None, None, {"count": expired, "ts": ts_now})
+    return expired
+
+
+# ── Outcomes stats ────────────────────────────────────────────────────────────
+
+def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
+    """Aggregate win-rate by bot_type, symbol, and regime from reco_outcomes.
+    Regime is joined from market_regime by matching the closest ts.
+    """
+    # Overall
+    cur = conn.execute(
+        """SELECT bot_type, direction,
+                  COUNT(*) as total,
+                  SUM(success) as wins,
+                  AVG(ret) as avg_ret,
+                  AVG(ABS(ret)) as avg_abs_ret
+           FROM reco_outcomes
+           GROUP BY bot_type, direction
+           ORDER BY bot_type, direction"""
+    )
+    by_bot: list[dict] = []
+    for r in cur.fetchall():
+        total = int(r["total"])
+        wins  = int(r["wins"])
+        by_bot.append({
+            "bot_type":  r["bot_type"],
+            "direction": r["direction"],
+            "total":     total,
+            "wins":      wins,
+            "win_rate":  round(wins / total, 3) if total else 0,
+            "avg_ret":   round(float(r["avg_ret"] or 0) * 100, 3),
+            "avg_abs_ret": round(float(r["avg_abs_ret"] or 0) * 100, 3),
+        })
+
+    # By symbol
+    cur = conn.execute(
+        """SELECT symbol, bot_type,
+                  COUNT(*) as total,
+                  SUM(success) as wins,
+                  AVG(ret) as avg_ret
+           FROM reco_outcomes
+           GROUP BY symbol, bot_type
+           ORDER BY total DESC"""
+    )
+    by_symbol: list[dict] = []
+    for r in cur.fetchall():
+        total = int(r["total"])
+        wins  = int(r["wins"])
+        by_symbol.append({
+            "symbol":   r["symbol"],
+            "bot_type": r["bot_type"],
+            "total":    total,
+            "wins":     wins,
+            "win_rate": round(wins / total, 3) if total else 0,
+            "avg_ret":  round(float(r["avg_ret"] or 0) * 100, 3),
+        })
+
+    # Summary
+    cur = conn.execute(
+        """SELECT COUNT(*) as total, SUM(success) as wins FROM reco_outcomes"""
+    )
+    r = cur.fetchone()
+    total = int(r["total"] or 0)
+    wins  = int(r["wins"]  or 0)
+    summary = {
+        "total":    total,
+        "wins":     wins,
+        "win_rate": round(wins / total, 3) if total else None,
+    }
+
+    return {"summary": summary, "by_bot": by_bot, "by_symbol": by_symbol}

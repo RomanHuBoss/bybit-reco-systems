@@ -143,6 +143,24 @@ def api_update_risk_limits(req: UpdateRiskLimitsRequest) -> dict[str, Any]:
         db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": req.version, "limits": req.limits})
         return {"ok": True, "version": req.version}
 
+class RecoActionRequest(BaseModel):
+    action: str   # "executed" | "ignored"
+    operator: str | None = None
+
+@app.post("/api/v1/recommendations/{rec_id}/action")
+def api_reco_action(rec_id: str, req: RecoActionRequest) -> dict[str, Any]:
+    allowed = {"executed", "ignored"}
+    if req.action not in allowed:
+        return {"ok": False, "error": f"action must be one of {allowed}"}
+    with closing(_get_conn()) as conn:
+        ok = db.update_recommendation_status(conn, rec_id, req.action, req.operator)
+        return {"ok": ok, "rec_id": rec_id, "new_status": req.action}
+
+@app.get("/api/v1/outcomes/stats")
+def api_outcomes_stats() -> dict[str, Any]:
+    with closing(_get_conn()) as conn:
+        return db.get_outcomes_stats(conn)
+
 @app.get("/api/v1/decisions")
 def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
     with closing(_get_conn()) as conn:

@@ -3,6 +3,9 @@ from __future__ import annotations
 import math
 from typing import Any
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
 def _pct(a: float, b: float) -> float:
     if b == 0:
         return 0.0

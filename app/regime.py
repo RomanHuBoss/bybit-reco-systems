@@ -38,7 +38,31 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
     else:
         risk_state = "neutral"
 
-    confidence = 0.65 if vol_state != "unknown" else 0.2
+    # ── Dynamic confidence ───────────────────────────────────────────────────
+    # Based on agreement between symbols — low variance = high confidence
+    n = max(1, len(atr_pcts))
+
+    def _cv(vals: list[float]) -> float:
+        """Coefficient of variation (std/mean). 0 = perfect agreement."""
+        if len(vals) < 2:
+            return 0.0
+        mean = sum(vals) / len(vals)
+        if mean == 0:
+            return 0.0
+        variance = sum((x - mean) ** 2 for x in vals) / len(vals)
+        return (variance ** 0.5) / mean
+
+    cv_atr   = _cv(atr_pcts)   # 0 = all symbols same vol tier
+    cv_trend = _cv(trend)       # 0 = all symbols same trend strength
+
+    # Agreement score: 1.0 = perfect, 0.0 = complete disagreement
+    agreement = max(0.0, 1.0 - 0.5 * cv_atr - 0.5 * min(cv_trend, 1.0))
+
+    # Sample size bonus: more symbols → more reliable
+    sample_bonus = min(0.10, (n - 1) * 0.005)
+
+    confidence = round(min(0.95, max(0.20, 0.45 + 0.40 * agreement + sample_bonus)), 3)
+
     return {
         "vol_state": vol_state,
         "trend_state": trend_state,
@@ -47,4 +71,10 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_trend_strength": avg_trend,
         "avg_spread_bps": avg_spread,
         "confidence": confidence,
+        "confidence_detail": {
+            "agreement": round(agreement, 3),
+            "cv_atr": round(cv_atr, 3),
+            "cv_trend": round(cv_trend, 3),
+            "n_symbols": n,
+        },
     }

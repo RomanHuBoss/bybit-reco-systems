@@ -1,5 +1,57 @@
 # Changelog
 
+## V3.6 — Operator actions, TTL expiry, dynamic regime confidence, outcomes screen, copy params
+
+### 1. Кнопки оператора (UI + API)
+
+Каждая `recommended` рекомендация теперь имеет кнопки:
+  ✓ — отметить исполненной → status = "executed"
+  ✗ — проигнорировать     → status = "ignored"
+
+После действия строка показывает метку вместо кнопок:
+  executed (зелёный) / ignored (серый) / expired (тёмный)
+
+Новый эндпоинт: `POST /api/v1/recommendations/{rec_id}/action`
+  Body: {"action": "executed"|"ignored", "operator": "ui"}
+  Логируется в decision_log как STATUS_UPDATE.
+
+### 2. TTL-инвалидация рекомендаций
+
+db.expire_stale_recommendations():
+  UPDATE recommendations SET status='expired'
+  WHERE status='recommended' AND (ts + ttl_sec) < now
+
+Вызывается автоматически в конце каждого цикла рекомендера.
+Логируется как TTL_EXPIRED {count, ts}.
+Оператор-установленные статусы (executed/ignored) не затрагиваются.
+
+### 3. Динамический Regime confidence (regime.py)
+
+Раньше: hardcoded 0.65.
+Теперь: confidence = 0.45 + 0.40 × agreement + sample_bonus
+  agreement = 1 - 0.5×CV(atr) - 0.5×CV(trend)
+  CV = coefficient of variation (std/mean) — мера разброса между символами
+  sample_bonus = min(0.10, (n-1) × 0.005)
+  Диапазон: [0.20, 0.95]
+
+В ответ добавлено confidence_detail: {agreement, cv_atr, cv_trend, n_symbols}
+
+### 4. Экран исходов (кнопка "Исходы")
+
+GET /api/v1/outcomes/stats
+  summary: {total, wins, win_rate}
+  by_bot:  [{bot_type, direction, total, wins, win_rate, avg_ret, avg_abs_ret}]
+  by_symbol: [{symbol, bot_type, total, wins, win_rate, avg_ret}]
+
+UI: кнопка "Исходы" открывает модал с таблицами в текстовом формате.
+Если данных нет — пишет "появятся через ~15 мин после первых рекомендаций".
+
+### 5. Кнопка "Скопировать параметры" (UI)
+
+В панели деталей появляется кнопка "Скопировать параметры" после выбора рекомендации.
+Копирует params JSON в буфер обмена — готово для вставки в Bybit UI.
+После копирования: "✓ Скопировано" на 2 секунды.
+
 ## V3.5 — Stale gate, outcomes fix, BTC beta
 
 ### Fix 1: Stale data gate (recommender.py + settings.py)
