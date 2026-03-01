@@ -23,7 +23,11 @@ def _to_float(x: Any) -> float | None:
 
 def _is_not_supported_symbol(err: Exception) -> bool:
     msg = str(err)
-    return ("10001" in msg) and ("Not supported symbols" in msg)
+    if "10001" not in msg:
+        return False
+    # Bybit returns different messages for invalid/pre-market/delisted symbols:
+    # "Not supported symbols", "symbol invalid", "params error: symbol invalid"
+    return any(k in msg for k in ("Not supported symbols", "symbol invalid", "Symbol invalid"))
 
 def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]) -> None:
     category = VENUE_TO_CATEGORY[venue]
@@ -52,9 +56,11 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         except Exception as e:
             if _is_not_supported_symbol(e):
                 disabled.add(sym)
-                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": "Not supported symbols"})
+                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e)})
                 continue
-            raise
+            # Log with symbol name so operator can identify the culprit
+            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "err": str(e)})
+            continue  # don't crash the whole cycle for one symbol
 
     if ticker_rows:
         db.insert_tickers(conn, ticker_rows)
@@ -94,9 +100,11 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
             except Exception as e:
                 if _is_not_supported_symbol(e):
                     disabled.add(sym)
-                    db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": "Not supported symbols"})
+                    db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e)})
                     break
-                raise
+                # Log with symbol name and continue — don't crash the whole cycle
+                db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "err": str(e)})
+                break  # skip remaining intervals for this symbol, try next
 
     if ohlcv_rows:
         db.upsert_ohlcv(conn, ohlcv_rows)

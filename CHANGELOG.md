@@ -1,5 +1,35 @@
 # Changelog
 
+## V3.2.1 — Hotfix: symbol auto-disable не работал
+
+### Root cause
+
+`_is_not_supported_symbol()` проверял только строку `"Not supported symbols"`,
+но Bybit для pre-market / delisted символов возвращает `"params error: symbol invalid"`.
+Строки не совпадали → `raise` → символ никогда не попадал в `_DISABLED_SYMBOLS`
+→ ошибка повторялась каждый цикл несмотря на рестарты.
+
+Дополнительно: `COLLECT_ERROR` не логировал имя символа — невозможно было найти виновника.
+
+### Fixes (collector.py)
+
+1. `_is_not_supported_symbol`: расширен список совпадений:
+   `"Not supported symbols"` | `"symbol invalid"` | `"Symbol invalid"`
+   Теперь любой вариант ошибки 10001 на символ → auto-disable
+
+2. Per-symbol ошибки: `raise` → `log + continue`
+   Один плохой символ больше не роняет весь цикл сбора.
+   `COLLECT_ERROR` теперь содержит поле `"symbol"` для диагностики.
+
+3. Outer handler в main.py: добавлен `"symbol": "UNKNOWN"` — маркер
+   неожиданной ошибки уровня коллектора (не per-symbol).
+
+### После деплоя
+
+- На первом цикле проблемный символ получит `SYMBOL_DISABLED` в журнале
+  с его именем и причиной — станет виден в логе.
+- Повторных `COLLECT_ERROR` по этому символу не будет.
+
 ## V3.2 — UI overhaul + /api/v1/status + audit
 
 ### Backend

@@ -186,7 +186,9 @@ def _collector_thread():
                     try:
                         collect_once(conn, client, venue, symbols)
                     except Exception as e:
-                        db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "err": str(e)})
+                        # Per-symbol errors are now caught inside collect_once with symbol name.
+                        # This catches only unexpected collector-level failures.
+                        db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
             time.sleep(settings.collect_interval_sec)
     finally:
         client.close()
