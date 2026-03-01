@@ -15,8 +15,6 @@ def _env(key: str, default: str | None = None) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    require_conf_gate: bool = False
-
     outcome_horizon_sec: int
     calib_min_samples: int
 
@@ -39,6 +37,8 @@ class Settings:
     taker_fee_bps_linear: float
 
     master_key: str | None
+
+    require_conf_gate: bool = False
 
 def load_settings() -> Settings:
     venues = [v.strip() for v in _env("VENUES", "spot,linear").split(",") if v.strip()]
