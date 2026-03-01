@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from .settings import load_settings
 from .bybit_client import BybitPublicClient
 from .collector import collect_once, collect_futures_once
+from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import compute_outcomes_once
 from .recommender import run_recommender_once
@@ -160,6 +161,25 @@ def api_reco_action(rec_id: str, req: RecoActionRequest) -> dict[str, Any]:
 def api_outcomes_stats() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
         return db.get_outcomes_stats(conn)
+
+@app.get("/api/v1/health/symbols")
+def api_symbol_health() -> dict[str, Any]:
+    with closing(_get_conn()) as conn:
+        items = db.get_symbol_health(
+            conn,
+            settings.symbols_spot,
+            settings.symbols_linear,
+            stale_sec=settings.stale_data_max_sec,
+        )
+        n_ok      = sum(1 for i in items if i["status"] == "ok")
+        n_stale   = sum(1 for i in items if i["status"] == "stale")
+        n_missing = sum(1 for i in items if i["status"] == "missing")
+        n_errors  = sum(i["error_count_10m"] for i in items)
+        return {
+            "ts": int(time.time()),
+            "summary": {"ok": n_ok, "stale": n_stale, "missing": n_missing, "errors_10m": n_errors},
+            "symbols": items,
+        }
 
 @app.get("/api/v1/decisions")
 def api_decisions(limit: int = 200) -> list[dict[str, Any]]:

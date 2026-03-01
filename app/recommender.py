@@ -8,9 +8,10 @@ from . import db
 from .features import compute_features_from_ohlcv, liquidity_tier, funding_signal, oi_trend, btc_beta
 from .regime import classify_regime
 from .risk import gate_candidate
+from .risk import gate_candidate
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
-from .calibration import fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db
+from .calibration import fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS
 
 BOT_TYPES_BYBIT = [
     "spot_grid",
@@ -247,6 +248,44 @@ def _fit_calibrator(conn, min_samples: int) -> PlattScaler:
     return fit_platt(xs, ys) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
 
+def _fit_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
+    """Fit one Platt scaler per bot_type. Returns {bot_type: PlattScaler}."""
+    from collections import defaultdict
+    outs = db.get_outcomes_recent(conn, limit=6000)
+    # group scores and labels by bot_type
+    data: dict[str, tuple[list[float], list[int]]] = defaultdict(lambda: ([], []))
+    for o in outs:
+        r = db.get_recommendation_by_id(conn, o["rec_id"])
+        if not r:
+            continue
+        bt = r["bot_type"]
+        data[bt][0].append(float(r["score"]))
+        data[bt][1].append(int(o["success"]))
+
+    result: dict[str, PlattScaler] = {}
+    for bt, (xs, ys) in data.items():
+        scaler = fit_platt(xs, ys) if len(xs) >= min_samples else PlattScaler(fitted=False)
+        if scaler.fitted:
+            save_platt_to_db(conn, BOT_CALIB_KEYS.get(bt, f"platt_{bt}_v1"), scaler)
+        result[bt] = scaler
+    return result
+
+def _load_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
+    """Load per-bot calibrators from DB, fitting if not stored."""
+    calibrators: dict[str, PlattScaler] = {}
+    for bt, key in BOT_CALIB_KEYS.items():
+        saved = load_platt_from_db(conn, key)
+        if saved and saved.fitted:
+            calibrators[bt] = saved
+        else:
+            calibrators[bt] = PlattScaler(fitted=False)
+    # Re-fit any missing ones
+    fitted = _fit_bot_calibrators(conn, min_samples)
+    for bt, scaler in fitted.items():
+        if scaler.fitted:
+            calibrators[bt] = scaler
+    return calibrators
+
 def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     # Fit on realized outcomes using signed direction score (direction_agg.scores.all).
     outs = db.get_outcomes_recent(conn, limit=5000)
@@ -297,6 +336,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     symbol_sent_map: dict[str, float] = compute_symbol_sentiment_map(conn)
 
     calibrator = _load_or_fit_calibrator(conn, min_samples=settings.calib_min_samples)
+    bot_calibrators = _load_bot_calibrators(conn, min_samples=settings.calib_min_samples)
     dir_calibrator = _load_or_fit_direction_calibrator(conn, min_samples=max(60, settings.calib_min_samples))
 
     features_all: list[dict[str, Any]] = []
@@ -457,6 +497,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             sym_sent = symbol_sent_map.get(sym)
             effective_sent = (0.5 * global_sent + 0.5 * sym_sent) if sym_sent is not None else global_sent
 
+            # ── Risk gate ────────────────────────────────────────────────
+            risk_blocks = gate_candidate(conn, venue, sym, limits)
+            feasibility_blocks.extend(risk_blocks)
+
             score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=effective_sent)
 
             # ── Funding + OI score adjustments ──
@@ -467,7 +511,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     score = _clamp(score - 0.06, 0.0, 1.0)   # crowded long → penalty
 
             conf_raw = float(conf0)
-            conf_cal = float(calibrator.predict(score)) if calibrator.fitted else float(conf0)
+            # Per-bot calibrator takes priority over global
+            bot_cal = bot_calibrators.get(bot_type)
+            if bot_cal and bot_cal.fitted:
+                conf_cal = float(bot_cal.predict(score))
+            elif calibrator.fitted:
+                conf_cal = float(calibrator.predict(score))
+            else:
+                conf_cal = float(conf0)
             conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))
             # OI unwinding → reduce confidence
             if venue == "linear" and oi_sig["signal"] == "caution":

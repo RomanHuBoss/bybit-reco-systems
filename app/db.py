@@ -465,3 +465,94 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
     }
 
     return {"summary": summary, "by_bot": by_bot, "by_symbol": by_symbol}
+
+
+# ── Symbol health ─────────────────────────────────────────────────────────────
+
+def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols_linear: list[str], stale_sec: int = 300) -> list[dict]:
+    """
+    Returns health status for each configured symbol:
+      last_candle_ts: newest 1m candle timestamp
+      last_ticker_ts: newest ticker timestamp
+      age_sec:        seconds since last candle
+      status:         'ok' | 'stale' | 'missing'
+      error_count_10m: COLLECT_ERRORs for this symbol in last 10 min
+      disabled:       True if SYMBOL_DISABLED in last 24h
+    """
+    now = now_ts()
+    result: list[dict] = []
+
+    # collect recent errors per symbol
+    cur = conn.execute(
+        """SELECT details_json FROM decision_log
+           WHERE action='COLLECT_ERROR' AND ts >= ?""",
+        (now - 600,),
+    )
+    error_counts: dict[str, int] = {}
+    for row in cur.fetchall():
+        try:
+            d = json.loads(row["details_json"])
+            sym = d.get("symbol", "UNKNOWN")
+            error_counts[sym] = error_counts.get(sym, 0) + 1
+        except Exception:
+            pass
+
+    # disabled symbols in last 24h
+    cur = conn.execute(
+        """SELECT details_json FROM decision_log
+           WHERE action='SYMBOL_DISABLED' AND ts >= ?""",
+        (now - 86400,),
+    )
+    disabled_syms: set[str] = set()
+    for row in cur.fetchall():
+        try:
+            d = json.loads(row["details_json"])
+            disabled_syms.add(d.get("symbol", ""))
+        except Exception:
+            pass
+
+    # stale skip counts per symbol in last hour
+    cur = conn.execute(
+        """SELECT details_json FROM decision_log
+           WHERE action='STALE_DATA_SKIP' AND ts >= ?""",
+        (now - 3600,),
+    )
+    stale_counts: dict[str, int] = {}
+    for row in cur.fetchall():
+        try:
+            d = json.loads(row["details_json"])
+            sym = d.get("symbol", "UNKNOWN")
+            stale_counts[sym] = stale_counts.get(sym, 0) + 1
+        except Exception:
+            pass
+
+    for venue, symbols in [("spot", symbols_spot), ("linear", symbols_linear)]:
+        for sym in symbols:
+            # last 1m candle
+            cur2 = conn.execute(
+                """SELECT MAX(ts) as m FROM ohlcv WHERE venue=? AND symbol=? AND tf_sec=60""",
+                (venue, sym),
+            )
+            r = cur2.fetchone()
+            last_ts = int(r["m"]) if r and r["m"] else None
+            age_sec = (now - last_ts) if last_ts else None
+
+            if last_ts is None:
+                status = "missing"
+            elif age_sec > stale_sec:
+                status = "stale"
+            else:
+                status = "ok"
+
+            result.append({
+                "venue":           venue,
+                "symbol":          sym,
+                "last_candle_ts":  last_ts,
+                "age_sec":         age_sec,
+                "status":          status,
+                "error_count_10m": error_counts.get(sym, 0),
+                "stale_skips_1h":  stale_counts.get(sym, 0),
+                "disabled":        sym in disabled_syms,
+            })
+
+    return sorted(result, key=lambda x: (x["status"] != "missing", x["status"] != "stale", x["symbol"]))

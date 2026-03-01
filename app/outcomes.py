@@ -2,7 +2,18 @@ from __future__ import annotations
 
 from . import db
 
-HORIZON_SEC_DEFAULT = 30 * 60  # 30 minutes
+# Per-bot-type outcome horizons
+# Grid bots live hours/days — 30m is meaningless for them
+# DCA accumulates over a full day
+# Martingale resolves within an hour in most cases
+BOT_HORIZONS: dict[str, int] = {
+    "spot_grid":          4 * 3600,   # 4h
+    "futures_grid":       4 * 3600,   # 4h
+    "dca_bot":           24 * 3600,   # 24h
+    "futures_martingale": 1 * 3600,   # 1h
+    "futures_combo":      2 * 3600,   # 2h
+}
+HORIZON_SEC_DEFAULT = 30 * 60  # fallback only
 
 # Grid bots: success = price stayed inside the recommended range
 # Directional bots (dca, martingale): success = price moved in direction
@@ -55,6 +66,7 @@ def _get_rec_params(conn, rec_id: str) -> dict | None:
 def compute_outcomes_once(
     conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 300
 ) -> int:
+    """horizon_sec is used as fallback only — BOT_HORIZONS takes precedence per bot_type."""
     cur = conn.execute(
         """SELECT rec_id, ts, venue, symbol, bot_type, direction
            FROM recommendations
@@ -75,7 +87,9 @@ def compute_outcomes_once(
         symbol    = r["symbol"]
         direction = r["direction"]
         ts0       = int(r["ts"])
-        ts_exit   = ts0 + horizon_sec
+        # Use per-bot-type horizon; fall back to global horizon_sec
+        effective_horizon = BOT_HORIZONS.get(bot_type, horizon_sec)
+        ts_exit   = ts0 + effective_horizon
 
         entry = _get_close_at_or_after(conn, venue, symbol, ts0)
         if entry is None or entry == 0:
@@ -134,7 +148,7 @@ def compute_outcomes_once(
             "symbol":       symbol,
             "bot_type":     bot_type,
             "direction":    direction,
-            "horizon_sec":  horizon_sec,
+            "horizon_sec":  effective_horizon,
             "entry_close":  float(entry),
             "exit_close":   float(_get_close_at_or_after(conn, venue, symbol, ts_exit) or entry),
             "ret":          float(ret) if bot_type in DIRECTIONAL_BOTS else float((exitp - entry) / entry),

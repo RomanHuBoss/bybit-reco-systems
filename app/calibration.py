@@ -51,3 +51,13 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
         return PlattScaler(a=float(obj.get("a",1.0)), b=float(obj.get("b",0.0)), fitted=bool(obj.get("fitted", False)))
     except Exception:
         return None
+
+
+# Keys used in app_config for per-bot calibrators
+BOT_CALIB_KEYS = {
+    "spot_grid":          "platt_spot_grid_v1",
+    "futures_grid":       "platt_futures_grid_v1",
+    "dca_bot":            "platt_dca_v1",
+    "futures_martingale": "platt_martingale_v1",
+    "futures_combo":      "platt_combo_v1",
+}

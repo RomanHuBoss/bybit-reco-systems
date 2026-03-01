@@ -1,5 +1,56 @@
 # Changelog
 
+## V3.7 — Health screen, per-bot horizons, calibrator per bot_type, risk gate, Telegram alerts
+
+### 1. Health-экран символов (кнопка "Здоровье")
+
+GET /api/v1/health/symbols
+  summary: {ok, stale, missing, errors_10m}
+  symbols: [{venue, symbol, last_candle_ts, age_sec, status, error_count_10m, stale_skips_1h, disabled}]
+  Отсортировано: missing → stale → ok
+
+UI: кнопка "Здоровье" открывает модал.
+  🔴 missing (нет данных вообще)
+  🟠 stale (данные старше STALE_DATA_MAX_SEC)
+  🟢 ok
+  Показывает ошибки за 10 мин, skip-счётчик за 1ч, флаг DISABLED.
+
+db.py: get_symbol_health(conn, symbols_spot, symbols_linear, stale_sec)
+
+### 2. Горизонт исходов по bot_type (outcomes.py)
+
+Было: HORIZON_SEC_DEFAULT = 1800 (30 мин) для всех.
+Стало (BOT_HORIZONS):
+  spot_grid / futures_grid:  4h  (grid живёт часами)
+  dca_bot:                  24h  (DCA накапливает весь день)
+  futures_martingale:         1h  (разрешается быстро)
+  futures_combo:              2h
+
+### 3. Calibrator per bot_type (recommender.py + calibration.py)
+
+_fit_bot_calibrators(): один Platt на каждый bot_type, хранится в app_config.
+  Ключи: platt_spot_grid_v1, platt_futures_grid_v1, platt_dca_v1, platt_martingale_v1, platt_combo_v1
+
+При расчёте confidence:
+  bot_cal (per-bot) → приоритет над global calibrator
+  Fallback: global calibrator → conf0
+
+### 4. Risk gate подключён в рекомендер
+
+risk.gate_candidate() теперь вызывается для каждого символа/бота.
+Блоки добавляются в feasibility_blocks:
+  MAX_CONCURRENT_BOTS, MAX_DD_DAY, COOLDOWN_ACTIVE, MAX_SYMBOL_BOTS
+
+### 5. Telegram алерты (alerts.py)
+
+Настройка: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID в .env (пустые = выключено).
+Алерты с cooldown 10 мин:
+  ⚡ collect_errors ≥ 5 за 10 мин
+  🔴 ≥ 50% символов stale/missing
+  ⚠ 0 рекомендаций в цикле
+
+Вызывается в конце каждого цикла рекомендера.
+
 ## V3.6 — Operator actions, TTL expiry, dynamic regime confidence, outcomes screen, copy params
 
 ### 1. Кнопки оператора (UI + API)

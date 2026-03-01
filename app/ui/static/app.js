@@ -326,6 +326,44 @@ async function loadDetails(recId) {
 
 // ── decisions / risk ──────────────────────────────────────────────────────────
 
+async function loadHealth() {
+  const res = await fetch("/api/v1/health/symbols");
+  let data;
+  try { data = await res.json(); } catch(e) { return; }
+
+  const s = data.summary || {};
+  const lines = [];
+  const okEmoji = s.ok === (s.ok + s.stale + s.missing) ? "🟢" : s.missing > 0 ? "🔴" : "🟠";
+  lines.push(`${okEmoji} Символы: ${s.ok} ok | ${s.stale} stale | ${s.missing} missing | ${s.errors_10m} ошибок за 10 мин`);
+  lines.push("");
+
+  const symbols = data.symbols || [];
+  const bad = symbols.filter(s => s.status !== "ok");
+  const good = symbols.filter(s => s.status === "ok");
+
+  if (bad.length > 0) {
+    lines.push("── Проблемные ──");
+    bad.forEach(s => {
+      const emoji = s.status === "missing" ? "🔴" : "🟠";
+      const age = s.age_sec !== null ? `${Math.round(s.age_sec/60)}m ago` : "нет данных";
+      const errs = s.error_count_10m > 0 ? ` | ⚡${s.error_count_10m} err/10m` : "";
+      const dis  = s.disabled ? " | 🚫DISABLED" : "";
+      const skip = s.stale_skips_1h > 0 ? ` | skip×${s.stale_skips_1h}/h` : "";
+      lines.push(`${emoji} ${s.venue.padEnd(6)} ${s.symbol.padEnd(14)} ${s.status.padEnd(8)} ${age}${errs}${dis}${skip}`);
+    });
+    lines.push("");
+  }
+
+  lines.push("── Здоровые ──");
+  good.forEach(s => {
+    const age = s.age_sec !== null ? `${s.age_sec}s ago` : "—";
+    lines.push(`🟢 ${s.venue.padEnd(6)} ${s.symbol.padEnd(14)} ok      ${age}`);
+  });
+
+  showModal("Здоровье символов", {_text: lines.join("\n")});
+  $("modalBody").textContent = lines.join("\n");
+}
+
 async function loadOutcomes() {
   const res = await fetch("/api/v1/outcomes/stats");
   let data;
@@ -433,6 +471,7 @@ $("refreshBtn").addEventListener("click", refreshAll);
 $("decisionsBtn").addEventListener("click", loadDecisions);
 $("riskBtn").addEventListener("click", loadRisk);
 $("outcomesBtn").addEventListener("click", loadOutcomes);
+$("healthBtn").addEventListener("click", loadHealth);
 $("copyParamsBtn").addEventListener("click", () => {
   const params = $("details").dataset.params;
   if (!params) return;

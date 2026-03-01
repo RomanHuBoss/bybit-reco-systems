@@ -38,6 +38,8 @@ class Settings:
     taker_fee_bps_linear: float
 
     master_key: str | None
+    telegram_token: str | None
+    telegram_chat_id: str | None
 
     require_conf_gate: bool = False
 
@@ -73,6 +75,8 @@ def load_settings() -> Settings:
         taker_fee_bps_spot=float(_env("TAKER_FEE_BPS_SPOT", "10")),
         taker_fee_bps_linear=float(_env("TAKER_FEE_BPS_LINEAR", "6")),
         master_key=master_key,
+        telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
         outcome_horizon_sec=outcome_horizon_sec,
         calib_min_samples=calib_min_samples,
     )
