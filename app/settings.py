@@ -15,7 +15,7 @@ def _env(key: str, default: str | None = None) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    require_conf_gate: bool
+    require_conf_gate: bool = False
 
     outcome_horizon_sec: int
     calib_min_samples: int
@@ -53,7 +53,10 @@ def load_settings() -> Settings:
     outcome_horizon_sec = int(_env("OUTCOME_HORIZON_SEC", "1800"))
     calib_min_samples = int(_env("CALIB_MIN_SAMPLES", "80"))
 
+    require_conf_gate = _env("REQUIRE_CONF_GATE", "0").strip().lower() in ("1","true","yes","y")
+
     return Settings(
+        require_conf_gate=require_conf_gate,
         db_path=_env("DB_PATH", "./data/app.db"),
         bybit_base_url=_env("BYBIT_BASE_URL", "https://api.bybit.com"),
         collect_interval_sec=int(_env("COLLECT_INTERVAL_SEC", "20")),
