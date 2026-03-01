@@ -2,13 +2,26 @@ const $ = (id) => document.getElementById(id);
 
 let recoAbort = null;
 let recoDebounce = null;
+let calibFitted = false;
+let countdownTimer = null;
+let countdownVal = 10;
 
+// ── helpers ──────────────────────────────────────────────────────────────────
 
-function fmt(x, n=2) {
+function fmt(x, n = 2) {
   if (x === null || x === undefined) return "-";
   const v = Number(x);
   if (Number.isNaN(v)) return String(x);
   return v.toFixed(n);
+}
+
+function timeAgo(ts) {
+  if (!ts) return "—";
+  const sec = Math.floor(Date.now() / 1000) - ts;
+  if (sec < 5)  return "только что";
+  if (sec < 60) return `${sec}с назад`;
+  if (sec < 3600) return `${Math.floor(sec/60)}м назад`;
+  return `${Math.floor(sec/3600)}ч назад`;
 }
 
 function pillStatus(status) {
@@ -17,6 +30,28 @@ function pillStatus(status) {
   else if (status === "blocked") cls += " bad";
   else cls += " warn";
   return `<span class="${cls}">${status}</span>`;
+}
+
+function confCell(conf) {
+  const v = Number(conf);
+  if (isNaN(v)) return "-";
+  let cls = "conf-val";
+  if (!calibFitted) cls += " conf-uncal";
+  else if (v >= 0.75) cls += " conf-high";
+  else if (v >= 0.60) cls += " conf-mid";
+  else cls += " conf-low";
+  const warn = !calibFitted ? " <span class='conf-warn-icon' title='Не откалибровано'>⚠</span>" : "";
+  return `<span class="${cls}">${v.toFixed(2)}${warn}</span>`;
+}
+
+function dirConfCell(dirConf) {
+  const v = Number(dirConf);
+  if (isNaN(v)) return "-";
+  let cls = "conf-val";
+  if (v >= 0.75) cls += " conf-high";
+  else if (v >= 0.55) cls += " conf-mid";
+  else cls += " conf-low";
+  return `<span class="${cls}">${v.toFixed(2)}</span>`;
 }
 
 function showModal(title, obj) {
@@ -29,16 +64,83 @@ function hideModal() {
   $("modal").classList.add("hidden");
 }
 
+// ── status & calibration ──────────────────────────────────────────────────────
+
+async function loadStatus() {
+  try {
+    const res = await fetch("/api/v1/status");
+    if (!res.ok) return;
+    const s = await res.json();
+
+    calibFitted = !!s.calibrator_fitted;
+    const count = s.outcome_count || 0;
+    const needed = s.calib_min_samples || 80;
+    const pct = Math.min(100, Math.round(count / needed * 100));
+
+    // calibration banner
+    const banner = $("calibBanner");
+    const header = $("confHeader");
+    if (!calibFitted) {
+      banner.classList.remove("hidden");
+      $("calibProgress").textContent =
+        `Накоплено ${count} / ${needed} исходов (${pct}%). Platt scaling включится автоматически.`;
+      $("calibBarFill").style.width = pct + "%";
+      header.textContent = "Увер ⚠";
+      header.title = "Уверенность НЕ откалибрована — числа завышены";
+    } else {
+      banner.classList.add("hidden");
+      header.textContent = "Увер ✓";
+      header.title = "Уверенность откалибрована (Platt scaling)";
+    }
+
+    // collect error banner
+    const errBanner = $("collectErrBanner");
+    if (s.collect_errors_10m > 0) {
+      errBanner.classList.remove("hidden");
+      $("collectErrText").textContent =
+        `${s.collect_errors_10m} ошибок сбора данных за последние 10 мин`;
+    } else {
+      errBanner.classList.add("hidden");
+    }
+
+    // sentiment badge
+    const sent = s.sentiment || {};
+    const ewma = sent.ewma_6h;
+    const regime = sent.regime || "—";
+    if (ewma !== null && ewma !== undefined) {
+      const v = Number(ewma);
+      let cls = "sentiment-badge";
+      if (v >= 0.15) cls += " sent-pos";
+      else if (v <= -0.15) cls += " sent-neg";
+      else cls += " sent-neu";
+      const flags = sent.flags || {};
+      const flag = flags.panic ? " 🚨" : flags.euphoria ? " 🔥" : "";
+      $("sentiment-badge").className = cls;
+      $("sentiment-badge").textContent =
+        `Сент: ${v >= 0 ? "+" : ""}${v.toFixed(2)} (${regime})${flag}`;
+    }
+
+    // last reco timestamp
+    if (s.last_reco_ts) {
+      $("lastUpdated").textContent = `Обновл: ${timeAgo(s.last_reco_ts)}`;
+    }
+  } catch (e) {
+    // status endpoint may not be available yet
+  }
+}
+
+// ── recommendations ───────────────────────────────────────────────────────────
+
 async function loadRecommendations() {
   const venue = $("venue").value;
-  const topN = Number($("topN").value || 20);
+  const topN = Number($("topN").value || 50);
   const minConf = Number($("minConf").value || 0);
 
   const qs = new URLSearchParams();
   const showRecommended = $("showRecommended")?.checked ?? true;
-  const showBlocked = $("showBlocked")?.checked ?? false;
-  const showNoTrade = $("showNoTrade")?.checked ?? false;
-  const showSuppressed = $("showSuppressed")?.checked ?? false;
+  const showBlocked     = $("showBlocked")?.checked ?? false;
+  const showNoTrade     = $("showNoTrade")?.checked ?? false;
+  const showSuppressed  = $("showSuppressed")?.checked ?? false;
 
   if (venue) qs.set("venue", venue);
   qs.set("top_n", String(topN));
@@ -49,14 +151,18 @@ async function loadRecommendations() {
   qs.set("show_suppressed", String(showSuppressed));
   qs.set("snapshot", "latest");
 
-  if (recoAbort) { try { recoAbort.abort(); } catch(e) {} }
+  if (recoAbort) { try { recoAbort.abort(); } catch (e) {} }
   recoAbort = new AbortController();
-  const res = await fetch(`/api/v1/recommendations?${qs.toString()}`, { signal: recoAbort.signal });
+
   let data;
-  try { data = await res.json(); } catch(e) { return; }
+  try {
+    const res = await fetch(`/api/v1/recommendations?${qs.toString()}`, { signal: recoAbort.signal });
+    data = await res.json();
+  } catch (e) { return; }
 
   const regime = data.regime || {};
-  $("regime").textContent = `Режим: ${regime.risk_state || "?"} | vol=${regime.vol_state || "?"} | trend=${regime.trend_state || "?"}`;
+  $("regime").textContent =
+    `Режим: ${regime.risk_state || "?"} | vol=${regime.vol_state || "?"} | trend=${regime.trend_state || "?"}`;
 
   const body = $("recoBody");
   body.innerHTML = "";
@@ -66,15 +172,19 @@ async function loadRecommendations() {
 
   items.forEach((it, i) => {
     if (it.status === "recommended") hasRecommended = true;
+    const dirAgg = (it.reasons || {}).direction_agg || {};
+    const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
     const tr = document.createElement("tr");
+    if (it.status === "recommended") tr.classList.add("row-recommended");
     tr.innerHTML = `
-      <td>${i+1}</td>
-      <td>${it.venue}</td>
+      <td>${i + 1}</td>
+      <td><span class="venue-pill venue-${it.venue}">${it.venue}</span></td>
       <td><b>${it.symbol}</b></td>
-      <td>${it.bot_type}</td>
-      <td>${it.direction}</td>
+      <td><span class="bot-pill">${it.bot_type}</span></td>
+      <td>${directionBadge(it.direction)}</td>
+      <td>${dirConfCell(dirConf)}</td>
       <td>${fmt(it.score)}</td>
-      <td>${fmt(it.confidence)}</td>
+      <td>${confCell(it.confidence)}</td>
       <td>${fmt(it.expected_rr)}</td>
       <td>${pillStatus(it.status)}</td>
       <td>
@@ -90,13 +200,26 @@ async function loadRecommendations() {
   else banner.classList.add("hidden");
 }
 
+function directionBadge(dir) {
+  if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">neutral</span>`;
+  if (dir === "long")  return `<span class="dir-badge dir-long">▲ long</span>`;
+  if (dir === "short") return `<span class="dir-badge dir-short">▼ short</span>`;
+  if (dir === "hedge") return `<span class="dir-badge dir-neu">⇅ hedge</span>`;
+  return `<span class="dir-badge dir-neu">${dir}</span>`;
+}
+
+// ── details panel ─────────────────────────────────────────────────────────────
+
 async function loadDetails(recId) {
   const res = await fetch(`/api/v1/recommendations/${recId}`);
   const it = await res.json();
 
   const reasons = it.reasons || {};
-  const blocks = it.blocks || [];
-  const params = it.params || {};
+  const blocks  = it.blocks  || [];
+  const params  = it.params  || {};
+  const dirAgg  = reasons.direction_agg  || {};
+  const sentAgg = reasons.sentiment_agg || {};
+  const confModel = reasons.confidence_model || {};
 
   const lines = [];
   lines.push(`rec_id: ${it.rec_id}`);
@@ -104,67 +227,133 @@ async function loadDetails(recId) {
   lines.push(`bot: ${it.bot_type} | dir=${it.direction} | mode=${it.account_mode}/${it.margin_mode}`);
   lines.push(`score=${fmt(it.score)} conf=${fmt(it.confidence)} expRR=${fmt(it.expected_rr)} riskScore=${fmt(it.risk_score)}`);
   lines.push(`status=${it.status}`);
+  if (!confModel.fitted) lines.push(`⚠ conf НЕ откалибрована (Platt не обучен)`);
+  else lines.push(`✓ conf откалибрована (Platt a=${fmt(confModel.a,3)} b=${fmt(confModel.b,3)})`);
+
   lines.push("");
-  lines.push("ПОЧЕМУ:");
-  lines.push("Подсказка: детальный multi-horizon сентимент смотрите в JSON -> reasons.sentiment_agg. Консенсус направления: reasons.direction_agg.");
-  lines.push(reasons.summary || "-");
+  lines.push("── Направление ──");
+  lines.push(`direction=${dirAgg.direction || "—"} bias=${dirAgg.bias || "—"}`);
+  lines.push(`dir_conf=${fmt(dirAgg.direction_confidence)} cal=${fmt(dirAgg.direction_confidence_calibrated)}`);
+  lines.push(`regime=${dirAgg.regime || "—"} coherence=${fmt(dirAgg.coherence)}`);
+  lines.push(`scores: tactical=${fmt((dirAgg.scores||{}).tactical)} struct=${fmt((dirAgg.scores||{}).structural)} all=${fmt((dirAgg.scores||{}).all)}`);
+  if (dirAgg.structural_veto_applied) lines.push("⚠ Structural veto applied");
+
   lines.push("");
+  lines.push("── Сентимент ──");
+  const ewma = (sentAgg.ewma || {});
+  lines.push(`1h=${fmt(ewma["1h"])} 6h=${fmt(ewma["6h"])} 1d=${fmt(ewma["1d"])} 7d=${fmt(ewma["7d"])}`);
+  lines.push(`regime=${sentAgg.regime || "—"} strength=${fmt(sentAgg.strength)} flags: panic=${(sentAgg.flags||{}).panic} euphoria=${(sentAgg.flags||{}).euphoria}`);
+
+  lines.push("");
+  lines.push("── Факторы ──");
   lines.push("Факторы +:");
-  (reasons.top_positive_factors || []).forEach(f => lines.push(`  + ${f.text} (${f.feature}=${fmt(f.value,4)})`));
+  (reasons.top_positive_factors || []).forEach(f =>
+    lines.push(`  + ${f.text} (${f.feature}=${fmt(f.value, 4)})`));
   lines.push("Факторы -:");
-  (reasons.top_negative_factors || []).forEach(f => lines.push(`  - ${f.text} (${f.feature}=${fmt(f.value,4)})`));
+  (reasons.top_negative_factors || []).forEach(f =>
+    lines.push(`  - ${f.text} (${f.feature}=${fmt(f.value, 4)})`));
+
   lines.push("");
-  lines.push("Стоимость исполнения (bps):");
+  lines.push("── Стоимость исполнения (bps) ──");
   lines.push(JSON.stringify(reasons.cost_model || {}, null, 2));
+
   lines.push("");
-  lines.push("Риск-гейты / блокировки:");
+  lines.push("── Риск-гейты ──");
   if (!blocks.length) lines.push("  OK");
-  else blocks.forEach(b => lines.push(`  - ${b.code}: ${b.msg}`));
+  else blocks.forEach(b => lines.push(`  ✗ ${b.code}: ${b.msg}`));
+
   lines.push("");
-  lines.push("Параметры для Bybit (копируйте в UI):");
-  lines.push("Подсказка: Grid — если в сильном флете, режим обычно Нейтральный; direction_bias показывает смещение. Диапазон: price_range_lower/price_range_upper.");
+  lines.push("── Параметры для Bybit (копируйте в UI) ──");
+  lines.push("Grid — флет: режим Нейтральный; direction_bias = смещение. Диапазон: price_range_lower/price_range_upper.");
   lines.push(JSON.stringify(params, null, 2));
 
   $("details").textContent = lines.join("\n");
 }
 
+// ── decisions / risk ──────────────────────────────────────────────────────────
 
 async function loadDecisions() {
   const res = await fetch("/api/v1/decisions?limit=200");
   let data;
-  try { data = await res.json(); } catch(e) { return; }
+  try { data = await res.json(); } catch (e) { return; }
   showModal("Журнал решений", data);
 }
 
 async function loadRisk() {
   const res = await fetch("/api/v1/risk/status");
   let data;
-  try { data = await res.json(); } catch(e) { return; }
+  try { data = await res.json(); } catch (e) { return; }
   showModal("Risk status", data);
 }
 
+// ── countdown ─────────────────────────────────────────────────────────────────
+
+function startCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownVal = 10;
+  $("refreshCountdown").textContent = `↻ ${countdownVal}s`;
+  countdownTimer = setInterval(() => {
+    countdownVal--;
+    if (countdownVal <= 0) {
+      $("refreshCountdown").textContent = "↻ …";
+    } else {
+      $("refreshCountdown").textContent = `↻ ${countdownVal}s`;
+    }
+  }, 1000);
+}
+
+// ── main refresh ──────────────────────────────────────────────────────────────
+
+async function refreshAll() {
+  await loadStatus();
+  await loadRecommendations();
+  startCountdown();
+}
+
+// ── events ────────────────────────────────────────────────────────────────────
+
 document.addEventListener("click", async (e) => {
   const t = e.target;
-  if (t && t.dataset && t.dataset.act) {
-    const act = t.dataset.act;
-    const id = t.dataset.id;
-    if (act === "details") await loadDetails(id);
-    if (act === "json") {
-      const res = await fetch(`/api/v1/recommendations/${id}`);
-      let data;
-  try { data = await res.json(); } catch(e) { return; }
-      showModal("Recommendation JSON", data);
-    }
-      }
+  if (!t || !t.dataset) return;
+  const act = t.dataset.act;
+  const id  = t.dataset.id;
+  if (act === "details") await loadDetails(id);
+  if (act === "json") {
+    const res = await fetch(`/api/v1/recommendations/${id}`);
+    let data;
+    try { data = await res.json(); } catch (e) { return; }
+    showModal("Recommendation JSON", data);
+  }
 });
 
-$("refreshBtn").addEventListener("click", loadRecommendations);
+$("refreshBtn").addEventListener("click", refreshAll);
 $("decisionsBtn").addEventListener("click", loadDecisions);
 $("riskBtn").addEventListener("click", loadRisk);
 $("modalClose").addEventListener("click", (e) => { e.stopPropagation(); hideModal(); });
 $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") hideModal(); });
+$("collectErrJournal").addEventListener("click", (e) => { e.preventDefault(); loadDecisions(); });
 
-loadRecommendations();
-setInterval(loadRecommendations, 5000);
+["venue", "topN", "minConf"].forEach(id => {
+  const el = $(id);
+  if (el) el.addEventListener("input", () => {
+    if (recoDebounce) clearTimeout(recoDebounce);
+    recoDebounce = setTimeout(refreshAll, 300);
+  });
+});
 
-['venue','topN','minConf'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', () => { if (recoDebounce) clearTimeout(recoDebounce); recoDebounce = setTimeout(loadRecommendations, 200); }); });
+["showRecommended", "showBlocked", "showNoTrade", "showSuppressed"].forEach(id => {
+  const el = $(id);
+  if (el) el.addEventListener("change", refreshAll);
+});
+
+// Keyboard: R = refresh
+document.addEventListener("keydown", (e) => {
+  if (e.key === "r" && !e.ctrlKey && !e.metaKey && document.activeElement.tagName !== "INPUT") {
+    refreshAll();
+  }
+});
+
+// ── boot ──────────────────────────────────────────────────────────────────────
+
+refreshAll();
+setInterval(refreshAll, 10000);

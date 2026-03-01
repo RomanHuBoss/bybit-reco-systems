@@ -7,13 +7,35 @@
   <link rel="stylesheet" href="/static/styles.css"/>
 </head>
 <body>
+
   <header class="header">
     <div class="title">Bybit Recommender — Панель оператора</div>
     <div class="meta">
-      <div id="regime"></div>
+      <div id="regime" class="regime-badge"></div>
+      <div id="sentiment-badge" class="sentiment-badge"></div>
+      <div id="lastUpdated" class="muted" style="font-size:12px"></div>
+      <div id="refreshCountdown" class="countdown"></div>
       <button id="refreshBtn" class="btn">Обновить</button>
     </div>
   </header>
+
+  <div id="calibBanner" class="calib-banner hidden">
+    <div class="calib-banner-left">
+      <span class="calib-icon">⚠</span>
+      <div>
+        <div class="calib-title">Калибратор не обучен — уверенность <b>не откалибрована</b></div>
+        <div class="calib-sub" id="calibProgress">Накоплено 0 / 80 исходов. Platt scaling включится автоматически.</div>
+      </div>
+    </div>
+    <div id="calibBar" class="calib-bar-wrap">
+      <div id="calibBarFill" class="calib-bar-fill" style="width:0%"></div>
+    </div>
+  </div>
+
+  <div id="collectErrBanner" class="collect-err-banner hidden">
+    <span>⚡</span> <span id="collectErrText"></span>
+    <a href="#" id="collectErrJournal" style="color:inherit;margin-left:8px;text-decoration:underline">открыть журнал</a>
+  </div>
 
   <section class="controls">
     <div class="control">
@@ -26,28 +48,27 @@
     </div>
     <div class="control">
       <label>Top N</label>
-      <input id="topN" type="number" value="20" min="1" max="200"/>
+      <input id="topN" type="number" value="50" min="1" max="200"/>
     </div>
     <div class="control">
-      <label>Мин. уверенность (для recommended)</label>
-      <input id="minConf" type="number" value="0.2" step="0.05" min="0" max="1"/>
+      <label>Мин. уверенность</label>
+      <input id="minConf" type="number" value="0.52" step="0.05" min="0" max="1"/>
     </div>
     <div class="control">
       <label></label>
       <button id="decisionsBtn" class="btn secondary">Журнал</button>
       <button id="riskBtn" class="btn secondary">Риски</button>
     </div>
-  <div class="control">
-  <label>Показ</label>
-  <div class="checks">
-    <label class="check"><input type="checkbox" id="showRecommended" checked> recommended</label>
-    <label class="check"><input type="checkbox" id="showBlocked"> blocked</label>
-    <label class="check"><input type="checkbox" id="showNoTrade"> no_trade</label>
-    <label class="check"><input type="checkbox" id="showSuppressed"> suppressed</label>
-  </div>
-</div>
-
-</section>
+    <div class="control">
+      <label>Показ</label>
+      <div class="checks">
+        <label class="check"><input type="checkbox" id="showRecommended" checked> recommended</label>
+        <label class="check"><input type="checkbox" id="showBlocked"> blocked</label>
+        <label class="check"><input type="checkbox" id="showNoTrade"> no_trade</label>
+        <label class="check"><input type="checkbox" id="showSuppressed"> suppressed</label>
+      </div>
+    </div>
+  </section>
 
   <main class="main">
     <div id="noTrade" class="banner hidden">NO-TRADE: нет рекомендаций со статусом <b>recommended</b> по текущим фильтрам/гейтам.</div>
@@ -63,8 +84,9 @@
               <th>Symbol</th>
               <th>Bybit bot</th>
               <th>Напр</th>
+              <th title="Уверенность направления (direction_confidence)">Уд.напр</th>
               <th>Скор</th>
-              <th>Увер</th>
+              <th id="confHeader" title="Уверенность модели">Увер</th>
               <th>Ож.RR</th>
               <th>Статус</th>
               <th>Действия</th>

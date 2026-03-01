@@ -225,3 +225,45 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+@app.get("/api/v1/status")
+def api_status() -> dict[str, Any]:
+    """System health: calibrator state, outcome progress, sentiment, collect errors."""
+    with closing(_get_conn()) as conn:
+        from .calibration import load_platt_from_db
+        platt = load_platt_from_db(conn, "platt_bybit_v2")
+        calib_fitted = bool(platt and platt.fitted)
+        calib_a = float(platt.a) if platt and platt.fitted else None
+        calib_b = float(platt.b) if platt and platt.fitted else None
+
+        cur = conn.execute("SELECT COUNT(*) AS c FROM reco_outcomes")
+        outcome_count = int(cur.fetchone()["c"])
+
+        last_reco_ts = db.get_latest_reco_ts(conn)
+
+        # Count collect errors in last 10 min
+        cur = conn.execute(
+            "SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?",
+            (db.now_ts() - 600,)
+        )
+        collect_errors_10m = int(cur.fetchone()["c"])
+
+        # Latest sentiment
+        from .sentiment_features import compute_sentiment_agg
+        sent = compute_sentiment_agg(conn, scope="global", key="crypto")
+
+        return {
+            "calibrator_fitted": calib_fitted,
+            "calibrator_params": {"a": calib_a, "b": calib_b},
+            "outcome_count": outcome_count,
+            "calib_min_samples": settings.calib_min_samples,
+            "last_reco_ts": last_reco_ts,
+            "collect_errors_10m": collect_errors_10m,
+            "sentiment": {
+                "regime": sent.get("regime"),
+                "strength": sent.get("strength"),
+                "ewma_6h": sent.get("ewma", {}).get("6h"),
+                "flags": sent.get("flags"),
+            },
+        }
