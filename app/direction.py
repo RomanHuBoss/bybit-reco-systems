@@ -93,29 +93,37 @@ def vote_for_tf(closes: list[float], highs: list[float], lows: list[float]) -> d
     # Soft contributions (normalized)
     # Slope normalized by ATR% to make TFs more comparable
     slope_norm = slope / max(1e-6, ap)
-    slope_c = _clamp(slope_norm * 0.15, -1.0, 1.0)
+    # Increased sensitivity: 0.22 vs old 0.15 — slope is the most reliable trend signal
+    slope_c = _clamp(slope_norm * 0.22, -1.0, 1.0)
 
     # MACD hist normalized by price
     p = closes[-1] if closes[-1] else 1.0
     hist_norm = hist / max(1e-9, p)
-    hist_c = _clamp(hist_norm * 800.0, -1.0, 1.0)
+    hist_c = _clamp(hist_norm * 900.0, -1.0, 1.0)
 
-    # RSI centered at 50
-    rsi_c = _clamp((rsi - 50.0) / 35.0, -1.0, 1.0)
+    # RSI centered at 50, tightened normalization for more signal pull
+    rsi_c = _clamp((rsi - 50.0) / 30.0, -1.0, 1.0)
 
-    # Soft directional score
-    # MA slope is most reliable for direction; MACD/RSI supplement
-    score = 0.55 * slope_c + 0.25 * hist_c + 0.20 * rsi_c
+    # Bollinger Band %B: price position relative to 20-period BB
+    # Acts as mean-reversion vs momentum confirmator
+    closes_20 = closes[-20:] if len(closes) >= 20 else closes
+    sma20 = sum(closes_20) / len(closes_20)
+    std20 = math.sqrt(sum((x - sma20) ** 2 for x in closes_20) / len(closes_20)) if len(closes_20) > 1 else 1e-9
+    bb_b = _clamp((closes[-1] - (sma20 - 2 * std20)) / max(1e-9, 4 * std20), 0.0, 1.0)  # 0=lower band, 1=upper band
+    bb_c = _clamp((bb_b - 0.5) * 2.0, -1.0, 1.0)  # centered: -1=oversold, +1=overbought
+
+    # Soft directional score — slope dominates; MACD/RSI/BB supplement
+    score = 0.55 * slope_c + 0.22 * hist_c + 0.15 * rsi_c + 0.08 * bb_c
     score = float(_clamp(score, -1.0, 1.0))
 
-    # Trendiness proxy: from absolute slope contribution
-    trend_strength = float(_clamp(abs(slope_c), 0.0, 1.0))
+    # Trendiness proxy: combination of absolute slope and MACD agreement
+    trend_strength = float(_clamp(abs(slope_c) * 0.75 + abs(hist_c) * 0.25, 0.0, 1.0))
 
-    # Neutral veto: if trendiness is low
+    # Neutral veto: lowered threshold — only veto very flat markets
     neutral_veto = 0.0
-    if trend_strength < 0.20:
+    if trend_strength < 0.15:
         neutral_veto = 0.8
-    elif trend_strength < 0.30:
+    elif trend_strength < 0.25:
         neutral_veto = 0.4
 
     return {
@@ -154,7 +162,7 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
     s_all = _aggregate_signed(tf_map, all_tfs)
 
     # Coherence: how much (weighted) TF signs agree with structural sign
-    thr = 0.12  # sign threshold on normalized score
+    thr = 0.10  # tightened sign threshold (was 0.12) — more responsive to moderate signals
     struct_sign = _sign(s_structural, thr)
     agree = 0.0
     total = 0.0
@@ -184,9 +192,9 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
         den += w
     trendiness = float(trendiness / den) if den > 0 else 0.0
 
-    if trendiness >= 0.55 and coherence >= 0.55:
+    if trendiness >= 0.48 and coherence >= 0.50:
         regime = "trend"
-    elif trendiness <= 0.30:
+    elif trendiness <= 0.25:
         regime = "range"
     else:
         regime = "transition"
@@ -226,11 +234,13 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
                 veto_applied = True
 
     # Confidence combines: strength + coherence + regime
-    base_conf = 0.45 + 0.35 * strength_all + 0.20 * _clamp(coherence, 0.0, 1.0)
+    # Base lowered from 0.45 → 0.30 to increase dynamic range.
+    # Now spans 0.30–0.99 instead of 0.55–0.99 — much better discrimination.
+    base_conf = 0.30 + 0.52 * strength_all + 0.18 * _clamp(coherence, 0.0, 1.0)
     if regime == "trend":
-        base_conf += 0.05
+        base_conf += 0.08  # was 0.05
     elif regime == "range":
-        base_conf -= 0.10
+        base_conf -= 0.08  # was 0.10
     direction_confidence = float(_clamp(base_conf, 0.0, 0.99))
 
     return {

@@ -40,23 +40,6 @@ def _direction(bot_type: str, agg: dict[str, Any]) -> str:
         return "hedge"
     return "neutral"
 
-    if bot_type in ("spot_grid", "futures_grid"):
-        # neutral unless there is a meaningful directional drift
-        if rng >= 0.65 and trend <= 0.25 and abs(slope) <= 0.0015:
-            return "neutral"
-        return "long" if slope >= 0 else "short"
-
-    if bot_type in ("futures_martingale",):
-        return "long" if slope >= 0 else "short"
-
-    if bot_type == "dca_bot":
-        return "long"
-
-    if bot_type == "futures_combo":
-        return "hedge"
-
-    return "neutral"
-
 def _mode(venue: str, direction: str) -> tuple[str, str]:
     if venue == "spot":
         return ("oneway", "cash")
@@ -195,7 +178,9 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
     spread = float(spread) if spread is not None else 8.0
 
     cost_bps = spread + taker_fee_bps
-    cost_penalty = _clamp(cost_bps / 30.0, 0.0, 1.5)
+    # FIX: was cost_bps/30 * 0.7 — this subtracted 0.65 from every raw score!
+    # Now: softer penalty, higher denominator. Cost still matters but doesn't kill signal.
+    cost_penalty = _clamp(cost_bps / 50.0, 0.0, 1.0)
 
     sent = float(global_sent)
     pos, neg = [], []
@@ -221,19 +206,26 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
         add_pos("global_sentiment", sent, 0.5, "нейтральный/позитивный сентимент поддерживает DCA")
         add_neg("atr_pct", atr_pct, -0.7, "высокая волатильность повышает риск просадки")
     elif bot_type == "futures_martingale":
-        rule = 0.8*rng - 0.8*_clamp(atr_pct/0.018, 0.0, 2.0) + 0.4*_clamp(sent+0.2, 0.0, 1.0) - 0.2*trend
+        # Add directional coherence bonus: martingale profits only when direction is clear
+        dir_info = f.get("_direction_agg", {}) if hasattr(f, "get") else {}
+        dir_coherence = float((dir_info.get("coherence") or 0.5))
+        dir_strength = float(((dir_info.get("strength") or {}).get("all", 0.0) if isinstance(dir_info.get("strength"), dict) else dir_info.get("strength", 0.0)))
+        rule = 0.8*rng - 0.8*_clamp(atr_pct/0.018, 0.0, 2.0) + 0.4*_clamp(sent+0.2, 0.0, 1.0) - 0.2*trend + 0.3*dir_coherence*dir_strength
         add_pos("range_score", rng, 0.8, "мартингейл только в диапазоне")
         add_neg("atr_pct", atr_pct, -0.8, "волатильность опасна для мартингейла")
         add_pos("global_sentiment", sent, 0.4, "негативный сентимент блокирует мартингейл")
         add_neg("trend_strength", trend, -0.2, "тренд увеличивает риск")
+        add_pos("direction_coherence", dir_coherence, 0.3, "согласованность направления критична для мартингейла")
     elif bot_type == "futures_combo":
         rule = 0.3 + 0.7*_clamp(-sent, 0.0, 1.0) + 0.4*_clamp(atr_pct/0.02, 0.0, 2.0)
         add_pos("global_sentiment", sent, 0.7, "risk-off сентимент => комбо/хедж")
         add_pos("atr_pct", atr_pct, 0.4, "рост волатильности => хеджирование")
 
-    raw = rule - 0.7*cost_penalty
-    score = float(_clamp(raw / 2.2, -1.0, 1.0))
-    conf0 = float(_clamp(_sigmoid(raw), 0.0, 1.0))
+    raw = rule - 0.35 * cost_penalty  # was 0.70 — much softer penalty
+    # Divide by 1.5 (was 2.2) for more polarized [-1, +1] scores
+    score = float(_clamp(raw / 1.5, -1.0, 1.0))
+    # Scale raw by 2.5 before sigmoid so conf spans [0.1, 0.9] instead of [0.45, 0.55]
+    conf0 = float(_clamp(_sigmoid(raw * 2.5), 0.0, 1.0))
     reasons = {
         "summary": "Рекомендация в терминах Bybit Trading Bot (Scenario B). Направление определяется голосованием индикаторов на 15m/30m/1h/4h/1d. Сентимент — multi-horizon EWMA (1h/6h/1d/7d) с консолидацией risk_on/off/neutral. Уверенность калибруется (Platt) по 30-мин forward доходности из OHLCV.",
         "top_positive_factors": sorted(pos, key=lambda x: abs(x["weight"]), reverse=True)[:5],
@@ -372,15 +364,16 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             dir_tmp = f.get("_direction_agg", {})
             dir_conf = float(dir_tmp.get("direction_confidence", 0.5))
             if bot_type == "futures_martingale" and (atr_pct > 0.018 or sent_agg.get("flags", {}).get("panic") or (sent_agg.get("regime") == "risk_off" and sent_agg.get("strength", 0.0) >= 0.35) or global_sent < -0.45 or dir_conf < 0.65):
-                feasibility_blocks.append({"code":"DIR_CONF_TOO_LOW" if dir_conf < 0.65 else "MARTINGALE_BLOCKED", "msg": f"atr_pct={atr_pct:.4f}, sentiment6h={global_sent:.2f}, dir_conf={dir_conf:.2f} => запрет"})
-                # skip further checks below by continuing to scoring
-
-                feasibility_blocks.append({"code":"MARTINGALE_BLOCKED", "msg": f"atr_pct={atr_pct:.4f} или sentiment={global_sent:.2f} => запрет"})
+                # BUG FIX: was appending two blocks (second was unreachable dead code copy)
+                code = "DIR_CONF_TOO_LOW" if dir_conf < 0.65 else "MARTINGALE_BLOCKED"
+                feasibility_blocks.append({"code": code, "msg": f"atr_pct={atr_pct:.4f}, sentiment6h={global_sent:.2f}, dir_conf={dir_conf:.2f} => запрет"})
             if bot_type == "dca_bot" and (sent_agg.get("flags", {}).get("panic") or global_sent < -0.70):
                 feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={global_sent:.2f} panic => запрет"})
 
             score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=global_sent)
-            conf = calibrator.predict(score) if calibrator.fitted else conf0
+            conf_raw = float(conf0)
+            conf_cal = float(calibrator.predict(score)) if calibrator.fitted else float(conf0)
+            conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))
 
             expected_rr = _expected_rr(bot_type, f)
             direction = _direction(bot_type, f.get('_direction_agg', {}))

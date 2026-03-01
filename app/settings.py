@@ -50,10 +50,10 @@ def load_settings() -> Settings:
 
     master_key = os.getenv("MASTER_KEY", "") or None
 
-    outcome_horizon_sec = int(_env("OUTCOME_HORIZON_SEC", "1800"))
-    calib_min_samples = int(_env("CALIB_MIN_SAMPLES", "80"))
+    outcome_horizon_sec = int(_env("OUTCOME_HORIZON_SEC", "900"))
+    calib_min_samples = int(_env("CALIB_MIN_SAMPLES", "60"))
 
-    require_conf_gate = _env("REQUIRE_CONF_GATE", "0").strip().lower() in ("1","true","yes","y")
+    require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1","true","yes","y")
 
     return Settings(
         require_conf_gate=require_conf_gate,
@@ -66,8 +66,8 @@ def load_settings() -> Settings:
         symbols_spot=symbols_spot,
         symbols_linear=symbols_linear,
         risk_limits=risk_limits,
-        min_score_to_recommend=float(_env("MIN_SCORE_TO_RECOMMEND", "0.0")),
-        min_conf_to_recommend=float(_env("MIN_CONF_TO_RECOMMEND", "0.30")),
+        min_score_to_recommend=float(_env("MIN_SCORE_TO_RECOMMEND", "0.08")),
+        min_conf_to_recommend=float(_env("MIN_CONF_TO_RECOMMEND", "0.52")),
         taker_fee_bps_spot=float(_env("TAKER_FEE_BPS_SPOT", "10")),
         taker_fee_bps_linear=float(_env("TAKER_FEE_BPS_LINEAR", "6")),
         master_key=master_key,
