@@ -111,3 +111,33 @@ def compute_sentiment_agg(conn, scope: str = "global", key: str = "crypto") -> d
         "flags": {"panic": bool(panic), "euphoria": bool(euphoria)},
         "n_points_7d": len(pts),
     }
+
+
+def compute_symbol_sentiment_map(conn, horizon_sec: int = 3600 * 6) -> dict[str, float]:
+    """
+    Returns {SYMBOL: blended_sentiment_float} for all symbols that have
+    scope='symbol' points in the last `horizon_sec` seconds.
+    Uses simple weighted mean by volume over the window.
+    """
+    now = int(__import__('time').time())
+    since = now - horizon_sec
+    cur = conn.execute(
+        """SELECT key, sentiment, volume
+           FROM sentiment
+           WHERE scope='symbol' AND ts >= ?
+           ORDER BY ts ASC""",
+        (since,),
+    )
+    agg: dict[str, list[tuple[float, float]]] = {}
+    for row in cur.fetchall():
+        sym = row["key"]
+        s   = float(row["sentiment"])
+        v   = max(1.0, float(row["volume"] or 1))
+        agg.setdefault(sym, []).append((s, v))
+
+    result: dict[str, float] = {}
+    for sym, pairs in agg.items():
+        total_w = sum(v for _, v in pairs)
+        if total_w > 0:
+            result[sym] = sum(s * v for s, v in pairs) / total_w
+    return result

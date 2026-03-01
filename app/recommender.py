@@ -9,7 +9,7 @@ from .features import compute_features_from_ohlcv
 from .regime import classify_regime
 from .risk import gate_candidate
 from .direction import vote_for_tf, aggregate_direction
-from .sentiment_features import compute_sentiment_agg
+from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .calibration import fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db
 
 BOT_TYPES_BYBIT = [
@@ -194,16 +194,16 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
         add_pos("range_score", rng, 1.4, "флет/диапазон подходит для Spot Grid")
         add_neg("trend_strength", trend, -1.0, "сильный тренд опасен для grid")
         add_neg("atr_pct", atr_pct, -0.6, "высокая волатильность ухудшает grid")
-        add_pos("global_sentiment", sent, 0.2, "сентимент влияет на риск-режим")
+        add_pos("effective_sentiment", sent, 0.2, "сентимент влияет на риск-режим")
     elif bot_type == "futures_grid":
         rule = 1.2*rng - 0.9*trend - 0.7*_clamp(atr_pct/0.018, 0.0, 2.0) + 0.2*sent
         add_pos("range_score", rng, 1.2, "флет подходит для Futures Grid")
         add_neg("trend_strength", trend, -0.9, "тренд ломает сетку")
         add_neg("atr_pct", atr_pct, -0.7, "волатильность повышает риск ликвидации")
-        add_pos("global_sentiment", sent, 0.2, "сентимент учитывается")
+        add_pos("effective_sentiment", sent, 0.2, "сентимент учитывается")
     elif bot_type == "dca_bot":
         rule = 0.4 + 0.5*_clamp(0.5 + sent, 0.0, 1.0) - 0.7*_clamp(atr_pct/0.02, 0.0, 2.0)
-        add_pos("global_sentiment", sent, 0.5, "нейтральный/позитивный сентимент поддерживает DCA")
+        add_pos("effective_sentiment", sent, 0.5, "нейтральный/позитивный сентимент поддерживает DCA")
         add_neg("atr_pct", atr_pct, -0.7, "высокая волатильность повышает риск просадки")
     elif bot_type == "futures_martingale":
         # Add directional coherence bonus: martingale profits only when direction is clear
@@ -213,12 +213,12 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
         rule = 0.8*rng - 0.8*_clamp(atr_pct/0.018, 0.0, 2.0) + 0.4*_clamp(sent+0.2, 0.0, 1.0) - 0.2*trend + 0.3*dir_coherence*dir_strength
         add_pos("range_score", rng, 0.8, "мартингейл только в диапазоне")
         add_neg("atr_pct", atr_pct, -0.8, "волатильность опасна для мартингейла")
-        add_pos("global_sentiment", sent, 0.4, "негативный сентимент блокирует мартингейл")
+        add_pos("effective_sentiment", sent, 0.4, "негативный сентимент блокирует мартингейл")
         add_neg("trend_strength", trend, -0.2, "тренд увеличивает риск")
         add_pos("direction_coherence", dir_coherence, 0.3, "согласованность направления критична для мартингейла")
     elif bot_type == "futures_combo":
         rule = 0.3 + 0.7*_clamp(-sent, 0.0, 1.0) + 0.4*_clamp(atr_pct/0.02, 0.0, 2.0)
-        add_pos("global_sentiment", sent, 0.7, "risk-off сентимент => комбо/хедж")
+        add_pos("effective_sentiment", sent, 0.7, "risk-off сентимент => комбо/хедж")
         add_pos("atr_pct", atr_pct, 0.4, "рост волатильности => хеджирование")
 
     raw = rule - 0.35 * cost_penalty  # was 0.70 — much softer penalty
@@ -231,7 +231,7 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
         "top_positive_factors": sorted(pos, key=lambda x: abs(x["weight"]), reverse=True)[:5],
         "top_negative_factors": sorted(neg, key=lambda x: abs(x["weight"]), reverse=True)[:5],
         "cost_model": {"spread_bps": spread, "taker_fee_bps": taker_fee_bps, "total_cost_bps": cost_bps},
-        "global_sentiment": sent,
+        "effective_sentiment": sent,
     }
     return score, conf0, reasons
 
@@ -293,6 +293,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
     # Use 6h EWMA as the primary numeric sentiment input for scoring
     global_sent = float(sent_agg.get("ewma", {}).get("6h", 0.0))
+    # Per-symbol sentiment map: {SYMBOL: float} blended from RSS/Reddit/CoinGecko
+    symbol_sent_map: dict[str, float] = compute_symbol_sentiment_map(conn)
 
     calibrator = _load_or_fit_calibrator(conn, min_samples=settings.calib_min_samples)
     dir_calibrator = _load_or_fit_direction_calibrator(conn, min_samples=max(60, settings.calib_min_samples))
@@ -363,14 +365,17 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 feasibility_blocks.append({"code":"TREND_TOO_STRONG", "msg": f"trend_strength={trend:.2f} слишком сильный тренд для grid"})
             dir_tmp = f.get("_direction_agg", {})
             dir_conf = float(dir_tmp.get("direction_confidence", 0.5))
-            if bot_type == "futures_martingale" and (atr_pct > 0.018 or sent_agg.get("flags", {}).get("panic") or (sent_agg.get("regime") == "risk_off" and sent_agg.get("strength", 0.0) >= 0.35) or global_sent < -0.45 or dir_conf < 0.65):
-                # BUG FIX: was appending two blocks (second was unreachable dead code copy)
+            if bot_type == "futures_martingale" and (atr_pct > 0.018 or sent_agg.get("flags", {}).get("panic") or (sent_agg.get("regime") == "risk_off" and sent_agg.get("strength", 0.0) >= 0.35) or effective_sent < -0.45 or dir_conf < 0.65):
                 code = "DIR_CONF_TOO_LOW" if dir_conf < 0.65 else "MARTINGALE_BLOCKED"
-                feasibility_blocks.append({"code": code, "msg": f"atr_pct={atr_pct:.4f}, sentiment6h={global_sent:.2f}, dir_conf={dir_conf:.2f} => запрет"})
-            if bot_type == "dca_bot" and (sent_agg.get("flags", {}).get("panic") or global_sent < -0.70):
-                feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={global_sent:.2f} panic => запрет"})
+                feasibility_blocks.append({"code": code, "msg": f"atr_pct={atr_pct:.4f}, sentiment6h={effective_sent:.2f}, dir_conf={dir_conf:.2f} => запрет"})
+            if bot_type == "dca_bot" and (sent_agg.get("flags", {}).get("panic") or effective_sent < -0.70):
+                feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={effective_sent:.2f} panic => запрет"})
 
-            score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=global_sent)
+            # Blend global and per-symbol sentiment: 50/50 when symbol data exists
+            sym_sent = symbol_sent_map.get(sym)
+            effective_sent = (0.5 * global_sent + 0.5 * sym_sent) if sym_sent is not None else global_sent
+
+            score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=effective_sent)
             conf_raw = float(conf0)
             conf_cal = float(calibrator.predict(score)) if calibrator.fitted else float(conf0)
             conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))
@@ -396,6 +401,12 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             reasons2["regime"] = regime
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
             reasons2["sentiment_agg"] = sent_agg
+            reasons2["symbol_sentiment"] = {
+                "value": float(sym_sent) if sym_sent is not None else None,
+                "effective": float(effective_sent),
+                "global": float(global_sent),
+                "blended": sym_sent is not None,
+            }
             # Calibrate direction confidence separately (if model fitted)
             dtmp = f.get("_direction_agg", {})
             xdir = float((dtmp.get("scores") or {}).get("all", 0.0))

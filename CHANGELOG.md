@@ -1,5 +1,57 @@
 # Changelog
 
+## V3.3 — Per-symbol sentiment: RSS + Reddit + CoinGecko trending + momentum
+
+### Проблема
+Сентимент был один на всех — `scope="global", key="crypto"`.
+XAUTUSDT, HYPEUSDT, PEPE получали одинаковый сигнал несмотря на разные драйверы.
+
+### Новые источники (все бесплатные, без регистрации)
+
+**1. RSS per-symbol (существующие CoinDesk + CoinTelegraph)**
+   Заголовки фильтруются по словарю SYMBOL_KEYWORDS для 30 символов.
+   Упоминание → score идёт в scope="symbol", key="BTCUSDT" и т.д.
+
+**2. Reddit per-symbol (BTC/ETH/SOL/XRP/DOGE)**
+   JSON-фид `/r/{coin}/hot.json?limit=25` — публичный, без auth.
+   Сигнал: 60% text sentiment + 40% upvote_ratio → [-1, 1].
+
+**3. CoinGecko trending**
+   `/api/v3/search/trending` — топ-7 трендовых монет.
+   Попадание в топ → +0.6 sentiment для символа.
+
+**4. CoinGecko price momentum (авторское дополнение)**
+   `/api/v3/coins/markets` — 24h + 7d изменение цены → нормировано в [-1, 1].
+   Формула: 0.6×clamp(Δ24h/10%, -1,1) + 0.4×clamp(Δ7d/20%, -1,1)
+   Самый надёжный сигнал: рыночные данные в реальном времени.
+
+### Веса блендинга per-symbol
+
+| Источник              | Вес  |
+|-----------------------|------|
+| coingecko_momentum    | 0.45 |
+| reddit                | 0.30 |
+| news_rss              | 0.15 |
+| coingecko_trending    | 0.10 |
+
+### Использование в рекомендере
+
+При наличии per-symbol данных:
+  effective_sent = 0.5 × global_sent + 0.5 × symbol_sent
+
+При отсутствии:
+  effective_sent = global_sent (без деградации)
+
+Все feasibility checks (MARTINGALE_BLOCKED, DCA_BLOCKED_PANIC) и скоринг
+теперь используют effective_sent. В reasons добавлен блок symbol_sentiment
+с полями value/effective/global/blended.
+
+### Новые функции
+
+- sentiment.py: полностью переписан, 8 модульных функций
+- sentiment_features.py: `compute_symbol_sentiment_map(conn)` → {SYMBOL: float}
+- recommender.py: `symbol_sent_map`, `effective_sent`, `reasons.symbol_sentiment`
+
 ## V3.2.1 — Hotfix: symbol auto-disable не работал
 
 ### Root cause

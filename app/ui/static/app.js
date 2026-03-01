@@ -241,8 +241,14 @@ async function loadDetails(recId) {
   lines.push("");
   lines.push("── Сентимент ──");
   const ewma = (sentAgg.ewma || {});
-  lines.push(`1h=${fmt(ewma["1h"])} 6h=${fmt(ewma["6h"])} 1d=${fmt(ewma["1d"])} 7d=${fmt(ewma["7d"])}`);
+  const symSent = reasons.symbol_sentiment || {};
+  lines.push(`Глобальный (EWMA): 1h=${fmt(ewma["1h"])} 6h=${fmt(ewma["6h"])} 1d=${fmt(ewma["1d"])} 7d=${fmt(ewma["7d"])}`);
   lines.push(`regime=${sentAgg.regime || "—"} strength=${fmt(sentAgg.strength)} flags: panic=${(sentAgg.flags||{}).panic} euphoria=${(sentAgg.flags||{}).euphoria}`);
+  if (symSent.blended) {
+    lines.push(`Per-symbol: ${fmt(symSent.value)} | Итого в скоринге (effective): ${fmt(symSent.effective)} = 0.5×global + 0.5×symbol`);
+  } else {
+    lines.push(`Per-symbol: нет данных — используется только глобальный (effective=${fmt(symSent.effective)})`);
+  }
 
   lines.push("");
   lines.push("── Факторы ──");
