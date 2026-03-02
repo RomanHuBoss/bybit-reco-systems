@@ -139,7 +139,7 @@ def _params(
         max_steps = 5 if global_sent >= -0.4 else 4
         return {
             "bybit_category": "Futures Martingale",
-            "direction": "long_or_short",
+            "direction": direction,  # actual computed direction (long/short/neutral)
             "step_pct": step_pct,
             "max_steps": max_steps,
             "leverage": leverage,
@@ -171,8 +171,16 @@ def _expected_rr(bot_type: str, f: dict[str, Any]) -> float:
     return 1.0
 
 def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, global_sent: float) -> tuple[float, float, dict[str, Any]]:
-    trend = float(f.get("trend_strength") or 0.0)
+    # Use multi-TF trendiness from direction_agg if available (more reliable than 1m slope)
+    dir_agg_f = f.get("_direction_agg") or {}
+    _strengths = dir_agg_f.get("strength") or {}
+    if isinstance(_strengths, dict) and _strengths.get("all") is not None:
+        trend = float(_clamp(abs(float(_strengths["all"])), 0.0, 1.0))
+    else:
+        trend = float(f.get("trend_strength") or 0.0)
     rng = float(f.get("range_score") or 0.0)
+    # Recalculate range_score based on actual multi-TF trendiness
+    rng = max(0.0, 1.0 - trend)
     atr_pct = float(f.get("atr_pct") or 0.0)
     spread = f.get("spread_bps")
     spread = float(spread) if spread is not None else 8.0
@@ -244,7 +252,7 @@ def _fit_calibrator(conn, min_samples: int) -> PlattScaler:
             continue
         xs.append(float(r["score"]))
         ys.append(int(o["success"]))
-    return fit_platt(xs, ys) if len(xs) >= min_samples else PlattScaler(fitted=False)
+    return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
 
 def _fit_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
@@ -263,7 +271,7 @@ def _fit_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
 
     result: dict[str, PlattScaler] = {}
     for bt, (xs, ys) in data.items():
-        scaler = fit_platt(xs, ys) if len(xs) >= min_samples else PlattScaler(fitted=False)
+        scaler = fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
         if scaler.fitted:
             save_platt_to_db(conn, BOT_CALIB_KEYS.get(bt, f"platt_{bt}_v1"), scaler)
         result[bt] = scaler
@@ -310,7 +318,7 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
             continue
         xs.append(x)
         ys.append(int(o["success"]))
-    return fit_platt(xs, ys) if len(xs) >= min_samples else PlattScaler(fitted=False)
+    return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
 def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     # Check DB first — fitting is expensive (N queries on outcome rows)
@@ -421,6 +429,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
     recs: list[dict[str, Any]] = []
 
+    # Cache risk status once per cycle — avoids 450+ extra DB queries/cycle with 30 symbols.
+    from .risk import compute_risk_status
+    _cached_risk_status = compute_risk_status(conn, limits)
+
     for (venue, sym), f in symbol_feature_map.items():
         taker_fee_bps = settings.taker_fee_bps_spot if venue == "spot" else settings.taker_fee_bps_linear
 
@@ -437,9 +449,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             atr_pct = float(f.get("atr_pct") or 0.0)
             trend = float(f.get("trend_strength") or 0.0)
 
-            # ── Liquidity tier ──
-            ticker_row = db.get_latest_ticker(conn, venue, sym)
-            turnover = float(ticker_row["turnover24h"]) if ticker_row and ticker_row["turnover24h"] else None
+            # ── Liquidity tier — reuse ticker from symbol loop (trow) ──
+            turnover = float(trow["turnover24h"]) if trow and trow["turnover24h"] else None
             liq_tier = liquidity_tier(turnover)
 
             # ── Funding rate + OI (futures only) ──
@@ -485,8 +496,12 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             if bot_type in ("spot_grid","futures_grid") and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
-            if bot_type in ("spot_grid","futures_grid") and trend > 0.60:
-                feasibility_blocks.append({"code":"TREND_TOO_STRONG", "msg": f"trend_strength={trend:.2f} слишком сильный тренд для grid"})
+            # Use multi-TF trendiness for gate (same source as _score uses)
+            _dir_agg_gate = f.get("_direction_agg") or {}
+            _strengths_gate = _dir_agg_gate.get("strength") or {}
+            _multitf_trend = float(_strengths_gate.get("all", 0.0)) if isinstance(_strengths_gate, dict) else 0.0
+            if bot_type in ("spot_grid","futures_grid") and _multitf_trend > 0.60:
+                feasibility_blocks.append({"code":"TREND_TOO_STRONG", "msg": f"multi_tf_trend_strength={_multitf_trend:.2f} слишком сильный тренд для grid"})
             dir_tmp = f.get("_direction_agg", {})
             dir_conf = float(dir_tmp.get("direction_confidence", 0.5))
 
@@ -500,8 +515,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if bot_type == "dca_bot" and (sent_agg.get("flags", {}).get("panic") or effective_sent < -0.70):
                 feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={effective_sent:.2f} panic => запрет"})
 
-            # ── Risk gate ────────────────────────────────────────────────
-            risk_blocks = gate_candidate(conn, venue, sym, limits)
+            # ── Risk gate — uses cached risk_status (computed once per cycle) ──
+            risk_blocks = gate_candidate(conn, venue, sym, limits, cached_status=_cached_risk_status)
             feasibility_blocks.extend(risk_blocks)
 
             score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=effective_sent)
@@ -563,7 +578,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "blended": sym_sent is not None,
             }
             # Calibrate direction confidence separately (if model fitted)
-            dtmp = f.get("_direction_agg", {})
+            dtmp = dict(f.get("_direction_agg", {}))  # copy — don't mutate f in-place across bot_type loop
             xdir = float((dtmp.get("scores") or {}).get("all", 0.0))
             dir_conf_cal = dir_calibrator.predict(xdir) if dir_calibrator.fitted else float(dtmp.get("direction_confidence", 0.5))
             dtmp["direction_confidence_calibrated"] = dir_conf_cal
@@ -598,7 +613,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "reasons": reasons2,
                 "blocks": blocks,
                 "status": status,
-                "ttl_sec": 180,
+                "ttl_sec": max(180, settings.collect_interval_sec * 15),  # at least 15 collect cycles
                 "model_version": model_version,
                 "features_ref_ts": int(f["ts_last"]),
             })
@@ -606,14 +621,23 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     if recs:
         # Publish only one best recommendation per (venue, symbol).
         # Others are stored as 'suppressed' for audit/debug.
+        STATUS_PRIORITY = {"recommended": 0, "blocked": 1, "no_trade": 2, "suppressed": 3}
         best_map: dict[tuple[str, str], dict[str, Any]] = {}
         for r in recs:
             key = (r["venue"], r["symbol"])
             cur = best_map.get(key)
-            if (cur is None) or (r["confidence"] > cur["confidence"]) or (
-                r["confidence"] == cur["confidence"] and r["score"] > cur["score"]
-            ):
+            if cur is None:
                 best_map[key] = r
+                continue
+            r_pri  = STATUS_PRIORITY.get(r["status"], 9)
+            c_pri  = STATUS_PRIORITY.get(cur["status"], 9)
+            if r_pri < c_pri:
+                best_map[key] = r  # better status wins unconditionally
+            elif r_pri == c_pri:
+                if r["confidence"] > cur["confidence"] or (
+                    r["confidence"] == cur["confidence"] and r["score"] > cur["score"]
+                ):
+                    best_map[key] = r
 
         for r in recs:
             key = (r["venue"], r["symbol"])

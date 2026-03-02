@@ -13,8 +13,8 @@ class PlattScaler:
         z = self.a * x + self.b
         return 1.0 / (1.0 + math.exp(-z))
 
-def fit_platt(xs: list[float], ys: list[int], iters: int = 250, lr: float = 0.08) -> PlattScaler:
-    if len(xs) < 80:
+def fit_platt(xs: list[float], ys: list[int], iters: int = 250, lr: float = 0.08, min_samples: int = 80) -> PlattScaler:
+    if len(xs) < min_samples:
         return PlattScaler(fitted=False)
     a, b = 1.0, 0.0
     n = len(xs)

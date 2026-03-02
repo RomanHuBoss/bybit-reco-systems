@@ -244,16 +244,49 @@ def _sentiment_thread():
                 db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)})
             except Exception as e:
                 db.log_decision(conn, "SENTIMENT_ERROR", None, None, {"err": str(e)})
-        time.sleep(60)
+        time.sleep(settings.sentiment_interval_sec)
 
 def _reco_thread():
     while True:
+        result = {}
         with closing(_get_conn()) as conn:
             try:
-                run_recommender_once(conn, settings)
+                result = run_recommender_once(conn, settings)
                 compute_outcomes_once(conn, horizon_sec=settings.outcome_horizon_sec)
             except Exception as e:
                 db.log_decision(conn, "RECO_ERROR", None, None, {"err": str(e)})
+
+        # TTL expiry — must run every cycle outside the main try/except
+        with closing(_get_conn()) as conn:
+            try:
+                db.expire_stale_recommendations(conn)
+            except Exception:
+                pass
+
+        # Telegram alerts (no-op if token not configured)
+        if settings.telegram_token:
+            try:
+                with closing(_get_conn()) as conn:
+                    health = db.get_symbol_health(
+                        conn, settings.symbols_spot, settings.symbols_linear,
+                        stale_sec=settings.stale_data_max_sec,
+                    )
+                    err_cur = conn.execute(
+                        """SELECT COUNT(*) as c FROM decision_log
+                           WHERE action='COLLECT_ERROR' AND ts >= ?""",
+                        (int(time.time()) - 600,),
+                    )
+                    err_count = int(err_cur.fetchone()["c"])
+                check_and_alert(
+                    token=settings.telegram_token,
+                    chat_id=settings.telegram_chat_id,
+                    symbol_health=health,
+                    collect_errors_10m=err_count,
+                    reco_count=int(result.get("count", 0)),
+                )
+            except Exception:
+                pass
+
         time.sleep(settings.reco_interval_sec)
 
 @app.on_event("startup")

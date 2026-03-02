@@ -57,10 +57,11 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
         symbol_bot_counts=symbol_counts,
     )
 
-def gate_candidate(conn, venue: str, symbol: str, limits: dict[str, Any]) -> list[dict[str, Any]]:
+def gate_candidate(conn, venue: str, symbol: str, limits: dict[str, Any], cached_status=None) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
 
-    rs = compute_risk_status(conn, limits)
+    # Accept pre-computed risk status to avoid re-querying DB per (symbol, bot_type)
+    rs = cached_status if cached_status is not None else compute_risk_status(conn, limits)
 
     max_conc = int(limits.get("max_concurrent_bots", 999999))
     if rs.active_bots >= max_conc:

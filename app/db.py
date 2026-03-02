@@ -150,8 +150,9 @@ def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int,
         q = """SELECT * FROM recommendations WHERE ts = ?"""
         params: list[Any] = [snapshot_ts]
     else:
+        # Use 24h window so executed/ignored/expired recs remain visible for audit
         q = """SELECT * FROM recommendations WHERE ts > ?"""
-        params: list[Any] = [now_ts() - 3600]
+        params: list[Any] = [now_ts() - 86400]
     if venue:
         q += " AND venue=?"
         params.append(venue)

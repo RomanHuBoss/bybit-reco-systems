@@ -67,12 +67,15 @@ def compute_outcomes_once(
     conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 300
 ) -> int:
     """horizon_sec is used as fallback only — BOT_HORIZONS takes precedence per bot_type."""
+    # Use minimum per-bot horizon as SQL filter — avoids re-processing recs
+    # whose effective horizon hasn't passed yet. min=1h (martingale), max=24h (DCA).
+    min_horizon = min(BOT_HORIZONS.values())  # 1h
     cur = conn.execute(
         """SELECT rec_id, ts, venue, symbol, bot_type, direction
            FROM recommendations
            WHERE ts <= ?
            ORDER BY ts DESC LIMIT ?""",
-        (db.now_ts() - horizon_sec, max_to_process),
+        (db.now_ts() - min_horizon, max_to_process),
     )
     rows = cur.fetchall()
     done = 0
@@ -89,6 +92,9 @@ def compute_outcomes_once(
         ts0       = int(r["ts"])
         # Use per-bot-type horizon; fall back to global horizon_sec
         effective_horizon = BOT_HORIZONS.get(bot_type, horizon_sec)
+        # Early skip: effective horizon hasn't passed yet
+        if db.now_ts() < ts0 + effective_horizon:
+            continue
         ts_exit   = ts0 + effective_horizon
 
         entry = _get_close_at_or_after(conn, venue, symbol, ts0)

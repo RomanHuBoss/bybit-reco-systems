@@ -296,7 +296,7 @@ def trending_to_symbol_points(trending: dict[str, Any] | None) -> dict[str, dict
                 "sentiment": 0.6,   # being in top-7 trending is bullish
                 "velocity": 0.3,    # momentum signal
                 "volume": 7,
-                "sources": {"coingecko_trending": True, "rank": trending_syms},
+                "sources": {"coingecko_trending": True},
                 "tags": ["coingecko_trending", "per_symbol"],
             }
     return result
