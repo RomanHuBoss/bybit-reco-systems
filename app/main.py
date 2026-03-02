@@ -90,7 +90,7 @@ def api_recommendations(
             venue=venue,
             top_n=top_n,
             min_conf=min_conf,
-            statuses=statuses if statuses else None,
+            statuses=statuses,          # empty list → returns nothing (correct); None → no filter
             snapshot_ts=snapshot_ts,
         )
 

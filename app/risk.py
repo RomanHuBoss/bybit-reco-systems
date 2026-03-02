@@ -75,7 +75,7 @@ def gate_candidate(conn, venue: str, symbol: str, limits: dict[str, Any], cached
         blocks.append({"code":"COOLDOWN_ACTIVE", "msg":"cooldown after losses is active"})
 
     max_symbol_bots = int(limits.get("max_symbol_bots", 999999))
-    active_for_symbol = db.count_active_bots_for_symbol(conn, venue, symbol)
+    active_for_symbol = rs.symbol_bot_counts.get(f"{venue}:{symbol}", 0)
     if active_for_symbol >= max_symbol_bots:
         blocks.append({"code":"MAX_SYMBOL_BOTS", "msg": f"{venue}:{symbol} active={active_for_symbol} >= limit={max_symbol_bots}"})
 

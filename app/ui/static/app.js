@@ -465,6 +465,29 @@ document.addEventListener("click", async (e) => {
     try { data = await res.json(); } catch (e) { return; }
     showModal("Recommendation JSON", data);
   }
+  if (act === "execute" || act === "ignore") {
+    const action = act === "execute" ? "executed" : "ignored";
+    try {
+      const res = await fetch(`/api/v1/recommendations/${id}/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, operator: "ui" }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        // Replace action buttons with status label immediately, then refresh
+        const btn = t.closest("td");
+        if (btn) {
+          btn.querySelectorAll(".op-exec, .op-ignore").forEach(b => b.remove());
+          const lbl = document.createElement("span");
+          lbl.className = `op-status-label op-${action}`;
+          lbl.textContent = action;
+          btn.appendChild(lbl);
+        }
+        await refreshAll();
+      }
+    } catch (e) { /* ignore network errors */ }
+  }
 });
 
 $("refreshBtn").addEventListener("click", refreshAll);

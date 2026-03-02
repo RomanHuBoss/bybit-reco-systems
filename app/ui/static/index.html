@@ -76,35 +76,33 @@
     <div id="noTrade" class="banner hidden">NO-TRADE: нет рекомендаций со статусом <b>recommended</b> по текущим фильтрам/гейтам.</div>
 
     <div class="grid">
-      <div class="panel panel-flex">
-        <div class="panel-title panel-title-fixed">Рекомендации</div>
-        <div class="table-scroll">
-          <table class="table" id="recoTable">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Площадка</th>
-                <th>Symbol</th>
-                <th>Bybit bot</th>
-                <th>Напр</th>
-                <th title="Уверенность направления (direction_confidence)">Уд.напр</th>
-                <th>Скор</th>
-                <th id="confHeader" title="Уверенность модели">Увер</th>
-                <th>Ож.RR</th>
-                <th>Статус</th>
-                <th>Действия</th>
-              </tr>
-            </thead>
-            <tbody id="recoBody"></tbody>
-          </table>
-        </div>
+      <div class="panel">
+        <div class="panel-title">Рекомендации</div>
+        <table class="table" id="recoTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Площадка</th>
+              <th>Symbol</th>
+              <th>Bybit bot</th>
+              <th>Напр</th>
+              <th title="Уверенность направления (direction_confidence)">Уд.напр</th>
+              <th>Скор</th>
+              <th id="confHeader" title="Уверенность модели">Увер</th>
+              <th>Ож.RR</th>
+              <th>Статус</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="recoBody"></tbody>
+        </table>
       </div>
 
-      <div class="panel panel-flex">
-        <div class="panel-title panel-title-fixed details-header">Детали
+      <div class="panel">
+        <div class="panel-title">Детали
           <button id="copyParamsBtn" class="btn tiny secondary hidden" style="float:right;margin-top:-4px">Скопировать параметры</button>
         </div>
-        <div id="details" class="details details-scroll muted">Выберите рекомендацию.</div>
+        <div id="details" class="details muted">Выберите рекомендацию.</div>
       </div>
     </div>
 

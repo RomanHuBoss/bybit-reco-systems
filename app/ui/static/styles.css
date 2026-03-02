@@ -14,16 +14,12 @@
   --err-border: rgba(255,90,122,0.40);
 }
 
-html { height: 100%; }
+* { box-sizing: border-box; }
 body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
   background: var(--bg);
   color: var(--text);
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
 }
 
 /* ── header ── */
@@ -149,14 +145,7 @@ body {
 .btn.tiny { padding: 5px 10px; border-radius: 8px; font-size: 12px; }
 
 /* ── main layout ── */
-.main {
-  flex: 1;
-  overflow: hidden;
-  padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
+.main { padding: 12px 16px; }
 .banner {
   border: 1px solid rgba(255,90,122,0.35);
   background: rgba(255,90,122,0.10);
@@ -164,14 +153,11 @@ body {
   border-radius: 12px;
   margin-bottom: 10px;
   font-size: 13px;
-  flex-shrink: 0;
 }
 .grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 12px;
-  flex: 1;
-  min-height: 0;
 }
 .panel {
   background: var(--panel);
@@ -180,52 +166,7 @@ body {
   padding: 12px;
   overflow: hidden;
 }
-/* Panel with independent scroll body */
-.panel-flex {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.panel-title {
-  font-weight: 700;
-  margin-bottom: 10px;
-}
-/* Fixed title row with divider (used in scrollable panels) */
-.panel-title-fixed {
-  flex-shrink: 0;
-  margin-bottom: 0;
-  padding-bottom: 8px;
-}
-/* Horizontal divider under fixed title */
-.details-header {
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 0;
-}
-
-/* Scrollable table container — thead stays sticky, tbody scrolls */
-.table-scroll {
-  overflow-y: auto;
-  overflow-x: auto;
-  flex: 1;
-  min-height: 0;
-  margin-top: 2px;
-}
-.table-scroll .table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--panel);
-  /* subtle bottom shadow to separate from scrolling rows */
-  box-shadow: 0 1px 0 var(--border);
-}
-
-/* Scrollable details body */
-.details-scroll {
-  overflow-y: auto;
-  flex: 1;
-  min-height: 0;
-  padding-top: 10px;
-}
+.panel-title { font-weight: 700; margin-bottom: 10px; }
 
 /* ── table ── */
 .table {
@@ -238,7 +179,6 @@ body {
   padding: 7px 7px;
   text-align: left;
   vertical-align: middle;
-  white-space: nowrap;
 }
 .table th { color: var(--muted); font-weight: 600; font-size: 12px; }
 .row-recommended td:first-child {

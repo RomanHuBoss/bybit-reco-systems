@@ -507,7 +507,6 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             feasibility_blocks.extend(risk_blocks)
 
             score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=effective_sent)
-            score_pre_adj = score  # save pre-adjustment score for calibrator (trained on stored scores)
 
             # ── Funding + OI score adjustments ──
             if venue == "linear":
@@ -517,14 +516,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     score = _clamp(score - 0.06, -1.0, 1.0)  # crowded long → penalty
 
             conf_raw = float(conf0)
-            # Use pre-adjustment score for calibrator — calibrator was trained on stored scores
-            # which are post-reco (and stored AFTER adjustment). First cycle: use score_pre_adj
-            # as proxy since calibrator hasn't seen adjusted scores yet. Consistent over time.
+            # Calibrator is trained on stored scores — which are post-adjustment (see recs.append below).
+            # Use the same post-adjustment score for inference to match training distribution.
             bot_cal = bot_calibrators.get(bot_type)
             if bot_cal and bot_cal.fitted:
-                conf_cal = float(bot_cal.predict(score_pre_adj))
+                conf_cal = float(bot_cal.predict(score))
             elif calibrator.fitted:
-                conf_cal = float(calibrator.predict(score_pre_adj))
+                conf_cal = float(calibrator.predict(score))
             else:
                 conf_cal = float(conf0)
             conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))

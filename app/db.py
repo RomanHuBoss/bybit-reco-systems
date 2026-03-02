@@ -159,7 +159,10 @@ def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int,
     # Apply min_conf only to status=recommended so blocked/no_trade/suppressed are still visible.
     q += " AND (status != ? OR confidence >= ?)"
     params.extend(["recommended", min_conf])
-    if statuses:
+    if statuses is not None:
+        if not statuses:
+            # Empty list → caller wants no statuses → return nothing
+            return []
         placeholders = ",".join("?" for _ in statuses)
         q += f" AND status IN ({placeholders})"
         params.extend(statuses)
@@ -616,8 +619,11 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     cur = conn.execute("DELETE FROM sentiment WHERE ts < ?", (cutoff_14d,))
     deleted["sentiment"] = cur.rowcount
 
-    # recommendations: keep 7 days (outcomes reference them; pruning older is safe)
-    cur = conn.execute("DELETE FROM recommendations WHERE ts < ? AND status NOT IN ('executed','ignored')", (cutoff,))
+    # recommendations: keep 14 days — MUST match outcomes retention.
+    # get_outcomes_with_recs() uses an INNER JOIN on rec_id.
+    # If recs are pruned at 7d but outcomes live 14d, the JOIN silently drops
+    # all outcomes whose rec was already pruned → calibrator loses half its training data.
+    cur = conn.execute("DELETE FROM recommendations WHERE ts < ? AND status NOT IN ('executed','ignored')", (cutoff_14d,))
     deleted["recommendations"] = cur.rowcount
 
     # reco_outcomes: keep 14 days (calibrator uses up to 6000 recent outcomes)
