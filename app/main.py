@@ -252,6 +252,8 @@ def _sentiment_thread():
         time.sleep(settings.sentiment_interval_sec)
 
 def _reco_thread():
+    _last_prune = 0.0
+    PRUNE_INTERVAL = 3600  # prune old DB rows once per hour
     while True:
         result = {}
         with closing(_get_conn()) as conn:
@@ -267,6 +269,16 @@ def _reco_thread():
                 db.expire_stale_recommendations(conn)
             except Exception:
                 pass
+
+        # DB pruning — once per hour to prevent unbounded growth
+        if time.time() - _last_prune >= PRUNE_INTERVAL:
+            with closing(_get_conn()) as conn:
+                try:
+                    deleted = db.prune_old_data(conn, retain_days=7)
+                    db.log_decision(conn, "DB_PRUNE", None, None, deleted)
+                    _last_prune = time.time()
+                except Exception:
+                    pass
 
         # Telegram alerts (no-op if token not configured)
         if settings.telegram_token:
@@ -299,13 +311,6 @@ async def startup_event():
     threading.Thread(target=_collector_thread, daemon=True).start()
     threading.Thread(target=_sentiment_thread, daemon=True).start()
     threading.Thread(target=_reco_thread, daemon=True).start()
-
-def main():
-    import uvicorn
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
-
-if __name__ == "__main__":
-    main()
 
 
 @app.get("/api/v1/status")
@@ -348,3 +353,11 @@ def api_status() -> dict[str, Any]:
                 "flags": sent.get("flags"),
             },
         }
+
+def main():
+    import uvicorn
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
+
+
+if __name__ == "__main__":
+    main()

@@ -284,6 +284,40 @@ def get_latest_sentiment(conn: sqlite3.Connection, scope: str, key: str) -> dict
         "tags": json.loads(r["tags_json"]),
     }
 
+
+def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000) -> list[dict[str, Any]]:
+    """Returns outcomes joined with rec score/bot_type/direction/reasons in one query.
+    Replaces N+1 pattern of get_outcomes_recent + get_recommendation_by_id per row.
+    """
+    cur = conn.execute(
+        """SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
+                  o.success, o.ret,
+                  r.score, r.reasons_json
+           FROM reco_outcomes o
+           JOIN recommendations r ON r.rec_id = o.rec_id
+           ORDER BY o.ts DESC LIMIT ?""",
+        (limit,),
+    )
+    out = []
+    for row in cur.fetchall():
+        try:
+            reasons = json.loads(row["reasons_json"]) if row["reasons_json"] else {}
+        except Exception:
+            reasons = {}
+        out.append({
+            "rec_id":    row["rec_id"],
+            "ts":        row["ts"],
+            "venue":     row["venue"],
+            "symbol":    row["symbol"],
+            "bot_type":  row["bot_type"],
+            "direction": row["direction"],
+            "success":   int(row["success"]),
+            "ret":       float(row["ret"]),
+            "score":     float(row["score"]),
+            "reasons":   reasons,
+        })
+    return out
+
 def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO reco_outcomes(
@@ -557,3 +591,39 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
             })
 
     return sorted(result, key=lambda x: (x["status"] != "missing", x["status"] != "stale", x["symbol"]))
+
+def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, int]:
+    """Prune old rows from high-growth tables. Call periodically (e.g. once per hour).
+    Retains retain_days of data. Returns count of deleted rows per table.
+    """
+    cutoff = now_ts() - retain_days * 86400
+    cutoff_14d = now_ts() - 14 * 86400  # sentiment: keep 14 days for EWMA
+    deleted = {}
+
+    # features: keep 1 day (used only for current cycle reference)
+    cur = conn.execute("DELETE FROM features WHERE ts < ?", (now_ts() - 86400,))
+    deleted["features"] = cur.rowcount
+
+    # market_regime: keep 7 days
+    cur = conn.execute("DELETE FROM market_regime WHERE ts < ?", (cutoff,))
+    deleted["market_regime"] = cur.rowcount
+
+    # decision_log: keep 7 days
+    cur = conn.execute("DELETE FROM decision_log WHERE ts < ?", (cutoff,))
+    deleted["decision_log"] = cur.rowcount
+
+    # sentiment: keep 14 days (EWMA uses 7d window with margin)
+    cur = conn.execute("DELETE FROM sentiment WHERE ts < ?", (cutoff_14d,))
+    deleted["sentiment"] = cur.rowcount
+
+    # recommendations: keep 7 days (outcomes reference them; pruning older is safe)
+    cur = conn.execute("DELETE FROM recommendations WHERE ts < ? AND status NOT IN ('executed','ignored')", (cutoff,))
+    deleted["recommendations"] = cur.rowcount
+
+    # reco_outcomes: keep 14 days (calibrator uses up to 6000 recent outcomes)
+    cur = conn.execute("DELETE FROM reco_outcomes WHERE ts < ?", (cutoff_14d,))
+    deleted["reco_outcomes"] = cur.rowcount
+
+    conn.commit()
+    return deleted
+

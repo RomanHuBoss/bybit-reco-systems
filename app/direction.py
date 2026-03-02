@@ -96,10 +96,11 @@ def vote_for_tf(closes: list[float], highs: list[float], lows: list[float]) -> d
     # Increased sensitivity: 0.22 vs old 0.15 — slope is the most reliable trend signal
     slope_c = _clamp(slope_norm * 0.22, -1.0, 1.0)
 
-    # MACD hist normalized by price
-    p = closes[-1] if closes[-1] else 1.0
-    hist_norm = hist / max(1e-9, p)
-    hist_c = _clamp(hist_norm * 900.0, -1.0, 1.0)
+    # MACD hist normalized by ATR (price-relative, scale-invariant across assets)
+    # Old: normalized by raw price → BTC($60K) MACD≈0, PEPE($0.00001) MACD saturates ±1
+    # Fix: divide by ATR which is already price-relative
+    hist_norm = hist / max(1e-9, ap * closes[-1] if closes else 1.0)
+    hist_c = _clamp(hist_norm * 4.0, -1.0, 1.0)  # ATR-normalized: ~4x ATR = max signal
 
     # RSI centered at 50, tightened normalization for more signal pull
     rsi_c = _clamp((rsi - 50.0) / 30.0, -1.0, 1.0)

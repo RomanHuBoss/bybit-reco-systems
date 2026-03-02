@@ -11,6 +11,7 @@ from .risk import gate_candidate, compute_risk_status as _compute_risk_status
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .calibration import fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS
+# Note: calibrators use db.get_outcomes_with_recs (single JOIN query) to avoid N+1 pattern
 
 BOT_TYPES_BYBIT = [
     "spot_grid",
@@ -244,30 +245,23 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
     return score, conf0, reasons
 
 def _fit_calibrator(conn, min_samples: int) -> PlattScaler:
-    outs = db.get_outcomes_recent(conn, limit=4000)
-    xs, ys = [], []
-    for o in outs:
-        r = db.get_recommendation_by_id(conn, o["rec_id"])
-        if not r:
-            continue
-        xs.append(float(r["score"]))
-        ys.append(int(o["success"]))
+    # Single JOIN query instead of N+1 (get_outcomes_recent + N x get_recommendation_by_id)
+    rows = db.get_outcomes_with_recs(conn, limit=4000)
+    xs = [float(row["score"]) for row in rows]
+    ys = [int(row["success"]) for row in rows]
     return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
 
 def _fit_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
     """Fit one Platt scaler per bot_type. Returns {bot_type: PlattScaler}."""
     from collections import defaultdict
-    outs = db.get_outcomes_recent(conn, limit=6000)
-    # group scores and labels by bot_type
+    # Single JOIN query instead of N+1
+    rows = db.get_outcomes_with_recs(conn, limit=6000)
     data: dict[str, tuple[list[float], list[int]]] = defaultdict(lambda: ([], []))
-    for o in outs:
-        r = db.get_recommendation_by_id(conn, o["rec_id"])
-        if not r:
-            continue
-        bt = r["bot_type"]
-        data[bt][0].append(float(r["score"]))
-        data[bt][1].append(int(o["success"]))
+    for row in rows:
+        bt = row["bot_type"]
+        data[bt][0].append(float(row["score"]))
+        data[bt][1].append(int(row["success"]))
 
     result: dict[str, PlattScaler] = {}
     for bt, (xs, ys) in data.items():
@@ -298,26 +292,18 @@ def _load_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
 
 def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     # Fit on realized outcomes using signed direction score (direction_agg.scores.all).
-    outs = db.get_outcomes_recent(conn, limit=5000)
+    # Single JOIN query instead of N+1
+    rows = db.get_outcomes_with_recs(conn, limit=5000)
     xs, ys = [], []
-    for o in outs:
-        r = db.get_recommendation_by_id(conn, o["rec_id"])
-        if not r:
+    for row in rows:
+        if row["bot_type"] != "futures_martingale":
             continue
-        # only futures_martingale — it's the only bot where direction correctness
-        # directly determines success. Grid success = price_in_range (not direction),
-        # so training direction_calibrator on grid outcomes is nonsensical.
-        if r.get("bot_type") != "futures_martingale":
-            continue
-        reasons = r.get("reasons") or {}
-        d = reasons.get("direction_agg") or {}
+        d = (row.get("reasons") or {}).get("direction_agg") or {}
         x = float((d.get("scores") or {}).get("all", 0.0))
-        # use only if direction is not neutral
-        dir_final = str(d.get("direction") or "neutral")
-        if dir_final == "neutral":
+        if str(d.get("direction") or "neutral") == "neutral":
             continue
         xs.append(x)
-        ys.append(int(o["success"]))
+        ys.append(int(row["success"]))
     return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
 def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
@@ -351,10 +337,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
     calibrator = _load_or_fit_calibrator(conn, min_samples=settings.calib_min_samples)
     bot_calibrators = _load_bot_calibrators(conn, min_samples=settings.calib_min_samples)
-    dir_calibrator = _load_or_fit_direction_calibrator(conn, min_samples=max(60, settings.calib_min_samples))
+    dir_calibrator = _load_or_fit_direction_calibrator(conn, min_samples=settings.calib_min_samples)
 
     features_all: list[dict[str, Any]] = []
     symbol_feature_map: dict[tuple[str,str], dict[str, Any]] = {}
+    symbol_ticker_map: dict[tuple[str,str], Any] = {}  # stores trow per (venue,sym)
 
     ts_now = db.now_ts()  # set here for stale gate use inside feature loop
 
@@ -419,6 +406,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             db.insert_features(conn, venue, sym, ts_f, f)
             features_all.append(f)
             symbol_feature_map[(venue, sym)] = f
+            symbol_ticker_map[(venue, sym)] = trow  # save for reco loop
 
     regime = classify_regime(features_all)
     db.insert_regime(conn, db.now_ts(), regime)
@@ -447,8 +435,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             spread = float(spread) if spread is not None else 12.0
             atr_pct = float(f.get("atr_pct") or 0.0)
 
-            # ── Liquidity tier — reuse ticker from symbol loop (trow) ──
-            turnover = float(trow["turnover24h"]) if trow and trow["turnover24h"] else None
+            # ── Liquidity tier — use per-(venue,sym) cached ticker ──
+            _trow = symbol_ticker_map.get((venue, sym))
+            turnover = float(_trow["turnover24h"]) if _trow and _trow["turnover24h"] else None
             liq_tier = liquidity_tier(turnover)
 
             # ── Funding rate + OI (futures only) ──
@@ -518,6 +507,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             feasibility_blocks.extend(risk_blocks)
 
             score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=effective_sent)
+            score_pre_adj = score  # save pre-adjustment score for calibrator (trained on stored scores)
 
             # ── Funding + OI score adjustments ──
             if venue == "linear":
@@ -527,12 +517,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     score = _clamp(score - 0.06, -1.0, 1.0)  # crowded long → penalty
 
             conf_raw = float(conf0)
-            # Per-bot calibrator takes priority over global
+            # Use pre-adjustment score for calibrator — calibrator was trained on stored scores
+            # which are post-reco (and stored AFTER adjustment). First cycle: use score_pre_adj
+            # as proxy since calibrator hasn't seen adjusted scores yet. Consistent over time.
             bot_cal = bot_calibrators.get(bot_type)
             if bot_cal and bot_cal.fitted:
-                conf_cal = float(bot_cal.predict(score))
+                conf_cal = float(bot_cal.predict(score_pre_adj))
             elif calibrator.fitted:
-                conf_cal = float(calibrator.predict(score))
+                conf_cal = float(calibrator.predict(score_pre_adj))
             else:
                 conf_cal = float(conf0)
             conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))
@@ -640,7 +632,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
         for r in recs:
             key = (r["venue"], r["symbol"])
             if best_map.get(key, {}).get("rec_id") != r["rec_id"]:
-                r["status"] = "suppressed"
+                # Only suppress 'recommended' recs — preserve 'blocked'/'no_trade' for audit
+                if r["status"] == "recommended":
+                    r["status"] = "suppressed"
 
         db.insert_recommendations(conn, recs)
         db.log_decision(

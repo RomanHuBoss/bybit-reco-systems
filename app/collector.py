@@ -102,9 +102,10 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                     disabled.add(sym)
                     db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e)})
                     break
-                # Log with symbol name and continue — don't crash the whole cycle
+                # Transient error (rate limit, timeout) — continue with next interval
+                # only break for symbol-level errors (_is_not_supported_symbol handles those above)
                 db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "err": str(e)})
-                break  # skip remaining intervals for this symbol, try next
+                continue  # try next interval; don't abandon all intervals for this symbol
 
     if ohlcv_rows:
         db.upsert_ohlcv(conn, ohlcv_rows)

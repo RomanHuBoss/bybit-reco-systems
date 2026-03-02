@@ -64,7 +64,7 @@ def _get_rec_params(conn, rec_id: str) -> dict | None:
 
 
 def compute_outcomes_once(
-    conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 300
+    conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 2000
 ) -> int:
     """horizon_sec is used as fallback only — BOT_HORIZONS takes precedence per bot_type."""
     # Use minimum per-bot horizon as SQL filter — avoids re-processing recs
@@ -74,7 +74,7 @@ def compute_outcomes_once(
         """SELECT rec_id, ts, venue, symbol, bot_type, direction
            FROM recommendations
            WHERE ts <= ?
-           ORDER BY ts DESC LIMIT ?""",
+           ORDER BY ts ASC LIMIT ?""",  # ASC: process oldest first — most likely past horizon
         (db.now_ts() - min_horizon, max_to_process),
     )
     rows = cur.fetchall()

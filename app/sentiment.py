@@ -41,7 +41,6 @@ COINGECKO_IDS: dict[str, str] = {
     "SUIUSDT":     "sui",
     "NEARUSDT":    "near",
     "MNTUSDT":     "mantle",
-    "PEPEUSDT":    "pepe",
     "ENAUSDT":     "ethena",
     "TONUSDT":     "the-open-network",
     "HYPEUSDT":    "hyperliquid",
@@ -75,7 +74,6 @@ SYMBOL_KEYWORDS: dict[str, list[str]] = {
     "SUIUSDT":     [" sui "],
     "NEARUSDT":    ["near protocol", " near "],
     "MNTUSDT":     ["mantle", " mnt "],
-    "PEPEUSDT":    [" pepe "],
     "ENAUSDT":     ["ethena", " ena "],
     "TONUSDT":     ["toncoin", " ton "],
     "HYPEUSDT":    ["hyperliquid", " hype "],
@@ -430,7 +428,7 @@ def blend_per_symbol(
             "ts": ts,
             "sentiment": _clamp(float(blended), -1.0, 1.0),
             "velocity": float(mom["velocity"]) if mom else 0.0,
-            "volume": 1,
+            "volume": len(sources_used),  # number of data sources blended
             "sources": {
                 "sources_used": sources_used,
                 "momentum": float(mom["sentiment"]) if mom else None,
