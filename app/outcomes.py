@@ -150,8 +150,8 @@ def compute_outcomes_once(
             "direction":    direction,
             "horizon_sec":  effective_horizon,
             "entry_close":  float(entry),
-            "exit_close":   float(_get_close_at_or_after(conn, venue, symbol, ts_exit) or entry),
-            "ret":          float(ret) if bot_type in DIRECTIONAL_BOTS else float((exitp - entry) / entry),
+            "exit_close":   float(exitp),   # exitp already fetched above — no extra query
+            "ret":          float(ret),
             "success":      int(success),
         })
         done += 1

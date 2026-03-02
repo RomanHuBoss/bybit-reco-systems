@@ -296,8 +296,10 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
         r = db.get_recommendation_by_id(conn, o["rec_id"])
         if not r:
             continue
-        # only direction-sensitive bots
-        if r.get("bot_type") not in ("spot_grid","futures_grid","futures_martingale"):
+        # only futures_martingale — it's the only bot where direction correctness
+        # directly determines success. Grid success = price_in_range (not direction),
+        # so training direction_calibrator on grid outcomes is nonsensical.
+        if r.get("bot_type") != "futures_martingale":
             continue
         reasons = r.get("reasons") or {}
         d = reasons.get("direction_agg") or {}
@@ -311,23 +313,25 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     return fit_platt(xs, ys) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
 def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
-    scaler = _fit_direction_calibrator(conn, min_samples=min_samples)
-    if scaler.fitted:
-        save_platt_to_db(conn, "platt_direction_v2", scaler)
-        return scaler
+    # Check DB first — fitting is expensive (N queries on outcome rows)
     saved = load_platt_from_db(conn, "platt_direction_v2")
     if saved and saved.fitted:
         return saved
+    # Not in DB — fit now
+    scaler = _fit_direction_calibrator(conn, min_samples=min_samples)
+    if scaler.fitted:
+        save_platt_to_db(conn, "platt_direction_v2", scaler)
     return scaler
 
 def _load_or_fit_calibrator(conn, min_samples: int) -> PlattScaler:
-    scaler = _fit_calibrator(conn, min_samples=min_samples)
-    if scaler.fitted:
-        save_platt_to_db(conn, "platt_bybit_v2", scaler)
-        return scaler
+    # Check DB first — fitting is expensive (N queries on outcome rows)
     saved = load_platt_from_db(conn, "platt_bybit_v2")
     if saved and saved.fitted:
         return saved
+    # Not in DB — fit now
+    scaler = _fit_calibrator(conn, min_samples=min_samples)
+    if scaler.fitted:
+        save_platt_to_db(conn, "platt_bybit_v2", scaler)
     return scaler
 
 def run_recommender_once(conn, settings) -> dict[str, Any]:
@@ -532,7 +536,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             status = "recommended"
             if blocks:
                 status = "blocked"
-            if score < settings.min_score_to_recommend:
+            elif score < settings.min_score_to_recommend:
                 status = "no_trade"
             elif settings.require_conf_gate and conf < settings.min_conf_to_recommend:
                 status = "no_trade"
