@@ -7,7 +7,7 @@ from typing import Any
 from . import db
 from .features import compute_features_from_ohlcv, liquidity_tier, funding_signal, oi_trend, btc_beta
 from .regime import classify_regime
-from .risk import gate_candidate
+from .risk import gate_candidate, compute_risk_status as _compute_risk_status
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .calibration import fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS
@@ -430,8 +430,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     recs: list[dict[str, Any]] = []
 
     # Cache risk status once per cycle — avoids 450+ extra DB queries/cycle with 30 symbols.
-    from .risk import compute_risk_status
-    _cached_risk_status = compute_risk_status(conn, limits)
+    _cached_risk_status = _compute_risk_status(conn, limits)
 
     for (venue, sym), f in symbol_feature_map.items():
         taker_fee_bps = settings.taker_fee_bps_spot if venue == "spot" else settings.taker_fee_bps_linear
@@ -447,7 +446,6 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             spread = f.get("spread_bps")
             spread = float(spread) if spread is not None else 12.0
             atr_pct = float(f.get("atr_pct") or 0.0)
-            trend = float(f.get("trend_strength") or 0.0)
 
             # ── Liquidity tier — reuse ticker from symbol loop (trow) ──
             turnover = float(trow["turnover24h"]) if trow and trow["turnover24h"] else None

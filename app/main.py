@@ -216,6 +216,8 @@ def api_sentiment_get(scope: str, key: str, limit: int = 120) -> dict[str, Any]:
 
 def _collector_thread():
     client = BybitPublicClient(settings.bybit_base_url)
+    _last_futures_collect = 0.0  # throttle: funding every 30min, OI every 15min
+    FUTURES_COLLECT_INTERVAL = 900  # 15 min — OI updates hourly, funding every 8h
     try:
         while True:
             with closing(_get_conn()) as conn:
@@ -225,11 +227,14 @@ def _collector_thread():
                         collect_once(conn, client, venue, symbols)
                     except Exception as e:
                         db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
-                # Funding rate + OI for futures (linear only)
-                try:
-                    collect_futures_once(conn, client, settings.symbols_linear)
-                except Exception as e:
-                    db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
+            # Funding rate + OI throttled to every 15min (was every 20s — 45x too often)
+            if time.time() - _last_futures_collect >= FUTURES_COLLECT_INTERVAL:
+                with closing(_get_conn()) as conn:
+                    try:
+                        collect_futures_once(conn, client, settings.symbols_linear)
+                        _last_futures_collect = time.time()
+                    except Exception as e:
+                        db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
             time.sleep(settings.collect_interval_sec)
     finally:
         client.close()

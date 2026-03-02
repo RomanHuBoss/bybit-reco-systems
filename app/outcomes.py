@@ -132,17 +132,22 @@ def compute_outcomes_once(
 
         # ── Directional bots: success = price moved in direction ─────────────
         elif bot_type in DIRECTIONAL_BOTS:
-            if direction not in ("long", "short"):
-                continue
-
             exitp = _get_close_at_or_after(conn, venue, symbol, ts_exit)
             if exitp is None:
                 continue
 
             ret = (exitp - entry) / entry
-            if direction == "short":
-                ret = -ret
-            success = 1 if ret > 0 else 0
+
+            if bot_type == "futures_combo" or direction == "hedge":
+                # Combo/hedge: success = significant price movement in either direction
+                # (both legs capture volatility; flat market = loss)
+                success = 1 if abs(ret) > 0.008 else 0  # >0.8% move = hedge profitable
+            elif direction not in ("long", "short"):
+                continue
+            else:
+                if direction == "short":
+                    ret = -ret
+                success = 1 if ret > 0 else 0
 
         else:
             continue
