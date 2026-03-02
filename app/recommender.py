@@ -8,7 +8,6 @@ from . import db
 from .features import compute_features_from_ohlcv, liquidity_tier, funding_signal, oi_trend, btc_beta
 from .regime import classify_regime
 from .risk import gate_candidate
-from .risk import gate_candidate
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .calibration import fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS
@@ -271,19 +270,22 @@ def _fit_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
     return result
 
 def _load_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
-    """Load per-bot calibrators from DB, fitting if not stored."""
+    """Load per-bot calibrators from DB. Only re-fit bot_types that have no saved scaler."""
     calibrators: dict[str, PlattScaler] = {}
+    missing: list[str] = []
     for bt, key in BOT_CALIB_KEYS.items():
         saved = load_platt_from_db(conn, key)
         if saved and saved.fitted:
             calibrators[bt] = saved
         else:
             calibrators[bt] = PlattScaler(fitted=False)
-    # Re-fit any missing ones
-    fitted = _fit_bot_calibrators(conn, min_samples)
-    for bt, scaler in fitted.items():
-        if scaler.fitted:
-            calibrators[bt] = scaler
+            missing.append(bt)
+    # Only hit the DB to re-fit if at least one bot_type is missing a calibrator
+    if missing:
+        fitted = _fit_bot_calibrators(conn, min_samples)
+        for bt in missing:
+            if bt in fitted and fitted[bt].fitted:
+                calibrators[bt] = fitted[bt]
     return calibrators
 
 def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
@@ -392,15 +394,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             # ── BTC beta ─────────────────────────────────────────────────
             if sym != "BTCUSDT" and btc_1h_closes:
-                sym_1h_rows = tf_map.get(3600)
-                if sym_1h_rows is None:
-                    # fetch closes directly if not in tf_map
-                    _sym_rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=3600, limit=50)
-                    sym_1h_closes = [float(r["close"]) for r in _sym_rows] if _sym_rows else []
-                else:
-                    # tf_map contains vote_for_tf result, not raw rows — fetch closes
-                    _sym_rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=3600, limit=50)
-                    sym_1h_closes = [float(r["close"]) for r in _sym_rows] if _sym_rows else []
+                # tf_map stores vote_for_tf dicts, not raw rows — always fetch closes from DB
+                _sym_rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=3600, limit=50)
+                sym_1h_closes = [float(r["close"]) for r in _sym_rows] if _sym_rows else []
                 beta_info = btc_beta(sym_1h_closes, btc_1h_closes, window=24)
             else:
                 beta_info = {"correlation": None, "beta": None,
@@ -427,6 +423,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
         for bot_type in BOT_TYPES_BYBIT:
             if bot_type == "spot_grid" and venue != "spot":
                 continue
+            if bot_type == "dca_bot" and venue != "spot":
+                continue  # Bybit DCA Bot is spot-only
             if bot_type in ("futures_grid","futures_martingale","futures_combo") and venue != "linear":
                 continue
 
@@ -459,6 +457,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 oi_sig["signal"] = "caution"       # unwinding → reduced conviction
             else:
                 oi_sig["signal"] = "neutral"
+
+            # Blend global and per-symbol sentiment: 50/50 when symbol data exists
+            # MUST be computed before feasibility checks that reference effective_sent
+            sym_sent = symbol_sent_map.get(sym)
+            effective_sent = (0.5 * global_sent + 0.5 * sym_sent) if sym_sent is not None else global_sent
 
             feasibility_blocks = []
 
@@ -493,10 +496,6 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if bot_type == "dca_bot" and (sent_agg.get("flags", {}).get("panic") or effective_sent < -0.70):
                 feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={effective_sent:.2f} panic => запрет"})
 
-            # Blend global and per-symbol sentiment: 50/50 when symbol data exists
-            sym_sent = symbol_sent_map.get(sym)
-            effective_sent = (0.5 * global_sent + 0.5 * sym_sent) if sym_sent is not None else global_sent
-
             # ── Risk gate ────────────────────────────────────────────────
             risk_blocks = gate_candidate(conn, venue, sym, limits)
             feasibility_blocks.extend(risk_blocks)
@@ -506,9 +505,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # ── Funding + OI score adjustments ──
             if venue == "linear":
                 if fr_sig["signal"] == "bullish":
-                    score = _clamp(score + 0.04, 0.0, 1.0)   # longs being paid → small bonus
+                    score = _clamp(score + 0.04, -1.0, 1.0)  # longs being paid → small bonus
                 elif fr_sig["signal"] == "bearish":
-                    score = _clamp(score - 0.06, 0.0, 1.0)   # crowded long → penalty
+                    score = _clamp(score - 0.06, -1.0, 1.0)  # crowded long → penalty
 
             conf_raw = float(conf0)
             # Per-bot calibrator takes priority over global
@@ -528,7 +527,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             direction = _direction(bot_type, f.get('_direction_agg', {}))
             account_mode, margin_mode = _mode(venue, direction)
 
-            blocks = feasibility_blocks + gate_candidate(conn, venue, sym, limits)
+            blocks = list(feasibility_blocks)  # risk_blocks already included via feasibility_blocks.extend()
 
             status = "recommended"
             if blocks:
