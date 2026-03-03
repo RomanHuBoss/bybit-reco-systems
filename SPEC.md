@@ -1,237 +1,287 @@
-# Bybit Trading Bot Recommender (Scenario B) — Specification
+# Bybit Recommender — Technical Specification
 
-## 1. Purpose
-
-This system provides the operator with **explicit, unambiguous recommendations** mapped to **Bybit Trading Bot UI categories**:
-- which Bybit bot type to run,
-- on which symbol (`*/USDT`) and venue (Spot / USDT Perpetual),
-- which direction mode (long / short / neutral / hedge),
-- with parameter hints (grid spacing, levels, price range, leverage, DCA step, etc.),
-- with confidence, regime context, and explainability.
-
-**Scenario B:** the operator launches bots manually in the Bybit UI.  
-The project **does not** place orders, manage positions, or start Bybit bots via API.
+Version: V3.8 (2026-03)
 
 ---
 
-## 2. What the project does / does not do
+## 1. Architecture overview
 
-### Does
-- Collects public Bybit market data:
-  - tickers (bid/ask/last/volume)
-  - OHLCV klines for: **1m, 15m, 30m, 1h, 4h, 1d**
-- Computes features and market regime snapshots.
-- Computes **direction** (long/short/neutral) using:
-  - multi-timeframe indicator aggregation (15m..1d)
-  - soft scoring + coherence + structural veto
-  - tactical vs structural direction scores
-- Collects **real global sentiment** (no keys):
-  - Alternative.me Fear & Greed Index
-  - RSS headlines sentiment (lexicon-based)
-- Builds **multi-horizon sentiment** (EWMA 1h/6h/1d/7d) and consolidates into:
-  - risk_on / neutral / risk_off regime + strength
-  - flags: panic/euphoria
-- Produces a **ranked** set of candidates, but publishes **only the best recommendation per (venue, symbol)**.
-- Provides a **Vanilla JS operator panel** and a JSON view for each recommendation.
-- Stores all data into SQLite (audit-ready).
+```
+┌──────────────────────────────────────────────────────┐
+│  Background threads (daemon)                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────┐  │
+│  │ collector    │  │ sentiment    │  │ reco      │  │
+│  │ thread       │  │ thread       │  │ thread    │  │
+│  │ (20s cycle)  │  │ (60s cycle)  │  │ (30s cyc) │  │
+│  └──────┬───────┘  └──────┬───────┘  └─────┬─────┘  │
+│         │                 │                │         │
+│         └─────────────────┴────────────────┘         │
+│                           │                          │
+│                     SQLite (WAL)                      │
+│                           │                          │
+│  ┌────────────────────────┴─────────────────────┐    │
+│  │  FastAPI (sync endpoints, short-lived conns) │    │
+│  └────────────────────────┬─────────────────────┘    │
+│                           │                          │
+│                    Operator UI (JS)                   │
+└──────────────────────────────────────────────────────┘
+```
 
-### Does not
-- Does not connect to private Bybit account data (balances/positions).
-- Does not start/stop Bybit built-in bots automatically.
-- Does not execute trades.
+### Threading model
+- All three threads are daemon threads started at FastAPI `startup`.
+- Each thread acquires its own short-lived SQLite connection (`closing(_get_conn())`).
+- SQLite is opened in WAL mode — concurrent reads/writes are safe.
+- FastAPI handlers also use short-lived connections — no shared state.
 
 ---
 
-## 3. Bybit bot taxonomy mapping
+## 2. Data collection (collector.py)
 
-Recommendations are in Bybit-style categories:
+### Symbols
+Configured via `SYMBOLS_SPOT` and `SYMBOLS_LINEAR` in `.env`.  
+Auto-disable: if Bybit returns `symbol invalid` / `Not supported symbols` the symbol is
+added to `_DISABLED_SYMBOLS` (in-process set) and skipped for the rest of the session.
 
-| Internal bot_type | Bybit UI category | Venue |
+### OHLCV
+- Timeframes collected: `1m, 15m, 30m, 1h, 4h, 1d`
+- Bybit v5 kline intervals: `1, 15, 30, 60, 240, D` (`"1440"` is invalid — use `"D"`)
+- Stored in `ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)`
+
+### Futures metadata (throttled to 15 min)
+- Funding rate: `/v5/market/tickers` → `funding_rate(symbol, ts, funding_rate, next_funding_ts)`
+- Open interest: `/v5/market/open-interest` (1h intervals, 48 candles) → `open_interest(symbol, ts, oi)`
+
+---
+
+## 3. Direction engine (direction.py) — V2.9
+
+### Indicators (per timeframe)
+| Indicator | Signal range | Weight |
 |---|---|---|
-| `spot_grid` | Spot Grid Bot | spot |
-| `futures_grid` | Futures Grid Bot | linear |
-| `dca_bot` | DCA Bot | spot/linear |
-| `futures_martingale` | Futures Martingale | linear |
-| `futures_combo` | Futures Combo | linear |
+| MA slope (EMA20 vs EMA50 normalized) | [-1, 1] | 0.35 |
+| MACD histogram (normalized × 900) | [-1, 1] | 0.30 |
+| RSI (normalized: (RSI-50)/30) | [-1, 1] | 0.27 |
+| BB %B (position in Bollinger Band) | [-1, 1] | 0.08 |
+
+### Aggregation
+- **Tactical** score: 15m + 30m + 1h (short-term momentum)
+- **Structural** score: 4h + 1d (trend backdrop)
+- **All** score: weighted combination
+- **Coherence**: fraction of TFs with the same sign as the aggregate
+- **Structural veto**: if structural score disagrees strongly with tactical (>0.4 gap),
+  direction confidence is capped
+
+### Output
+```python
+{
+  "direction": "long" | "short" | "neutral",
+  "bias": "long" | "short" | "neutral",   # weaker signal
+  "direction_confidence": float,           # raw [0, 1]
+  "direction_confidence_calibrated": float, # Platt-scaled
+  "scores": {"tactical": float, "structural": float, "all": float},
+  "strength": {"tactical": float, "structural": float, "all": float},
+  "coherence": float,
+  "regime": "trend" | "range" | "unknown",
+  "structural_veto_applied": bool,
+  "tf_used": [int, ...]
+}
+```
+
+### BTC beta adjustment
+If `|r(symbol, BTC)| > 0.80` (is_btc_driven): `dir_conf × 0.88`  
+Purpose: high BTC correlation means the symbol's direction signal reflects BTC, not its own momentum.
 
 ---
 
-## 4. Data model (SQLite)
+## 4. Scoring (recommender.py)
 
-Database path: `DB_PATH` (default `./data/app.db`)
+### Score formula per bot type
 
-Core tables:
-- `ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)`
-- `ticker_snap(venue, symbol, ts, last, bid, ask, vol24h, turnover24h)`
-- `sentiment(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)`
-- `features(venue, symbol, ts, features_json)`
+**spot_grid / futures_grid**:
+```
+raw = 1.4×range - 1.0×trend - 0.6×clamp(atr/0.015, 0,2) + 0.2×sent - 0.35×cost_penalty
+```
+
+**dca_bot**:
+```
+raw = 0.4 + 0.5×clamp(0.5+sent, 0,1) - 0.7×clamp(atr/0.02, 0,2) - 0.35×cost_penalty
+```
+
+**futures_martingale**:
+```
+raw = 0.8×range - 0.8×clamp(atr/0.018,0,2) + 0.4×clamp(sent+0.2,0,1)
+      - 0.2×trend + 0.3×coherence×dir_strength - 0.35×cost_penalty
+```
+
+**futures_combo**:
+```
+raw = 0.3 + 0.7×clamp(-sent,0,1) + 0.4×clamp(atr/0.02,0,2) - 0.35×cost_penalty
+```
+
+Where:
+- `range = max(0, 1 - trend)` — derived from multi-TF trend strength
+- `trend` = `|strength.all|` from direction aggregation
+- `cost_penalty = clamp(cost_bps/50, 0, 1)`
+- `score = clamp(raw / 1.5, -1, 1)`
+
+### Funding rate adjustments (linear only)
+- Signal `bullish` (longs being paid): `score += 0.04`
+- Signal `bearish` (crowded long):     `score -= 0.06`
+
+### Raw confidence
+```
+conf0 = clamp(sigmoid(raw × 2.5), 0, 1)
+```
+
+### Calibrated confidence
+```
+conf_cal = bot_calibrator.predict(score)   # if fitted
+         | global_calibrator.predict(score) # fallback
+         | conf0                            # uncalibrated
+conf = clamp(0.5 × conf0 + 0.5 × conf_cal, 0, 1)
+```
+OI unwinding signal: `conf × 0.88`
+
+---
+
+## 5. Feasibility gates
+
+| Code | Condition |
+|---|---|
+| `LIQUIDITY_TOO_LOW` | turnover24h < $500K |
+| `LIQUIDITY_LOW_FUTURES` | turnover24h < $2M + bot ∈ {martingale, combo} |
+| `FUNDING_EXTREME` | funding_rate > 0.06%/8h |
+| `SPREAD_TOO_WIDE` | spread_bps > 14 for grid bots |
+| `TREND_TOO_STRONG` | multi_tf_trend_strength > 0.60 for grid bots |
+| `MARTINGALE_BLOCKED` | atr > 0.018 OR panic OR risk_off strong OR sent < -0.45 |
+| `DIR_CONF_TOO_LOW` | dir_conf < 0.65 (martingale only) |
+| `DCA_BLOCKED_PANIC` | sent < -0.70 OR panic flag |
+| `MAX_CONCURRENT_BOTS` | total running bots ≥ limit |
+| `MAX_DD_DAY` | daily drawdown ≥ limit |
+| `COOLDOWN_ACTIVE` | in cooldown period after drawdown |
+| `MAX_SYMBOL_BOTS` | too many bots on same symbol |
+
+---
+
+## 6. Grid price range calculation
+
+```
+span_target_pct  = clamp(atr_1h × 100 × 25, 1, 12)   # target range width
+grid_spacing_pct = clamp(max(atr×100×0.6, min_step), 0.08, 2.5)
+levels           = clamp(round(span/spacing) + 1, 6, 60)
+span_actual_pct  = spacing × (levels - 1)
+half             = span_actual_pct / 2
+
+# Directional skew (CORRECTED in V3.8):
+long:    lower_pct = half × 0.80,  upper_pct = half × 1.20  # range extends upward
+short:   lower_pct = half × 1.20,  upper_pct = half × 0.80  # range extends downward
+neutral: lower_pct = upper_pct = half
+
+price_range_lower = price × (1 - lower_pct/100)
+price_range_upper = price × (1 + upper_pct/100)
+```
+
+ATR used: 1h ATR (`atr_pct_1h`) preferred over 1m ATR for more stable grid width.
+
+---
+
+## 7. Calibration (calibration.py)
+
+### Algorithm: Platt Scaling (logistic regression on scores)
+
+```
+P(success | score) = sigmoid(a × score + b)
+```
+
+Gradient descent, 300 iterations, lr=0.06, overflow-clamped `z ∈ [-500, +500]`.
+
+### Persistence & freshness
+- Stored in `app_config` table as JSON `{a, b, fitted, ts}`.
+- `ts` = unix timestamp of last fit.
+- Re-fit condition: `time.now() - ts >= CALIB_REFIT_INTERVAL_SEC (3600s)`.
+- Re-fit uses last 4000–6000 outcome rows (JOIN query, not N+1).
+- If re-fit fails (insufficient data): stale model is retained as fallback.
+
+### Training data
+- Source: `reco_outcomes` JOIN `recommendations`
+- Features (x): stored `score` (post-adjustment, matching inference distribution)
+- Labels (y): `success` flag (bot-type-specific criterion, see Outcome Labeling)
+
+---
+
+## 8. Outcome labeling (outcomes.py)
+
+### Horizons per bot type
+| Bot type | Horizon |
+|---|---|
+| spot_grid, futures_grid | 4h = 14400s |
+| dca_bot | 24h = 86400s |
+| futures_martingale | 1h = 3600s |
+| futures_combo | 2h = 7200s |
+
+### Success criterion
+- **Grid bots**: price stayed within `[price_range_lower × 0.995, price_range_upper × 1.005]`
+  for the full horizon (checked against 1m candle min/max).
+  Fallback (no range stored): `|ret| < 1.5%` over horizon.
+- **Directional bots**: `ret > 0` in the direction of the recommendation.
+
+---
+
+## 9. Sentiment (sentiment.py + sentiment_features.py)
+
+### Sources
+| Source | Scope | Update |
+|---|---|---|
+| Fear & Greed Index | global | hourly |
+| RSS CoinDesk/Cointelegraph | global + per-symbol | per sentiment cycle |
+| Reddit (BTC/ETH/SOL/XRP/DOGE) | per-symbol | per sentiment cycle |
+| CoinGecko trending | per-symbol | per sentiment cycle |
+| CoinGecko price momentum | per-symbol | per sentiment cycle |
+
+### Per-symbol blend weights
+`coingecko_momentum`: 0.45, `reddit`: 0.30, `news_rss`: 0.15, `coingecko_trending`: 0.10
+
+### Effective sentiment
+```
+effective_sent = 0.5 × global_6h_ewma + 0.5 × symbol_sent  # if symbol data exists
+               = global_6h_ewma                              # otherwise
+```
+
+### EWMA horizons
+1h (λ≈0.9), 6h (λ≈0.98), 1d (λ≈0.995), 7d (λ≈0.999)
+
+### Regime classification
+`risk_on` (ewma_6h ≥ 0.15), `risk_off` (≤ -0.15), `neutral` otherwise  
+Flags: `panic` (strength ≥ 0.5 + risk_off), `euphoria` (strength ≥ 0.5 + risk_on)
+
+---
+
+## 10. Database schema (SQLite, WAL mode)
+
+Key tables:
+- `ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)` — PK(venue,symbol,tf_sec,ts)
+- `ticker(venue, symbol, ts, price, spread_bps, turnover24h)` — PK(venue,symbol)
+- `recommendations(rec_id, ts, venue, symbol, bot_type, direction, score, confidence, ...)`
+- `reco_outcomes(outcome_id, rec_id, ts, success, ret, horizon_sec, ...)`
 - `market_regime(ts, regime_json)`
-- `recommendations(rec_id, ts, venue, symbol, bot_type, direction, ... , params_json, reasons_json, status, ...)`
-- `decision_log(ts, action, rec_id, operator, details_json)`
-- `reco_outcomes(...)` (forward-return labels for calibration)
-- `app_config(key, value_json, updated_ts)` (stores calibration coefficients)
-
-Status values:
-- `recommended` — best per (venue,symbol)
-- `suppressed` — other candidates (audit)
-- `blocked` — failed risk gates
-- `no_trade` — low confidence/score
+- `features(venue, symbol, ts, features_json)`
+- `funding_rate(symbol, ts, funding_rate, next_funding_ts)` — PK(symbol,ts)
+- `open_interest(symbol, ts, oi)` — PK(symbol,ts)
+- `sentiment_data(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)`
+- `decision_log(id, ts, action, rec_id, operator, details_json)`
+- `bot_instances(bot_id, venue, symbol, bot_type, status, started_ts, stopped_ts)`
+- `risk_limits(id, ts, version, limits_json, is_active)`
+- `app_config(key, value_json, updated_ts)` — stores Platt scalers
 
 ---
 
-## 5. Market data collection
+## 11. Known limitations
 
-Collector interval: `COLLECT_INTERVAL_SEC`.
-
-For each configured symbol:
-- tickers: `/v5/market/tickers`
-- klines: `/v5/market/kline` for intervals: 1, 15, 30, 60, 240, 1440
-
-All market endpoints are public (no keys).
-
----
-
-## 6. Sentiment pipeline
-
-Collection loop: every 60 seconds.
-
-Inputs:
-- Fear & Greed Index (Alternative.me)
-- RSS feeds (CoinDesk, Cointelegraph) — lexicon-based polarity
-
-Output:
-- writes raw points (`crypto_fng`, `crypto_news_rss`) and combined point `crypto` to `sentiment` table.
-
-Multi-horizon features:
-- EWMA sentiment for 1h/6h/1d/7d (half-life = horizon)
-- consolidated `risk_on/risk_off/neutral` + strength
-- flags: `panic`, `euphoria`
-
-Exposed in `reasons.sentiment_agg`.
-
----
-
-## 7. Direction engine (V2.9)
-
-Direction is determined from multi-timeframe indicator aggregation across:
-- 15m / 30m / 1h / 4h / 1d
-
-Indicators:
-- MA slope (SMA20–SMA60 normalized by ATR%)
-- MACD histogram (normalized)
-- RSI14 (soft centered vote)
-
-Key mechanisms:
-- **soft contributions** instead of hard thresholds
-- **tactical vs structural** direction scores
-- **coherence**: agreement with structural sign
-- **structural veto**: 4h/1d can override or neutralize if incoherent
-- outputs:
-  - `direction`: long/short/neutral
-  - `direction_confidence`
-  - `regime`: trend/range/transition
-  - `regime_confidence`
-
-Exposed in `reasons.direction_agg`.
-
----
-
-## 8. Recommendation generation
-
-For each (venue, symbol):
-1) compute features (from 1m data) + direction aggregation (from 15m..1d)
-2) generate Bybit-bot candidates (taxonomy)
-3) apply feasibility rules and risk gates
-4) score candidates + compute confidence
-5) select **best** by:
-   1) higher confidence
-   2) tie-break by score
-6) store all candidates:
-   - best as `recommended`
-   - the rest as `suppressed` (audit)
-
----
-
-## 9. Confidence and calibration
-
-Two calibrations exist:
-
-1) **Recommendation confidence**
-- Platt scaling on `score` -> success label
-- persisted key: `platt_bybit_v2`
-
-2) **Direction confidence**
-- Platt scaling on `direction_agg.scores.all` -> success label
-- persisted key: `platt_direction_v2`
-
-Outcome labeling:
-- horizon: `OUTCOME_HORIZON_SEC` (default 1800)
-- success: forward return sign aligned with direction
-
----
-
-## 10. Grid-specific parameter hints (operator fills Bybit UI)
-
-For grid bots the recommender outputs:
-- `grid_spacing_pct` (>= cost-based floor)
-- `grid_levels` (derived from span/step; varies across symbols)
-- `price_range_lower`, `price_range_upper` (fill Bybit “Ценовой диапазон”)
-- `leverage` (futures)
-
-Notes:
-- Grid direction defaults to `neutral` in range regime. Bias and strength are also shown.
-
----
-
-## 11. API
-
-### Recommendations
-- `GET /api/v1/recommendations`
-  Params:
-  - `venue` (optional)
-  - `top_n`
-  - `min_conf`
-  - status toggles: `show_recommended`, `show_blocked`, `show_no_trade`, `show_suppressed`
-  - `snapshot=latest` (default) — returns only the latest recommendation snapshot
-
-- `GET /api/v1/recommendations/{rec_id}`
-
-### Risk
-- `GET /api/v1/risk/status`
-- `POST /api/v1/risk/limits`
-
-### Journal
-- `GET /api/v1/decisions?limit=200`
-
-### Sentiment
-- `GET /api/v1/sentiment?scope=global&key=crypto`
-
----
-
-## 12. UI
-
-Static UI at `/`:
-- status filters (recommended/blocked/no_trade/suppressed)
-- details pane in Russian
-- JSON button per recommendation
-- Buttons: Риски, Журнал
-
----
-
-## 13. Configuration (.env)
-
-Key variables:
-- `DB_PATH`
-- `COLLECT_INTERVAL_SEC`, `RECO_INTERVAL_SEC`
-- `SYMBOLS_SPOT`, `SYMBOLS_LINEAR`
-- thresholds: `MIN_CONF_TO_RECOMMEND`, `MIN_SCORE_TO_RECOMMEND`
-- fees: `TAKER_FEE_BPS_SPOT`, `TAKER_FEE_BPS_LINEAR`
-- calibration: `OUTCOME_HORIZON_SEC`, `CALIB_MIN_SAMPLES`
-
----
-
-## 14. Known limitations
-- Sentiment sources are limited and lexicon-based (no LLM/transformer).
-- No private account context (position-aware recommendations not available).
-- Confidence labels are simplistic (forward-return sign, no transaction costs/slippage).
-
+- Bybit public API rate limits: collector sleeps `COLLECT_INTERVAL_SEC` between cycles.
+  Aggressive interval (< 10s) risks HTTP 429.
+- SQLite single-writer: heavy concurrent writes should be avoided; the daemon threads
+  are sequential per cycle so this is not an issue in practice.
+- Calibration quality degrades until ~80 outcomes are collected (≈1–2 days at normal volume).
+  During this period confidence values are raw sigmoids and should be treated as rough estimates.
+- Reddit API (`/r/{coin}/hot.json`) is rate-limited and may return 429 occasionally.
+  Failures are logged as `SENTIMENT_ERROR` and the cycle continues.

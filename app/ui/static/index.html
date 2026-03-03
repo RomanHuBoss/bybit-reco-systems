@@ -38,7 +38,7 @@
   </div>
 
   <section class="controls">
-    <div class="control">
+    <div class="control control-venue">
       <label>Площадка</label>
       <select id="venue">
         <option value="">all</option>
@@ -46,31 +46,32 @@
         <option value="linear">linear</option>
       </select>
     </div>
-    <div class="control">
+    <div class="control control-topn">
       <label>Top N</label>
       <input id="topN" type="number" value="50" min="1" max="200"/>
     </div>
-    <div class="control">
+    <div class="control control-conf">
       <label>Мин. уверенность</label>
       <input id="minConf" type="number" value="0.52" step="0.05" min="0" max="1"/>
     </div>
-    <div class="control">
-      <label></label>
-      <button id="decisionsBtn" class="btn secondary">Журнал</button>
-      <button id="healthBtn" class="btn secondary">Здоровье</button>
-      <button id="outcomesBtn" class="btn secondary">Исходы</button>
-      <button id="riskBtn" class="btn secondary">Риски</button>
-    </div>
-    <div class="control">
-      <label>Показ</label>
-      <div class="checks">
-        <label class="check"><input type="checkbox" id="showRecommended" checked> recommended</label>
-        <label class="check"><input type="checkbox" id="showBlocked"> blocked</label>
-        <label class="check"><input type="checkbox" id="showNoTrade"> no_trade</label>
-        <label class="check"><input type="checkbox" id="showSuppressed"> suppressed</label>
+    <div class="control control-btns">
+      <label>&nbsp;</label>
+      <div class="btn-row">
+        <button id="decisionsBtn" class="btn secondary">Журнал</button>
+        <button id="healthBtn" class="btn secondary">Здоровье</button>
+        <button id="outcomesBtn" class="btn secondary">Исходы</button>
+        <button id="riskBtn" class="btn secondary">Риски</button>
       </div>
     </div>
   </section>
+
+  <div class="filter-bar">
+    <span class="filter-label">Показ:</span>
+    <label class="filter-pill"><input type="checkbox" id="showRecommended" checked><span class="fpill fpill-recommended">recommended</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showBlocked"><span class="fpill fpill-blocked">blocked</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showNoTrade"><span class="fpill fpill-notrade">no_trade</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showSuppressed"><span class="fpill fpill-suppressed">suppressed</span></label>
+  </div>
 
   <main class="main">
     <div id="noTrade" class="banner hidden">NO-TRADE: нет рекомендаций со статусом <b>recommended</b> по текущим фильтрам/гейтам.</div>
@@ -102,19 +103,25 @@
 
       <div class="panel panel-flex">
         <div class="panel-title panel-title-fixed details-header">Детали
-          <button id="copyParamsBtn" class="btn tiny secondary hidden" style="float:right;margin-top:-4px">Скопировать параметры</button>
+          <span style="float:right;display:inline-flex;gap:6px;margin-top:-4px">
+            <button id="refreshDetailsBtn" class="btn tiny secondary hidden">Обновить</button>
+            <button id="copyParamsBtn" class="btn tiny secondary hidden">Скопировать параметры</button>
+          </span>
         </div>
         <div id="details" class="details details-scroll muted">Выберите рекомендацию.</div>
       </div>
     </div>
 
+    <!-- Modal -->
     <div class="modal hidden" id="modal">
       <div class="modal-card">
         <div class="modal-header">
           <div id="modalTitle" class="modal-title">Modal</div>
-          <button id="modalClose" class="btn tiny">Close</button>
+          <button id="modalClose" class="btn tiny">Закрыть</button>
         </div>
-        <pre id="modalBody" class="pre"></pre>
+        <div class="modal-scroll">
+          <pre id="modalBody" class="pre"></pre>
+        </div>
       </div>
     </div>
   </main>

@@ -113,25 +113,36 @@ body {
 
 /* ── controls ── */
 .controls {
-  display: grid;
-  grid-template-columns: 1.1fr 0.7fr 0.8fr 1.6fr auto;
-  gap: 12px;
-  padding: 12px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   align-items: end;
 }
-@media (max-width: 1100px) {
-  .controls { grid-template-columns: 1fr 1fr; }
-}
 .control { min-width: 0; }
 .control label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+
+/* Fixed widths per control type */
+.control-venue { flex: 0 0 140px; }
+.control-topn  { flex: 0 0 90px; }
+.control-conf  { flex: 0 0 130px; }
+.control-btns  { flex: 0 0 auto; }
+
+/* Button row inside controls */
+.btn-row { display: flex; gap: 6px; flex-wrap: nowrap; }
+
 .control input, .control select {
   width: 100%;
-  padding: 9px 10px;
+  box-sizing: border-box;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   background: #0f172a;
   color: var(--text);
   border-radius: 10px;
+}
+@media (max-width: 900px) {
+  .control-venue, .control-topn, .control-conf { flex: 0 0 100%; }
 }
 
 /* ── buttons ── */
@@ -310,7 +321,9 @@ body {
 .modal-card {
   width: min(1000px, 98vw);
   max-height: 87vh;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -321,8 +334,15 @@ body {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 10px;
+  flex-shrink: 0;
 }
 .modal-title { font-weight: 700; }
+/* Only the content area scrolls — header stays fixed */
+.modal-scroll {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
 .pre {
   white-space: pre-wrap;
   font-size: 12px;
@@ -331,12 +351,67 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
+  margin: 0;
 }
 
-/* ── checks ── */
-.checks { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding-top: 6px; }
-.check { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
-.check:hover { color: var(--text); }
+/* ── checks (legacy, replaced by filter-bar) ── */
+
+
+/* ── filter bar ── */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.filter-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 2px;
+}
+
+/* Hide native checkbox */
+.filter-pill input[type="checkbox"] { display: none; }
+
+.filter-pill { cursor: pointer; user-select: none; }
+
+.fpill {
+  display: inline-block;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: transparent;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.filter-pill:hover .fpill { border-color: #3e6090; color: var(--text); }
+
+/* Checked state colours per status */
+.filter-pill input:checked ~ .fpill.fpill-recommended {
+  background: rgba(51,209,122,0.12);
+  border-color: rgba(51,209,122,0.50);
+  color: var(--good);
+}
+.filter-pill input:checked ~ .fpill.fpill-blocked {
+  background: rgba(255,90,122,0.10);
+  border-color: rgba(255,90,122,0.45);
+  color: var(--bad);
+}
+.filter-pill input:checked ~ .fpill.fpill-notrade {
+  background: rgba(255,176,32,0.10);
+  border-color: rgba(255,176,32,0.45);
+  color: var(--warn);
+}
+.filter-pill input:checked ~ .fpill.fpill-suppressed {
+  background: rgba(147,164,200,0.10);
+  border-color: rgba(147,164,200,0.35);
+  color: var(--muted);
+}
 
 .hidden { display: none !important; }
 

@@ -5,6 +5,7 @@ let recoDebounce = null;
 let calibFitted = false;
 let countdownTimer = null;
 let countdownVal = 10;
+let currentRecId = null;   // rec_id currently shown in Details panel
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ function dirConfCell(dirConf) {
 
 function showModal(title, obj) {
   $("modalTitle").textContent = title;
-  $("modalBody").textContent = JSON.stringify(obj, null, 2);
+  $("modalBody").textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
   $("modal").classList.remove("hidden");
 }
 
@@ -215,8 +216,32 @@ function directionBadge(dir) {
 // ── details panel ─────────────────────────────────────────────────────────────
 
 async function loadDetails(recId) {
-  const res = await fetch(`/api/v1/recommendations/${recId}`);
-  const it = await res.json();
+  // Set currentRecId immediately so the Refresh button works even if fetch is slow
+  currentRecId = recId;
+  const btn = $("refreshDetailsBtn");
+  btn.classList.remove("hidden");
+  btn.disabled = true;
+  btn.textContent = "…";
+
+  let it;
+  try {
+    const res = await fetch(`/api/v1/recommendations/${recId}`);
+    if (!res.ok) {
+      $("details").textContent = `Ошибка загрузки деталей (HTTP ${res.status}).`;
+      btn.disabled = false;
+      btn.textContent = "Обновить";
+      return;
+    }
+    it = await res.json();
+  } catch (e) {
+    $("details").textContent = `Ошибка сети при загрузке деталей.`;
+    btn.disabled = false;
+    btn.textContent = "Обновить";
+    return;
+  }
+
+  btn.disabled = false;
+  btn.textContent = "Обновить";
 
   const reasons = it.reasons || {};
   const blocks  = it.blocks  || [];
@@ -316,10 +341,16 @@ async function loadDetails(recId) {
   lines.push("Grid — флет: режим Нейтральный; direction_bias = смещение. Диапазон: price_range_lower/price_range_upper.");
   lines.push(JSON.stringify(params, null, 2));
 
-  // Store params for copy button
+  // Store params for copy button (must be done before setting textContent, which doesn't affect dataset)
   $("details").dataset.params = JSON.stringify(params, null, 2);
   $("details").dataset.recId  = it.rec_id;
   $("copyParamsBtn").classList.remove("hidden");
+
+  // Append refresh timestamp so the user can see the panel was actually updated
+  const now = new Date();
+  const hms = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  lines.push("");
+  lines.push(`── обновлено ${hms} ──`);
 
   $("details").textContent = lines.join("\n");
 }
@@ -331,37 +362,38 @@ async function loadHealth() {
   let data;
   try { data = await res.json(); } catch(e) { return; }
 
-  const s = data.summary || {};
+  const sum = data.summary || {};
   const lines = [];
-  const okEmoji = s.ok === (s.ok + s.stale + s.missing) ? "🟢" : s.missing > 0 ? "🔴" : "🟠";
-  lines.push(`${okEmoji} Символы: ${s.ok} ok | ${s.stale} stale | ${s.missing} missing | ${s.errors_10m} ошибок за 10 мин`);
+  const total = (sum.ok || 0) + (sum.stale || 0) + (sum.missing || 0);
+  // 🟢 only when every symbol is ok AND there is at least one symbol
+  const okEmoji = total > 0 && sum.ok === total ? "🟢" : (sum.missing || 0) > 0 ? "🔴" : "🟠";
+  lines.push(`${okEmoji} Символы: ${sum.ok} ok | ${sum.stale} stale | ${sum.missing} missing | ${sum.errors_10m} ошибок за 10 мин`);
   lines.push("");
 
   const symbols = data.symbols || [];
-  const bad = symbols.filter(s => s.status !== "ok");
-  const good = symbols.filter(s => s.status === "ok");
+  const bad  = symbols.filter(sym => sym.status !== "ok");
+  const good = symbols.filter(sym => sym.status === "ok");
 
   if (bad.length > 0) {
     lines.push("── Проблемные ──");
-    bad.forEach(s => {
-      const emoji = s.status === "missing" ? "🔴" : "🟠";
-      const age = s.age_sec !== null ? `${Math.round(s.age_sec/60)}m ago` : "нет данных";
-      const errs = s.error_count_10m > 0 ? ` | ⚡${s.error_count_10m} err/10m` : "";
-      const dis  = s.disabled ? " | 🚫DISABLED" : "";
-      const skip = s.stale_skips_1h > 0 ? ` | skip×${s.stale_skips_1h}/h` : "";
-      lines.push(`${emoji} ${s.venue.padEnd(6)} ${s.symbol.padEnd(14)} ${s.status.padEnd(8)} ${age}${errs}${dis}${skip}`);
+    bad.forEach(sym => {
+      const emoji = sym.status === "missing" ? "🔴" : "🟠";
+      const age  = sym.age_sec !== null ? `${Math.round(sym.age_sec / 60)}m ago` : "нет данных";
+      const errs = sym.error_count_10m > 0 ? ` | ⚡${sym.error_count_10m} err/10m` : "";
+      const dis  = sym.disabled ? " | 🚫DISABLED" : "";
+      const skip = sym.stale_skips_1h > 0 ? ` | skip×${sym.stale_skips_1h}/h` : "";
+      lines.push(`${emoji} ${sym.venue.padEnd(6)} ${sym.symbol.padEnd(14)} ${sym.status.padEnd(8)} ${age}${errs}${dis}${skip}`);
     });
     lines.push("");
   }
 
   lines.push("── Здоровые ──");
-  good.forEach(s => {
-    const age = s.age_sec !== null ? `${s.age_sec}s ago` : "—";
-    lines.push(`🟢 ${s.venue.padEnd(6)} ${s.symbol.padEnd(14)} ok      ${age}`);
+  good.forEach(sym => {
+    const age = sym.age_sec !== null ? `${sym.age_sec}s ago` : "—";
+    lines.push(`🟢 ${sym.venue.padEnd(6)} ${sym.symbol.padEnd(14)} ok      ${age}`);
   });
 
-  showModal("Здоровье символов", {_text: lines.join("\n")});
-  $("modalBody").textContent = lines.join("\n");
+  showModal("Здоровье символов", lines.join("\n"));
 }
 
 async function loadOutcomes() {
@@ -408,9 +440,7 @@ async function loadOutcomes() {
     lines.push("Исходов пока нет. Данные появятся через ~15 мин после первых рекомендаций.");
   }
 
-  showModal("Экран исходов (win-rate)", {_text: lines.join("\n")});
-  // Override modal body with pre-formatted text
-  $("modalBody").textContent = lines.join("\n");
+  showModal("Экран исходов (win-rate)", lines.join("\n"));
 }
 
 async function loadDecisions() {
@@ -424,7 +454,7 @@ async function loadRisk() {
   const res = await fetch("/api/v1/risk/status");
   let data;
   try { data = await res.json(); } catch (e) { return; }
-  showModal("Risk status", data);
+  showModal("Статус рисков", data);
 }
 
 // ── countdown ─────────────────────────────────────────────────────────────────
@@ -458,13 +488,18 @@ document.addEventListener("click", async (e) => {
   if (!t || !t.dataset) return;
   const act = t.dataset.act;
   const id  = t.dataset.id;
+
   if (act === "details") await loadDetails(id);
+
   if (act === "json") {
-    const res = await fetch(`/api/v1/recommendations/${id}`);
     let data;
-    try { data = await res.json(); } catch (e) { return; }
+    try {
+      const res = await fetch(`/api/v1/recommendations/${id}`);
+      data = await res.json();
+    } catch (e) { return; }
     showModal("Recommendation JSON", data);
   }
+
   if (act === "execute" || act === "ignore") {
     const action = act === "execute" ? "executed" : "ignored";
     try {
@@ -475,16 +510,30 @@ document.addEventListener("click", async (e) => {
       });
       const data = await res.json();
       if (data.ok) {
-        // Replace action buttons with status label immediately, then refresh
-        const btn = t.closest("td");
-        if (btn) {
-          btn.querySelectorAll(".op-exec, .op-ignore").forEach(b => b.remove());
-          const lbl = document.createElement("span");
-          lbl.className = `op-status-label op-${action}`;
-          lbl.textContent = action;
-          btn.appendChild(lbl);
+        // Update row in-place — avoids the flicker caused by a full table rebuild.
+        // The row will naturally disappear on the next scheduled auto-refresh.
+        const row = t.closest("tr");
+        if (row) {
+          row.classList.remove("row-recommended");
+          row.style.opacity = "0.45";
+
+          // Update the status cell (column index 9, 0-based)
+          const cells = row.querySelectorAll("td");
+          if (cells.length >= 10) {
+            const statusClass = action === "executed" ? "op-executed" : "op-ignored";
+            cells[9].innerHTML =
+              `<span class="op-status-label ${statusClass}">${action}</span>`;
+          }
+
+          // Remove execute/ignore buttons but keep Детали and JSON
+          const actionTd = t.closest("td");
+          if (actionTd) {
+            actionTd.querySelectorAll(".op-exec, .op-ignore").forEach(b => b.remove());
+          }
         }
-        await refreshAll();
+        // Do NOT call refreshAll() here — that clears and rebuilds the entire table,
+        // which makes the row disappear and potentially reappear if the reco thread
+        // already produced a new cycle for the same symbol.
       }
     } catch (e) { /* ignore network errors */ }
   }
@@ -495,6 +544,11 @@ $("decisionsBtn").addEventListener("click", loadDecisions);
 $("riskBtn").addEventListener("click", loadRisk);
 $("outcomesBtn").addEventListener("click", loadOutcomes);
 $("healthBtn").addEventListener("click", loadHealth);
+
+$("refreshDetailsBtn").addEventListener("click", () => {
+  if (currentRecId) loadDetails(currentRecId);
+});
+
 $("copyParamsBtn").addEventListener("click", () => {
   const params = $("details").dataset.params;
   if (!params) return;
@@ -503,6 +557,7 @@ $("copyParamsBtn").addEventListener("click", () => {
     setTimeout(() => { $("copyParamsBtn").textContent = "Скопировать параметры"; }, 2000);
   });
 });
+
 $("modalClose").addEventListener("click", (e) => { e.stopPropagation(); hideModal(); });
 $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") hideModal(); });
 $("collectErrJournal").addEventListener("click", (e) => { e.preventDefault(); loadDecisions(); });

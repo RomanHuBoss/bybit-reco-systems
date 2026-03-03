@@ -1,11 +1,12 @@
 # Bybit Trading Bot Recommender (Scenario B)
 
-Operator-facing recommender that outputs **Bybit Trading Bot UI-mapped** recommendations (Spot Grid, Futures Grid, DCA, Futures Martingale, Futures Combo) based on:
+Operator-facing recommender that outputs **Bybit Trading Bot UI-mapped** recommendations
+(Spot Grid, Futures Grid, DCA, Futures Martingale, Futures Combo) based on:
 - multi-timeframe direction consensus (15m..1d),
-- multi-horizon global sentiment (1h..7d),
-- volatility/liquidity/cost proxies,
+- multi-horizon global + per-symbol sentiment (1h..7d),
+- volatility / liquidity / cost proxies,
 - strict risk gates,
-- explainability.
+- Platt-scaled calibrated confidence.
 
 **Scenario B:** you launch bots manually in the Bybit UI.  
 This project **does not trade** and does not require Bybit API keys.
@@ -15,26 +16,31 @@ This project **does not trade** and does not require Bybit API keys.
 ## Features
 
 - Public Bybit data collector:
-  - tickers + OHLCV (1m/15m/30m/1h/4h/1d)
+  - tickers + OHLCV (1m / 15m / 30m / 1h / 4h / 1d)
+  - funding rate + open interest (linear, throttled to 15 min)
 - Direction engine (V2.9):
-  - soft indicator aggregation (MA slope / MACD / RSI)
-  - tactical vs structural direction
-  - coherence + structural veto
-  - outputs direction + confidence + regime
-- Real global sentiment:
+  - soft indicator aggregation (MA slope / MACD / RSI / BB%B)
+  - tactical vs structural scores, coherence, structural veto
+- Sentiment (multi-source):
   - Fear & Greed Index (Alternative.me)
-  - RSS headlines polarity (CoinDesk/Cointelegraph)
-  - multi-horizon EWMA 1h/6h/1d/7d + risk_on/off/neutral
-- Bybit-bot taxonomy mapping
-- Best-per-(venue,symbol) publishing:
-  - best => `recommended`
-  - others => `suppressed` (audit)
-- Operator UI (Vanilla JS):
-  - filters by status
-  - details pane (RU)
-  - per-item JSON view
-  - Risk status + Decision log
-- SQLite storage (audit-friendly)
+  - RSS headlines polarity (CoinDesk / Cointelegraph)
+  - Reddit per-symbol (BTC/ETH/SOL/XRP/DOGE)
+  - CoinGecko trending + price momentum
+  - multi-horizon EWMA 1h/6h/1d/7d, risk_on/off/neutral
+  - per-symbol effective sentiment (50/50 blend)
+- Bybit-bot taxonomy mapping (5 bot types)
+- Per-bot Platt calibration (5 separate scalers + 1 global + 1 direction)
+- **Periodic re-calibration every 60 min** — models retrain as new outcomes arrive
+- Best-per-(venue, symbol) publishing:
+  - best → `recommended`, others → `suppressed` (full audit trail)
+- Operator UI (Vanilla JS, Russian):
+  - status filters (recommended / blocked / no_trade / suppressed)
+  - Details pane with inline **Обновить** button
+  - **Скопировать параметры** (Bybit UI params → clipboard)
+  - Risk status / Decision log / Health / Outcomes modals
+  - In-place ✓/✗ row update (no table flicker)
+- SQLite storage (append-only, audit-friendly)
+- Telegram alerts (optional)
 
 ---
 
@@ -46,10 +52,10 @@ This project **does not trade** and does not require Bybit API keys.
 ### 2) Install
 ```bash
 python -m venv .venv
+# Linux/macOS
+source .venv/bin/activate
 # Windows
 .venv\Scripts\activate
-# Linux/macOS
-# source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
@@ -59,56 +65,91 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env`:
-- `SYMBOLS_SPOT=BTCUSDT,ETHUSDT,...`
-- `SYMBOLS_LINEAR=BTCUSDT,ETHUSDT,...`
+Key settings in `.env`:
+```ini
+SYMBOLS_SPOT=BTCUSDT,ETHUSDT,...
+SYMBOLS_LINEAR=BTCUSDT,ETHUSDT,...
+CALIB_MIN_SAMPLES=80        # lower for faster initial calibration
+STALE_DATA_MAX_SEC=300
+MIN_CONF_TO_RECOMMEND=0.52
+```
 
 ### 4) Run
 ```bash
 python main.py
 ```
 
-UI:
-- http://127.0.0.1:8000/
-
-Swagger:
-- http://127.0.0.1:8000/docs
+- UI:      http://127.0.0.1:8000/
+- Swagger: http://127.0.0.1:8000/docs
 
 ---
 
-## How to use (operator workflow)
+## Operator workflow
 
-1) Open UI `/`
-2) Watch the **latest snapshot** of recommendations:
-   - default filter: `recommended`
-3) Click **Детали** to read reasons
-4) Click **JSON** to copy the full object:
-   - `params` contains Bybit UI parameter hints
-   - for Grid: `price_range_lower/upper` = Bybit “Ценовой диапазон”
+1. Open UI `/`
+2. Watch the **latest snapshot** of recommendations (default filter: `recommended`)
+3. Click **Детали** — read scoring breakdown, sentiment, direction signals, risk gates
+4. Click **Обновить** in the Details pane to refresh without reloading the table
+5. Click **Скопировать параметры** — copies `params` JSON for direct paste into Bybit UI:
+   - Grid: `price_range_lower/upper` = Bybit "Ценовой диапазон"
+   - `grid_spacing_pct` = шаг сетки, `grid_levels` = кол-во уровней
+6. Click **✓** (executed) or **✗** (ignored) — row updates in-place, logged to `decision_log`
 
 ---
 
 ## Configuration reference
 
-Important vars:
-- `COLLECT_INTERVAL_SEC` — market data pull interval
-- `RECO_INTERVAL_SEC` — recommendation refresh interval
-- `OUTCOME_HORIZON_SEC` — forward label horizon (default 1800s)
-- `CALIB_MIN_SAMPLES` — minimum outcomes for Platt fitting
-- `MIN_CONF_TO_RECOMMEND` — main operator filter
-- `TAKER_FEE_BPS_SPOT`, `TAKER_FEE_BPS_LINEAR` — cost proxy
+| Variable | Default | Description |
+|---|---|---|
+| `COLLECT_INTERVAL_SEC` | `20` | Market data pull interval |
+| `RECO_INTERVAL_SEC` | `30` | Recommendation refresh interval |
+| `OUTCOME_HORIZON_SEC` | `1800` | Forward label horizon (overridden per bot type) |
+| `CALIB_MIN_SAMPLES` | `80` | Minimum outcomes for Platt fitting |
+| `MIN_CONF_TO_RECOMMEND` | `0.52` | Confidence gate for `recommended` status |
+| `MIN_SCORE_TO_RECOMMEND` | `0.08` | Score gate |
+| `REQUIRE_CONF_GATE` | `1` | Enable/disable confidence gate |
+| `STALE_DATA_MAX_SEC` | `300` | Max data age before a symbol is skipped |
+| `TAKER_FEE_BPS_SPOT` | `10` | Spot taker fee proxy (bps) |
+| `TAKER_FEE_BPS_LINEAR` | `6` | Linear taker fee proxy (bps) |
+| `TELEGRAM_BOT_TOKEN` | `` | Optional; empty = alerts disabled |
+| `TELEGRAM_CHAT_ID` | `` | Telegram chat ID for alerts |
 
 ---
 
-## What "confidence" means here
+## Calibration
 
-There are two calibrated probabilities:
-- **recommendation confidence**: calibrated vs forward outcome for the recommendation score
-- **direction confidence**: calibrated vs forward outcome for the direction signal
+There are **three layers** of Platt-scaled calibration, all stored in `app_config` and
+**re-fit automatically every 60 minutes** as new outcomes accumulate:
 
-Calibration uses Platt scaling and persists coefficients in SQLite:
-- `app_config.platt_bybit_v2`
-- `app_config.platt_direction_v2`
+| Key | Scope |
+|---|---|
+| `platt_bybit_v2` | Global fallback calibrator |
+| `platt_direction_v2` | Direction confidence calibrator |
+| `platt_spot_grid_v1` | Per-bot: Spot Grid |
+| `platt_futures_grid_v1` | Per-bot: Futures Grid |
+| `platt_dca_v1` | Per-bot: DCA Bot |
+| `platt_martingale_v1` | Per-bot: Futures Martingale |
+| `platt_combo_v1` | Per-bot: Futures Combo |
+
+Priority: per-bot calibrator → global calibrator → raw sigmoid.  
+Final `confidence = 0.5 × conf_raw + 0.5 × conf_calibrated`.
+
+The UI shows **Увер ⚠** with a progress bar until `CALIB_MIN_SAMPLES` outcomes are
+collected, then switches to **Увер ✓**.
+
+---
+
+## Outcome horizons (per bot type)
+
+| Bot | Horizon |
+|---|---|
+| spot_grid / futures_grid | 4h (grids live for hours) |
+| dca_bot | 24h |
+| futures_martingale | 1h |
+| futures_combo | 2h |
+
+Grid success criterion: price stayed **inside** the recommended range for the full horizon
+(not directional movement). Directional bots: `ret > 0` in the direction.
 
 ---
 
@@ -116,37 +157,67 @@ Calibration uses Platt scaling and persists coefficients in SQLite:
 
 ```
 app/
-  main.py            # FastAPI app + background loops
-  collector.py       # Bybit public data collector
-  recommender.py     # taxonomy, scoring, risk gates
-  direction.py       # V2.9 direction engine
-  sentiment.py       # raw sentiment collectors
-  sentiment_features.py  # multi-horizon EWMA + voting
-  outcomes.py        # labels for calibration
-  db.py              # sqlite helpers + schema init
-  ui/static/         # Vanilla JS UI
+  main.py               # FastAPI app + background threads
+  collector.py          # Bybit public data collector
+  recommender.py        # taxonomy, scoring, calibration, risk gates
+  calibration.py        # PlattScaler — fit / save / load / overflow-safe predict
+  direction.py          # V2.9 direction engine (15m..1d)
+  sentiment.py          # raw sentiment collectors (F&G, RSS, Reddit, CoinGecko)
+  sentiment_features.py # multi-horizon EWMA + per-symbol blending
+  outcomes.py           # forward labels for calibration
+  features.py           # OHLCV feature extraction, BTC beta
+  regime.py             # market regime classification
+  risk.py               # risk gates + position limits
+  alerts.py             # Telegram alerting
+  db.py                 # SQLite helpers + schema init
+  settings.py           # env-based settings
+  ui/static/
+    index.html          # single-page operator UI
+    app.js              # Vanilla JS — all UI logic
+    styles.css          # dark theme styles
 migrations/
-  init.sql
-main.py              # root entrypoint
-SPEC.md              # detailed specification
+  init.sql              # full schema DDL
+main.py                 # root entrypoint (uvicorn)
+SPEC.md                 # detailed specification
+CHANGELOG.md            # version history
 ```
+
+---
+
+## API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/` | Operator UI |
+| GET | `/api/v1/recommendations` | Latest snapshot with filters |
+| GET | `/api/v1/recommendations/{rec_id}` | Full detail for one rec |
+| POST | `/api/v1/recommendations/{rec_id}/action` | Mark executed/ignored |
+| GET | `/api/v1/status` | Calibrator state, outcome count, sentiment, errors |
+| GET | `/api/v1/health/symbols` | Per-symbol data freshness |
+| GET | `/api/v1/outcomes/stats` | Win-rate breakdown by bot / symbol |
+| GET | `/api/v1/decisions` | Decision log (last 200) |
+| GET | `/api/v1/risk/status` | Active risk limits and position counts |
+| POST | `/api/v1/risk/limits` | Update risk limits |
+| GET/POST | `/api/v1/sentiment` | Sentiment series read/write |
 
 ---
 
 ## Development notes
 
-- The system uses only public endpoints. No Bybit keys needed.
-- For faster calibration, you can reduce `OUTCOME_HORIZON_SEC` (e.g. 600) and `CALIB_MIN_SAMPLES`.
-- The recommendation API returns the latest snapshot by default (`snapshot=latest`) to avoid duplicates.
+- Only public Bybit endpoints are used. No API keys required.
+- For faster initial calibration: set `OUTCOME_HORIZON_SEC=600` and `CALIB_MIN_SAMPLES=30`.
+- The `snapshot=latest` parameter in `/api/v1/recommendations` pins the response to the most
+  recent recommender cycle timestamp — prevents mixing stale and fresh rows.
+- Calibrators stored in `app_config` will be re-fit on first startup after upgrade
+  (their `ts` field will be missing → treated as age=∞ → immediate refit).
 
 ---
 
-## Roadmap ideas
+## Roadmap
 
-- Better sentiment sources (Twitter/Reddit/Telegram aggregation) + dispersion-aware confidence
-- Symbol-level sentiment (BTC/ETH specific)
-- Transaction-cost aware outcome labeling (spread/fees)
+- Better sentiment sources (Twitter/Telegram aggregation, dispersion-aware confidence)
 - Regime-specific calibration (separate models for trend vs range)
+- UI symbol disable toggle (without `.env` edit + restart)
 - Position-aware recommendations (requires private Bybit account integration)
 
 ---
@@ -154,8 +225,3 @@ SPEC.md              # detailed specification
 ## Disclaimer
 
 This software provides informational recommendations only. It is not financial advice.
-
-
-
-## Performance notes
-Background collectors run in separate threads; API requests use short-lived SQLite connections. UI uses debounced requests and cancels in-flight calls.

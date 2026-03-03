@@ -13,6 +13,10 @@ from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_
 from .calibration import fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS
 # Note: calibrators use db.get_outcomes_with_recs (single JOIN query) to avoid N+1 pattern
 
+# Re-fit calibrators every hour even if a saved version exists.
+# New outcomes accumulate continuously, so models trained once become stale.
+CALIB_REFIT_INTERVAL_SEC = 3600
+
 BOT_TYPES_BYBIT = [
     "spot_grid",
     "futures_grid",
@@ -90,10 +94,12 @@ def _params(
         half = span_pct / 2.0
 
         # directional skew in range selection
+        # long bias → range extends more to the upside (higher upper_mul)
+        # short bias → range extends more to the downside (higher lower_mul)
         if direction == "long":
-            lower_mul, upper_mul = 1.20, 0.80
-        elif direction == "short":
             lower_mul, upper_mul = 0.80, 1.20
+        elif direction == "short":
+            lower_mul, upper_mul = 1.20, 0.80
         else:
             lower_mul, upper_mul = 1.0, 1.0
 
@@ -272,22 +278,27 @@ def _fit_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
     return result
 
 def _load_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
-    """Load per-bot calibrators from DB. Only re-fit bot_types that have no saved scaler."""
+    """Load per-bot calibrators from DB. Re-fit those that are missing OR stale."""
+    import time as _time
+    now = int(_time.time())
     calibrators: dict[str, PlattScaler] = {}
-    missing: list[str] = []
+    needs_refit: list[str] = []
     for bt, key in BOT_CALIB_KEYS.items():
         saved = load_platt_from_db(conn, key)
         if saved and saved.fitted:
-            calibrators[bt] = saved
-        else:
-            calibrators[bt] = PlattScaler(fitted=False)
-            missing.append(bt)
-    # Only hit the DB to re-fit if at least one bot_type is missing a calibrator
-    if missing:
+            age = now - saved.saved_ts
+            if age < CALIB_REFIT_INTERVAL_SEC:
+                calibrators[bt] = saved
+                continue
+        # Missing or stale
+        calibrators[bt] = saved if (saved and saved.fitted) else PlattScaler(fitted=False)
+        needs_refit.append(bt)
+    if needs_refit:
         fitted = _fit_bot_calibrators(conn, min_samples)
-        for bt in missing:
+        for bt in needs_refit:
             if bt in fitted and fitted[bt].fitted:
                 calibrators[bt] = fitted[bt]
+            # else: keep the stale/unfitted version already set above
     return calibrators
 
 def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
@@ -307,25 +318,35 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
 def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
-    # Check DB first — fitting is expensive (N queries on outcome rows)
+    """Load direction calibrator; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
+    import time as _time
     saved = load_platt_from_db(conn, "platt_direction_v2")
     if saved and saved.fitted:
-        return saved
-    # Not in DB — fit now
+        age = int(_time.time()) - saved.saved_ts
+        if age < CALIB_REFIT_INTERVAL_SEC:
+            return saved
     scaler = _fit_direction_calibrator(conn, min_samples=min_samples)
     if scaler.fitted:
         save_platt_to_db(conn, "platt_direction_v2", scaler)
+    elif saved and saved.fitted:
+        return saved  # Keep stale version if not enough data
     return scaler
 
 def _load_or_fit_calibrator(conn, min_samples: int) -> PlattScaler:
-    # Check DB first — fitting is expensive (N queries on outcome rows)
+    """Load general calibrator from DB; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
+    import time as _time
     saved = load_platt_from_db(conn, "platt_bybit_v2")
     if saved and saved.fitted:
-        return saved
-    # Not in DB — fit now
+        age = int(_time.time()) - saved.saved_ts
+        if age < CALIB_REFIT_INTERVAL_SEC:
+            return saved  # Still fresh — use cached
+    # Not in DB, not fitted, or stale — re-fit now
     scaler = _fit_calibrator(conn, min_samples=min_samples)
     if scaler.fitted:
         save_platt_to_db(conn, "platt_bybit_v2", scaler)
+    elif saved and saved.fitted:
+        # Not enough new data to re-fit — keep the stale version rather than returning unfitted
+        return saved
     return scaler
 
 def run_recommender_once(conn, settings) -> dict[str, Any]:
