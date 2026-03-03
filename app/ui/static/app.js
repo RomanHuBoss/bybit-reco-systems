@@ -6,6 +6,7 @@ let calibFitted = false;
 let countdownTimer = null;
 let countdownVal = 10;
 let currentRecId = null;   // rec_id currently shown in Details panel
+let currentMeta  = null;   // {venue, symbol, bot_type} — used to find fresh rec_id on refresh
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -218,6 +219,7 @@ function directionBadge(dir) {
 async function loadDetails(recId) {
   // Set currentRecId immediately so the Refresh button works even if fetch is slow
   currentRecId = recId;
+  // currentMeta is set after successful parse so we have venue/symbol/bot_type
   const btn = $("refreshDetailsBtn");
   btn.classList.remove("hidden");
   btn.disabled = true;
@@ -239,6 +241,11 @@ async function loadDetails(recId) {
     btn.textContent = "Обновить";
     return;
   }
+
+  // Store meta so refresh can locate the fresh rec_id in the current table snapshot
+  currentMeta = { venue: it.venue, symbol: it.symbol, bot_type: it.bot_type };
+  // Normalise to the actual rec_id returned by the DB (arg may be stale)
+  currentRecId = it.rec_id;
 
   btn.disabled = false;
   btn.textContent = "Обновить";
@@ -546,7 +553,32 @@ $("outcomesBtn").addEventListener("click", loadOutcomes);
 $("healthBtn").addEventListener("click", loadHealth);
 
 $("refreshDetailsBtn").addEventListener("click", () => {
-  if (currentRecId) loadDetails(currentRecId);
+  if (!currentMeta) return;
+  // Every recommender cycle produces new rec_ids for the same (venue, symbol, bot_type).
+  // Look for the freshest rec_id in the current table DOM before falling back to the
+  // stored one — otherwise we always re-fetch the stale record from a previous cycle.
+  let freshId = null;
+  if (currentMeta) {
+    const rows = $("recoBody").querySelectorAll("tr");
+    for (const row of rows) {
+      const detailsBtn = row.querySelector('button[data-act="details"]');
+      if (!detailsBtn) continue;
+      const rid = detailsBtn.dataset.id || "";
+      // rec_id format: R-{ts}-{venue}-{symbol}-{bot_type}-{hex}
+      const parts = rid.split("-");
+      // parts: ["R", ts, venue, symbol, bot_type_part1, ..., hex]
+      // Reconstruct venue/symbol/bot_type from the known values stored in currentMeta
+      if (
+        rid.includes(`-${currentMeta.venue}-`) &&
+        rid.includes(`-${currentMeta.symbol}-`) &&
+        rid.includes(`-${currentMeta.bot_type}-`)
+      ) {
+        freshId = rid;
+        break;
+      }
+    }
+  }
+  loadDetails(freshId || currentRecId);
 });
 
 $("copyParamsBtn").addEventListener("click", () => {
