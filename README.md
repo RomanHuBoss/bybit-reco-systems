@@ -118,21 +118,38 @@ python main.py
 
 ## Calibration
 
-There are **three layers** of Platt-scaled calibration, all stored in `app_config` and
-**re-fit automatically every 60 minutes** as new outcomes accumulate:
+Two-stage **LogReg + Platt** calibration, re-fit automatically every 60 minutes.
+Feature weights are learned from actual outcomes — no hand-tuned score weights.
+
+```
+P(success) = Platt( LogReg([range_score, trend, atr_pct, sentiment,
+                              dir_conf, coherence, spread_bps, score]) )
+```
+
+Platt is fitted on **log-odds** of LogReg output (temperature scaling), not raw probabilities.
+
+### Degradation by outcome count
+
+| Count | Mode |
+|---|---|
+| < 80 | Raw sigmoid only |
+| 80–299 | Platt on score (legacy) |
+| ≥ 300 | Full LogReg + Platt |
+
+### Storage keys in `app_config`
 
 | Key | Scope |
 |---|---|
-| `platt_bybit_v2` | Global fallback calibrator |
-| `platt_direction_v2` | Direction confidence calibrator |
-| `platt_spot_grid_v1` | Per-bot: Spot Grid |
-| `platt_futures_grid_v1` | Per-bot: Futures Grid |
-| `platt_dca_v1` | Per-bot: DCA Bot |
-| `platt_martingale_v1` | Per-bot: Futures Martingale |
-| `platt_combo_v1` | Per-bot: Futures Combo |
+| `logreg_global_v1` | Global LogReg+Platt fallback |
+| `logreg_spot_grid_v1` | Per-bot: Spot Grid |
+| `logreg_futures_grid_v1` | Per-bot: Futures Grid |
+| `logreg_dca_v1` | Per-bot: DCA Bot |
+| `logreg_martingale_v1` | Per-bot: Futures Martingale |
+| `logreg_combo_v1` | Per-bot: Futures Combo |
+| `platt_direction_v2` | Direction confidence (Platt-only) |
 
-Priority: per-bot calibrator → global calibrator → raw sigmoid.  
-Final `confidence = 0.5 × conf_raw + 0.5 × conf_calibrated`.
+Priority at inference: per-bot LogReg+Platt → per-bot Platt-only → global → raw sigmoid.  
+Final `confidence = 0.5 × conf_raw + 0.5 × conf_calibrated` (avoids cold-start overconfidence).
 
 The UI shows **Увер ⚠** with a progress bar until `CALIB_MIN_SAMPLES` outcomes are
 collected, then switches to **Увер ✓**.

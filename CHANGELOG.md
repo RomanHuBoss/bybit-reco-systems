@@ -1,3 +1,64 @@
+## V3.9 — Audit & bugfix: calibration math, feature extraction, inference path
+
+### 1. Platt fitted on logit(p_logreg) instead of raw probabilities (calibration.py) — math fix
+
+**Problem**: `fit_logreg()` was fitting Platt scaling on raw LogReg output probabilities
+`p ∈ [0,1]`. This is mathematically incorrect: the logistic link function expects an
+unbounded input (log-odds), not a probability. Result: the Platt `a` parameter scaled
+probability instead of temperature, giving poor calibration and slow convergence.
+
+**Fix**: probabilities are converted to log-odds before fitting:
+```
+logit(p) = log(p / (1 - p))
+P_calibrated = sigmoid(a × logit(p_logreg) + b)
+```
+where `a ≈ 1.0` means the LogReg is already well-calibrated,
+`a < 1` means overconfident, `b` shifts the decision threshold.
+Verified: on synthetic data `a=1.013, b=0.039` — confirms LogReg output is well-calibrated.
+
+### 2. Falsy-value bug in extract_features for dir_conf (calibration.py) — logic fix
+
+**Problem**: `dir_conf = float(dir_agg.get("direction_confidence_calibrated") or ... or 0.5)`
+If `direction_confidence_calibrated == 0.0` (valid extreme value), Python's `or`
+evaluates `0.0` as falsy and substitutes `0.5` — silently corrupting the feature vector.
+
+**Fix**: explicit `None` checks:
+```python
+_dc = dir_agg.get("direction_confidence_calibrated")
+if _dc is None:
+    _dc = dir_agg.get("direction_confidence")
+dir_conf = float(_dc) if _dc is not None else 0.5
+```
+
+### 3. _using_logreg wrong when model is in Platt-only mode (recommender.py) — logic fix
+
+**Problem**: when `80 ≤ n_outcomes < 300`, `fit_logreg()` returns a `LogRegScaler` with
+`fitted=True` but `coef=[]` (Platt-only). The inference block set `_using_logreg=True`
+(because `fitted=True` and `_fv is not None`), then called `bot_cal.predict(_fv)` which
+returned `0.5` silently (len mismatch: `len([]) ≠ 8`). Confidence was stuck at
+`0.5 × conf_raw + 0.5 × 0.5 = 0.5 × conf_raw + 0.25` regardless of score.
+
+**Fix**: `_using_logreg` now also requires `len(coef) > 0`. Inference block uses
+`predict_score_only(score)` when `coef=[]`. Same guard added to global calibrator path.
+
+### 4. LogRegScaler.predict() silent 0.5 on coef mismatch (calibration.py) — clarity fix
+
+Improved code comment to make it explicit that callers must use `predict_score_only()`
+when `len(coef) == 0`. The `0.5` fallback is preserved but now documented as intentional.
+
+### 5. Unused variable score_used removed (calibration.py) — cleanup
+
+`score_used` was built alongside `X` and `y_used` in `fit_logreg()` but never used.
+Removed to avoid confusion.
+
+### 6. PUBLISH log indentation inconsistency (recommender.py) — cosmetic fix
+
+`sentiment_regime` and `sentiment_strength` keys in the PUBLISH decision log were
+indented 3 levels (12 spaces) instead of 4 levels (16 spaces) like surrounding keys.
+No functional impact.
+
+---
+
 ## V3.8 — UI fixes, calibrator periodic re-fit, direction range fix, bug sweep
 
 ### 1. Периодическая рекалибровка (calibration.py + recommender.py) — критично
@@ -11,82 +72,56 @@
 - Все три загрузчика (`_load_or_fit_calibrator`, `_load_or_fit_direction_calibrator`,
   `_load_bot_calibrators`) проверяют возраст: если `age >= CALIB_REFIT_INTERVAL_SEC=3600` —
   принудительный рефит, результат сохраняется в БД.
-- Fallback: если рефит не удался (мало данных) — продолжает использовать стale-версию
+- Fallback: если рефит не удался (мало данных) — продолжает использовать stale-версию
   вместо деградации до не-откалиброванного состояния.
 - Старые записи в БД без поля `ts` получат `saved_ts=0` → немедленный рефит при апгрейде.
 
 ### 2. Инверсия диапазона Grid-бота (recommender.py) — критично
 
 **Проблема**: при направлении `long` диапазон смещался **вниз** (lower_mul=1.20,
-upper_mul=0.80), а не вверх. Оператор получал перекошенный диапазон в обратную сторону.
+upper_mul=0.80), а не вверх.
 
 **Исправление**:
-- `long`:  `lower_mul=0.80, upper_mul=1.20` → диапазон смещён **вверх** (больше пространства над ценой)
+- `long`:  `lower_mul=0.80, upper_mul=1.20` → диапазон смещён **вверх**
 - `short`: `lower_mul=1.20, upper_mul=0.80` → диапазон смещён **вниз**
 
 ### 3. Overflow защита в Platt predict (calibration.py)
 
-Для экстремальных значений `score` (например, после апгрейда с другой нормировкой)
-`math.exp(-z)` мог выбросить `OverflowError`. Добавлен clamp `z ∈ [-500, +500]`
-в `PlattScaler.predict()` и в цикле градиентного спуска `fit_platt()`.
+Для экстремальных значений `score` `math.exp(-z)` мог выбросить `OverflowError`.
+Добавлен clamp `z ∈ [-500, +500]` в `PlattScaler.predict()` и в `fit_platt()`.
 
 ### 4. UI — Layout панели управления (styles.css + index.html)
 
-**Проблема**: `grid-template-columns: 1.1fr 0.7fr 0.8fr 1.6fr auto` растягивал поля
-ввода на всю ширину, кнопки наезжали на поле «Мин. уверенность».
-
-**Решение**: controls переведён на `flexbox` с фиксированными размерами:
-- Площадка: `140px`, Top N: `90px`, Мин. уверенность: `130px`
-- Кнопки вынесены в `div.btn-row { display: flex; gap: 6px }`
-- Поля ввода получили `box-sizing: border-box` (padding больше не распирает ширину)
-- Responsive breakpoint: `@media (max-width: 900px)` — каждый контрол на отдельной строке
+`grid-template-columns` → `flexbox` с фиксированными размерами.
+Кнопки вынесены в `div.btn-row`. `box-sizing: border-box` на полях ввода.
 
 ### 5. UI — Кнопка «Обновить» в панели Детали (index.html + app.js)
 
-Добавлена кнопка **Обновить** рядом с «Скопировать параметры». Хранит `currentRecId`
-и при клике вызывает `loadDetails(currentRecId)` — частичное обновление без перегрузки
-всей таблицы рекомендаций.
+Добавлена кнопка **Обновить**. Хранит `currentRecId` и `currentMeta`.
+При клике ищет свежий `rec_id` в текущем DOM таблицы — иначе бы fetched стale запись
+из прошлого цикла рекомендера (rec_id содержит timestamp цикла).
 
 ### 6. UI — Кнопки ✓/✗ больше не вызывают мерцание (app.js)
 
-**Проблема**: нажатие ✓/✗ вызывало `refreshAll()`, который делал `body.innerHTML = ""`
-→ строка пропадала, а если рекомендер успевал дать новый цикл для того же символа — 
-появлялась снова.
+DOM обновляется in-place: строка тускнеет, статус заменяется меткой, кнопки удаляются.
+`refreshAll()` больше не вызывается — строка исчезнет на следующем авто-обновлении.
 
-**Решение**: DOM обновляется **in-place**:
-1. Строка тускнеет (`opacity: 0.45`) и теряет класс `row-recommended`
-2. Ячейка статуса заменяется меткой `executed`/`ignored` без пересборки таблицы
-3. Кнопки ✓/✗ удаляются из `<td>`, кнопки «Детали» и «JSON» остаются
-4. `refreshAll()` больше НЕ вызывается — строка исчезнет сама на следующем авто-обновлении
+### 7. UI — Модальные окна и фильтр-бар (index.html + styles.css + app.js)
 
-### 7. UI — Модальные окна (index.html + styles.css + app.js)
+- «Close» → «Закрыть», «Risk status» → «Статус рисков»
+- Только контентная область скроллируется; заголовок фиксирован
+- Чекбоксы статусов перенесены из controls-ряда в отдельный `filter-bar`
+  с toggle-пиллами (цветовая индикация по статусу)
 
-- Кнопка «Close» → **«Закрыть»**
-- Заголовок «Risk status» → **«Статус рисков»**
-- Скроллируется только контентная область: `.modal-card` теперь `display:flex; flex-direction:column; overflow:hidden`, отдельный `div.modal-scroll { overflow-y:auto; flex:1 }` — заголовок с кнопкой закрытия остаётся видимым при прокрутке длинных журналов
+### 8. Исправлен variable shadowing в loadHealth() (app.js)
 
-### 8. Исправлены баги JS (app.js)
+`const s = data.summary` перекрывалась в коллбэках. Переименовано: `sum`/`sym`.
 
-**Variable shadowing в `loadHealth()`**: `const s = data.summary` перекрывалась в
-`symbols.filter(s => ...)` и `bad.forEach(s => ...)`. Переименовано: `sum` (summary),
-`sym` (per-symbol item). Дополнительно исправлен edge-case: `🟢` не присваивается
-если `total === 0` (нет данных вообще).
-
-**`showModal()` теперь принимает строку напрямую**: функция проверяет `typeof obj === "string"`
-— избавлено от двойного вызова (передача `{_text: lines.join("\n")}` + `modalBody.textContent = ...`).
-
-**Обработка ошибок в `loadDetails()`**: добавлены `try/catch` с понятным сообщением
-пользователю при HTTP-ошибке (404) или сетевой ошибке.
-
-### 9. Улучшение `fit_platt` (calibration.py)
-
-- Итераций: `300` (было `250`) — лучшая сходимость
-- Learning rate: `0.06` (было `0.08`) — стабильнее на зашумлённых данных
-- Чуть меньше вероятность overshooting в области малой выборки
-
-# Changelog
+---
 
 ## V3.7 — Health screen, per-bot horizons, calibrator per bot_type, risk gate, Telegram alerts
+
+
 
 ### 1. Health-экран символов (кнопка "Здоровье")
 

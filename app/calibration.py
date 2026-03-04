@@ -98,12 +98,12 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
 
     # direction_agg block
     dir_agg = reasons.get("direction_agg") or {}
-    # Support both calibrated and raw direction confidence
-    dir_conf = float(
-        dir_agg.get("direction_confidence_calibrated")
-        or dir_agg.get("direction_confidence")
-        or 0.5
-    )
+    # Support both calibrated and raw direction confidence.
+    # Use explicit None checks — `or` would incorrectly skip 0.0 (a valid probability).
+    _dc = dir_agg.get("direction_confidence_calibrated")
+    if _dc is None:
+        _dc = dir_agg.get("direction_confidence")
+    dir_conf = float(_dc) if _dc is not None else 0.5
     coherence = float(dir_agg.get("coherence") or 0.5)
 
     strengths = dir_agg.get("strength") or {}
@@ -167,8 +167,12 @@ class LogRegScaler:
 
     def predict(self, features: list[float]) -> float:
         """Return calibrated P(success) given a feature vector."""
-        if not self.fitted or len(features) != len(self.coef):
+        if not self.fitted:
             return 0.5
+        if len(self.coef) == 0 or len(features) != len(self.coef):
+            # Platt-only mode (insufficient data for LogReg) or feature length mismatch:
+            # fall through to Platt on score if caller passes score as features[7]
+            return 0.5  # caller should use predict_score_only() in this case
         # Linear combination
         z = self.intercept + sum(c * f for c, f in zip(self.coef, features))
         # Sigmoid → raw logistic probability
@@ -218,13 +222,12 @@ def fit_logreg(
         )
 
     # Build feature matrix — skip rows with missing features
-    X, y_used, score_used = [], [], []
+    X, y_used = [], []
     for r in rows:
         fv = extract_features(r)
         if fv is not None:
             X.append(fv)
             y_used.append(int(r["success"]))
-            score_used.append(float(r["score"]))
 
     if len(X) < logreg_min_samples:
         return LogRegScaler(
@@ -259,11 +262,20 @@ def fit_logreg(
         coef_raw = (clf.coef_[0] / std).tolist()
         intercept_raw = float(clf.intercept_[0] - (clf.coef_[0] / std).dot(mean))
 
-        # Get LogReg predicted probabilities for Platt fitting
-        p_logreg = clf.predict_proba(Xs)[:, 1].tolist()
+        # Get LogReg predicted probabilities, convert to log-odds (logits) for Platt fitting.
+        # Fitting Platt on probabilities ∈ [0,1] is incorrect — the logistic link expects
+        # an unbounded input. Fitting on logit(p) gives proper temperature scaling:
+        #   P_calibrated = sigmoid(a * logit(p_logreg) + b)
+        # where a≈1 means well-calibrated, a<1 means overconfident, b shifts the threshold.
+        import math as _math
+        def _logit(p: float) -> float:
+            p = max(1e-7, min(1.0 - 1e-7, p))
+            return _math.log(p / (1.0 - p))
+        p_logreg_raw = clf.predict_proba(Xs)[:, 1].tolist()
+        logits_logreg = [_logit(p) for p in p_logreg_raw]
 
-        # Fit Platt on LogReg outputs (not on raw score)
-        platt_top = fit_platt(p_logreg, y_used, min_samples=min_samples)
+        # Fit Platt on log-odds of LogReg outputs
+        platt_top = fit_platt(logits_logreg, y_used, min_samples=min_samples)
 
         return LogRegScaler(
             coef=coef_raw,

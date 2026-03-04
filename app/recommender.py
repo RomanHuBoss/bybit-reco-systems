@@ -553,12 +553,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             _fv = extract_features(_row_for_cal)
 
             bot_cal = bot_calibrators.get(bot_type)
-            if bot_cal and bot_cal.fitted and _fv is not None:
+            if bot_cal and bot_cal.fitted and len(bot_cal.coef) > 0 and _fv is not None:
+                # Full LogReg + Platt path
                 conf_cal = float(bot_cal.predict(_fv))
             elif bot_cal and bot_cal.fitted:
-                # Feature extraction failed — use score-only Platt fallback
+                # Platt-only or feature extraction failed
                 conf_cal = float(bot_cal.predict_score_only(score))
-            elif global_calibrator.fitted and _fv is not None:
+            elif global_calibrator.fitted and len(global_calibrator.coef) > 0 and _fv is not None:
                 conf_cal = float(global_calibrator.predict(_fv))
             elif global_calibrator.fitted:
                 conf_cal = float(global_calibrator.predict_score_only(score))
@@ -614,7 +615,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             reasons2["direction_agg"] = dtmp
             # Record which calibrator layer was actually used
             _bot_cal_info = bot_calibrators.get(bot_type)
-            _using_logreg = bool(_bot_cal_info and _bot_cal_info.fitted and _fv is not None)
+            # _using_logreg is True only when the full LogReg path is available:
+            # model fitted + coef populated (not Platt-only) + feature vector extracted
+            _using_logreg = bool(
+                _bot_cal_info
+                and _bot_cal_info.fitted
+                and len(getattr(_bot_cal_info, 'coef', [])) > 0
+                and _fv is not None
+            )
             reasons2["confidence_model"] = {
                 "type": "logreg_platt_v1" if _using_logreg else "platt_only",
                 "fitted": bool(_bot_cal_info and _bot_cal_info.fitted) if _bot_cal_info else global_calibrator.fitted,
@@ -696,8 +704,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "model_version": model_version,
                 "regime": regime,
                 "global_sentiment_6h": global_sent,
-            "sentiment_regime": sent_agg.get("regime"),
-            "sentiment_strength": sent_agg.get("strength"),
+                "sentiment_regime": sent_agg.get("regime"),
+                "sentiment_strength": sent_agg.get("strength"),
                 "calibrator_fitted": calibrator.fitted,
             },
         )

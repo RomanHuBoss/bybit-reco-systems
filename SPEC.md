@@ -187,25 +187,68 @@ ATR used: 1h ATR (`atr_pct_1h`) preferred over 1m ATR for more stable grid width
 
 ## 7. Calibration (calibration.py)
 
-### Algorithm: Platt Scaling (logistic regression on scores)
+### Architecture: Two-stage LogReg + Platt
 
 ```
-P(success | score) = sigmoid(a × score + b)
+P(success) = sigmoid(a × logit(LogReg(features)) + b)
+           = Platt( LogReg([range_score, trend_strength, atr_pct_norm,
+                             effective_sentiment, dir_conf, coherence,
+                             spread_bps_norm, score]) )
 ```
 
+**Stage 1 — LogisticRegression** (sklearn, lbfgs, C=1.0, class_weight=balanced):
+- Learns feature weights from actual outcomes (replaces hand-tuned score formula)
+- Features standardized (StandardScaler) for numerical stability
+- Coefficients stored in raw (un-standardized) form so prediction works without sklearn at inference
+- Requires ≥ 300 outcomes per bot-type
+
+**Stage 2 — Platt scaling** (temperature calibration on log-odds):
+```
+logit(p_logreg) = log(p / (1 - p))
+P_calibrated = sigmoid(a × logit(p_logreg) + b)
+```
+Fitting Platt on `logit(p)` (not raw probability) is mathematically correct:
+`a ≈ 1.0` = well-calibrated, `a < 1.0` = overconfident, `b` = threshold shift.
 Gradient descent, 300 iterations, lr=0.06, overflow-clamped `z ∈ [-500, +500]`.
 
+### Degradation tiers (by outcome count)
+
+| Outcomes | Mode | Formula |
+|---|---|---|
+| < 80 | Unfitted | `conf = sigmoid(score × 2.5)` (raw) |
+| 80–299 | Platt-only | `conf = sigmoid(a × score + b)` |
+| ≥ 300 | LogReg + Platt | `conf = sigmoid(a × logit(LogReg(features)) + b)` |
+
+Blend at inference: `conf = 0.5 × conf_raw + 0.5 × conf_calibrated`  
+(avoids overconfidence during cold-start; gradually dominated by calibrator as n grows)
+
+### Features (FEATURE_NAMES — canonical order, never reorder)
+
+| Index | Name | Source | Range |
+|---|---|---|---|
+| 0 | range_score | 1 − \|strength.all\| | [0, 1] |
+| 1 | trend_strength | \|strength.all\| | [0, 1] |
+| 2 | atr_pct_norm | atr_pct / 0.02, clipped | [0, 2] |
+| 3 | effective_sentiment | blended global+symbol | [-1, 1] |
+| 4 | dir_conf | direction_confidence_calibrated ∥ raw | [0, 1] |
+| 5 | coherence | multi-TF direction agreement | [0, 1] |
+| 6 | spread_bps_norm | spread_bps / 10 | [0, 5] |
+| 7 | score | post-adjustment legacy score | [-1, 1] |
+
+Note: `dir_conf` uses explicit `None` checks (not `or`-chaining) to correctly handle 0.0.
+
 ### Persistence & freshness
-- Stored in `app_config` table as JSON `{a, b, fitted, ts}`.
-- `ts` = unix timestamp of last fit.
-- Re-fit condition: `time.now() - ts >= CALIB_REFIT_INTERVAL_SEC (3600s)`.
-- Re-fit uses last 4000–6000 outcome rows (JOIN query, not N+1).
-- If re-fit fails (insufficient data): stale model is retained as fallback.
+- Stored in `app_config` as JSON under keys `logreg_{bot}_v1` / `logreg_global_v1`
+- Direction calibrator (Platt-only) stored under `platt_direction_v2`
+- `ts` = unix timestamp of last fit
+- Re-fit condition: `time.now() - ts >= CALIB_REFIT_INTERVAL_SEC (3600s)`
+- Re-fit uses last 6000–8000 outcome rows (LEFT JOIN query — excludes already-processed recs)
+- If re-fit fails (insufficient data): stale model retained as fallback
 
 ### Training data
-- Source: `reco_outcomes` JOIN `recommendations`
-- Features (x): stored `score` (post-adjustment, matching inference distribution)
+- Source: `reco_outcomes` LEFT JOIN `recommendations` (excludes unprocessed recs)
 - Labels (y): `success` flag (bot-type-specific criterion, see Outcome Labeling)
+- Score (x): stored post-adjustment score (matching inference distribution)
 
 ---
 
