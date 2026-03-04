@@ -29,6 +29,231 @@ BOT_TYPES_BYBIT = [
     "futures_combo",
 ]
 
+def _fmt_tf(tf_sec: int) -> str:
+    if tf_sec % 86400 == 0:
+        d = tf_sec // 86400
+        return f"{d}d"
+    if tf_sec % 3600 == 0:
+        h = tf_sec // 3600
+        return f"{h}h"
+    if tf_sec % 60 == 0:
+        m = tf_sec // 60
+        return f"{m}m"
+    return f"{tf_sec}s"
+
+def _round_price(x: float | None, decimals: int = 6) -> float | None:
+    if x is None:
+        return None
+    try:
+        return float(round(float(x), decimals))
+    except Exception:
+        return None
+
+def _pct_dist(a: float | None, b: float | None) -> float | None:
+    if a is None or b is None:
+        return None
+    try:
+        if b == 0:
+            return None
+        return float((a - b) / b * 100.0)
+    except Exception:
+        return None
+
+def _build_trade_plan(
+    bot_type: str,
+    venue: str,
+    f: dict[str, Any],
+    direction: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Human/actionable execution guide shown in the UI 'Details' panel.
+
+    This is NOT a guarantee of profit and NOT a full risk model.
+    It provides consistent, ATR-scaled reference levels (TP/SL/kill-switch)
+    and an approximate time horizon for bot lifecycle.
+    """
+
+    price = float(f.get("price") or 0.0) or None
+    atr_pct_1m = float(f.get("atr_pct") or 0.0)
+    atr_pct_15m = float(f.get("_atr_pct_15m") or 0.0)
+    atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
+    atr_pct_4h = float(f.get("_atr_pct_4h") or 0.0)
+    atr_pct_slow = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
+
+    atr_abs_1h = (price * atr_pct_slow) if (price is not None and atr_pct_slow > 0) else None
+    atr_abs_15m = (price * atr_pct_15m) if (price is not None and atr_pct_15m > 0) else None
+    atr_abs_4h = (price * atr_pct_4h) if (price is not None and atr_pct_4h > 0) else None
+
+    # Default timeframes
+    decision_tfs = {"macro": "1h", "entry": "15m", "monitor": "1m"}
+
+    # Horizon by bot type (heuristics)
+    if bot_type in ("spot_grid", "futures_grid"):
+        horizon = {"min_hours": 6, "max_hours": 48}
+    elif bot_type == "dca_bot":
+        horizon = {"min_hours": 12, "max_hours": 72}
+    elif bot_type == "futures_martingale":
+        horizon = {"min_hours": 1, "max_hours": 8}
+    elif bot_type == "futures_combo":
+        horizon = {"min_hours": 2, "max_hours": 12}
+    else:
+        horizon = {"min_hours": 2, "max_hours": 24}
+
+    # Adjust horizon by regime confidence if present
+    d = f.get("_direction_agg") or {}
+    regime = str(d.get("regime") or "unknown")
+    regime_conf = float(d.get("regime_confidence") or 0.0)
+    if regime_conf >= 0.75:
+        horizon = {"min_hours": max(1, int(horizon["min_hours"] * 0.8)), "max_hours": int(horizon["max_hours"] * 0.85)}
+    elif regime_conf <= 0.35:
+        horizon = {"min_hours": int(horizon["min_hours"] * 1.0), "max_hours": int(horizon["max_hours"] * 0.6)}
+
+    def lvl(name: str, px: float | None) -> dict[str, Any]:
+        return {
+            "name": name,
+            "price": _round_price(px, decimals=8),
+            "dist_pct_from_entry": _round_price(_pct_dist(px, price), decimals=4) if (px is not None and price is not None) else None,
+        }
+
+    plan: dict[str, Any] = {
+        "reference_price": _round_price(price, decimals=10),
+        "decision_timeframes": decision_tfs,
+        "expected_horizon": {**horizon, "basis": "heuristics(bot_type)+regime_confidence"},
+        "volatility": {
+            "atr_pct_1m": atr_pct_1m,
+            "atr_pct_15m": atr_pct_15m if atr_pct_15m > 0 else None,
+            "atr_pct_1h": atr_pct_1h if atr_pct_1h > 0 else None,
+            "atr_pct_4h": atr_pct_4h if atr_pct_4h > 0 else None,
+            "atr_pct_used": atr_pct_slow,
+            "atr_abs_used": _round_price(atr_abs_1h, decimals=10) if atr_abs_1h is not None else None,
+        },
+        "regime": {
+            "name": regime,
+            "confidence": _round_price(regime_conf, decimals=4),
+            "trendiness": _round_price(float(d.get("trendiness") or 0.0), decimals=4) if isinstance(d.get("trendiness"), (int, float)) else None,
+            "coherence": _round_price(float(d.get("coherence") or 0.0), decimals=4) if isinstance(d.get("coherence"), (int, float)) else None,
+        },
+        "bot_type": bot_type,
+        "venue": venue,
+        "direction": direction,
+        "levels": {},
+        "close_conditions": [],
+        "notes": "Ориентиры уровней (TP/SL/диапазон) масштабируются по ATR старшего ТФ (предпочтительно 1h). Это подсказка для запуска/контроля бота, а не обещание результата.",
+    }
+
+    # ── Martingale: TP/SL ladder (directional reference) ──
+    if bot_type in ("futures_martingale",):
+        if price is not None and atr_abs_1h is not None and atr_abs_1h > 0 and direction in ("long", "short"):
+            sgn = 1.0 if direction == "long" else -1.0
+            sl = price - sgn * (1.0 * atr_abs_1h)
+            tp1 = price + sgn * (0.9 * atr_abs_1h)
+            tp2 = price + sgn * (1.6 * atr_abs_1h)
+            tp3 = price + sgn * (2.3 * atr_abs_1h)
+            trail = atr_abs_15m if (atr_abs_15m is not None and atr_abs_15m > 0) else (0.5 * atr_abs_1h)
+            plan["levels"] = {
+                "stop_loss": lvl("SL", sl),
+                "take_profit": [lvl("TP1", tp1), lvl("TP2", tp2), lvl("TP3", tp3)],
+                "trailing_stop": {"distance": _round_price(trail, decimals=10), "tf": "15m" if atr_abs_15m else "1h"},
+                "risk_kill_switch": {
+                    "max_adverse_move": _round_price(2.5 * atr_abs_1h, decimals=10),
+                    "comment": "Если цена ушла против позиции сильнее ~2.5 ATR(1h), лучше принудительно остановить/закрыть бота.",
+                },
+            }
+            plan["close_conditions"] = [
+                "Достижение TP1/TP2/TP3 (можно фиксировать частями).",
+                "Пробой против позиции сильнее ~2.5 ATR(1h) (risk_kill_switch).",
+                "Истечение ожидаемого horizon (expected_horizon.max_hours) или смена режима/направления на противоположный.",
+            ]
+        else:
+            plan["levels"] = {"comment": "Недостаточно данных (ATR/price/direction) для расчёта TP/SL."}
+            plan["close_conditions"] = ["Недостаточно данных для уровней — используйте стандартные ограничения риска/времени."]
+
+    # ── Grid: range + kill-switch + step ──
+    elif bot_type in ("spot_grid", "futures_grid"):
+        lower = params.get("price_range_lower")
+        upper = params.get("price_range_upper")
+        ks_pad = (0.6 * atr_abs_1h) if (atr_abs_1h is not None and atr_abs_1h > 0) else None
+        lower_ks = (float(lower) - ks_pad) if (lower is not None and ks_pad is not None) else None
+        upper_ks = (float(upper) + ks_pad) if (upper is not None and ks_pad is not None) else None
+
+        step_pct = params.get("grid_spacing_pct")
+        step_abs = (price * float(step_pct) / 100.0) if (price is not None and step_pct is not None) else None
+        tp_leg_abs = (0.7 * step_abs) if step_abs is not None else (0.25 * atr_abs_1h if atr_abs_1h else None)
+
+        plan["levels"] = {
+            "range": {
+                "lower": _round_price(float(lower), decimals=10) if lower is not None else None,
+                "upper": _round_price(float(upper), decimals=10) if upper is not None else None,
+            },
+            "kill_switch": {
+                "lower": _round_price(lower_ks, decimals=10),
+                "upper": _round_price(upper_ks, decimals=10),
+                "pad_abs": _round_price(ks_pad, decimals=10),
+                "comment": "Если цена выходит за kill_switch — сетку лучше остановить (признак пробоя диапазона).",
+            },
+            "grid_step": {
+                "step_pct": float(step_pct) if step_pct is not None else None,
+                "step_abs": _round_price(step_abs, decimals=10),
+                "comment": "Рекомендованный шаг сетки (ориентир).",
+            },
+            "tp_per_leg": {
+                "abs": _round_price(tp_leg_abs, decimals=10),
+                "pct": _round_price((tp_leg_abs / price * 100.0) if (tp_leg_abs is not None and price) else None, decimals=4),
+                "comment": "Ориентир на прибыль на одну 'ногу' (часто ~0.6–0.8 от шага сетки).",
+            },
+        }
+        plan["close_conditions"] = [
+            "Выход цены за kill_switch (признак пробоя диапазона).",
+            "Истечение expected_horizon.max_hours без возврата в диапазон/без набора прибыли.",
+            "Рост trendiness/regime='trend' (по direction_agg) — сетку лучше остановить.",
+        ]
+
+    # ── DCA: steps + TP-from-avg + stop-out ──
+    elif bot_type == "dca_bot":
+        step_pct = float(params.get("dca_step_pct") or 0.0)
+        max_orders = int(params.get("max_orders") or 0)
+        step_abs = (price * step_pct / 100.0) if (price is not None and step_pct > 0) else None
+
+        tp_from_avg_abs = (0.8 * atr_abs_1h) if (atr_abs_1h is not None and atr_abs_1h > 0) else None
+        stop_out_abs = ((max_orders + 1) * step_abs) if (step_abs is not None and max_orders > 0) else None
+        stop_out_price = (price - stop_out_abs) if (price is not None and stop_out_abs is not None) else None
+
+        plan["levels"] = {
+            "dca_step": {
+                "step_pct": step_pct if step_pct > 0 else None,
+                "step_abs": _round_price(step_abs, decimals=10),
+                "max_orders": max_orders,
+            },
+            "take_profit_from_avg": {
+                "abs": _round_price(tp_from_avg_abs, decimals=10),
+                "pct": _round_price((tp_from_avg_abs / price * 100.0) if (tp_from_avg_abs is not None and price) else None, decimals=4),
+                "comment": "TP считается от средней цены позиции (avg_entry).",
+            },
+            "stop_out": {
+                "price": _round_price(stop_out_price, decimals=10),
+                "max_adverse_abs": _round_price(stop_out_abs, decimals=10),
+                "comment": "Жёсткий предел усреднений: если цена ушла ниже stop_out — лучше остановить DCA, иначе это превращается в 'держим навсегда'.",
+            },
+        }
+        plan["close_conditions"] = [
+            "Достижение take_profit_from_avg от средней цены позиции (avg_entry).",
+            "Достижение stop_out (жёсткий предел усреднений).",
+            "Истечение expected_horizon.max_hours при отсутствии прогресса/смене риск-режима.",
+        ]
+
+    # ── Combo/hedge: no direct TP/SL ──
+    elif bot_type == "futures_combo":
+        plan["levels"] = {
+            "comment": "Для hedge/комбо ключевой ориентир — волатильность и риск-режим. TP/SL зависит от двух ног стратегии; используйте ATR(1h) как масштаб для контрольных уровней.",
+            "atr_abs_used": _round_price(atr_abs_1h, decimals=10) if atr_abs_1h is not None else None,
+        }
+        plan["close_conditions"] = [
+            "Истечение expected_horizon.max_hours или нормализация волатильности/сентимента.",
+            "Перекос одной из ног выше допустимого риска (ручной контроль).",
+        ]
+
+    return plan
+
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
@@ -408,7 +633,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # Multi-timeframe direction voting (15m/30m/1h/4h/1d)
             tf_secs = [15*60, 30*60, 60*60, 240*60, 24*60*60]
             tf_map = {}
+            atr_15m = None
+            atr_30m = None
             atr_1h = None
+            atr_4h = None
+            atr_1d = None
             for tf in tf_secs:
                 rows_tf = db.get_latest_ohlcv(conn, venue, sym, tf_sec=tf, limit=260 if tf<=3600 else 420)
                 if not rows_tf or len(rows_tf) < 80:
@@ -422,10 +651,22 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 tf_map[tf] = info
                 if tf == 60*60:
                     atr_1h = float(info.get("atr_pct") or 0.0)
+                elif tf == 15*60:
+                    atr_15m = float(info.get("atr_pct") or 0.0)
+                elif tf == 30*60:
+                    atr_30m = float(info.get("atr_pct") or 0.0)
+                elif tf == 240*60:
+                    atr_4h = float(info.get("atr_pct") or 0.0)
+                elif tf == 24*60*60:
+                    atr_1d = float(info.get("atr_pct") or 0.0)
 
             agg = aggregate_direction(tf_map) if tf_map else {"direction":"neutral","bias":"neutral","direction_confidence":0.5,"scores":{"tactical":0,"structural":0,"all":0},"strength":{"tactical":0,"structural":0,"all":0},"coherence":0.5,"regime":"unknown","regime_confidence":0.0,"structural_veto_applied":False,"tf_used":[]}
             f["_direction_agg"] = agg
             f["_atr_pct_1h"] = atr_1h
+            f["_atr_pct_15m"] = atr_15m
+            f["_atr_pct_30m"] = atr_30m
+            f["_atr_pct_4h"] = atr_4h
+            f["_atr_pct_1d"] = atr_1d
 
             # ── BTC beta ─────────────────────────────────────────────────
             if sym != "BTCUSDT" and btc_1h_closes:
@@ -620,6 +861,20 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             risk_score = float(_clamp(atr_pct/0.02, 0.0, 1.0))
 
+            params = _params(
+                bot_type,
+                venue,
+                f,
+                global_sent=effective_sent,
+                direction=direction,
+                taker_fee_bps=taker_fee_bps,
+                direction_bias=str(f.get("_direction_agg", {}).get("bias", "neutral")),
+                direction_bias_strength=float((f.get("_direction_agg", {}).get("strength", {}) or {}).get("all", 0.0) if isinstance(f.get("_direction_agg", {}).get("strength"), dict) else float(f.get("_direction_agg", {}).get("strength", 0.0))),
+                atr_pct_for_grid=f.get("_atr_pct_1h"),
+            )
+            # Add execution guide for UI "Details" panel.
+            params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params)
+
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)
             reasons2["regime"] = regime
@@ -674,17 +929,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "confidence": float(conf),
                 "expected_rr": float(expected_rr),
                 "risk_score": float(risk_score),
-                "params": _params(
-                    bot_type,
-                    venue,
-                    f,
-                    global_sent=effective_sent,
-                    direction=direction,
-                    taker_fee_bps=taker_fee_bps,
-                    direction_bias=str(f.get("_direction_agg", {}).get("bias", "neutral")),
-                    direction_bias_strength=float((f.get("_direction_agg", {}).get("strength", {}) or {}).get("all", 0.0) if isinstance(f.get("_direction_agg", {}).get("strength"), dict) else float(f.get("_direction_agg", {}).get("strength", 0.0))),
-                    atr_pct_for_grid=f.get("_atr_pct_1h"),
-                ),
+                "params": params,
                 "reasons": reasons2,
                 "blocks": blocks,
                 "status": status,
