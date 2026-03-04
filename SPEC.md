@@ -281,6 +281,11 @@ Note: `dir_conf` uses explicit `None` checks (not `or`-chaining) to correctly ha
 | CoinGecko trending | per-symbol | per sentiment cycle |
 | CoinGecko price momentum | per-symbol | per sentiment cycle |
 
+### Global source weighting
+Sources are weighted by `max(volume, 15)` — minimum floor prevents high-volume sources
+from drowning out reliable low-volume ones (FnG vol=1 → effective weight 15).
+With RSS vol≈60: FnG≈20%, RSS≈80% of combined global signal.
+
 ### Per-symbol blend weights
 `coingecko_momentum`: 0.45, `reddit`: 0.30, `news_rss`: 0.15, `coingecko_trending`: 0.10
 

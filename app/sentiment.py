@@ -442,6 +442,12 @@ def blend_per_symbol(
 
 # ── 7. Global combine ─────────────────────────────────────────────────────────
 
+# Minimum effective weight for each global sentiment source.
+# Without this, FnG (volume=1) contributes ~1-2% of the combined signal while
+# RSS (volume=40-80 items) dominates 98-99% — despite FnG being more reliable.
+# Each source receives at least this weight regardless of its raw volume.
+_GLOBAL_MIN_SOURCE_WEIGHT = 15.0
+
 def combine_global_sentiment(points: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not points:
         return None
@@ -450,7 +456,9 @@ def combine_global_sentiment(points: list[dict[str, Any]]) -> dict[str, Any] | N
     tags: list[str] = []
     sources: dict = {}
     for p in points:
-        vol = float(p.get("volume") or 1.0)
+        # Clamp minimum weight so no source is drowned out by higher-volume ones.
+        # FnG (vol=1) and RSS (vol=40-80) each get at least _GLOBAL_MIN_SOURCE_WEIGHT.
+        vol = max(float(p.get("volume") or 1.0), _GLOBAL_MIN_SOURCE_WEIGHT)
         wsum += float(p.get("sentiment") or 0.0) * vol
         w += vol
         tags.extend(p.get("tags") or [])
