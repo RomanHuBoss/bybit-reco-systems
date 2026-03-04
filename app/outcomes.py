@@ -86,6 +86,7 @@ def compute_outcomes_once(
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.ts <= ? AND o.rec_id IS NULL
+           AND r.status NOT IN ('blocked', 'no_trade', 'suppressed')
            ORDER BY r.ts ASC LIMIT ?""",
         (db.now_ts() - min_horizon, max_to_process),
     )

@@ -548,10 +548,20 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # ── Two-stage calibration: LogReg(features) → Platt ──────────────────
             # Build a temporary reasons-like dict so extract_features() can work
             # with the current (not yet stored) feature set.
+            # ── Compute dir_conf_cal FIRST so extract_features gets the calibrated
+            # value — matching what was stored in reasons_json during training.
+            # (Previously dir_conf_cal was computed after extract_features, causing
+            # a train/inference skew: model trained on calibrated conf, inferred on raw.)
+            _dtmp_pre = dict(f.get("_direction_agg", {}))
+            _xdir_pre = float((_dtmp_pre.get("scores") or {}).get("all", 0.0))
+            _dir_conf_pre = dir_calibrator.predict(_xdir_pre) if dir_calibrator.fitted else float(_dtmp_pre.get("direction_confidence", 0.5))
+            _dir_agg_for_cal = dict(_dtmp_pre)
+            _dir_agg_for_cal["direction_confidence_calibrated"] = _dir_conf_pre
+
             _reasons_for_cal = {
                 "effective_sentiment": effective_sent,
                 "cost_model": {"spread_bps": float(f.get("spread_bps") or 8.0)},
-                "direction_agg": f.get("_direction_agg", {}),
+                "direction_agg": _dir_agg_for_cal,  # includes calibrated dir_conf
                 "top_positive_factors": (reasons.get("top_positive_factors") or []),
                 "top_negative_factors": (reasons.get("top_negative_factors") or []),
             }

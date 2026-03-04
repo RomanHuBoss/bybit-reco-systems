@@ -173,13 +173,17 @@ class LogRegScaler:
             # Platt-only mode (insufficient data for LogReg) or feature length mismatch:
             # fall through to Platt on score if caller passes score as features[7]
             return 0.5  # caller should use predict_score_only() in this case
-        # Linear combination
+        # Linear combination → logit
         z = self.intercept + sum(c * f for c, f in zip(self.coef, features))
-        # Sigmoid → raw logistic probability
+        # Sigmoid → raw logistic probability (used as fallback only)
         p_raw = 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, z))))
-        # Platt calibration on top
+        # Platt calibration on top.
+        # IMPORTANT: Platt was trained on logit(p_logreg) as input (see fit_logreg),
+        # so we must pass z (= logit(p_raw)) here — NOT p_raw itself.
+        # Passing p_raw ∈ [0,1] instead of z ∈ (-∞,+∞) destroys calibration:
+        # weak signals get inflated (~0.05→0.41) and strong ones get suppressed (~0.87→0.64).
         if self.platt.fitted:
-            return self.platt.predict(p_raw)
+            return self.platt.predict(z)
         return p_raw
 
     def predict_score_only(self, score: float) -> float:
