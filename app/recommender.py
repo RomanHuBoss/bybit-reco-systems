@@ -372,7 +372,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     btc_1h_rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", tf_sec=3600, limit=50)
     if not btc_1h_rows:
         btc_1h_rows = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", tf_sec=3600, limit=50)
-    btc_1h_closes = [float(r["close"]) for r in btc_1h_rows] if btc_1h_rows else []
+    # Reverse to oldest-first for log-return calculations in btc_beta
+    btc_1h_closes = [float(r["close"]) for r in reversed(btc_1h_rows)] if btc_1h_rows else []
 
     for venue in settings.venues:
         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
@@ -380,7 +381,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=60, limit=220)
             trow = db.get_latest_ticker(conn, venue, sym)
             ticker = dict(trow) if trow else None
-            f = compute_features_from_ohlcv([dict(r) for r in rows], ticker)
+            # get_latest_ohlcv returns newest-first (ORDER BY ts DESC).
+            # compute_features_from_ohlcv and all indicator functions
+            # (ma_slope, EMA, RSI, MACD, BB) require oldest-first order.
+            f = compute_features_from_ohlcv([dict(r) for r in reversed(rows)], ticker)
             if not f:
                 continue
 
@@ -402,9 +406,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 rows_tf = db.get_latest_ohlcv(conn, venue, sym, tf_sec=tf, limit=260 if tf<=3600 else 420)
                 if not rows_tf or len(rows_tf) < 80:
                     continue
-                closes_tf = [float(r["close"]) for r in rows_tf]
-                highs_tf = [float(r["high"]) for r in rows_tf]
-                lows_tf = [float(r["low"]) for r in rows_tf]
+                # Reverse to oldest-first — get_latest_ohlcv returns newest-first.
+                rows_tf_ord = list(reversed(rows_tf))
+                closes_tf = [float(r["close"]) for r in rows_tf_ord]
+                highs_tf = [float(r["high"]) for r in rows_tf_ord]
+                lows_tf = [float(r["low"]) for r in rows_tf_ord]
                 info = vote_for_tf(closes_tf, highs_tf, lows_tf)
                 tf_map[tf] = info
                 if tf == 60*60:
@@ -418,7 +424,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if sym != "BTCUSDT" and btc_1h_closes:
                 # tf_map stores vote_for_tf dicts, not raw rows — always fetch closes from DB
                 _sym_rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=3600, limit=50)
-                sym_1h_closes = [float(r["close"]) for r in _sym_rows] if _sym_rows else []
+                sym_1h_closes = [float(r["close"]) for r in reversed(_sym_rows)] if _sym_rows else []
                 beta_info = btc_beta(sym_1h_closes, btc_1h_closes, window=24)
             else:
                 beta_info = {"correlation": None, "beta": None,

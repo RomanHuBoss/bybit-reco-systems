@@ -630,6 +630,26 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     cur = conn.execute("DELETE FROM reco_outcomes WHERE ts < ?", (cutoff_14d,))
     deleted["reco_outcomes"] = cur.rowcount
 
+    # ohlcv: keep 30 days. Without pruning this grows at ~216K rows/day
+    # (30 symbols × 5 TFs × 1440 1m candles/day). INSERT OR REPLACE only
+    # refreshes the last ~220-420 candles — older rows accumulate indefinitely.
+    # 30d is far more than any indicator needs (max window: 420 candles ≈ 7h for 1m).
+    cutoff_30d = now_ts() - 30 * 86400
+    cur = conn.execute("DELETE FROM ohlcv WHERE ts < ?", (cutoff_30d,))
+    deleted["ohlcv"] = cur.rowcount
+
+    # ticker_snap: keep 2 days (only latest snapshot is used at inference time)
+    cur = conn.execute("DELETE FROM ticker_snap WHERE ts < ?", (now_ts() - 2 * 86400,))
+    deleted["ticker_snap"] = cur.rowcount
+
+    # funding_rate: keep 7 days (only current value used; history not queried)
+    cur = conn.execute("DELETE FROM funding_rate WHERE ts < ?", (cutoff,))
+    deleted["funding_rate"] = cur.rowcount
+
+    # open_interest: keep 7 days (oi_trend uses last 48 1h candles = 2 days)
+    cur = conn.execute("DELETE FROM open_interest WHERE ts < ?", (cutoff,))
+    deleted["open_interest"] = cur.rowcount
+
     conn.commit()
     return deleted
 
