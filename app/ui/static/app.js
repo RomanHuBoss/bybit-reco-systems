@@ -75,8 +75,11 @@ async function loadStatus() {
     const s = await res.json();
 
     calibFitted = !!s.calibrator_fitted;
-    const count = s.outcome_count || 0;
-    const needed = s.calib_min_samples || 80;
+    const logregActive = !!s.calibrator_logreg;
+    const calibN  = s.calibrator_n  || 0;
+    const count   = s.outcome_count || 0;
+    const needed  = s.calib_min_samples || 80;
+    const logreg_needed = 300;  // matches fit_logreg logreg_min_samples
     const pct = Math.min(100, Math.round(count / needed * 100));
 
     // calibration banner
@@ -85,14 +88,19 @@ async function loadStatus() {
     if (!calibFitted) {
       banner.classList.remove("hidden");
       $("calibProgress").textContent =
-        `Накоплено ${count} / ${needed} исходов (${pct}%). Platt scaling включится автоматически.`;
+        `Накоплено ${count} / ${needed} исходов (${pct}%). Калибровка включится автоматически.`;
       $("calibBarFill").style.width = pct + "%";
       header.textContent = "Увер ⚠";
-      header.title = "Уверенность НЕ откалибрована — числа завышены";
+      header.title = "Уверенность НЕ откалибрована — числа ненадёжны";
+    } else if (!logregActive) {
+      banner.classList.add("hidden");
+      const pct2 = Math.min(100, Math.round(calibN / logreg_needed * 100));
+      header.textContent = "Увер ~";
+      header.title = `Platt scaling активен (${calibN} исходов). LogReg включится после ${logreg_needed} — накоплено ${pct2}%`;
     } else {
       banner.classList.add("hidden");
       header.textContent = "Увер ✓";
-      header.title = "Уверенность откалибрована (Platt scaling)";
+      header.title = `LogReg + Platt активен (${calibN} исходов на глобальной модели)`;
     }
 
     // collect error banner
@@ -263,8 +271,13 @@ async function loadDetails(recId) {
   lines.push(`bot: ${it.bot_type} | dir=${it.direction} | mode=${it.account_mode}/${it.margin_mode}`);
   lines.push(`score=${fmt(it.score)} conf=${fmt(it.confidence)} expRR=${fmt(it.expected_rr)} riskScore=${fmt(it.risk_score)}`);
   lines.push(`status=${it.status}`);
-  if (!confModel.fitted) lines.push(`⚠ conf НЕ откалибрована (Platt не обучен)`);
-  else lines.push(`✓ conf откалибрована (Platt a=${fmt(confModel.a,3)} b=${fmt(confModel.b,3)})`);
+  if (!confModel.fitted) {
+    lines.push(`⚠ conf НЕ откалибрована (нет данных)`);
+  } else if (confModel.logreg_active) {
+    lines.push(`✓ LogReg + Platt (n=${confModel.n_samples}) a=${fmt(confModel.a,3)} b=${fmt(confModel.b,3)}`);
+  } else {
+    lines.push(`~ Platt only (n=${confModel.n_samples}, LogReg нужно ≥300) a=${fmt(confModel.a,3)} b=${fmt(confModel.b,3)}`);
+  }
 
   lines.push("");
   // BTC beta block

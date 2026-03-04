@@ -317,40 +317,56 @@ async def startup_event():
 def api_status() -> dict[str, Any]:
     """System health: calibrator state, outcome progress, sentiment, collect errors."""
     with closing(_get_conn()) as conn:
-        from .calibration import load_platt_from_db
-        platt = load_platt_from_db(conn, "platt_bybit_v2")
-        calib_fitted = bool(platt and platt.fitted)
-        calib_a = float(platt.a) if platt and platt.fitted else None
-        calib_b = float(platt.b) if platt and platt.fitted else None
+        from .calibration import load_logreg_from_db, GLOBAL_LOGREG_KEY, BOT_LOGREG_KEYS
+
+        # Global LogReg+Platt model
+        global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
+        calib_fitted  = bool(global_model and global_model.fitted)
+        calib_n       = int(global_model.n_samples) if global_model and global_model.fitted else 0
+        calib_logreg  = bool(global_model and global_model.fitted and len(global_model.coef) > 0)
+
+        # Per-bot model summary
+        bot_status = {}
+        for bt, key in BOT_LOGREG_KEYS.items():
+            m = load_logreg_from_db(conn, key)
+            bot_status[bt] = {
+                "fitted":       bool(m and m.fitted),
+                "logreg_active": bool(m and m.fitted and len(m.coef) > 0),
+                "n_samples":    int(m.n_samples) if m and m.fitted else 0,
+            }
 
         cur = conn.execute("SELECT COUNT(*) AS c FROM reco_outcomes")
         outcome_count = int(cur.fetchone()["c"])
 
         last_reco_ts = db.get_latest_reco_ts(conn)
 
-        # Count collect errors in last 10 min
         cur = conn.execute(
             "SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?",
             (db.now_ts() - 600,)
         )
         collect_errors_10m = int(cur.fetchone()["c"])
 
-        # Latest sentiment
         from .sentiment_features import compute_sentiment_agg
         sent = compute_sentiment_agg(conn, scope="global", key="crypto")
 
         return {
-            "calibrator_fitted": calib_fitted,
-            "calibrator_params": {"a": calib_a, "b": calib_b},
-            "outcome_count": outcome_count,
-            "calib_min_samples": settings.calib_min_samples,
-            "last_reco_ts": last_reco_ts,
+            "calibrator_fitted":  calib_fitted,
+            "calibrator_logreg":  calib_logreg,
+            "calibrator_n":       calib_n,
+            "calibrator_params":  {
+                "a": float(global_model.platt.a) if global_model and global_model.fitted else None,
+                "b": float(global_model.platt.b) if global_model and global_model.fitted else None,
+            },
+            "bot_calibrators":    bot_status,
+            "outcome_count":      outcome_count,
+            "calib_min_samples":  settings.calib_min_samples,
+            "last_reco_ts":       last_reco_ts,
             "collect_errors_10m": collect_errors_10m,
             "sentiment": {
-                "regime": sent.get("regime"),
+                "regime":   sent.get("regime"),
                 "strength": sent.get("strength"),
-                "ewma_6h": sent.get("ewma", {}).get("6h"),
-                "flags": sent.get("flags"),
+                "ewma_6h":  sent.get("ewma", {}).get("6h"),
+                "flags":    sent.get("flags"),
             },
         }
 

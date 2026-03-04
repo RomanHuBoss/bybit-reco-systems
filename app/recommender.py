@@ -10,7 +10,11 @@ from .regime import classify_regime
 from .risk import gate_candidate, compute_risk_status as _compute_risk_status
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
-from .calibration import fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS
+from .calibration import (
+    fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
+    LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
+    extract_features, BOT_LOGREG_KEYS, GLOBAL_LOGREG_KEY,
+)
 # Note: calibrators use db.get_outcomes_with_recs (single JOIN query) to avoid N+1 pattern
 
 # Re-fit calibrators every hour even if a saved version exists.
@@ -250,60 +254,71 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
     }
     return score, conf0, reasons
 
-def _fit_calibrator(conn, min_samples: int) -> PlattScaler:
-    # Single JOIN query instead of N+1 (get_outcomes_recent + N x get_recommendation_by_id)
-    rows = db.get_outcomes_with_recs(conn, limit=4000)
-    xs = [float(row["score"]) for row in rows]
-    ys = [int(row["success"]) for row in rows]
-    return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
-
-
-def _fit_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
-    """Fit one Platt scaler per bot_type. Returns {bot_type: PlattScaler}."""
-    from collections import defaultdict
-    # Single JOIN query instead of N+1
+def _fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
+    """Fit global LogReg+Platt calibrator on all outcome rows."""
     rows = db.get_outcomes_with_recs(conn, limit=6000)
-    data: dict[str, tuple[list[float], list[int]]] = defaultdict(lambda: ([], []))
-    for row in rows:
-        bt = row["bot_type"]
-        data[bt][0].append(float(row["score"]))
-        data[bt][1].append(int(row["success"]))
+    return fit_logreg(rows, min_samples=min_samples)
 
-    result: dict[str, PlattScaler] = {}
-    for bt, (xs, ys) in data.items():
-        scaler = fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
-        if scaler.fitted:
-            save_platt_to_db(conn, BOT_CALIB_KEYS.get(bt, f"platt_{bt}_v1"), scaler)
-        result[bt] = scaler
+
+def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
+    """Fit one LogReg+Platt per bot_type."""
+    from collections import defaultdict
+    rows = db.get_outcomes_with_recs(conn, limit=8000)
+    data: dict[str, list] = defaultdict(list)
+    for row in rows:
+        data[row["bot_type"]].append(row)
+
+    result: dict[str, LogRegScaler] = {}
+    for bt, bt_rows in data.items():
+        model = fit_logreg(bt_rows, min_samples=min_samples)
+        if model.fitted:
+            save_logreg_to_db(conn, BOT_LOGREG_KEYS.get(bt, f"logreg_{bt}_v1"), model)
+        result[bt] = model
     return result
 
-def _load_bot_calibrators(conn, min_samples: int) -> dict[str, PlattScaler]:
-    """Load per-bot calibrators from DB. Re-fit those that are missing OR stale."""
+
+def _load_or_fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
+    """Load global calibrator; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
+    import time as _time
+    saved = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
+    if saved and saved.fitted:
+        if int(_time.time()) - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
+            return saved
+    model = _fit_global_logreg(conn, min_samples=min_samples)
+    if model.fitted:
+        save_logreg_to_db(conn, GLOBAL_LOGREG_KEY, model)
+    elif saved and saved.fitted:
+        return saved  # keep stale if not enough data yet
+    return model
+
+
+def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
+    """Load per-bot calibrators; re-fit stale or missing ones."""
     import time as _time
     now = int(_time.time())
-    calibrators: dict[str, PlattScaler] = {}
+    calibrators: dict[str, LogRegScaler] = {}
     needs_refit: list[str] = []
-    for bt, key in BOT_CALIB_KEYS.items():
-        saved = load_platt_from_db(conn, key)
+
+    for bt, key in BOT_LOGREG_KEYS.items():
+        saved = load_logreg_from_db(conn, key)
         if saved and saved.fitted:
-            age = now - saved.saved_ts
-            if age < CALIB_REFIT_INTERVAL_SEC:
+            if now - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
                 calibrators[bt] = saved
                 continue
-        # Missing or stale
-        calibrators[bt] = saved if (saved and saved.fitted) else PlattScaler(fitted=False)
+        calibrators[bt] = saved if (saved and saved.fitted) else LogRegScaler(fitted=False)
         needs_refit.append(bt)
+
     if needs_refit:
-        fitted = _fit_bot_calibrators(conn, min_samples)
+        fitted = _fit_bot_logregs(conn, min_samples)
         for bt in needs_refit:
             if bt in fitted and fitted[bt].fitted:
                 calibrators[bt] = fitted[bt]
-            # else: keep the stale/unfitted version already set above
+
     return calibrators
 
+
 def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
-    # Fit on realized outcomes using signed direction score (direction_agg.scores.all).
-    # Single JOIN query instead of N+1
+    """Fit direction calibrator on futures_martingale outcomes (Platt on dir score)."""
     rows = db.get_outcomes_with_recs(conn, limit=5000)
     xs, ys = [], []
     for row in rows:
@@ -317,37 +332,21 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
         ys.append(int(row["success"]))
     return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
+
 def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     """Load direction calibrator; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
     import time as _time
     saved = load_platt_from_db(conn, "platt_direction_v2")
     if saved and saved.fitted:
-        age = int(_time.time()) - saved.saved_ts
-        if age < CALIB_REFIT_INTERVAL_SEC:
+        if int(_time.time()) - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
             return saved
     scaler = _fit_direction_calibrator(conn, min_samples=min_samples)
     if scaler.fitted:
         save_platt_to_db(conn, "platt_direction_v2", scaler)
     elif saved and saved.fitted:
-        return saved  # Keep stale version if not enough data
-    return scaler
-
-def _load_or_fit_calibrator(conn, min_samples: int) -> PlattScaler:
-    """Load general calibrator from DB; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
-    import time as _time
-    saved = load_platt_from_db(conn, "platt_bybit_v2")
-    if saved and saved.fitted:
-        age = int(_time.time()) - saved.saved_ts
-        if age < CALIB_REFIT_INTERVAL_SEC:
-            return saved  # Still fresh — use cached
-    # Not in DB, not fitted, or stale — re-fit now
-    scaler = _fit_calibrator(conn, min_samples=min_samples)
-    if scaler.fitted:
-        save_platt_to_db(conn, "platt_bybit_v2", scaler)
-    elif saved and saved.fitted:
-        # Not enough new data to re-fit — keep the stale version rather than returning unfitted
         return saved
     return scaler
+
 
 def run_recommender_once(conn, settings) -> dict[str, Any]:
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
@@ -356,9 +355,12 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     # Per-symbol sentiment map: {SYMBOL: float} blended from RSS/Reddit/CoinGecko
     symbol_sent_map: dict[str, float] = compute_symbol_sentiment_map(conn)
 
-    calibrator = _load_or_fit_calibrator(conn, min_samples=settings.calib_min_samples)
-    bot_calibrators = _load_bot_calibrators(conn, min_samples=settings.calib_min_samples)
-    dir_calibrator = _load_or_fit_direction_calibrator(conn, min_samples=settings.calib_min_samples)
+    # LogReg+Platt calibrators (new) — replace legacy Platt-on-score
+    global_calibrator  = _load_or_fit_global_logreg(conn, min_samples=settings.calib_min_samples)
+    bot_calibrators    = _load_or_fit_bot_logregs(conn, min_samples=settings.calib_min_samples)
+    dir_calibrator     = _load_or_fit_direction_calibrator(conn, min_samples=settings.calib_min_samples)
+    # Legacy alias — used in PUBLISH log and UI status endpoint
+    calibrator = global_calibrator
 
     features_all: list[dict[str, Any]] = []
     symbol_feature_map: dict[tuple[str,str], dict[str, Any]] = {}
@@ -537,15 +539,32 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     score = _clamp(score - 0.06, -1.0, 1.0)  # crowded long → penalty
 
             conf_raw = float(conf0)
-            # Calibrator is trained on stored scores — which are post-adjustment (see recs.append below).
-            # Use the same post-adjustment score for inference to match training distribution.
+            # ── Two-stage calibration: LogReg(features) → Platt ──────────────────
+            # Build a temporary reasons-like dict so extract_features() can work
+            # with the current (not yet stored) feature set.
+            _reasons_for_cal = {
+                "effective_sentiment": effective_sent,
+                "cost_model": {"spread_bps": float(f.get("spread_bps") or 8.0)},
+                "direction_agg": f.get("_direction_agg", {}),
+                "top_positive_factors": (reasons.get("top_positive_factors") or []),
+                "top_negative_factors": (reasons.get("top_negative_factors") or []),
+            }
+            _row_for_cal = {"score": score, "reasons": _reasons_for_cal, "success": 0}
+            _fv = extract_features(_row_for_cal)
+
             bot_cal = bot_calibrators.get(bot_type)
-            if bot_cal and bot_cal.fitted:
-                conf_cal = float(bot_cal.predict(score))
-            elif calibrator.fitted:
-                conf_cal = float(calibrator.predict(score))
+            if bot_cal and bot_cal.fitted and _fv is not None:
+                conf_cal = float(bot_cal.predict(_fv))
+            elif bot_cal and bot_cal.fitted:
+                # Feature extraction failed — use score-only Platt fallback
+                conf_cal = float(bot_cal.predict_score_only(score))
+            elif global_calibrator.fitted and _fv is not None:
+                conf_cal = float(global_calibrator.predict(_fv))
+            elif global_calibrator.fitted:
+                conf_cal = float(global_calibrator.predict_score_only(score))
             else:
                 conf_cal = float(conf0)
+            # Blend raw sigmoid with calibrated to avoid overconfident cold-start
             conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))
             # OI unwinding → reduce confidence
             if venue == "linear" and oi_sig["signal"] == "caution":
@@ -593,7 +612,17 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             dtmp["direction_confidence_calibrated"] = dir_conf_cal
             dtmp["direction_confidence_model"] = {"type":"platt_scaling","fitted": dir_calibrator.fitted, "a": getattr(dir_calibrator,"a",None), "b": getattr(dir_calibrator,"b",None)}
             reasons2["direction_agg"] = dtmp
-            reasons2["confidence_model"] = {"type":"platt_scaling","fitted":calibrator.fitted,"a": getattr(calibrator,'a',None),"b": getattr(calibrator,'b',None)}
+            # Record which calibrator layer was actually used
+            _bot_cal_info = bot_calibrators.get(bot_type)
+            _using_logreg = bool(_bot_cal_info and _bot_cal_info.fitted and _fv is not None)
+            reasons2["confidence_model"] = {
+                "type": "logreg_platt_v1" if _using_logreg else "platt_only",
+                "fitted": bool(_bot_cal_info and _bot_cal_info.fitted) if _bot_cal_info else global_calibrator.fitted,
+                "n_samples": (_bot_cal_info.n_samples if _bot_cal_info and _bot_cal_info.fitted else global_calibrator.n_samples),
+                "logreg_active": _using_logreg,
+                "a": getattr(getattr(_bot_cal_info, "platt", None), "a", None) if _bot_cal_info else getattr(global_calibrator.platt, "a", None),
+                "b": getattr(getattr(_bot_cal_info, "platt", None), "b", None) if _bot_cal_info else getattr(global_calibrator.platt, "b", None),
+            }
 
             recs.append({
                 "rec_id": rec_id,
