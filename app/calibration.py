@@ -104,7 +104,8 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
     if _dc is None:
         _dc = dir_agg.get("direction_confidence")
     dir_conf = float(_dc) if _dc is not None else 0.5
-    coherence = float(dir_agg.get("coherence") or 0.5)
+    _c = dir_agg.get("coherence")
+    coherence = float(_c) if _c is not None else 0.5
 
     strengths = dir_agg.get("strength") or {}
     if isinstance(strengths, dict):

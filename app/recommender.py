@@ -246,7 +246,7 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
     # Scale raw by 2.5 before sigmoid so conf spans [0.1, 0.9] instead of [0.45, 0.55]
     conf0 = float(_clamp(_sigmoid(raw * 2.5), 0.0, 1.0))
     reasons = {
-        "summary": "Рекомендация в терминах Bybit Trading Bot (Scenario B). Направление определяется голосованием индикаторов на 15m/30m/1h/4h/1d. Сентимент — multi-horizon EWMA (1h/6h/1d/7d) с консолидацией risk_on/off/neutral. Уверенность калибруется (Platt) по 30-мин forward доходности из OHLCV.",
+        "summary": "Рекомендация в терминах Bybit Trading Bot (Scenario B). Направление определяется голосованием индикаторов на 15m/30m/1h/4h/1d. Сентимент — multi-horizon EWMA (1h/6h/1d/7d) с консолидацией risk_on/off/neutral. Уверенность калибруется на реальных исходах по ботовым горизонтам: spot_grid/futures_grid=4h (диапазон), dca_bot=24h (направление), futures_martingale=1h (направление), futures_combo=2h (волатильность >0.8%).",
         "top_positive_factors": sorted(pos, key=lambda x: abs(x["weight"]), reverse=True)[:5],
         "top_negative_factors": sorted(neg, key=lambda x: abs(x["weight"]), reverse=True)[:5],
         "cost_model": {"spread_bps": spread, "taker_fee_bps": taker_fee_bps, "total_cost_bps": cost_bps},
@@ -570,17 +570,25 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             bot_cal = bot_calibrators.get(bot_type)
             if bot_cal and bot_cal.fitted and len(bot_cal.coef) > 0 and _fv is not None:
-                # Full LogReg + Platt path
                 conf_cal = float(bot_cal.predict(_fv))
+                _cal_source = "bot_logreg"
+                _active_cal = bot_cal
             elif bot_cal and bot_cal.fitted:
-                # Platt-only or feature extraction failed
                 conf_cal = float(bot_cal.predict_score_only(score))
+                _cal_source = "bot_platt"
+                _active_cal = bot_cal
             elif global_calibrator.fitted and len(global_calibrator.coef) > 0 and _fv is not None:
                 conf_cal = float(global_calibrator.predict(_fv))
+                _cal_source = "global_logreg"
+                _active_cal = global_calibrator
             elif global_calibrator.fitted:
                 conf_cal = float(global_calibrator.predict_score_only(score))
+                _cal_source = "global_platt"
+                _active_cal = global_calibrator
             else:
                 conf_cal = float(conf0)
+                _cal_source = "raw"
+                _active_cal = None
             # Blend raw sigmoid with calibrated to avoid overconfident cold-start
             conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))
             # OI unwinding → reduce confidence
@@ -629,23 +637,19 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             dtmp["direction_confidence_calibrated"] = dir_conf_cal
             dtmp["direction_confidence_model"] = {"type":"platt_scaling","fitted": dir_calibrator.fitted, "a": getattr(dir_calibrator,"a",None), "b": getattr(dir_calibrator,"b",None)}
             reasons2["direction_agg"] = dtmp
-            # Record which calibrator layer was actually used
-            _bot_cal_info = bot_calibrators.get(bot_type)
-            # _using_logreg is True only when the full LogReg path is available:
-            # model fitted + coef populated (not Platt-only) + feature vector extracted
-            _using_logreg = bool(
-                _bot_cal_info
-                and _bot_cal_info.fitted
-                and len(getattr(_bot_cal_info, 'coef', [])) > 0
-                and _fv is not None
-            )
+            # confidence_model reflects the calibrator ACTUALLY used (_cal_source set above).
+            # Previously used _bot_cal_info presence to fill fields, which gave wrong
+            # fitted/a/b when bot_cal existed-but-unfitted and global was used instead.
             reasons2["confidence_model"] = {
-                "type": "logreg_platt_v1" if _using_logreg else "platt_only",
-                "fitted": bool(_bot_cal_info and _bot_cal_info.fitted) if _bot_cal_info else global_calibrator.fitted,
-                "n_samples": (_bot_cal_info.n_samples if _bot_cal_info and _bot_cal_info.fitted else global_calibrator.n_samples),
-                "logreg_active": _using_logreg,
-                "a": getattr(getattr(_bot_cal_info, "platt", None), "a", None) if _bot_cal_info else getattr(global_calibrator.platt, "a", None),
-                "b": getattr(getattr(_bot_cal_info, "platt", None), "b", None) if _bot_cal_info else getattr(global_calibrator.platt, "b", None),
+                "source": _cal_source,
+                "type": "logreg_platt_v1" if _cal_source in ("bot_logreg", "global_logreg") else (
+                    "platt_only" if _cal_source in ("bot_platt", "global_platt") else "raw"
+                ),
+                "fitted": _active_cal.fitted if _active_cal is not None else False,
+                "n_samples": _active_cal.n_samples if _active_cal is not None and _active_cal.fitted else 0,
+                "logreg_active": _cal_source in ("bot_logreg", "global_logreg"),
+                "a": getattr(getattr(_active_cal, "platt", None), "a", None) if _active_cal else None,
+                "b": getattr(getattr(_active_cal, "platt", None), "b", None) if _active_cal else None,
             }
 
             recs.append({
