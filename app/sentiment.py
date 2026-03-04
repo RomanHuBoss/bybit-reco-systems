@@ -4,6 +4,7 @@ import time
 import xml.etree.ElementTree as ET
 from typing import Any
 import httpx
+import re
 
 # ── endpoints ────────────────────────────────────────────────────────────────
 
@@ -107,8 +108,13 @@ def _now_ts() -> int:
 
 def _score_text(text: str) -> float:
     t = (text or "").lower()
-    p = sum(1 for w in POS_WORDS if w in t)
-    n = sum(1 for w in NEG_WORDS if w in t)
+    # IMPORTANT: avoid substring matching (e.g. "ban" in "bank", "up" in "startup").
+    # Tokenize into words and score on whole-token matches.
+    tokens = re.findall(r"[a-z0-9']+", t)
+    if not tokens:
+        return 0.0
+    p = sum(1 for tok in tokens if tok in POS_WORDS)
+    n = sum(1 for tok in tokens if tok in NEG_WORDS)
     if p == 0 and n == 0:
         return 0.0
     return (p - n) / float(p + n)

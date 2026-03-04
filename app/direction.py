@@ -244,15 +244,35 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
         base_conf -= 0.08  # was 0.10
     direction_confidence = float(_clamp(base_conf, 0.0, 0.99))
 
+    # Regime confidence should be LOW near regime boundaries and HIGH when
+    # trendiness is clearly in-range or clearly trending. The previous formula
+    # (max(trendiness, 1-trendiness)) was almost always >= 0.5, making the
+    # metric artificially high and uninformative.
+    if regime == "trend":
+        # Trend is only valid when both trendiness and coherence are sufficiently high.
+        trend_part = _clamp((trendiness - 0.48) / 0.30, 0.0, 1.0)   # 0 at threshold, ~1 when clearly trending
+        coh_part   = _clamp((coherence  - 0.50) / 0.35, 0.0, 1.0)
+        regime_conf = 0.25 + 0.75 * (0.65 * trend_part + 0.35 * coh_part)
+    elif regime == "range":
+        range_part = _clamp((0.25 - trendiness) / 0.25, 0.0, 1.0)   # 1 near 0, 0 at boundary
+        regime_conf = 0.25 + 0.75 * range_part
+    else:  # transition
+        mid = (0.25 + 0.48) / 2.0
+        half_width = (0.48 - 0.25) / 2.0
+        trans_part = 1.0 - _clamp(abs(trendiness - mid) / max(1e-9, half_width), 0.0, 1.0)
+        regime_conf = 0.25 + 0.75 * trans_part
+    regime_confidence = float(_clamp(regime_conf, 0.0, 1.0))
+
     return {
         "direction": direction,                    # long/short/neutral
         "bias": bias,                              # long/short
         "direction_confidence": direction_confidence,
         "scores": {"tactical": s_tactical, "structural": s_structural, "all": s_all},
         "strength": {"tactical": strength_tact, "structural": strength_struct, "all": strength_all},
+        "trendiness": trendiness,                  # multi-TF trendiness proxy (NOT signed)
         "coherence": coherence,
         "regime": regime,                          # trend/range/transition
-        "regime_confidence": float(_clamp(0.35 + 0.65*max(trendiness, 1-trendiness), 0.0, 1.0)),
+        "regime_confidence": regime_confidence,
         "structural_veto_applied": veto_applied,
         "tf_used": used,
     }

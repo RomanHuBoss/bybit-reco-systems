@@ -67,10 +67,14 @@ def _params(
     direction_bias_strength: float,
     atr_pct_for_grid: float | None,
 ) -> dict[str, Any]:
+    # Use a slower volatility proxy for risk sizing/steps (1h ATR% if available).
     atr_pct_1m = float(f.get("atr_pct") or 0.0)
-    atr_pct = float(atr_pct_for_grid) if atr_pct_for_grid is not None else atr_pct_1m
+    atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
+    atr_pct_slow = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
+    # Grid spacing uses the TF-specific ATR% if provided (preferred), else the slow proxy.
+    atr_pct = float(atr_pct_for_grid) if atr_pct_for_grid is not None else atr_pct_slow
 
-    risk_per_trade = 0.003 if atr_pct < 0.01 else 0.002
+    risk_per_trade = 0.003 if atr_pct_slow < 0.01 else 0.002
     if global_sent < -0.4:
         risk_per_trade *= 0.7
 
@@ -133,7 +137,7 @@ def _params(
         }
 
     if bot_type == "dca_bot":
-        step_pct = float(_clamp(atr_pct_1m * 100.0 * 0.7, 0.2, 2.0))
+        step_pct = float(_clamp(atr_pct_slow * 100.0 * 0.7, 0.2, 2.0))
         max_orders = 6 if global_sent >= -0.4 else 4
         return {
             "bybit_category": "DCA Bot",
@@ -146,7 +150,7 @@ def _params(
 
     if bot_type == "futures_martingale":
         leverage = 2 if global_sent < 0 else 3
-        step_pct = float(_clamp(atr_pct_1m * 100.0 * 0.9, 0.3, 2.5))
+        step_pct = float(_clamp(atr_pct_slow * 100.0 * 0.9, 0.3, 2.5))
         max_steps = 5 if global_sent >= -0.4 else 4
         return {
             "bybit_category": "Futures Martingale",
@@ -170,7 +174,9 @@ def _params(
     return {"investment_risk_per_trade": risk_per_trade}
 
 def _expected_rr(bot_type: str, f: dict[str, Any]) -> float:
-    atr_pct = float(f.get("atr_pct") or 0.0)
+    atr_pct_1m = float(f.get("atr_pct") or 0.0)
+    atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
+    atr_pct = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
     if bot_type in ("spot_grid","futures_grid"):
         return float(_clamp(1.2 - 8*atr_pct, 0.6, 2.0))
     if bot_type == "dca_bot":
@@ -182,17 +188,18 @@ def _expected_rr(bot_type: str, f: dict[str, Any]) -> float:
     return 1.0
 
 def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, global_sent: float) -> tuple[float, float, dict[str, Any]]:
-    # Use multi-TF trendiness from direction_agg if available (more reliable than 1m slope)
+    # Use multi-TF *trendiness* (unsigned) from direction_agg when available.
+    # IMPORTANT: abs(direction_strength) is NOT trendiness; it is the magnitude of the signed direction score.
     dir_agg_f = f.get("_direction_agg") or {}
-    _strengths = dir_agg_f.get("strength") or {}
-    if isinstance(_strengths, dict) and _strengths.get("all") is not None:
-        trend = float(_clamp(abs(float(_strengths["all"])), 0.0, 1.0))
-    else:
-        trend = float(f.get("trend_strength") or 0.0)
-    rng = float(f.get("range_score") or 0.0)
-    # Recalculate range_score based on actual multi-TF trendiness
+    t_multi = dir_agg_f.get("trendiness")
+    trend = float(_clamp(float(t_multi) if t_multi is not None else float(f.get("trend_strength") or 0.0), 0.0, 1.0))
+    # Range score is the complement of trendiness.
     rng = max(0.0, 1.0 - trend)
-    atr_pct = float(f.get("atr_pct") or 0.0)
+
+    # Volatility for scoring/risk should use a slower proxy (1h ATR% if available).
+    atr_pct_1m = float(f.get("atr_pct") or 0.0)
+    atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
+    atr_pct = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
     spread = f.get("spread_bps")
     spread = float(spread) if spread is not None else 8.0
 
@@ -462,7 +469,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             spread = f.get("spread_bps")
             spread = float(spread) if spread is not None else 12.0
-            atr_pct = float(f.get("atr_pct") or 0.0)
+            # Risk/scoring volatility proxy: prefer 1h ATR% (from multi-TF direction pass).
+            atr_pct_1m = float(f.get("atr_pct") or 0.0)
+            atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
+            atr_pct = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
 
             # ── Liquidity tier — use per-(venue,sym) cached ticker ──
             _trow = symbol_ticker_map.get((venue, sym))
@@ -514,10 +524,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
             # Use multi-TF trendiness for gate (same source as _score uses)
             _dir_agg_gate = f.get("_direction_agg") or {}
-            _strengths_gate = _dir_agg_gate.get("strength") or {}
-            _multitf_trend = float(_strengths_gate.get("all", 0.0)) if isinstance(_strengths_gate, dict) else 0.0
-            if bot_type in ("spot_grid","futures_grid") and _multitf_trend > 0.60:
-                feasibility_blocks.append({"code":"TREND_TOO_STRONG", "msg": f"multi_tf_trend_strength={_multitf_trend:.2f} слишком сильный тренд для grid"})
+            _multitf_trendiness = float(_dir_agg_gate.get("trendiness") or 0.0)
+            if bot_type in ("spot_grid","futures_grid") and _multitf_trendiness > 0.60:
+                feasibility_blocks.append({"code":"TREND_TOO_STRONG", "msg": f"multi_tf_trendiness={_multitf_trendiness:.2f} слишком сильный тренд для grid"})
             dir_tmp = f.get("_direction_agg", {})
             dir_conf = float(dir_tmp.get("direction_confidence", 0.5))
 
@@ -669,7 +678,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     bot_type,
                     venue,
                     f,
-                    global_sent=global_sent,
+                    global_sent=effective_sent,
                     direction=direction,
                     taker_fee_bps=taker_fee_bps,
                     direction_bias=str(f.get("_direction_agg", {}).get("bias", "neutral")),

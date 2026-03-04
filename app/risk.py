@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,10 +19,19 @@ class RiskStatus:
     symbol_bot_counts: dict[str, int]
 
 def day_start_ts_utc() -> int:
-    # Keep it simple: use local epoch day boundary (UTC-like approximation).
-    # For production: use timezone-aware day boundary.
-    now = int(time.time())
-    return now - (now % 86400)
+    """Day boundary used for daily PnL/DD limits.
+
+    Default is UTC midnight, but can be overridden via env var RISK_DAY_TZ
+    (IANA timezone name, e.g. "UTC", "America/Chicago").
+    """
+    tz_name = os.getenv("RISK_DAY_TZ", "UTC")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    now = datetime.now(tz)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(midnight.timestamp())
 
 def get_risk_limits(conn, fallback_limits: dict[str, Any]) -> dict[str, Any]:
     active = db.get_active_risk_limits(conn)

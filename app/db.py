@@ -11,10 +11,13 @@ MIGRATION_INIT_SQL = Path(__file__).resolve().parent.parent / "migrations" / "in
 
 def connect(db_path: str) -> sqlite3.Connection:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
+    # Multiple background threads write concurrently (collector/sentiment/recommender/outcomes).
+    # Use a longer SQLite busy timeout to avoid transient "database is locked" write failures.
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=60.0)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA busy_timeout=5000;")
+        conn.execute("PRAGMA busy_timeout=60000;")
+        conn.execute("PRAGMA foreign_keys=ON;")
     except Exception:
         pass
     return conn
@@ -87,7 +90,10 @@ def get_latest_ohlcv(conn: sqlite3.Connection, venue: str, symbol: str, tf_sec: 
         """SELECT * FROM ohlcv WHERE venue=? AND symbol=? AND tf_sec=? ORDER BY ts DESC LIMIT ?""",
         (venue, symbol, tf_sec, limit),
     )
-    return list(cur.fetchall())[::-1]  # oldest -> newest
+    # IMPORTANT CONTRACT:
+    #   Returned rows are ordered newest -> oldest (ts DESC), matching the SQL.
+    #   Callers that need oldest -> newest (e.g. indicator calculations) must reverse().
+    return list(cur.fetchall())
 
 def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> sqlite3.Row | None:
     cur = conn.execute(
