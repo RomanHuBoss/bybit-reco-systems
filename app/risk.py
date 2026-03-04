@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
+
+try:
+    # Python 3.9+ (PEP 615). Requires system tzdata or the "tzdata" pip package.
+    from zoneinfo import ZoneInfo  # type: ignore
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,11 +29,18 @@ def day_start_ts_utc() -> int:
     Default is UTC midnight, but can be overridden via env var RISK_DAY_TZ
     (IANA timezone name, e.g. "UTC", "America/Chicago").
     """
-    tz_name = os.getenv("RISK_DAY_TZ", "UTC")
-    try:
-        tz = ZoneInfo(tz_name)
-    except Exception:
-        tz = ZoneInfo("UTC")
+    tz_name = (os.getenv("RISK_DAY_TZ", "UTC") or "UTC").strip()
+
+    # Be robust on minimal systems (or Windows) where zoneinfo has no tz database.
+    # If tz cannot be resolved, fall back to fixed UTC instead of crashing.
+    tz = timezone.utc
+    if tz_name.upper() in {"UTC", "Z", "ETC/UTC", "ETC/GMT", "GMT"}:
+        tz = timezone.utc
+    elif ZoneInfo is not None:
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = timezone.utc
     now = datetime.now(tz)
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return int(midnight.timestamp())
