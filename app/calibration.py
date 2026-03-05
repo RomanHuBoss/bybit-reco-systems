@@ -204,12 +204,20 @@ def fit_logreg(
     - If n >= logreg_min_samples: fit full LogReg + Platt on LogReg probabilities.
     - If logreg_min_samples > n >= min_samples: fit Platt on score only (legacy mode).
     - If n < min_samples: return unfitted.
+    - If class balance is degenerate (WR < 5% or > 95%): return unfitted.
+      Fitting on near-homogeneous labels produces extreme Platt intercepts that
+      drag calibrated confidence toward 0 or 1 for all inputs.
     """
     xs_score = [float(r["score"]) for r in rows]
     ys       = [int(r["success"]) for r in rows]
     n        = len(rows)
 
     if n < min_samples:
+        return LogRegScaler(fitted=False)
+
+    # Guard: degenerate class balance → calibrator would be meaningless
+    win_rate = sum(ys) / n
+    if win_rate < 0.05 or win_rate > 0.95:
         return LogRegScaler(fitted=False)
 
     # Always fit a Platt on score as fallback/baseline
