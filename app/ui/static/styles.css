@@ -252,6 +252,18 @@ body {
   white-space: nowrap;
 }
 .table th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.table th[data-sort] {
+  cursor: pointer;
+  user-select: none;
+}
+.table th[data-sort]:hover { color: var(--fg); }
+.table th[data-sort]::after {
+  content: " ⇅";
+  opacity: 0.3;
+  font-size: 10px;
+}
+.table th[data-sort].sort-asc::after  { content: " ↑"; opacity: 1; color: var(--good); }
+.table th[data-sort].sort-desc::after { content: " ↓"; opacity: 1; color: var(--good); }
 .row-recommended td:first-child {
   border-left: 2px solid var(--good);
 }

@@ -8,6 +8,11 @@ let countdownVal = 10;
 let currentRecId = null;   // rec_id currently shown in Details panel
 let currentMeta  = null;   // {venue, symbol, bot_type} — used to find fresh rec_id on refresh
 
+// ── sort state ────────────────────────────────────────────────────────────────
+let sortCol = "confidence";  // default: sort by confidence descending
+let sortDir = "desc";        // "asc" | "desc"
+let lastItems = [];          // last fetched items — re-sorted on header click without refetch
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function fmt(x, n = 2) {
@@ -178,9 +183,52 @@ async function loadRecommendations() {
   body.innerHTML = "";
 
   const items = data.items || [];
-  let hasRecommended = false;
+  lastItems = items;
+  renderRecoTable(items);
 
-  items.forEach((it, i) => {
+  const banner = $("noTrade");
+  const hasRecommended = items.some(it => it.status === "recommended");
+  if (!hasRecommended) banner.classList.remove("hidden");
+  else banner.classList.add("hidden");
+}
+
+function applySort(items) {
+  if (!sortCol) return [...items];
+  return [...items].sort((a, b) => {
+    let av, bv;
+    if (sortCol === "dir_conf") {
+      const da = (a.reasons || {}).direction_agg || {};
+      const db = (b.reasons || {}).direction_agg || {};
+      av = da.direction_confidence_calibrated ?? da.direction_confidence ?? -1;
+      bv = db.direction_confidence_calibrated ?? db.direction_confidence ?? -1;
+    } else {
+      av = a[sortCol] ?? "";
+      bv = b[sortCol] ?? "";
+    }
+    if (typeof av === "string") av = av.toLowerCase();
+    if (typeof bv === "string") bv = bv.toLowerCase();
+    if (av < bv) return sortDir === "asc" ? -1 :  1;
+    if (av > bv) return sortDir === "asc" ?  1 : -1;
+    return 0;
+  });
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll(".table th[data-sort]").forEach(th => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.dataset.sort === sortCol) {
+      th.classList.add(sortDir === "asc" ? "sort-asc" : "sort-desc");
+    }
+  });
+}
+
+function renderRecoTable(items) {
+  const sorted = applySort(items);
+  updateSortHeaders();
+  const body = $("recoBody");
+  body.innerHTML = "";
+  let hasRecommended = false;
+  sorted.forEach((it, i) => {
     if (it.status === "recommended") hasRecommended = true;
     const dirAgg = (it.reasons || {}).direction_agg || {};
     const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
@@ -208,12 +256,10 @@ async function loadRecommendations() {
     `;
     body.appendChild(tr);
   });
-
   const banner = $("noTrade");
   if (!hasRecommended) banner.classList.remove("hidden");
   else banner.classList.add("hidden");
 }
-
 function directionBadge(dir) {
   if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">neutral</span>`;
   if (dir === "long")  return `<span class="dir-badge dir-long">▲ long</span>`;
@@ -564,6 +610,21 @@ $("decisionsBtn").addEventListener("click", loadDecisions);
 $("riskBtn").addEventListener("click", loadRisk);
 $("outcomesBtn").addEventListener("click", loadOutcomes);
 $("healthBtn").addEventListener("click", loadHealth);
+
+// ── column sort ───────────────────────────────────────────────────────────────
+document.querySelector("#recoTable thead").addEventListener("click", (e) => {
+  const th = e.target.closest("th[data-sort]");
+  if (!th) return;
+  const col = th.dataset.sort;
+  if (sortCol === col) {
+    sortDir = sortDir === "desc" ? "asc" : "desc";
+  } else {
+    sortCol = col;
+    // numeric columns: default desc (highest first); text columns: default asc
+    sortDir = ["score", "confidence", "dir_conf", "expected_rr"].includes(col) ? "desc" : "asc";
+  }
+  if (lastItems.length) renderRecoTable(lastItems);
+});
 
 $("refreshDetailsBtn").addEventListener("click", () => {
   if (!currentMeta) return;
