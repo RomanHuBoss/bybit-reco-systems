@@ -11,17 +11,32 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
     trend = [f.get("trend_strength", 0.0) for f in features_by_symbol if f.get("trend_strength") is not None]
     spreads = [f.get("spread_bps", 0.0) for f in features_by_symbol if f.get("spread_bps") is not None]
 
+    # 1h ATR — same source the scorer uses; only present after multi-TF pass
+    atr_pcts_1h = [f["_atr_pct_1h"] for f in features_by_symbol
+                   if f.get("_atr_pct_1h") is not None and f["_atr_pct_1h"] > 0]
+
     avg_atr = sum(atr_pcts) / max(1, len(atr_pcts))
     avg_trend = sum(trend) / max(1, len(trend))
     avg_spread = sum(spreads) / max(1, len(spreads)) if spreads else None
+    avg_atr_1h = sum(atr_pcts_1h) / max(1, len(atr_pcts_1h)) if atr_pcts_1h else None
 
-    # vol bins (heuristic)
-    if avg_atr < 0.003:
-        vol_state = "low"
-    elif avg_atr < 0.01:
-        vol_state = "normal"
+    # vol_state: prefer 1h ATR (matches scorer) over 1m ATR (regime display was 59× lower).
+    # Thresholds align with _score() normalizers (0.06 = "normal/high" boundary).
+    if avg_atr_1h is not None:
+        if avg_atr_1h < 0.02:
+            vol_state = "low"
+        elif avg_atr_1h < 0.06:
+            vol_state = "normal"
+        else:
+            vol_state = "high"
     else:
-        vol_state = "high"
+        # Fallback: 1m ATR (pre-multi-TF-pass or symbol without 1h data)
+        if avg_atr < 0.003:
+            vol_state = "low"
+        elif avg_atr < 0.01:
+            vol_state = "normal"
+        else:
+            vol_state = "high"
 
     if avg_trend > 0.6:
         trend_state = "trending"
@@ -68,6 +83,7 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
         "trend_state": trend_state,
         "risk_state": risk_state,
         "avg_atr_pct": avg_atr,
+        "avg_atr_pct_1h": avg_atr_1h,  # 1h ATR used for vol_state classification
         "avg_trend_strength": avg_trend,
         "avg_spread_bps": avg_spread,
         "confidence": confidence,

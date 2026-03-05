@@ -68,7 +68,7 @@ def fit_platt(
 FEATURE_NAMES = [
     "range_score",        # 1 − trend_strength (multi-TF)
     "trend_strength",     # |all-TF trend strength|
-    "atr_pct_norm",       # atr_pct / 0.02  (normalised, clipped 0..2)
+    "atr_pct_norm",       # atr_pct / 0.10  (normalised, clipped 0..2; 1.0 ≈ 10% 1h ATR)
     "effective_sentiment",# blended global+symbol sentiment [-1, 1]
     "dir_conf",           # direction_confidence_calibrated (or raw) [0, 1]
     "coherence",          # direction coherence [0, 1]
@@ -131,7 +131,7 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
     return [
         _clamp(range_score,           0.0, 1.0),
         _clamp(trend_strength,        0.0, 1.0),
-        _clamp(atr_pct / 0.02,        0.0, 2.0),   # normalised
+        _clamp(atr_pct / 0.10,        0.0, 2.0),   # normalised: /0.10 so 1.0 = 10% 1h ATR
         _clamp(sent,                  -1.0, 1.0),
         _clamp(dir_conf,              0.0, 1.0),
         _clamp(coherence,             0.0, 1.0),
@@ -385,15 +385,17 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 # ── Key registry ──────────────────────────────────────────────────────────────
 
-# LogReg+Platt keys (new)
+# LogReg+Platt keys — v2 bumped after atr_pct_norm fix (/0.02 → /0.10).
+# Old v1 models were trained with a saturated ATR feature (most small-caps hit clamp ceiling).
+# Bumping key forces an immediate refit on the next recommender cycle.
 BOT_LOGREG_KEYS = {
-    "spot_grid":          "logreg_spot_grid_v1",
-    "futures_grid":       "logreg_futures_grid_v1",
-    "dca_bot":            "logreg_dca_v1",
-    "futures_martingale": "logreg_martingale_v1",
-    "futures_combo":      "logreg_combo_v1",
+    "spot_grid":          "logreg_spot_grid_v2",
+    "futures_grid":       "logreg_futures_grid_v2",
+    "dca_bot":            "logreg_dca_v2",
+    "futures_martingale": "logreg_martingale_v2",
+    "futures_combo":      "logreg_combo_v2",
 }
-GLOBAL_LOGREG_KEY    = "logreg_global_v1"
+GLOBAL_LOGREG_KEY    = "logreg_global_v2"
 DIRECTION_LOGREG_KEY = "logreg_direction_v1"
 
 # Legacy Platt keys (kept for direction calibrator + backward compat)

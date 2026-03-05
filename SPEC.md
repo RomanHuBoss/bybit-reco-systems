@@ -1,6 +1,6 @@
 # Bybit Recommender — Technical Specification
 
-Version: V3.8 (2026-03)
+Version: V4.0 (2026-03)
 
 ---
 
@@ -97,28 +97,36 @@ Purpose: high BTC correlation means the symbol's direction signal reflects BTC, 
 
 ### Score formula per bot type
 
-**spot_grid / futures_grid**:
+**spot_grid**:
 ```
-raw = 1.4×range - 1.0×trend - 0.6×clamp(atr/0.015, 0,2) + 0.2×sent - 0.35×cost_penalty
+raw = 1.4×range - 1.0×trend - 0.6×clamp(atr/0.06, 0,2) + 0.2×sent - 0.35×cost_penalty
+```
+
+**futures_grid**:
+```
+raw = 1.2×range - 0.9×trend - 0.7×clamp(atr/0.06, 0,2) + 0.2×sent - 0.35×cost_penalty
 ```
 
 **dca_bot**:
 ```
-raw = 0.4 + 0.5×clamp(0.5+sent, 0,1) - 0.7×clamp(atr/0.02, 0,2) - 0.35×cost_penalty
+raw = 0.4 + 0.5×clamp(0.5+sent, 0,1) - 0.7×clamp(atr/0.12, 0,2) - 0.35×cost_penalty
 ```
 
 **futures_martingale**:
 ```
-raw = 0.8×range - 0.8×clamp(atr/0.018,0,2) + 0.4×clamp(sent+0.2,0,1)
+raw = 0.8×range - 0.8×clamp(atr/0.06, 0,2) + 0.4×clamp(sent+0.2,0,1)
       - 0.2×trend + 0.3×coherence×dir_strength - 0.35×cost_penalty
 ```
 
 **futures_combo**:
 ```
-raw = 0.3 + 0.7×clamp(-sent,0,1) + 0.4×clamp(atr/0.02,0,2) - 0.35×cost_penalty
+raw = 0.7×clamp(-sent,0,1) + 0.4×clamp(atr/0.06,0,2) - 0.35×cost_penalty
 ```
+_(No unconditional baseline. Combo passes only when sentiment is negative or 1h ATR > ~3%.)_
 
 Where:
+- `atr` = 1h ATR% (from `_atr_pct_1h`; falls back to 1m ATR if 1h unavailable)
+- ATR normalizers reference 1h ATR scale: `0.06` ≈ 6% = high-volatility boundary for grid/martingale; `0.12` = DCA tolerance is ~2× higher
 - `range = max(0, 1 - trend)` — derived from multi-TF trend strength
 - `trend` = `|strength.all|` from direction aggregation
 - `cost_penalty = clamp(cost_bps/50, 0, 1)`
@@ -153,7 +161,7 @@ OI unwinding signal: `conf × 0.88`
 | `FUNDING_EXTREME` | funding_rate > 0.06%/8h |
 | `SPREAD_TOO_WIDE` | spread_bps > 14 for grid bots |
 | `TREND_TOO_STRONG` | multi_tf_trend_strength > 0.60 for grid bots |
-| `MARTINGALE_BLOCKED` | atr > 0.018 OR panic OR risk_off strong OR sent < -0.45 |
+| `MARTINGALE_BLOCKED` | atr > 0.05 OR panic OR risk_off strong OR sent < -0.45 |
 | `DIR_CONF_TOO_LOW` | dir_conf < 0.65 (martingale only) |
 | `DCA_BLOCKED_PANIC` | sent < -0.70 OR panic flag |
 | `MAX_CONCURRENT_BOTS` | total running bots ≥ limit |
@@ -228,7 +236,7 @@ Blend at inference: `conf = 0.5 × conf_raw + 0.5 × conf_calibrated`
 |---|---|---|---|
 | 0 | range_score | 1 − \|strength.all\| | [0, 1] |
 | 1 | trend_strength | \|strength.all\| | [0, 1] |
-| 2 | atr_pct_norm | atr_pct / 0.02, clipped | [0, 2] |
+| 2 | atr_pct_norm | atr_pct / 0.10, clipped | [0, 2] |
 | 3 | effective_sentiment | blended global+symbol | [-1, 1] |
 | 4 | dir_conf | direction_confidence_calibrated ∥ raw | [0, 1] |
 | 5 | coherence | multi-TF direction agreement | [0, 1] |
@@ -267,6 +275,9 @@ Note: `dir_conf` uses explicit `None` checks (not `or`-chaining) to correctly ha
   for the full horizon (checked against 1m candle min/max).
   Fallback (no range stored): `|ret| < 1.5%` over horizon.
 - **Directional bots**: `ret > 0` in the direction of the recommendation.
+- **futures_combo / hedge**: `|ret| > max(2%, 0.8 × atr_1h_at_entry)`.
+  Uses ATR-relative threshold to keep the base success rate ~55% across volatility regimes.
+  Fixed 0.8% threshold inflated win-rate to 93%+ in high-volatility periods.
 
 ---
 

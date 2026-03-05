@@ -1,4 +1,101 @@
-## V3.9 — Audit & bugfix: calibration math, feature extraction, inference path
+## V4.0 — ATR-scale fix: grid/martingale/DCA restored; combo baseline removed; regime vol fix
+
+### Root cause (all four bugs share one origin)
+
+`_score()` was refactored in V3.0 to use `atr_pct_1h` (1h ATR) as the volatility proxy for
+more stable scoring. However, all numeric ATR thresholds in the scoring formulas were carried
+over unchanged from the 1m-ATR era. Typical 1h ATR for small-cap symbols (BARD, ZRO, GRASS…)
+is 3–8%, versus 0.1–0.5% for 1m ATR — a 20–60× discrepancy. Consequence:
+
+- `futures_grid` and `futures_martingale` scoring penalised every symbol to `no_trade` / `blocked`.
+- `dca_bot` also penalised to `no_trade` for any symbol with 1h ATR > 2%.
+- `futures_combo` scoring used the same high ATR as a **bonus**, creating a self-reinforcing
+  cycle: combo wins every per-symbol contest → calibrator trains on combo outcomes only →
+  calibrator inflates combo confidence further.
+
+### Fix 1 — ATR normalizer thresholds rescaled to 1h ATR domain (recommender.py) — CRITICAL
+
+Old vs new normalizer constants in `_score()`:
+
+| Bot type | Old divisor | New divisor | Basis |
+|---|---|---|---|
+| spot_grid | 0.015 | 0.06 | penalty=1.0 at 6% 1h ATR |
+| futures_grid | 0.018 | 0.06 | same scale |
+| futures_martingale | 0.018 | 0.06 | same scale |
+| dca_bot | 0.02 | 0.12 | DCA is more tolerant of vol |
+| futures_combo | 0.02 | 0.06 | bonus scale matches penalty scale |
+
+Block threshold for `futures_martingale` changed: `atr_pct > 0.018` → `atr_pct > 0.05`.
+Old threshold (1.8%) blocked 100% of symbols. New threshold (5%) blocks only extreme-vol
+cases while allowing normal-to-elevated volatility markets.
+
+**Resulting scores at 1h ATR = 6.8% (ranging, neutral sentiment):**
+
+| Bot | Before | After |
+|---|---|---|
+| spot_grid | +0.091 (marginal) | +0.437 ✓ |
+| futures_grid | **−0.175** (no_trade) | +0.228 ✓ |
+| dca_bot | **−0.542** (no_trade) | +0.126 ✓ |
+| futures_martingale | **blocked** (always) | blocked (>5% only) |
+| futures_combo | +0.691 (dominant) | +0.261 (competitive) |
+
+### Fix 2 — futures_combo unconditional baseline removed (recommender.py) — CRITICAL
+
+Old formula: `rule = 0.3 + 0.7×(-sent) + 0.4×atr_bonus`
+
+The constant `+0.3` guaranteed combo always passed `min_score=0.08` regardless of market
+conditions. Removed. New formula:
+
+```
+rule = 0.7×clamp(-sent, 0, 1) + 0.4×clamp(atr/0.06, 0, 2) - 0.35×cost_penalty
+```
+
+Combo now requires either elevated ATR (> ~3%) or negative sentiment to be recommended.
+At low-vol neutral market it correctly falls below threshold.
+
+### Fix 3 — vol_state in classify_regime now uses 1h ATR (regime.py) — HIGH
+
+`classify_regime()` classified `vol_state` from 1m ATR (`avg_atr_pct ≈ 0.001`), always
+reporting `vol=low` while `_score()` was simultaneously processing 1h ATR of 3–8%.
+Operators saw contradictory information (UI: "vol=low"; system: treating as high-vol).
+
+Fix: when `_atr_pct_1h` is present in feature dicts, use it for vol_state classification.
+New thresholds for 1h ATR: `low < 2%`, `2% ≤ normal < 6%`, `high ≥ 6%`.
+`avg_atr_pct_1h` added to regime output for transparency.
+1m ATR fallback retained if 1h data is unavailable.
+
+### Fix 4 — atr_pct_norm feature in calibrator rescaled (calibration.py) — HIGH
+
+`extract_features()` normalised `atr_pct / 0.02`, clipped to [0, 2].
+With 1h ATR = 5–10%, `atr/0.02 = 2.5–5.0`, always saturating at 2.0.
+The LogisticRegression could not distinguish moderate volatility (3%) from extreme (10%).
+
+Fix: normalizer changed to `atr_pct / 0.10` — feature reaches 1.0 at 10% 1h ATR.
+Model version keys bumped `_v1 → _v2` to force immediate refit with correct normalization
+on the next recommender cycle (existing v1 models in `app_config` are skipped).
+
+### Fix 5 — futures_combo outcome threshold made ATR-relative (outcomes.py) — MEDIUM
+
+Fixed threshold `|ret| > 0.8%` over 2h horizon gave 93%+ `success=1` rate when 1h ATR
+was 6.8% (2h sigma ≈ 9.6%). The calibrator learned to assign high confidence to combo
+in any volatile market, regardless of actual predictive value.
+
+New threshold: `|ret| > max(2%, 0.8 × atr_1h_at_entry)`. ATR is read from
+`params.trade_plan.volatility.atr_pct_1h` stored at recommendation time.
+This yields a stable ~55% base success rate across the full ATR range.
+
+### No-change decisions
+
+- **RSI implementation** (SMA vs Wilder): max impact on direction score ≈ 0.05 per TF (weight 0.15);
+  RSI rarely diverges > 2 points between methods in practice. Not patched — insufficient signal/noise.
+- **OI index approximation** (oi_trend): OI affects only confidence ×0.88, no score impact.
+  Index offset of 1–2 periods is directionally correct. Not patched.
+- **spot_grid liquidity for small caps**: spot_grid IS generated (25 outcomes confirm it).
+  Currently absent from top-50 due to lower score competing against futures combo.
+  This is expected behaviour after the scoring fix above, not a separate bug.
+
+---
+
 
 ### 1. Platt fitted on logit(p_logreg) instead of raw probabilities (calibration.py) — math fix
 

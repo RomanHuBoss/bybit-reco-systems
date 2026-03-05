@@ -143,6 +143,7 @@ def compute_outcomes_once(
 
         # ── Directional bots: success = price moved in direction ─────────────
         elif bot_type in DIRECTIONAL_BOTS:
+            params = _get_rec_params(conn, rec_id)  # needed for combo ATR threshold
             ep = _get_close_at_or_after(conn, venue, symbol, ts_exit)
             if ep is None:
                 continue
@@ -150,8 +151,17 @@ def compute_outcomes_once(
             price_ret = (exitp - entry) / entry  # actual price return — stored unchanged
 
             if bot_type == "futures_combo" or direction == "hedge":
-                # Both legs capture volatility; flat market = loss
-                success = 1 if abs(price_ret) > 0.008 else 0
+                # ATR-relative threshold: ~0.8× 1h ATR at entry, minimum 2%.
+                # Fixed 0.8% threshold was too easy to hit in high-vol regimes (93%+ success at
+                # 1h ATR 6.8%) causing the calibrator to over-rate combo in any volatile market.
+                # Scaling with ATR keeps the base success rate stable (~55%) across vol regimes.
+                atr_thresh = 0.020  # default 2% if ATR unavailable
+                if params:
+                    vol = (params.get("trade_plan") or {}).get("volatility") or {}
+                    atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.0)
+                    if atr_1h > 0:
+                        atr_thresh = max(0.020, atr_1h * 0.8)
+                success = 1 if abs(price_ret) > atr_thresh else 0
             elif direction not in ("long", "short"):
                 continue
             else:

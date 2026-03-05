@@ -441,19 +441,22 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
     rule = 0.0
 
     if bot_type == "spot_grid":
-        rule = 1.4*rng - 1.0*trend - 0.6*_clamp(atr_pct/0.015, 0.0, 2.0) + 0.2*max(-0.5, min(0.5, sent))
+        # ATR normalizer 0.06 = 1h ATR at which penalty reaches 1.0 (~6% hourly = high for grid)
+        rule = 1.4*rng - 1.0*trend - 0.6*_clamp(atr_pct/0.06, 0.0, 2.0) + 0.2*max(-0.5, min(0.5, sent))
         add_pos("range_score", rng, 1.4, "флет/диапазон подходит для Spot Grid")
         add_neg("trend_strength", trend, -1.0, "сильный тренд опасен для grid")
         add_neg("atr_pct", atr_pct, -0.6, "высокая волатильность ухудшает grid")
         add_pos("effective_sentiment", sent, 0.2, "сентимент влияет на риск-режим")
     elif bot_type == "futures_grid":
-        rule = 1.2*rng - 0.9*trend - 0.7*_clamp(atr_pct/0.018, 0.0, 2.0) + 0.2*sent
+        # ATR normalizer 0.06: same scale as spot_grid (both receive 1h ATR)
+        rule = 1.2*rng - 0.9*trend - 0.7*_clamp(atr_pct/0.06, 0.0, 2.0) + 0.2*sent
         add_pos("range_score", rng, 1.2, "флет подходит для Futures Grid")
         add_neg("trend_strength", trend, -0.9, "тренд ломает сетку")
         add_neg("atr_pct", atr_pct, -0.7, "волатильность повышает риск ликвидации")
         add_pos("effective_sentiment", sent, 0.2, "сентимент учитывается")
     elif bot_type == "dca_bot":
-        rule = 0.4 + 0.5*_clamp(0.5 + sent, 0.0, 1.0) - 0.7*_clamp(atr_pct/0.02, 0.0, 2.0)
+        # ATR normalizer 0.12: DCA is more tolerant of volatility (spot accumulation)
+        rule = 0.4 + 0.5*_clamp(0.5 + sent, 0.0, 1.0) - 0.7*_clamp(atr_pct/0.12, 0.0, 2.0)
         add_pos("effective_sentiment", sent, 0.5, "нейтральный/позитивный сентимент поддерживает DCA")
         add_neg("atr_pct", atr_pct, -0.7, "высокая волатильность повышает риск просадки")
     elif bot_type == "futures_martingale":
@@ -461,14 +464,17 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
         dir_info = f.get("_direction_agg", {}) if hasattr(f, "get") else {}
         dir_coherence = float((dir_info.get("coherence") or 0.5))
         dir_strength = float(((dir_info.get("strength") or {}).get("all", 0.0) if isinstance(dir_info.get("strength"), dict) else dir_info.get("strength", 0.0)))
-        rule = 0.8*rng - 0.8*_clamp(atr_pct/0.018, 0.0, 2.0) + 0.4*_clamp(sent+0.2, 0.0, 1.0) - 0.2*trend + 0.3*dir_coherence*dir_strength
+        # ATR normalizer 0.06: matches grid scale (martingale blocked above 5% 1h ATR anyway)
+        rule = 0.8*rng - 0.8*_clamp(atr_pct/0.06, 0.0, 2.0) + 0.4*_clamp(sent+0.2, 0.0, 1.0) - 0.2*trend + 0.3*dir_coherence*dir_strength
         add_pos("range_score", rng, 0.8, "мартингейл только в диапазоне")
         add_neg("atr_pct", atr_pct, -0.8, "волатильность опасна для мартингейла")
         add_pos("effective_sentiment", sent, 0.4, "негативный сентимент блокирует мартингейл")
         add_neg("trend_strength", trend, -0.2, "тренд увеличивает риск")
         add_pos("direction_coherence", dir_coherence, 0.3, "согласованность направления критична для мартингейла")
     elif bot_type == "futures_combo":
-        rule = 0.3 + 0.7*_clamp(-sent, 0.0, 1.0) + 0.4*_clamp(atr_pct/0.02, 0.0, 2.0)
+        # No unconditional baseline: combo requires either elevated ATR or negative sentiment to be justified.
+        # ATR normalizer 0.06: bonus reaches max at ~12% 1h ATR (extreme vol = hedge valuable).
+        rule = 0.7*_clamp(-sent, 0.0, 1.0) + 0.4*_clamp(atr_pct/0.06, 0.0, 2.0)
         add_pos("effective_sentiment", sent, 0.7, "risk-off сентимент => комбо/хедж")
         add_pos("atr_pct", atr_pct, 0.4, "рост волатильности => хеджирование")
 
@@ -775,7 +781,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             beta_info = f.get("_btc_beta", {})
             if beta_info.get("is_btc_driven") and sym != "BTCUSDT":
                 dir_conf = float(_clamp(dir_conf * 0.88, 0.0, 0.99))
-            if bot_type == "futures_martingale" and (atr_pct > 0.018 or sent_agg.get("flags", {}).get("panic") or (sent_agg.get("regime") == "risk_off" and sent_agg.get("strength", 0.0) >= 0.35) or effective_sent < -0.45 or dir_conf < 0.65):
+            # Block threshold 0.05 = 5% 1h ATR. Old value 0.018 was calibrated for 1m ATR
+            # and blocked ALL symbols since typical 1h ATR for small caps is 3–8%.
+            if bot_type == "futures_martingale" and (atr_pct > 0.05 or sent_agg.get("flags", {}).get("panic") or (sent_agg.get("regime") == "risk_off" and sent_agg.get("strength", 0.0) >= 0.35) or effective_sent < -0.45 or dir_conf < 0.65):
                 code = "DIR_CONF_TOO_LOW" if dir_conf < 0.65 else "MARTINGALE_BLOCKED"
                 feasibility_blocks.append({"code": code, "msg": f"atr_pct={atr_pct:.4f}, sentiment6h={effective_sent:.2f}, dir_conf={dir_conf:.2f} => запрет"})
             if bot_type == "dca_bot" and (sent_agg.get("flags", {}).get("panic") or effective_sent < -0.70):
