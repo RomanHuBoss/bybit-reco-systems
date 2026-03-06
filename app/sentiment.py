@@ -263,8 +263,8 @@ def fetch_reddit_sentiment(client: httpx.Client) -> dict[str, dict[str, Any]]:
 def fetch_coingecko_trending(client: httpx.Client) -> dict[str, Any] | None:
     """
     CoinGecko /search/trending — top-7 trending coins.
-    If any of our symbols is trending → positive signal per-symbol.
-    Also returns a global hype point.
+    Matching is performed by CoinGecko *id*, not ticker symbol, because ticker-based
+    matching creates false positives when unrelated coins share the same symbol.
     """
     try:
         r = client.get(
@@ -277,30 +277,29 @@ def fetch_coingecko_trending(client: httpx.Client) -> dict[str, Any] | None:
         coins = [c.get("item", {}) for c in data.get("coins", [])]
         return {
             "trending_ids": [c.get("id") for c in coins],
-            "trending_symbols": [c.get("symbol","").upper() + "USDT" for c in coins],
         }
     except Exception:
         return None
 
 def trending_to_symbol_points(trending: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     """
-    For each of our symbols that appears in CoinGecko trending top-7:
-    inject a positive sentiment point (being in trending = bullish momentum).
+    For each configured symbol whose CoinGecko id appears in trending top-7,
+    inject a positive sentiment point.
     """
     result: dict[str, dict[str, Any]] = {}
     if not trending:
         return result
-    trending_syms = set(trending.get("trending_symbols", []))
-    for sym in SYMBOL_KEYWORDS:
-        if sym in trending_syms:
+    trending_ids = set(trending.get("trending_ids", []))
+    for sym, cg_id in COINGECKO_IDS.items():
+        if cg_id in trending_ids:
             result[sym] = {
                 "scope": "symbol",
                 "key": sym,
                 "ts": _now_ts(),
-                "sentiment": 0.6,   # being in top-7 trending is bullish
-                "velocity": 0.3,    # momentum signal
+                "sentiment": 0.6,
+                "velocity": 0.3,
                 "volume": 7,
-                "sources": {"coingecko_trending": True},
+                "sources": {"coingecko_trending": True, "coingecko_id": cg_id},
                 "tags": ["coingecko_trending", "per_symbol"],
             }
     return result

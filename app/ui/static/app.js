@@ -353,7 +353,13 @@ async function loadDetails(recId) {
   lines.push(`Глобальный (EWMA): 1h=${fmt(ewma["1h"])} 6h=${fmt(ewma["6h"])} 1d=${fmt(ewma["1d"])} 7d=${fmt(ewma["7d"])}`);
   lines.push(`regime=${sentAgg.regime || "—"} strength=${fmt(sentAgg.strength)} flags: panic=${(sentAgg.flags||{}).panic} euphoria=${(sentAgg.flags||{}).euphoria}`);
   if (symSent.blended) {
-    lines.push(`Per-symbol: ${fmt(symSent.value)} | Итого в скоринге (effective): ${fmt(symSent.effective)} = 0.5×global + 0.5×symbol`);
+    const gw = symSent.global_weight ?? null;
+    const sw = symSent.symbol_weight ?? null;
+    const mix = (gw !== null && sw !== null)
+      ? ` = ${fmt(gw, 2)}×global + ${fmt(sw, 2)}×symbol`
+      : "";
+    const nPts = symSent.n_points != null ? ` (n=${symSent.n_points})` : "";
+    lines.push(`Per-symbol: ${fmt(symSent.value)}${nPts} | Итого в скоринге (effective): ${fmt(symSent.effective)}${mix}`);
   } else {
     lines.push(`Per-symbol: нет данных — используется только глобальный (effective=${fmt(symSent.effective)})`);
   }

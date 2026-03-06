@@ -57,14 +57,30 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     daily_pnl = db.sum_daily_pnl(conn, start)
     daily_dd = -daily_pnl if daily_pnl < 0 else 0.0
 
-    # cooldown: if last decision log contains LOSS event in recent minutes (MVP: uses decision log tag)
+    # cooldown: use the latest realised loss from trades first; fall back to explicit LOSS log entry.
+    # The previous implementation only looked for action='LOSS', but no code path emits that
+    # action, so cooldown_after_loss_min was effectively dead and never blocked candidates.
     cooldown_min = int(limits.get("cooldown_after_loss_min", 0))
     cooldown_active = False
     if cooldown_min > 0:
-        cur = conn.execute("""SELECT ts, details_json FROM decision_log WHERE action='LOSS' ORDER BY ts DESC LIMIT 1""")
+        last_loss_ts = None
+
+        cur = conn.execute(
+            """SELECT ts FROM trades WHERE pnl < 0 ORDER BY ts DESC LIMIT 1"""
+        )
         row = cur.fetchone()
         if row:
             last_loss_ts = int(row["ts"])
+
+        cur = conn.execute(
+            """SELECT ts FROM decision_log WHERE action='LOSS' ORDER BY ts DESC LIMIT 1"""
+        )
+        row = cur.fetchone()
+        if row:
+            ts_loss = int(row["ts"])
+            last_loss_ts = max(last_loss_ts or 0, ts_loss)
+
+        if last_loss_ts:
             cooldown_active = (db.now_ts() - last_loss_ts) < cooldown_min * 60
 
     symbol_counts: dict[str, int] = {}

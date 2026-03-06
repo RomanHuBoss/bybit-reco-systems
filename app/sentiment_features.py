@@ -113,7 +113,7 @@ def compute_sentiment_agg(conn, scope: str = "global", key: str = "crypto") -> d
     }
 
 
-def compute_symbol_sentiment_map(conn, horizon_sec: int = 3600 * 6) -> dict[str, float]:
+def compute_symbol_sentiment_map(conn, horizon_sec: int = 3600 * 6) -> dict[str, tuple[float, int]]:
     """
     Returns {SYMBOL: (blended_sentiment_float, n_points)} for all symbols that have
     scope='symbol' points in the last `horizon_sec` seconds.

@@ -10,6 +10,7 @@ from .regime import classify_regime
 from .risk import gate_candidate, compute_risk_status as _compute_risk_status
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
+from .outcomes import BOT_HORIZONS
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
@@ -55,12 +56,62 @@ def _pct_dist(a: float | None, b: float | None) -> float | None:
     except Exception:
         return None
 
+
+
+def _estimate_cost_model(
+    bot_type: str,
+    venue: str,
+    f: dict[str, Any],
+    taker_fee_bps: float,
+    funding_rate: float | None = None,
+) -> dict[str, Any]:
+    """Approximate round-trip execution costs used consistently in scoring/params/outcomes.
+
+    This project does not simulate actual fills, so the model must stay simple and conservative.
+    We explicitly avoid silent underestimation by carrying a slippage term and (for linear bots)
+    expected funding over the bot horizon.
+    """
+    spread_bps = f.get("spread_bps")
+    spread_bps = float(spread_bps) if spread_bps is not None else None
+
+    if spread_bps is None:
+        fallback_spread = 10.0 if venue == "spot" else 8.0
+        spread_bps_used = fallback_spread
+        spread_missing = True
+    else:
+        spread_bps_used = max(0.0, float(spread_bps))
+        spread_missing = False
+
+    fee_bps_round_trip = max(0.0, float(taker_fee_bps)) * 2.0
+
+    # One full spread round-trip plus a conservative slippage term.
+    slippage_bps = max(1.0 if venue == "spot" else 0.8, spread_bps_used * (0.35 if bot_type in ("spot_grid", "futures_grid") else 0.50))
+
+    horizon_sec = BOT_HORIZONS.get(bot_type, 0)
+    expected_funding_bps = 0.0
+    if venue == "linear" and funding_rate is not None and horizon_sec > 0:
+        expected_funding_bps = abs(float(funding_rate)) * 10000.0 * (float(horizon_sec) / (8.0 * 3600.0))
+
+    total_cost_bps = fee_bps_round_trip + spread_bps_used + slippage_bps + expected_funding_bps
+
+    return {
+        "spread_bps": spread_bps_used,
+        "spread_missing": spread_missing,
+        "fee_bps_round_trip": fee_bps_round_trip,
+        "slippage_bps": float(slippage_bps),
+        "funding_rate": float(funding_rate) if funding_rate is not None else None,
+        "expected_funding_bps": float(expected_funding_bps),
+        "total_cost_bps": float(total_cost_bps),
+        "horizon_sec": int(horizon_sec),
+    }
+
 def _build_trade_plan(
     bot_type: str,
     venue: str,
     f: dict[str, Any],
     direction: str,
     params: dict[str, Any],
+    cost_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Human/actionable execution guide shown in the UI 'Details' panel.
 
@@ -132,6 +183,7 @@ def _build_trade_plan(
         "bot_type": bot_type,
         "venue": venue,
         "direction": direction,
+        "cost_model": dict(cost_model or {}),
         "levels": {},
         "close_conditions": [],
         "notes": "Ориентиры уровней (TP/SL/диапазон) масштабируются по ATR старшего ТФ (предпочтительно 1h). Это подсказка для запуска/контроля бота, а не обещание результата.",
@@ -287,6 +339,7 @@ def _params(
     direction_bias: str,
     direction_bias_strength: float,
     atr_pct_for_grid: float | None,
+    cost_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Use a slower volatility proxy for risk sizing/steps (1h ATR% if available).
     atr_pct_1m = float(f.get("atr_pct") or 0.0)
@@ -294,17 +347,17 @@ def _params(
     atr_pct_slow = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
     # Grid spacing uses the TF-specific ATR% if provided (preferred), else the slow proxy.
     atr_pct = float(atr_pct_for_grid) if atr_pct_for_grid is not None else atr_pct_slow
+    cost_model = dict(cost_model or {})
 
     risk_per_trade = 0.003 if atr_pct_slow < 0.01 else 0.002
     if global_sent < -0.4:
         risk_per_trade *= 0.7
 
     if bot_type in ("spot_grid", "futures_grid"):
-        spread_bps = float(f.get("spread_bps") or 8.0)
-        total_cost_bps = spread_bps + float(taker_fee_bps)
+        total_cost_bps = float(cost_model.get("total_cost_bps") or 0.0)
 
         base_step_pct = atr_pct * 100.0 * 0.6
-        min_step_pct = max(0.08, (total_cost_bps * 1.8) / 100.0)
+        min_step_pct = max(0.08, (total_cost_bps * 1.2) / 100.0)
         grid_spacing_pct = float(_clamp(max(base_step_pct, min_step_pct), 0.08, 2.5))
 
         span_target_pct = float(_clamp(atr_pct * 100.0 * 25.0, 1.0, 12.0))
@@ -350,6 +403,7 @@ def _params(
             "span_target_pct": span_target_pct,
             "range_span_pct_total": span_pct,
             "total_cost_bps": total_cost_bps,
+            "cost_model": cost_model,
             "leverage": leverage,
             "price_range_lower": price_range_lower,
             "price_range_upper": price_range_upper,
@@ -365,7 +419,8 @@ def _params(
             "direction": "long",
             "dca_step_pct": step_pct,
             "max_orders": max_orders,
-            "take_profit_mode": "auto",
+            "take_profit_mode": "avg_entry_plus_atr",
+            "cost_model": cost_model,
             "investment_risk_per_trade": risk_per_trade,
         }
 
@@ -379,6 +434,7 @@ def _params(
             "step_pct": step_pct,
             "max_steps": max_steps,
             "leverage": leverage,
+            "cost_model": cost_model,
             "investment_risk_per_trade": risk_per_trade * 0.7,
             "warning": "Мартингейл сильно увеличивает риск. Используйте только при высокой согласованности направления.",
         }
@@ -388,11 +444,12 @@ def _params(
             "bybit_category": "Futures Combo",
             "mode": "hedge",
             "allocation": {"leg1": 0.6, "leg2": 0.4},
+            "cost_model": cost_model,
             "investment_risk_per_trade": risk_per_trade * 0.6,
-            "notes": "Комбо трактуем как hedge/carry подсказку.",
+            "notes": "Комбо трактуем как hedge/carry подсказку. Полноценный PnL двух ног в проекте пока не моделируется.",
         }
 
-    return {"investment_risk_per_trade": risk_per_trade}
+    return {"investment_risk_per_trade": risk_per_trade, "cost_model": cost_model}
 
 def _expected_rr(bot_type: str, f: dict[str, Any]) -> float:
     atr_pct_1m = float(f.get("atr_pct") or 0.0)
@@ -408,7 +465,14 @@ def _expected_rr(bot_type: str, f: dict[str, Any]) -> float:
         return 1.0
     return 1.0
 
-def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, global_sent: float) -> tuple[float, float, dict[str, Any]]:
+def _score(
+    bot_type: str,
+    venue: str,
+    f: dict[str, Any],
+    taker_fee_bps: float,
+    global_sent: float,
+    cost_model: dict[str, Any] | None = None,
+) -> tuple[float, float, dict[str, Any]]:
     # Use multi-TF *trendiness* (unsigned) from direction_agg when available.
     # IMPORTANT: abs(direction_strength) is NOT trendiness; it is the magnitude of the signed direction score.
     dir_agg_f = f.get("_direction_agg") or {}
@@ -421,13 +485,14 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
     atr_pct_1m = float(f.get("atr_pct") or 0.0)
     atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
     atr_pct = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
-    spread = f.get("spread_bps")
+    cost_model = dict(cost_model or {})
+    spread = cost_model.get("spread_bps", f.get("spread_bps"))
     spread = float(spread) if spread is not None else 8.0
 
-    cost_bps = spread + taker_fee_bps
-    # FIX: was cost_bps/30 * 0.7 — this subtracted 0.65 from every raw score!
-    # Now: softer penalty, higher denominator. Cost still matters but doesn't kill signal.
-    cost_penalty = _clamp(cost_bps / 50.0, 0.0, 1.0)
+    cost_bps = float(cost_model.get("total_cost_bps") or (spread + taker_fee_bps))
+    # Use a softer but economically consistent penalty based on the full expected round-trip cost,
+    # including slippage/funding when available. This avoids optimistic scores on expensive setups.
+    cost_penalty = _clamp(cost_bps / 60.0, 0.0, 1.0)
 
     sent = float(global_sent)
     pos, neg = [], []
@@ -480,19 +545,21 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
     # Scale raw by 2.5 before sigmoid so conf spans [0.1, 0.9] instead of [0.45, 0.55]
     conf0 = float(_clamp(_sigmoid(raw * 2.5), 0.0, 1.0))
     reasons = {
-        "summary": "Рекомендация в терминах Bybit Trading Bot (Scenario B). Направление определяется голосованием индикаторов на 15m/30m/1h/4h/1d. Сентимент — multi-horizon EWMA (1h/6h/1d/7d) с консолидацией risk_on/off/neutral. Уверенность калибруется на реальных исходах по ботовым горизонтам: spot_grid/futures_grid=4h (диапазон), dca_bot=24h (направление), futures_martingale=1h (направление), futures_combo=2h (волатильность >0.8%).",
+        "summary": "Рекомендация в терминах Bybit Trading Bot (Scenario B). Направление определяется голосованием индикаторов на 15m/30m/1h/4h/1d. Сентимент — multi-horizon EWMA (1h/6h/1d/7d) с консолидацией risk_on/off/neutral. Уверенность калибруется на фактических outcome-метках только там, где метка отражает механику стратегии; для futures_combo confidence intentionally remains heuristic because the project does not model full two-leg PnL.",
         "top_positive_factors": sorted(pos, key=lambda x: abs(x["weight"]), reverse=True)[:5],
         "top_negative_factors": sorted(neg, key=lambda x: abs(x["weight"]), reverse=True)[:5],
-        "cost_model": {"spread_bps": spread, "taker_fee_bps": taker_fee_bps, "total_cost_bps": cost_bps},
+        "cost_model": {**cost_model, "spread_bps": spread, "taker_fee_bps": taker_fee_bps, "total_cost_bps": cost_bps},
         "effective_sentiment": sent,
     }
     return score, conf0, reasons
 
 # ── Persistence gate state ───────────────────────────────────────────────────
-# Tracks which (venue, symbol, bot_type) combos were 'recommended' in the
-# previous cycle. Only directional bots require 2 consecutive confirmations.
-# Key: (venue, symbol, bot_type) → ts of last recommended cycle
-_prev_recommended: dict[tuple, int] = {}
+# Tracks consecutive recommended cycles for the SAME logical signal.
+# The original implementation keyed only by (venue, symbol, bot_type) and therefore
+# could accidentally confirm a freshly flipped short using a previous long signal.
+# We include direction in the signature and require a consecutive-cycle hit within
+# an interval-derived freshness window.
+_prev_recommended: dict[tuple, dict[str, int]] = {}
 PERSISTENCE_BOTS = {"futures_martingale", "dca_bot"}  # bots that need 2-cycle confirmation
 
 
@@ -737,8 +804,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if bot_type in ("futures_grid","futures_martingale","futures_combo") and venue != "linear":
                 continue
 
-            spread = f.get("spread_bps")
-            spread = float(spread) if spread is not None else 12.0
+            spread_raw = f.get("spread_bps")
+            spread = float(spread_raw) if spread_raw is not None else None
             # Risk/scoring volatility proxy: prefer 1h ATR% (from multi-TF direction pass).
             atr_pct_1m = float(f.get("atr_pct") or 0.0)
             atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
@@ -754,6 +821,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             oi_rows  = db.get_oi_series(conn, sym, limit=48)  if venue == "linear" else []
             fr_sig   = funding_signal(fr_data["funding_rate"] if fr_data else None)
             oi_sig   = oi_trend(oi_rows)
+            cost_model = _estimate_cost_model(
+                bot_type=bot_type,
+                venue=venue,
+                f=f,
+                taker_fee_bps=taker_fee_bps,
+                funding_rate=(fr_data["funding_rate"] if fr_data else None),
+            )
             # Combine OI trend with price direction for final signal
             if oi_sig["trend"] == "growing":
                 dir_agg_tmp = f.get("_direction_agg", {})
@@ -780,17 +854,25 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 effective_sent = (1.0 - _sym_weight) * global_sent + _sym_weight * sym_sent
             else:
                 sym_sent = None
+                _sym_n = 0
+                _sym_weight = 0.0
                 effective_sent = global_sent
 
             feasibility_blocks = []
 
-            # ── Liquidity gates ──
-            if liq_tier == "micro":
+            # ── Data completeness / liquidity gates ──
+            if turnover is None:
+                feasibility_blocks.append({"code": "LIQUIDITY_UNKNOWN",
+                    "msg": "нет turnover24h — ликвидность не подтверждена, cost-model ненадёжен"})
+            elif liq_tier == "micro":
                 feasibility_blocks.append({"code": "LIQUIDITY_TOO_LOW",
-                    "msg": f"turnover24h={turnover} USD < $500K — grid запрещён на неликвидных символах"})
+                    "msg": f"turnover24h={turnover} USD < $500K — торговля на неликвидном символе искажает fills/статистику"})
             if liq_tier == "low" and bot_type in ("futures_martingale", "futures_combo"):
                 feasibility_blocks.append({"code": "LIQUIDITY_LOW_FUTURES",
                     "msg": f"turnover24h={turnover} USD < $2M — мартингейл/комбо запрещён на низколиквидных"})
+            if spread is None:
+                feasibility_blocks.append({"code": "SPREAD_UNKNOWN",
+                    "msg": "bid/ask отсутствуют — нельзя надёжно оценить execution cost"})
 
             # ── Funding rate gate (futures only) ──
             if venue == "linear" and fr_sig["signal"] == "bearish" and fr_sig["value"] is not None:
@@ -798,7 +880,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     feasibility_blocks.append({"code": "FUNDING_EXTREME",
                         "msg": f"funding_rate={fr_sig['value']:.4f} ({fr_sig['annualized_pct']:.0f}%/year) — crowded long, высокий carry-cost"})
 
-            if bot_type in ("spot_grid","futures_grid") and spread > 14.0:
+            if bot_type in ("spot_grid","futures_grid") and spread is not None and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
             # Use multi-TF trendiness for gate (same source as _score uses)
             _dir_agg_gate = f.get("_direction_agg") or {}
@@ -824,7 +906,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             risk_blocks = gate_candidate(conn, venue, sym, limits, cached_status=_cached_risk_status)
             feasibility_blocks.extend(risk_blocks)
 
-            score, conf0, reasons = _score(bot_type, venue, f, taker_fee_bps=taker_fee_bps, global_sent=effective_sent)
+            score, conf0, reasons = _score(
+                bot_type,
+                venue,
+                f,
+                taker_fee_bps=taker_fee_bps,
+                global_sent=effective_sent,
+                cost_model=cost_model,
+            )
 
             # ── Funding + OI score adjustments ──
             if venue == "linear":
@@ -849,7 +938,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             _reasons_for_cal = {
                 "effective_sentiment": effective_sent,
-                "cost_model": {"spread_bps": float(f.get("spread_bps") or 8.0)},
+                "cost_model": cost_model,
                 "direction_agg": _dir_agg_for_cal,  # includes calibrated dir_conf
                 "top_positive_factors": (reasons.get("top_positive_factors") or []),
                 "top_negative_factors": (reasons.get("top_negative_factors") or []),
@@ -858,7 +947,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             _fv = extract_features(_row_for_cal)
 
             bot_cal = bot_calibrators.get(bot_type)
-            if bot_cal and bot_cal.fitted and len(bot_cal.coef) > 0 and _fv is not None:
+            if bot_type == "futures_combo":
+                # Combo/hedge lacks full two-leg execution & PnL accounting in this project.
+                # Using a fitted probability here would create false statistical certainty from
+                # a proxy label, so keep confidence explicitly heuristic.
+                conf_cal = float(conf0)
+                _cal_source = "raw_proxy"
+                _active_cal = None
+            elif bot_cal and bot_cal.fitted and len(bot_cal.coef) > 0 and _fv is not None:
                 conf_cal = float(bot_cal.predict(_fv))
                 _cal_source = "bot_logreg"
                 _active_cal = bot_cal
@@ -892,8 +988,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # The system already falls back gracefully; this makes the uncertainty explicit.
             _ctx_mult = 1.0
             if not f.get("_atr_pct_1h"):          _ctx_mult *= 0.92  # no 1h ATR
-            if oi_sig.get("oi_now") is None:       _ctx_mult *= 0.96  # no OI data
-            if fr_sig.get("rate") is None:         _ctx_mult *= 0.98  # no funding data
+            if venue == "linear" and oi_sig.get("oi_now") is None: _ctx_mult *= 0.96  # no OI data
+            if venue == "linear" and fr_sig.get("value") is None:  _ctx_mult *= 0.98  # no funding data
             _dir_tf_count = len((f.get("_direction_agg") or {}).get("tf_used") or [])
             if _dir_tf_count < 3:                  _ctx_mult *= 0.93  # sparse TF coverage
             if _ctx_mult < 1.0:
@@ -902,6 +998,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # OI unwinding → reduce confidence
             if venue == "linear" and oi_sig["signal"] == "caution":
                 conf = float(_clamp(conf * 0.88, 0.0, 1.0))
+            if bot_type == "futures_combo":
+                conf = float(min(conf, 0.68))
 
             expected_rr = _expected_rr(bot_type, f)
             direction = _direction(bot_type, f.get('_direction_agg', {}))
@@ -918,20 +1016,30 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 status = "no_trade"
 
             # Persistence gate for directional bots: require 2 consecutive cycles
-            # to promote a recommendation. Filters one-off noisy spikes.
-            # Grid bots exempt — they don't need directional conviction.
+            # for the SAME signal signature. This avoids confirming a fresh short with a stale long.
             import time as _rtime
             if status == "recommended" and bot_type in PERSISTENCE_BOTS:
-                _pkey = (venue, sym, bot_type)
+                _pkey = (venue, sym, bot_type, direction)
                 _now_ts = int(_rtime.time())
-                _prev_ts = _prev_recommended.get(_pkey, 0)
-                if _now_ts - _prev_ts > 120:  # more than 2 cycles (2×30s) since last seen
-                    status = "suppressed"      # suppress first appearance
-                _prev_recommended[_pkey] = _now_ts
+                _fresh_gap = max(45, int(settings.reco_interval_sec * 2.5))
+                _state = _prev_recommended.get(_pkey) or {"ts": 0, "count": 0}
+                if _now_ts - int(_state.get("ts", 0)) <= _fresh_gap:
+                    _state = {"ts": _now_ts, "count": int(_state.get("count", 0)) + 1}
+                else:
+                    _state = {"ts": _now_ts, "count": 1}
+                _prev_recommended[_pkey] = _state
+                # remove stale opposite-direction state for same symbol/bot
+                for _other_dir in ("long", "short", "neutral", "hedge"):
+                    _other_key = (venue, sym, bot_type, _other_dir)
+                    if _other_key != _pkey:
+                        _prev_recommended.pop(_other_key, None)
+                if int(_state.get("count", 0)) < 2:
+                    status = "suppressed"
             elif status != "recommended":
-                _prev_recommended.pop((venue, sym, bot_type), None)
+                for _other_dir in ("long", "short", "neutral", "hedge"):
+                    _prev_recommended.pop((venue, sym, bot_type, _other_dir), None)
 
-            risk_score = float(_clamp(atr_pct/0.02, 0.0, 1.0))
+            risk_score = float(_clamp(atr_pct/0.10, 0.0, 1.0))
 
             params = _params(
                 bot_type,
@@ -943,9 +1051,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 direction_bias=str(f.get("_direction_agg", {}).get("bias", "neutral")),
                 direction_bias_strength=float((f.get("_direction_agg", {}).get("strength", {}) or {}).get("all", 0.0) if isinstance(f.get("_direction_agg", {}).get("strength"), dict) else float(f.get("_direction_agg", {}).get("strength", 0.0))),
                 atr_pct_for_grid=f.get("_atr_pct_1h"),
+                cost_model=cost_model,
             )
             # Add execution guide for UI "Details" panel.
-            params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params)
+            params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params, cost_model=cost_model)
 
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)
@@ -965,6 +1074,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "effective": float(effective_sent),
                 "global": float(global_sent),
                 "blended": sym_sent is not None,
+                "symbol_weight": float(_sym_weight),
+                "global_weight": float(1.0 - _sym_weight),
+                "n_points": int(_sym_n),
             }
             # Calibrate direction confidence separately (if model fitted)
             dtmp = dict(f.get("_direction_agg", {}))  # copy — don't mutate f in-place across bot_type loop
@@ -979,7 +1091,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             reasons2["confidence_model"] = {
                 "source": _cal_source,
                 "type": "logreg_platt_v1" if _cal_source in ("bot_logreg", "global_logreg") else (
-                    "platt_only" if _cal_source in ("bot_platt", "global_platt") else "raw"
+                    "platt_only" if _cal_source in ("bot_platt", "global_platt") else ("raw_proxy" if _cal_source == "raw_proxy" else "raw")
                 ),
                 "fitted": _active_cal.fitted if _active_cal is not None else False,
                 "n_samples": _active_cal.n_samples if _active_cal is not None and _active_cal.fitted else 0,
