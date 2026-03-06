@@ -8,7 +8,17 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
         return {"vol_state":"unknown","trend_state":"unknown","risk_state":"unknown","confidence":0.0}
 
     atr_pcts = [f.get("atr_pct", 0.0) for f in features_by_symbol if f.get("atr_pct") is not None]
-    trend = [f.get("trend_strength", 0.0) for f in features_by_symbol if f.get("trend_strength") is not None]
+    # Keep regime classification on the same trend metric that the scorer and gates use:
+    # multi-timeframe unsigned trendiness from direction_agg.
+    # Fall back to 1m trend_strength only when direction_agg is not available.
+    trend = []
+    for f in features_by_symbol:
+        d = f.get("_direction_agg") or {}
+        t = d.get("trendiness")
+        if t is None:
+            t = f.get("trend_strength")
+        if t is not None:
+            trend.append(float(t))
     spreads = [f.get("spread_bps", 0.0) for f in features_by_symbol if f.get("spread_bps") is not None]
 
     # 1h ATR — same source the scorer uses; only present after multi-TF pass

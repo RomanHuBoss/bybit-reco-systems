@@ -555,18 +555,36 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
     return calibrators
 
 
+def _raw_direction_confidence(direction_agg: dict[str, Any]) -> float:
+    """Monotonic signal for directional success probability.
+
+    Use raw direction_confidence (0..1) rather than the signed aggregate score.
+    A signed score is unsuitable for 1D Platt calibration because successful shorts
+    naturally have negative scores and get mixed together with failed longs.
+    """
+    x = direction_agg.get("direction_confidence")
+    if x is None:
+        # Fallback: derive from unsigned strength if raw confidence is absent.
+        x = (direction_agg.get("strength") or {}).get("all", 0.0)
+    return float(_clamp(float(x), 0.0, 1.0))
+
+
 def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
-    """Fit direction calibrator on futures_martingale outcomes (Platt on dir score)."""
+    """Fit direction calibrator on futures_martingale outcomes.
+
+    We calibrate the *raw direction confidence* (or unsigned strength fallback),
+    not the signed aggregate score. This preserves symmetry between strong longs
+    and strong shorts and makes the resulting value a true probability-like metric.
+    """
     rows = db.get_outcomes_with_recs(conn, limit=5000)
     xs, ys = [], []
     for row in rows:
         if row["bot_type"] != "futures_martingale":
             continue
         d = (row.get("reasons") or {}).get("direction_agg") or {}
-        x = float((d.get("scores") or {}).get("all", 0.0))
         if str(d.get("direction") or "neutral") == "neutral":
             continue
-        xs.append(x)
+        xs.append(_raw_direction_confidence(d))
         ys.append(int(row["success"]))
     return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
 
@@ -574,13 +592,14 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
 def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     """Load direction calibrator; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
     import time as _time
-    saved = load_platt_from_db(conn, "platt_direction_v2")
+    key = "platt_direction_v3"
+    saved = load_platt_from_db(conn, key)
     if saved and saved.fitted:
         if int(_time.time()) - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
             return saved
     scaler = _fit_direction_calibrator(conn, min_samples=min_samples)
     if scaler.fitted:
-        save_platt_to_db(conn, "platt_direction_v2", scaler)
+        save_platt_to_db(conn, key, scaler)
     elif saved and saved.fitted:
         return saved
     return scaler
@@ -811,8 +830,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # (Previously dir_conf_cal was computed after extract_features, causing
             # a train/inference skew: model trained on calibrated conf, inferred on raw.)
             _dtmp_pre = dict(f.get("_direction_agg", {}))
-            _xdir_pre = float((_dtmp_pre.get("scores") or {}).get("all", 0.0))
-            _dir_conf_pre = dir_calibrator.predict(_xdir_pre) if dir_calibrator.fitted else float(_dtmp_pre.get("direction_confidence", 0.5))
+            _xdir_pre = _raw_direction_confidence(_dtmp_pre)
+            _dir_conf_pre = dir_calibrator.predict(_xdir_pre) if dir_calibrator.fitted else _xdir_pre
             _dir_agg_for_cal = dict(_dtmp_pre)
             _dir_agg_for_cal["direction_confidence_calibrated"] = _dir_conf_pre
 
@@ -904,8 +923,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             }
             # Calibrate direction confidence separately (if model fitted)
             dtmp = dict(f.get("_direction_agg", {}))  # copy — don't mutate f in-place across bot_type loop
-            xdir = float((dtmp.get("scores") or {}).get("all", 0.0))
-            dir_conf_cal = dir_calibrator.predict(xdir) if dir_calibrator.fitted else float(dtmp.get("direction_confidence", 0.5))
+            xdir = _raw_direction_confidence(dtmp)
+            dir_conf_cal = dir_calibrator.predict(xdir) if dir_calibrator.fitted else xdir
             dtmp["direction_confidence_calibrated"] = dir_conf_cal
             dtmp["direction_confidence_model"] = {"type":"platt_scaling","fitted": dir_calibrator.fitted, "a": getattr(dir_calibrator,"a",None), "b": getattr(dir_calibrator,"b",None)}
             reasons2["direction_agg"] = dtmp

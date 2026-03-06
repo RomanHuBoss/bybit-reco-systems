@@ -210,11 +210,15 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
     strength_struct = float(_clamp(abs(s_structural), 0.0, 1.0))
     strength_tact = float(_clamp(abs(s_tactical), 0.0, 1.0))
 
-    # Bias is sign of all score (fallback structural)
-    if s_all >= 0:
+    # Bias is a weaker directional hint than `direction`, but it still should
+    # remain neutral when the aggregate score itself is near-zero.
+    all_sign = _sign(s_all, thr)
+    if all_sign > 0:
         bias = "long"
-    else:
+    elif all_sign < 0:
         bias = "short"
+    else:
+        bias = "neutral"
 
     # Default neutral if weak signal or range regime
     if strength_all < 0.12 or regime == "range":

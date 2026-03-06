@@ -179,8 +179,12 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
             return None
         return (oi_now - old) / old * 100.0
 
-    oi_4h = float(oi_series[min(3, len(oi_series)-1)]["oi"])   # ~4h back
-    oi_24h = float(oi_series[min(23, len(oi_series)-1)]["oi"])  # ~24h back
+    # newest-first series: index 0 = now, 1 = ~1h back, ...
+    # So 4h / 24h reference points are indices 4 and 24 respectively.
+    # Previous implementation used 3 / 23, which understated lookback changes
+    # and distorted OI trend classification near thresholds.
+    oi_4h = float(oi_series[min(4, len(oi_series)-1)]["oi"])    # ~4h back
+    oi_24h = float(oi_series[min(24, len(oi_series)-1)]["oi"])  # ~24h back
 
     chg_4h  = _pct_chg(oi_4h)
     chg_24h = _pct_chg(oi_24h)
