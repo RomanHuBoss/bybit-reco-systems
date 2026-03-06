@@ -1,346 +1,413 @@
 # Bybit Recommender — Technical Specification
 
-Version: V4.0 (2026-03)
+Version: V4.1-docsync (2026-03-06)
+
+This document describes the **current branch as attached**, including implementation caveats that should be known to anyone maintaining or presenting the system.
 
 ---
 
 ## 1. Architecture overview
 
-```
-┌──────────────────────────────────────────────────────┐
-│  Background threads (daemon)                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────┐  │
-│  │ collector    │  │ sentiment    │  │ reco      │  │
-│  │ thread       │  │ thread       │  │ thread    │  │
-│  │ (20s cycle)  │  │ (60s cycle)  │  │ (30s cyc) │  │
-│  └──────┬───────┘  └──────┬───────┘  └─────┬─────┘  │
-│         │                 │                │         │
-│         └─────────────────┴────────────────┘         │
-│                           │                          │
-│                     SQLite (WAL)                      │
-│                           │                          │
-│  ┌────────────────────────┴─────────────────────┐    │
-│  │  FastAPI (sync endpoints, short-lived conns) │    │
-│  └────────────────────────┬─────────────────────┘    │
-│                           │                          │
-│                    Operator UI (JS)                   │
-└──────────────────────────────────────────────────────┘
+```text
+collector thread   -> public market data -> SQLite
+sentiment thread   -> sentiment series   -> SQLite
+reco thread        -> features + score + calibration + publish -> SQLite
+FastAPI            -> operator API/UI over the same SQLite database
 ```
 
-### Threading model
-- All three threads are daemon threads started at FastAPI `startup`.
-- Each thread acquires its own short-lived SQLite connection (`closing(_get_conn())`).
-- SQLite is opened in WAL mode — concurrent reads/writes are safe.
-- FastAPI handlers also use short-lived connections — no shared state.
+Threads are daemonized and use short-lived SQLite connections. The database runs in WAL mode.
+
+Nominal loop intervals from `settings.py`:
+- collector: `20s`
+- recommender: `20s`
+- sentiment: `60s`
 
 ---
 
-## 2. Data collection (collector.py)
+## 2. Data collection
 
-### Symbols
-Configured via `SYMBOLS_SPOT` and `SYMBOLS_LINEAR` in `.env`.  
-Auto-disable: if Bybit returns `symbol invalid` / `Not supported symbols` the symbol is
-added to `_DISABLED_SYMBOLS` (in-process set) and skipped for the rest of the session.
+### Market data
+- `ticker`: last price, spread proxy, turnover
+- `ohlcv`: `1m / 15m / 30m / 1h / 4h / 1d`
+- `funding_rate` for `linear`
+- `open_interest` for `linear`
 
-### OHLCV
-- Timeframes collected: `1m, 15m, 30m, 1h, 4h, 1d`
-- Bybit v5 kline intervals: `1, 15, 30, 60, 240, D` (`"1440"` is invalid — use `"D"`)
-- Stored in `ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)`
+### Venues
+- `spot`
+- `linear` (USDT perpetual)
 
-### Futures metadata (throttled to 15 min)
-- Funding rate: `/v5/market/tickers` → `funding_rate(symbol, ts, funding_rate, next_funding_ts)`
-- Open interest: `/v5/market/open-interest` (1h intervals, 48 candles) → `open_interest(symbol, ts, oi)`
-
----
-
-## 3. Direction engine (direction.py) — V2.9
-
-### Indicators (per timeframe)
-| Indicator | Signal range | Weight |
-|---|---|---|
-| MA slope (EMA20 vs EMA50 normalized) | [-1, 1] | 0.35 |
-| MACD histogram (normalized × 900) | [-1, 1] | 0.30 |
-| RSI (normalized: (RSI-50)/30) | [-1, 1] | 0.27 |
-| BB %B (position in Bollinger Band) | [-1, 1] | 0.08 |
-
-### Aggregation
-- **Tactical** score: 15m + 30m + 1h (short-term momentum)
-- **Structural** score: 4h + 1d (trend backdrop)
-- **All** score: weighted combination
-- **Coherence**: fraction of TFs with the same sign as the aggregate
-- **Structural veto**: if structural score disagrees strongly with tactical (>0.4 gap),
-  direction confidence is capped
-
-### Output
-```python
-{
-  "direction": "long" | "short" | "neutral",
-  "bias": "long" | "short" | "neutral",   # weaker signal
-  "direction_confidence": float,           # raw [0, 1]
-  "direction_confidence_calibrated": float, # Platt-scaled
-  "scores": {"tactical": float, "structural": float, "all": float},
-  "strength": {"tactical": float, "structural": float, "all": float},
-  "coherence": float,
-  "regime": "trend" | "range" | "unknown",
-  "structural_veto_applied": bool,
-  "tf_used": [int, ...]
-}
-```
-
-### BTC beta adjustment
-If `|r(symbol, BTC)| > 0.80` (is_btc_driven): `dir_conf × 0.88`  
-Purpose: high BTC correlation means the symbol's direction signal reflects BTC, not its own momentum.
+### Staleness
+A symbol is skipped if the freshest `1m` candle is older than `STALE_DATA_MAX_SEC`.
 
 ---
 
-## 4. Scoring (recommender.py)
+## 3. Direction engine (`direction.py`)
 
-### Score formula per bot type
+### Inputs per timeframe
+For each timeframe the system derives a soft directional vote from:
+- MA slope
+- MACD
+- RSI
+- Bollinger %B
 
-**spot_grid**:
-```
-raw = 1.4×range - 1.0×trend - 0.6×clamp(atr/0.06, 0,2) + 0.2×sent - 0.35×cost_penalty
-```
+### Aggregation outputs
+The multi-timeframe aggregator returns:
+- `direction`
+- `bias`
+- `scores.{tactical,structural,all}`
+- `strength.{tactical,structural,all}`
+- `coherence`
+- `trendiness`
+- `regime`
+- `regime_confidence`
+- `tf_used`
 
-**futures_grid**:
-```
-raw = 1.2×range - 0.9×trend - 0.7×clamp(atr/0.06, 0,2) + 0.2×sent - 0.35×cost_penalty
-```
-
-**dca_bot**:
-```
-raw = 0.4 + 0.5×clamp(0.5+sent, 0,1) - 0.7×clamp(atr/0.12, 0,2) - 0.35×cost_penalty
-```
-
-**futures_martingale**:
-```
-raw = 0.8×range - 0.8×clamp(atr/0.06, 0,2) + 0.4×clamp(sent+0.2,0,1)
-      - 0.2×trend + 0.3×coherence×dir_strength - 0.35×cost_penalty
-```
-
-**futures_combo**:
-```
-raw = 0.7×clamp(-sent,0,1) + 0.4×clamp(atr/0.06,0,2) - 0.35×cost_penalty
-```
-_(No unconditional baseline. Combo passes only when sentiment is negative or 1h ATR > ~3%.)_
-
-Where:
-- `atr` = 1h ATR% (from `_atr_pct_1h`; falls back to 1m ATR if 1h unavailable)
-- ATR normalizers reference 1h ATR scale: `0.06` ≈ 6% = high-volatility boundary for grid/martingale; `0.12` = DCA tolerance is ~2× higher
-- `range = max(0, 1 - trend)` — derived from multi-TF trend strength
-- `trend` = `|strength.all|` from direction aggregation
-- `cost_penalty = clamp(cost_bps/50, 0, 1)`
-- `score = clamp(raw / 1.5, -1, 1)`
-
-### Funding rate adjustments (linear only)
-- Signal `bullish` (longs being paid): `score += 0.04`
-- Signal `bearish` (crowded long):     `score -= 0.06`
-
-### Raw confidence
-```
-conf0 = clamp(sigmoid(raw × 2.5), 0, 1)
-```
-
-### Calibrated confidence
-```
-conf_cal = bot_calibrator.predict(score)   # if fitted
-         | global_calibrator.predict(score) # fallback
-         | conf0                            # uncalibrated
-conf = clamp(0.5 × conf0 + 0.5 × conf_cal, 0, 1)
-```
-OI unwinding signal: `conf × 0.88`
+### Important current behavior
+- `trendiness` is the unsigned multi-timeframe trend proxy used later by scoring, regime classification and some gates.
+- `direction_confidence` is raw confidence in `[0,1]`.
+- A separate direction calibrator may add `direction_confidence_calibrated`.
 
 ---
 
-## 5. Feasibility gates
+## 4. Feature construction (`features.py` + `recommender.py`)
 
-| Code | Condition |
-|---|---|
-| `LIQUIDITY_TOO_LOW` | turnover24h < $500K |
-| `LIQUIDITY_LOW_FUTURES` | turnover24h < $2M + bot ∈ {martingale, combo} |
-| `FUNDING_EXTREME` | funding_rate > 0.06%/8h |
-| `SPREAD_TOO_WIDE` | spread_bps > 14 for grid bots |
-| `TREND_TOO_STRONG` | multi_tf_trend_strength > 0.60 for grid bots |
-| `MARTINGALE_BLOCKED` | atr > 0.05 OR panic OR risk_off strong OR sent < -0.45 |
-| `DIR_CONF_TOO_LOW` | dir_conf < 0.65 (martingale only) |
-| `DCA_BLOCKED_PANIC` | sent < -0.70 OR panic flag |
-| `MAX_CONCURRENT_BOTS` | total running bots ≥ limit |
-| `MAX_DD_DAY` | daily drawdown ≥ limit |
-| `COOLDOWN_ACTIVE` | in cooldown period after drawdown |
-| `MAX_SYMBOL_BOTS` | too many bots on same symbol |
+Per symbol / venue the recommender composes a feature dict that includes:
+- price
+- spread
+- turnover24h
+- ATR proxies (`1m`, plus slower TFs when available)
+- funding signal (`linear` only)
+- OI trend (`linear` only)
+- BTC beta / correlation
+- multi-TF direction aggregate under `_direction_agg`
+
+The recommendation engine prefers `1h ATR` over `1m ATR` for scoring, grid sizing and many risk heuristics.
 
 ---
 
-## 6. Grid price range calculation
+## 5. Regime classification (`regime.py`)
 
-```
-span_target_pct  = clamp(atr_1h × 100 × 25, 1, 12)   # target range width
-grid_spacing_pct = clamp(max(atr×100×0.6, min_step), 0.08, 2.5)
-levels           = clamp(round(span/spacing) + 1, 6, 60)
-span_actual_pct  = spacing × (levels - 1)
-half             = span_actual_pct / 2
+The current branch classifies market regime from the symbol set using:
+- average ATR
+- average spread
+- average multi-TF `trendiness`
 
-# Directional skew (CORRECTED in V3.8):
-long:    lower_pct = half × 0.80,  upper_pct = half × 1.20  # range extends upward
-short:   lower_pct = half × 1.20,  upper_pct = half × 0.80  # range extends downward
-neutral: lower_pct = upper_pct = half
+### Outputs
+- `vol_state`: `low / normal / high`
+- `trend_state`: `ranging / mixed / trending`
+- `risk_state`: `risk_on / neutral / risk_off`
+- `confidence`
+- agreement diagnostics (`cv_atr`, `cv_trend`, `n_symbols`)
 
-price_range_lower = price × (1 - lower_pct/100)
-price_range_upper = price × (1 + upper_pct/100)
-```
-
-ATR used: 1h ATR (`atr_pct_1h`) preferred over 1m ATR for more stable grid width.
+### Important alignment
+This branch uses `direction_agg.trendiness` when available, rather than substituting signed direction strength.
 
 ---
 
-## 7. Calibration (calibration.py)
-
-### Architecture: Two-stage LogReg + Platt
-
-```
-P(success) = sigmoid(a × logit(LogReg(features)) + b)
-           = Platt( LogReg([range_score, trend_strength, atr_pct_norm,
-                             effective_sentiment, dir_conf, coherence,
-                             spread_bps_norm, score]) )
-```
-
-**Stage 1 — LogisticRegression** (sklearn, lbfgs, C=1.0, class_weight=balanced):
-- Learns feature weights from actual outcomes (replaces hand-tuned score formula)
-- Features standardized (StandardScaler) for numerical stability
-- Coefficients stored in raw (un-standardized) form so prediction works without sklearn at inference
-- Requires ≥ 300 outcomes per bot-type
-
-**Stage 2 — Platt scaling** (temperature calibration on log-odds):
-```
-logit(p_logreg) = log(p / (1 - p))
-P_calibrated = sigmoid(a × logit(p_logreg) + b)
-```
-Fitting Platt on `logit(p)` (not raw probability) is mathematically correct:
-`a ≈ 1.0` = well-calibrated, `a < 1.0` = overconfident, `b` = threshold shift.
-Gradient descent, 300 iterations, lr=0.06, overflow-clamped `z ∈ [-500, +500]`.
-
-### Degradation tiers (by outcome count)
-
-| Outcomes | Mode | Formula |
-|---|---|---|
-| < 80 | Unfitted | `conf = sigmoid(score × 2.5)` (raw) |
-| 80–299 | Platt-only | `conf = sigmoid(a × score + b)` |
-| ≥ 300 | LogReg + Platt | `conf = sigmoid(a × logit(LogReg(features)) + b)` |
-
-Blend at inference: `conf = 0.5 × conf_raw + 0.5 × conf_calibrated`  
-(avoids overconfidence during cold-start; gradually dominated by calibrator as n grows)
-
-### Features (FEATURE_NAMES — canonical order, never reorder)
-
-| Index | Name | Source | Range |
-|---|---|---|---|
-| 0 | range_score | 1 − \|strength.all\| | [0, 1] |
-| 1 | trend_strength | \|strength.all\| | [0, 1] |
-| 2 | atr_pct_norm | atr_pct / 0.10, clipped | [0, 2] |
-| 3 | effective_sentiment | blended global+symbol | [-1, 1] |
-| 4 | dir_conf | direction_confidence_calibrated ∥ raw | [0, 1] |
-| 5 | coherence | multi-TF direction agreement | [0, 1] |
-| 6 | spread_bps_norm | spread_bps / 10 | [0, 5] |
-| 7 | score | post-adjustment legacy score | [-1, 1] |
-
-Note: `dir_conf` uses explicit `None` checks (not `or`-chaining) to correctly handle 0.0.
-
-### Persistence & freshness
-- Stored in `app_config` as JSON under keys `logreg_{bot}_v1` / `logreg_global_v1`
-- Direction calibrator (Platt-only) stored under `platt_direction_v2`
-- `ts` = unix timestamp of last fit
-- Re-fit condition: `time.now() - ts >= CALIB_REFIT_INTERVAL_SEC (3600s)`
-- Re-fit uses last 6000–8000 outcome rows (LEFT JOIN query — excludes already-processed recs)
-- If re-fit fails (insufficient data): stale model retained as fallback
-
-### Training data
-- Source: `reco_outcomes` LEFT JOIN `recommendations` (excludes unprocessed recs)
-- Labels (y): `success` flag (bot-type-specific criterion, see Outcome Labeling)
-- Score (x): stored post-adjustment score (matching inference distribution)
-
----
-
-## 8. Outcome labeling (outcomes.py)
-
-### Horizons per bot type
-| Bot type | Horizon |
-|---|---|
-| spot_grid, futures_grid | 4h = 14400s |
-| dca_bot | 24h = 86400s |
-| futures_martingale | 1h = 3600s |
-| futures_combo | 2h = 7200s |
-
-### Success criterion
-- **Grid bots**: price stayed within `[price_range_lower × 0.995, price_range_upper × 1.005]`
-  for the full horizon (checked against 1m candle min/max).
-  Fallback (no range stored): `|ret| < 1.5%` over horizon.
-- **Directional bots**: `ret > 0` in the direction of the recommendation.
-- **futures_combo / hedge**: `|ret| > max(2%, 0.8 × atr_1h_at_entry)`.
-  Uses ATR-relative threshold to keep the base success rate ~55% across volatility regimes.
-  Fixed 0.8% threshold inflated win-rate to 93%+ in high-volatility periods.
-
----
-
-## 9. Sentiment (sentiment.py + sentiment_features.py)
+## 6. Sentiment system (`sentiment.py` + `sentiment_features.py`)
 
 ### Sources
-| Source | Scope | Update |
-|---|---|---|
-| Fear & Greed Index | global | hourly |
-| RSS CoinDesk/Cointelegraph | global + per-symbol | per sentiment cycle |
-| Reddit (BTC/ETH/SOL/XRP/DOGE) | per-symbol | per sentiment cycle |
-| CoinGecko trending | per-symbol | per sentiment cycle |
-| CoinGecko price momentum | per-symbol | per sentiment cycle |
+- Fear & Greed
+- RSS headlines
+- Reddit
+- CoinGecko trending
+- CoinGecko momentum
 
-### Global source weighting
-Sources are weighted by `max(volume, 15)` — minimum floor prevents high-volume sources
-from drowning out reliable low-volume ones (FnG vol=1 → effective weight 15).
-With RSS vol≈60: FnG≈20%, RSS≈80% of combined global signal.
+### Aggregation
+Global sentiment is stored as EWMA statistics on horizons:
+- `1h`
+- `6h`
+- `1d`
+- `7d`
 
-### Per-symbol blend weights
-`coingecko_momentum`: 0.45, `reddit`: 0.30, `news_rss`: 0.15, `coingecko_trending`: 0.10
+The system derives:
+- `regime = risk_on / neutral / risk_off`
+- `strength`
+- `panic`
+- `euphoria`
 
-### Effective sentiment
+### Per-symbol sentiment
+`compute_symbol_sentiment_map()` returns:
+
+```text
+{ SYMBOL: (symbol_sentiment, n_points) }
 ```
-effective_sent = 0.5 × global_6h_ewma + 0.5 × symbol_sent  # if symbol data exists
-               = global_6h_ewma                              # otherwise
+
+The recommender uses adaptive blending:
+
+```text
+sym_weight = clip(n_points / 20, 0.1, 0.5)
+effective_sent = (1 - sym_weight) * global_sent + sym_weight * symbol_sent
 ```
 
-### EWMA horizons
-1h (λ≈0.9), 6h (λ≈0.98), 1d (λ≈0.995), 7d (λ≈0.999)
-
-### Regime classification
-`risk_on` (ewma_6h ≥ 0.15), `risk_off` (≤ -0.15), `neutral` otherwise  
-Flags: `panic` (strength ≥ 0.5 + risk_off), `euphoria` (strength ≥ 0.5 + risk_on)
+If a symbol has no local sentiment points, `effective_sent = global_sent`.
 
 ---
 
-## 10. Database schema (SQLite, WAL mode)
+## 7. Scoring (`recommender.py`)
 
-Key tables:
-- `ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)` — PK(venue,symbol,tf_sec,ts)
-- `ticker(venue, symbol, ts, price, spread_bps, turnover24h)` — PK(venue,symbol)
-- `recommendations(rec_id, ts, venue, symbol, bot_type, direction, score, confidence, ...)`
-- `reco_outcomes(outcome_id, rec_id, ts, success, ret, horizon_sec, ...)`
-- `market_regime(ts, regime_json)`
-- `features(venue, symbol, ts, features_json)`
-- `funding_rate(symbol, ts, funding_rate, next_funding_ts)` — PK(symbol,ts)
-- `open_interest(symbol, ts, oi)` — PK(symbol,ts)
-- `sentiment_data(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)`
-- `decision_log(id, ts, action, rec_id, operator, details_json)`
-- `bot_instances(bot_id, venue, symbol, bot_type, status, started_ts, stopped_ts)`
-- `risk_limits(id, ts, version, limits_json, is_active)`
-- `app_config(key, value_json, updated_ts)` — stores Platt scalers
+### Raw score formulas
+
+#### `spot_grid`
+```text
+raw = 1.4*range - 1.0*trend - 0.6*clip(atr/0.06, 0, 2)
+      + 0.2*clip(sent, -0.5, 0.5) - 0.35*cost_penalty
+```
+
+#### `futures_grid`
+```text
+raw = 1.2*range - 0.9*trend - 0.7*clip(atr/0.06, 0, 2)
+      + 0.2*sent - 0.35*cost_penalty
+```
+
+#### `dca_bot`
+```text
+raw = 0.4 + 0.5*clip(0.5 + sent, 0, 1)
+      - 0.7*clip(atr/0.12, 0, 2) - 0.35*cost_penalty
+```
+
+#### `futures_martingale`
+```text
+raw = 0.8*range
+      - 0.8*clip(atr/0.06, 0, 2)
+      + 0.4*clip(sent + 0.2, 0, 1)
+      - 0.2*trend
+      + 0.3*coherence*dir_strength
+      - 0.35*cost_penalty
+```
+
+#### `futures_combo`
+```text
+raw = 0.7*clip(-sent, 0, 1)
+      + 0.4*clip(atr/0.06, 0, 2)
+      - 0.35*cost_penalty
+```
+
+### Shared definitions
+- `range = 1 - trendiness`
+- `trend = trendiness`
+- `cost_penalty = clip((spread_bps + taker_fee_bps) / 50, 0, 1)`
+- `score = clip(raw / 1.5, -1, 1)`
+- `conf_raw = sigmoid(raw * 2.5)`
+
+### Linear-only score adjustments
+After bot-specific scoring, `linear` instruments may get small score shifts from funding:
+- bullish funding: `+0.04`
+- bearish funding: `-0.06`
 
 ---
 
-## 11. Known limitations
+## 8. Feasibility gates
 
-- Bybit public API rate limits: collector sleeps `COLLECT_INTERVAL_SEC` between cycles.
-  Aggressive interval (< 10s) risks HTTP 429.
-- SQLite single-writer: heavy concurrent writes should be avoided; the daemon threads
-  are sequential per cycle so this is not an issue in practice.
-- Calibration quality degrades until ~80 outcomes are collected (≈1–2 days at normal volume).
-  During this period confidence values are raw sigmoids and should be treated as rough estimates.
-- Reddit API (`/r/{coin}/hot.json`) is rate-limited and may return 429 occasionally.
-  Failures are logged as `SENTIMENT_ERROR` and the cycle continues.
+The engine may block or downgrade a candidate using:
+- liquidity gates
+- spread gate
+- stale-data gate
+- trend-too-strong for grids
+- martingale-specific direction / panic / ATR blocks
+- DCA panic block
+- risk-limit gates from `risk.py`
+- confidence gate (`MIN_CONF_TO_RECOMMEND`) when enabled
+
+Status flow:
+- `recommended`
+- `blocked`
+- `no_trade`
+- `suppressed`
+
+### Persistence gate
+`futures_martingale` and `dca_bot` require repeated recommendation before promotion.
+
+Current implementation caveat:
+- the in-memory key is `(venue, symbol, bot_type)`
+- the window is hard-coded to `120s`
+- direction is not part of the persistence key in this branch
+
+---
+
+## 9. Calibration (`calibration.py`)
+
+### 9.1 Model stack
+
+Primary calibration for bot confidence is two-stage:
+
+```text
+features -> LogReg -> logit(p) -> Platt -> conf_calibrated
+```
+
+If there is not enough data, the branch degrades to:
+
+```text
+Platt(score) -> raw sigmoid(score)
+```
+
+### 9.2 Canonical feature vector
+
+Current canonical order:
+
+| idx | feature |
+|---:|---|
+| 0 | `range_score` |
+| 1 | `trend_strength` |
+| 2 | `atr_pct_norm` |
+| 3 | `effective_sentiment` |
+| 4 | `dir_conf` |
+| 5 | `coherence` |
+| 6 | `spread_bps_norm` |
+| 7 | `score` |
+| 8 | `oi_4h_norm` |
+| 9 | `funding_norm` |
+| 10 | `liq_tier_num` |
+| 11 | `btc_corr` |
+| 12 | `regime_conf` |
+
+### 9.3 Recency weighting
+
+Both `fit_platt()` and the LogReg fitting path apply exponential recency weighting.
+Default half-life in the helper is `21 days`.
+
+### 9.4 Degenerate-label guard
+
+`fit_platt()` refuses to fit when:
+- `n < min_samples`
+- win rate `< 5%`
+- win rate `> 95%`
+
+In that case it returns `fitted=False`.
+
+### 9.5 Storage keys
+
+| Key | Meaning |
+|---|---|
+| `logreg_global_v3` | global calibrator |
+| `logreg_spot_grid_v3` | per-bot |
+| `logreg_futures_grid_v3` | per-bot |
+| `logreg_dca_v3` | per-bot |
+| `logreg_martingale_v3` | per-bot |
+| `logreg_combo_v3` | per-bot |
+| `platt_direction_v3` | direction-confidence calibrator |
+
+### 9.6 Refit cadence
+
+Refit is triggered no more than once per hour:
+
+```text
+CALIB_REFIT_INTERVAL_SEC = 3600
+```
+
+### 9.7 Important caveat in this branch
+
+The persisted `reasons` structure used for training is richer than the temporary `_reasons_for_cal` block built online during inference. Anyone modifying the feature vector should verify train/inference parity explicitly.
+
+---
+
+## 10. Confidence composition in the recommender
+
+After obtaining `conf_raw` and `conf_cal`, the branch applies adaptive blending:
+
+```text
+cal_weight = 0.10 + 0.40 * clip(n_samples / 300, 0, 1)
+confidence = clip((1 - cal_weight) * conf_raw + cal_weight * conf_cal, 0, 1)
+```
+
+Then additional adjustments may apply:
+- context-completeness penalty
+- OI caution multiplier (`× 0.88` on `linear`)
+
+### Current caveat
+The context penalty logic in this branch checks `fr_sig["rate"]`; funding helpers expose a different shape, so this part deserves a cleanup pass.
+
+---
+
+## 11. Recommendation payload
+
+Each recommendation row contains:
+- identity: `rec_id`, `ts`, `venue`, `symbol`, `bot_type`
+- decision fields: `direction`, `score`, `confidence`, `status`
+- Bybit-facing `params`
+- rich `reasons`
+- feasibility `blocks`
+- `ttl_sec`
+- `model_version`
+- `features_ref_ts`
+
+### `params`
+Contains bot-specific controls such as:
+- grid range / spacing / levels
+- DCA step / max orders
+- martingale step / max steps / leverage
+- risk-per-trade proxy
+
+### `params.trade_plan`
+Human-readable operator guide with:
+- volatility snapshot
+- regime snapshot
+- expected horizon
+- ATR-scaled levels
+- close / kill-switch notes
+
+### Current caveat
+`outcomes.py` reads `params.trade_plan.cost_model`, but the trade-plan builder in the attached branch does not currently populate that block.
+
+---
+
+## 12. Outcome labeling (`outcomes.py`)
+
+### Horizons
+| bot_type | horizon |
+|---|---:|
+| `spot_grid` | 4h |
+| `futures_grid` | 4h |
+| `dca_bot` | 24h |
+| `futures_martingale` | 1h |
+| `futures_combo` | 2h |
+
+### Success logic
+- **grid bots**: stay inside recommended range; fallback to bounded return if range is missing
+- **futures_combo / hedge**: `abs(ret) > atr_relative_threshold`
+- **futures_martingale**: TP/SL decision on 1m candles, fallback to cost-adjusted directional return
+- **dca_bot**: directional return must exceed `max(1.5 * cost_floor, 0.3%)`
+- **other directional paths**: simple directional return sign
+
+---
+
+## 13. Database overview
+
+Primary tables:
+- `ohlcv`
+- `ticker`
+- `funding_rate`
+- `open_interest`
+- `sentiment`
+- `recommendations`
+- `reco_outcomes`
+- `decision_log`
+- `risk_limits`
+- `app_config`
+
+SQLite WAL mode is used for concurrent read-heavy workloads.
+
+---
+
+## 14. Known implementation caveats
+
+These are not theoretical concerns; they describe the attached branch as-is.
+
+1. `compute_symbol_sentiment_map()` returns tuples but still advertises `dict[str, float]` in its signature/docstring.
+2. The persistence gate state does not include direction in the key.
+3. The context-completeness penalty uses a funding-field name that does not match the funding block shape.
+4. `outcomes.py` expects `trade_plan.cost_model`, but the current trade-plan builder does not populate it.
+5. Feature-space parity between training-time `reasons` and online `_reasons_for_cal` should be treated as a regression-sensitive area.
+
+---
+
+## 15. Positioning / scope
+
+The project is an operator decision-support tool, not an execution bot.
+It is intentionally lightweight:
+- public data only
+- SQLite storage
+- no paid feeds required
+- no high-end compute requirement
+
+It is suitable for controlled manual operation and iterative model hygiene, but changes to calibration, outcome labels and persistence logic should always be reviewed together because they interact directly with displayed confidence and downstream trust.

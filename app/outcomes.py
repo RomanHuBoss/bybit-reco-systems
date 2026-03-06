@@ -233,9 +233,8 @@ def compute_outcomes_once(
                 vol = {}
                 total_cost_bps = 15.0
                 if params:
-                    tp = (params.get("trade_plan") or {}) if params else {}
-                    vol = tp.get("volatility") or {}
-                    cm  = tp.get("cost_model") or (params or {}).get("cost_model") or {}
+                    vol = (params.get("trade_plan") or {}).get("volatility") or {}
+                    cm  = (params.get("trade_plan") or {}).get("cost_model") or {}
                     total_cost_bps = float(cm.get("total_cost_bps") or 15.0)
                 atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.02)
 
@@ -258,8 +257,7 @@ def compute_outcomes_once(
                 # Minimum threshold: 1.5x total costs OR 0.3% absolute, whichever is larger.
                 total_cost_bps = 15.0
                 if params:
-                    tp = (params.get("trade_plan") or {})
-                    cm = tp.get("cost_model") or params.get("cost_model") or {}
+                    cm = (params.get("trade_plan") or {}).get("cost_model") or {}
                     total_cost_bps = float(cm.get("total_cost_bps") or 15.0)
                 cost_floor = total_cost_bps / 10_000
                 min_edge   = max(cost_floor * 1.5, 0.003)   # 1.5x costs OR 0.3% min

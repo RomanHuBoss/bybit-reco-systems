@@ -849,14 +849,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             _reasons_for_cal = {
                 "effective_sentiment": effective_sent,
-                "cost_model": (reasons.get("cost_model") or {"spread_bps": float(f.get("spread_bps") or 8.0)}),
+                "cost_model": {"spread_bps": float(f.get("spread_bps") or 8.0)},
                 "direction_agg": _dir_agg_for_cal,  # includes calibrated dir_conf
                 "top_positive_factors": (reasons.get("top_positive_factors") or []),
                 "top_negative_factors": (reasons.get("top_negative_factors") or []),
-                "open_interest": oi_sig if venue == "linear" else {},
-                "funding": fr_sig if venue == "linear" else {},
-                "liquidity": {"tier": liq_tier, "turnover24h_usd": turnover},
-                "btc_beta": f.get("_btc_beta", {}),
             }
             _row_for_cal = {"score": score, "reasons": _reasons_for_cal, "success": 0}
             _fv = extract_features(_row_for_cal)
@@ -895,16 +891,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # Context completeness penalty — reduce confidence when key signals are missing.
             # The system already falls back gracefully; this makes the uncertainty explicit.
             _ctx_mult = 1.0
-            if not f.get("_atr_pct_1h"):
-                _ctx_mult *= 0.92  # no 1h ATR
-            if venue == "linear":
-                if oi_sig.get("oi_now") is None:
-                    _ctx_mult *= 0.96  # no OI data
-                if fr_sig.get("value") is None:
-                    _ctx_mult *= 0.98  # no funding data
+            if not f.get("_atr_pct_1h"):          _ctx_mult *= 0.92  # no 1h ATR
+            if oi_sig.get("oi_now") is None:       _ctx_mult *= 0.96  # no OI data
+            if fr_sig.get("rate") is None:         _ctx_mult *= 0.98  # no funding data
             _dir_tf_count = len((f.get("_direction_agg") or {}).get("tf_used") or [])
-            if _dir_tf_count < 3:
-                _ctx_mult *= 0.93  # sparse TF coverage
+            if _dir_tf_count < 3:                  _ctx_mult *= 0.93  # sparse TF coverage
             if _ctx_mult < 1.0:
                 conf = float(_clamp(conf * _ctx_mult, 0.0, 1.0))
 
@@ -931,22 +922,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # Grid bots exempt — they don't need directional conviction.
             import time as _rtime
             if status == "recommended" and bot_type in PERSISTENCE_BOTS:
-                _pkey = (venue, sym, bot_type, direction)
+                _pkey = (venue, sym, bot_type)
                 _now_ts = int(_rtime.time())
-                _persist_window = max(2 * int(settings.reco_interval_sec), int(settings.reco_interval_sec) + 5)
                 _prev_ts = _prev_recommended.get(_pkey, 0)
-                if _now_ts - _prev_ts > _persist_window:
-                    status = "suppressed"      # suppress first appearance of this exact signal
+                if _now_ts - _prev_ts > 120:  # more than 2 cycles (2×30s) since last seen
+                    status = "suppressed"      # suppress first appearance
                 _prev_recommended[_pkey] = _now_ts
-                # Drop opposite-direction stale state for the same bot/symbol so a flip
-                # does not inherit persistence from the previous direction.
-                if bot_type == "futures_martingale":
-                    _opp = "short" if direction == "long" else "long" if direction == "short" else None
-                    if _opp is not None:
-                        _prev_recommended.pop((venue, sym, bot_type, _opp), None)
             elif status != "recommended":
-                for _d in ("long", "short", "neutral", "hedge"):
-                    _prev_recommended.pop((venue, sym, bot_type, _d), None)
+                _prev_recommended.pop((venue, sym, bot_type), None)
 
             risk_score = float(_clamp(atr_pct/0.02, 0.0, 1.0))
 
@@ -963,8 +946,6 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             )
             # Add execution guide for UI "Details" panel.
             params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params)
-            if isinstance(params.get("trade_plan"), dict):
-                params["trade_plan"]["cost_model"] = dict(reasons.get("cost_model") or {})
 
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)
