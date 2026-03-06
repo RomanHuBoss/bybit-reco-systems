@@ -66,7 +66,7 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
         last_loss_ts = None
 
         cur = conn.execute(
-            """SELECT ts FROM trades WHERE pnl < 0 ORDER BY ts DESC LIMIT 1"""
+            """SELECT ts FROM trades WHERE (pnl - fee) < 0 ORDER BY ts DESC LIMIT 1"""
         )
         row = cur.fetchone()
         if row:

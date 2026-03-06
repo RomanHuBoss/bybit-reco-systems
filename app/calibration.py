@@ -161,7 +161,8 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
     if _dc is None:
         _dc = dir_agg.get("direction_confidence")
     dir_conf = float(_dc) if _dc is not None else 0.5
-    coherence = float(dir_agg.get("coherence") or 0.5)
+    coherence_raw = dir_agg.get("coherence")
+    coherence = float(coherence_raw) if coherence_raw is not None else 0.5
 
     strengths = dir_agg.get("strength") or {}
     if isinstance(strengths, dict):
@@ -171,8 +172,12 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
     range_score = max(0.0, 1.0 - trend_strength)
 
     cost = reasons.get("cost_model") or {}
-    spread_bps = float(cost.get("spread_bps") or cost.get("total_cost_bps") or 8.0)
-    sent = float(reasons.get("effective_sentiment") or 0.0)
+    spread_raw = cost.get("spread_bps")
+    if spread_raw is None:
+        spread_raw = cost.get("total_cost_bps")
+    spread_bps = float(spread_raw) if spread_raw is not None else 8.0
+    sent_raw = reasons.get("effective_sentiment")
+    sent = float(sent_raw) if sent_raw is not None else 0.0
     atr_pct = _extract_factor_value(reasons, "atr_pct") or 0.0
 
     oi_block = reasons.get("open_interest") or {}

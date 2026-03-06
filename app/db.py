@@ -199,21 +199,52 @@ def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any
     return True
 
 
-def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any]) -> None:
+def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any]) -> str:
+    """Insert a trade in a conflict-aware way.
+
+    Returns:
+      - "inserted" when a new trade row is written
+      - "duplicate" when the same trade_id already exists with identical payload
+
+    Raises:
+      ValueError when the same trade_id already exists with different payload.
+    """
+    payload = (
+        trade["trade_id"],
+        trade["bot_id"],
+        int(trade["ts"]),
+        trade["symbol"],
+        float(trade.get("pnl") or 0.0),
+        float(trade.get("fee") or 0.0),
+        json.dumps(trade.get("meta") or {}, ensure_ascii=False),
+    )
+    cur = conn.execute(
+        """SELECT bot_id, ts, symbol, pnl, fee, meta_json
+           FROM trades WHERE trade_id=?""",
+        (trade["trade_id"],),
+    )
+    row = cur.fetchone()
+    if row:
+        existing = (
+            row["bot_id"],
+            int(row["ts"]),
+            row["symbol"],
+            float(row["pnl"]),
+            float(row["fee"]),
+            row["meta_json"],
+        )
+        incoming = payload[1:]
+        if existing == incoming:
+            return "duplicate"
+        raise ValueError(f"trade_id={trade['trade_id']} already exists with different payload")
+
     conn.execute(
-        """INSERT OR REPLACE INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)
+        """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)
            VALUES(?,?,?,?,?,?,?)""",
-        (
-            trade["trade_id"],
-            trade["bot_id"],
-            int(trade["ts"]),
-            trade["symbol"],
-            float(trade.get("pnl") or 0.0),
-            float(trade.get("fee") or 0.0),
-            json.dumps(trade.get("meta") or {}, ensure_ascii=False),
-        ),
+        payload,
     )
     conn.commit()
+    return "inserted"
 
 
 def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
@@ -356,8 +387,22 @@ def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: 
         })
     return out
 
-def sum_daily_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
+def sum_daily_gross_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
     cur = conn.execute("""SELECT COALESCE(SUM(pnl),0.0) AS s FROM trades WHERE ts>=?""", (day_start_ts,))
+    return float(cur.fetchone()["s"])
+
+
+def sum_daily_fees(conn: sqlite3.Connection, day_start_ts: int) -> float:
+    cur = conn.execute("""SELECT COALESCE(SUM(fee),0.0) AS s FROM trades WHERE ts>=?""", (day_start_ts,))
+    return float(cur.fetchone()["s"])
+
+
+def sum_daily_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
+    """Net daily PnL after fees.
+
+    Risk limits must use net economics, not gross trade PnL.
+    """
+    cur = conn.execute("""SELECT COALESCE(SUM(pnl - fee),0.0) AS s FROM trades WHERE ts>=?""", (day_start_ts,))
     return float(cur.fetchone()["s"])
 
 
@@ -490,12 +535,33 @@ def get_oi_series(conn: sqlite3.Connection, symbol: str, limit: int = 48) -> lis
 # ── Operator actions ──────────────────────────────────────────────────────────
 
 OPERATOR_STATUSES = {"executed", "ignored", "recommended", "blocked", "no_trade", "suppressed", "expired"}
+TERMINAL_RECOMMENDATION_STATUSES = {"executed", "ignored", "expired", "blocked", "no_trade", "suppressed"}
+_ALLOWED_STATUS_TRANSITIONS = {
+    "recommended": {"recommended", "executed", "ignored"},
+    "executed": {"executed"},
+    "ignored": {"ignored"},
+    "expired": {"expired"},
+    "blocked": {"blocked"},
+    "no_trade": {"no_trade"},
+    "suppressed": {"suppressed"},
+}
+
 
 def update_recommendation_status(
     conn: sqlite3.Connection, rec_id: str, status: str, operator: str | None = None
 ) -> bool:
     if status not in OPERATOR_STATUSES:
         return False
+    cur = conn.execute("SELECT status FROM recommendations WHERE rec_id=?", (rec_id,))
+    row = cur.fetchone()
+    if not row:
+        return False
+    current = str(row["status"])
+    allowed = _ALLOWED_STATUS_TRANSITIONS.get(current, {current})
+    if status not in allowed:
+        return False
+    if status == current:
+        return True
     cur = conn.execute(
         """UPDATE recommendations SET status=? WHERE rec_id=?""",
         (status, rec_id),
@@ -503,7 +569,7 @@ def update_recommendation_status(
     conn.commit()
     if cur.rowcount == 0:
         return False
-    log_decision(conn, "STATUS_UPDATE", rec_id, operator, {"new_status": status})
+    log_decision(conn, "STATUS_UPDATE", rec_id, operator, {"old_status": current, "new_status": status})
     return True
 
 
@@ -532,8 +598,9 @@ def expire_stale_recommendations(conn: sqlite3.Connection) -> int:
 # ── Outcomes stats ────────────────────────────────────────────────────────────
 
 def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
-    """Aggregate win-rate by bot_type, symbol, and regime from reco_outcomes.
-    Regime is joined from market_regime by matching the closest ts.
+    """Aggregate win-rate and return proxies from reco_outcomes.
+
+    This function does not join market regime slices; it reports only overall/by-bot/by-symbol stats.
     """
     # Overall
     cur = conn.execute(
@@ -667,6 +734,12 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
             )
             r = cur2.fetchone()
             last_ts = int(r["m"]) if r and r["m"] else None
+            cur3 = conn.execute(
+                """SELECT MAX(ts) as m FROM ticker_snap WHERE venue=? AND symbol=?""",
+                (venue, sym),
+            )
+            rt = cur3.fetchone()
+            last_ticker_ts = int(rt["m"]) if rt and rt["m"] else None
             age_sec = (now - last_ts) if last_ts else None
 
             if last_ts is None:
@@ -680,6 +753,7 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
                 "venue":           venue,
                 "symbol":          sym,
                 "last_candle_ts":  last_ts,
+                "last_ticker_ts":  last_ticker_ts,
                 "age_sec":         age_sec,
                 "status":          status,
                 "error_count_10m": error_counts.get(sym, 0),

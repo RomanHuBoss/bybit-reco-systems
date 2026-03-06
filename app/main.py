@@ -104,8 +104,10 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             db.update_recommendation_status(conn, rec_id, "executed", operator)
         return existing, True
 
-    if rec["status"] in {"blocked", "no_trade", "expired", "ignored"}:
+    if rec["status"] in {"blocked", "no_trade", "suppressed", "expired", "ignored"}:
         raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
+    if rec.get("bot_type") == "futures_combo":
+        raise HTTPException(status_code=409, detail="futures_combo is intentionally non-executable until a real two-leg PnL/execution model exists")
 
     bot = {
         "bot_id": f"B-{int(time.time())}-{rec['symbol']}-{secrets.token_hex(4)}",
@@ -125,6 +127,8 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             "operator": operator,
             "trade_count": 0,
             "realized_pnl": 0.0,
+            "realized_pnl_gross": 0.0,
+            "realized_pnl_net": 0.0,
             "realized_fee": 0.0,
             "last_trade_ts": None,
         },
@@ -284,17 +288,23 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
             "fee": req.fee,
             "meta": req.meta,
         }
-        db.insert_trade(conn, trade)
+        try:
+            insert_result = db.insert_trade(conn, trade)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
         trades = db.list_trades(conn, bot_id=bot_id, limit=10_000)
-        realized_pnl = float(sum(float(t["pnl"]) for t in trades))
+        realized_pnl_gross = float(sum(float(t["pnl"]) for t in trades))
         realized_fee = float(sum(float(t["fee"]) for t in trades))
+        realized_pnl_net = realized_pnl_gross - realized_fee
         db.update_bot_state(
             conn,
             bot_id,
             {
                 "trade_count": len(trades),
-                "realized_pnl": realized_pnl,
+                "realized_pnl": realized_pnl_net,
+                "realized_pnl_gross": realized_pnl_gross,
+                "realized_pnl_net": realized_pnl_net,
                 "realized_fee": realized_fee,
                 "last_trade_ts": ts,
                 "last_trade_id": trade_id,
@@ -305,8 +315,19 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
         if req.stop_bot:
             db.stop_bot(conn, bot_id)
             db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": req.operator, "stopped_ts": int(time.time())})
-        db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "trade_id": trade_id, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot})
-        return {"ok": True, "trade_id": trade_id, "bot_id": bot_id, "trade_count": len(trades), "realized_pnl": realized_pnl, "realized_fee": realized_fee, "bot_status": "stopped" if req.stop_bot else bot["status"]}
+        db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot})
+        return {
+            "ok": True,
+            "trade_id": trade_id,
+            "bot_id": bot_id,
+            "trade_count": len(trades),
+            "insert_result": insert_result,
+            "realized_pnl": realized_pnl_net,
+            "realized_pnl_gross": realized_pnl_gross,
+            "realized_pnl_net": realized_pnl_net,
+            "realized_fee": realized_fee,
+            "bot_status": "stopped" if req.stop_bot else bot["status"],
+        }
 
 
 @app.get("/api/v1/trades")

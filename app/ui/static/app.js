@@ -71,6 +71,18 @@ function hideModal() {
   $("modal").classList.add("hidden");
 }
 
+function getAdminApiKey() {
+  const el = $("adminApiKey");
+  return el ? (el.value || "").trim() : "";
+}
+
+function authHeaders(base = {}) {
+  const headers = { ...base };
+  const apiKey = getAdminApiKey();
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  return headers;
+}
+
 // ── status & calibration ──────────────────────────────────────────────────────
 
 async function loadStatus() {
@@ -577,10 +589,14 @@ document.addEventListener("click", async (e) => {
     try {
       const res = await fetch(`/api/v1/recommendations/${id}/action`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ action, operator: "ui" }),
       });
       const data = await res.json();
+      if (!res.ok || !data.ok) {
+        showModal("Ошибка операторского действия", data.detail || data.error || data);
+        return;
+      }
       if (data.ok) {
         // Update row in-place — avoids the flicker caused by a full table rebuild.
         // The row will naturally disappear on the next scheduled auto-refresh.
@@ -698,3 +714,11 @@ document.addEventListener("keydown", (e) => {
 
 refreshAll();
 setInterval(refreshAll, 10000);
+
+const adminApiKeyEl = $("adminApiKey");
+if (adminApiKeyEl) {
+  adminApiKeyEl.value = localStorage.getItem("admin_api_key") || "";
+  adminApiKeyEl.addEventListener("input", () => {
+    localStorage.setItem("admin_api_key", adminApiKeyEl.value || "");
+  });
+}

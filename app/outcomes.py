@@ -323,6 +323,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
 
         params = _get_rec_params(conn, rec_id)
         price_ret: float
+        ret_proxy: float
         success: int
         exitp: float
 
@@ -332,6 +333,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 continue
             exitp = ep
             price_ret = (exitp - entry) / entry
+            ret_proxy = price_ret
             success = _grid_success(conn, venue, symbol, entry, exitp, ts0, ts_exit, params)
 
         elif bot_type in DIRECTIONAL_BOTS:
@@ -340,6 +342,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 continue
             exitp = ep
             price_ret = (exitp - entry) / entry
+            ret_proxy = (-price_ret if direction == "short" else price_ret) if direction in ("long", "short") else price_ret
 
             if bot_type == "futures_combo" or direction == "hedge":
                 vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
@@ -351,6 +354,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 min_p, max_p = window
                 realized_move = max(abs(max_p - entry), abs(min_p - entry)) / entry
                 atr_thresh = max(cost_floor * 2.0, 0.020, atr_1h * 0.8 if atr_1h > 0 else 0.0)
+                ret_proxy = realized_move - atr_thresh
                 success = 1 if realized_move > atr_thresh else 0
 
             elif bot_type == "futures_martingale" and direction in ("long", "short"):
@@ -366,6 +370,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                         success = tp_sl
                     else:
                         direction_ret = -price_ret if direction == "short" else price_ret
+                        ret_proxy = direction_ret
                         cost_floor = total_cost_bps / 10_000
                         success = 1 if direction_ret > cost_floor * 1.5 else 0
 
@@ -374,9 +379,11 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 if exit_fallback is not None:
                     exitp = float(exit_fallback)
                     price_ret = (exitp - entry) / entry
+                    ret_proxy = price_ret
 
             elif direction in ("long", "short"):
                 direction_ret = -price_ret if direction == "short" else price_ret
+                ret_proxy = direction_ret
                 cost_floor = _extract_total_cost_bps(params) / 10_000
                 success = 1 if direction_ret > cost_floor else 0
             else:
@@ -397,7 +404,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "horizon_sec": effective_horizon,
                 "entry_close": float(entry),
                 "exit_close": float(exitp),
-                "ret": float(price_ret),
+                "ret": float(ret_proxy),
                 "success": int(success),
             },
         )

@@ -154,25 +154,31 @@ def _build_feature_snapshot(
     liq_tier: str,
     beta_info: dict[str, Any],
 ) -> dict[str, float]:
+    def _value_or_default(value: Any, default: float) -> float:
+        return float(default if value is None else value)
+
     liq_map = {"micro": 0.0, "low": 0.33, "medium": 0.67, "high": 1.0, "unknown": 0.5}
     trendiness = abs(float(direction_agg.get("trendiness") or 0.0))
     dir_conf = direction_agg.get("direction_confidence_calibrated")
     if dir_conf is None:
         dir_conf = direction_agg.get("direction_confidence")
+    spread_bps = cost_model.get("spread_bps")
+    if spread_bps is None:
+        spread_bps = cost_model.get("total_cost_bps")
     return {
         "range_score": _clamp(1.0 - trendiness, 0.0, 1.0),
         "trend_strength": _clamp(trendiness, 0.0, 1.0),
         "atr_pct_norm": _clamp(float(atr_pct) / 0.10, 0.0, 2.0),
         "effective_sentiment": _clamp(float(effective_sent), -1.0, 1.0),
-        "dir_conf": _clamp(float(dir_conf if dir_conf is not None else 0.5), 0.0, 1.0),
-        "coherence": _clamp(float(direction_agg.get("coherence") or 0.5), 0.0, 1.0),
-        "spread_bps_norm": _clamp(float(cost_model.get("spread_bps") or cost_model.get("total_cost_bps") or 8.0) / 10.0, 0.0, 5.0),
+        "dir_conf": _clamp(_value_or_default(dir_conf, 0.5), 0.0, 1.0),
+        "coherence": _clamp(_value_or_default(direction_agg.get("coherence"), 0.5), 0.0, 1.0),
+        "spread_bps_norm": _clamp(_value_or_default(spread_bps, 8.0) / 10.0, 0.0, 5.0),
         "score": _clamp(float(score), -1.0, 1.0),
-        "oi_4h_norm": _clamp(float(oi_sig.get("oi_4h_chg_pct") or 0.0) / 10.0, -3.0, 3.0),
-        "funding_norm": _clamp(float(cost_model.get("directional_funding_bps_8h") or 0.0) / 20.0, -2.0, 2.0),
+        "oi_4h_norm": _clamp(_value_or_default(oi_sig.get("oi_4h_chg_pct"), 0.0) / 10.0, -3.0, 3.0),
+        "funding_norm": _clamp(_value_or_default(cost_model.get("directional_funding_bps_8h"), 0.0) / 20.0, -2.0, 2.0),
         "liq_tier_num": float(liq_map.get(str(liq_tier).lower(), 0.67)),
-        "btc_corr": _clamp(float(beta_info.get("correlation") or 0.0), -1.0, 1.0),
-        "regime_conf": _clamp(float(direction_agg.get("regime_confidence") or 0.5), 0.0, 1.0),
+        "btc_corr": _clamp(_value_or_default(beta_info.get("correlation"), 0.0), -1.0, 1.0),
+        "regime_conf": _clamp(_value_or_default(direction_agg.get("regime_confidence"), 0.5), 0.0, 1.0),
     }
 
 def _build_trade_plan(
@@ -1095,6 +1101,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 status = "no_trade"
             elif settings.require_conf_gate and conf < settings.min_conf_to_recommend:
                 status = "no_trade"
+
+            if bot_type == "futures_combo" and status == "recommended":
+                status = "suppressed"
+                blocks = list(blocks) + [{
+                    "code": "COMBO_PUBLICATION_DISABLED",
+                    "msg": "futures_combo remains research-only until a real two-leg PnL/execution model exists",
+                }]
 
             # Persistence gate for directional bots: require 2 consecutive cycles
             # for the SAME signal signature. This avoids confirming a fresh short with a stale long.
