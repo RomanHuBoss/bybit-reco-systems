@@ -38,30 +38,36 @@
   </div>
 
   <section class="controls">
-    <div class="control control-venue">
-      <label>Площадка</label>
-      <select id="venue">
-        <option value="">all</option>
-        <option value="spot">spot</option>
-        <option value="linear">linear</option>
-      </select>
+    <div class="controls-left">
+      <div class="control control-venue">
+        <label>Площадка</label>
+        <select id="venue">
+          <option value="">all</option>
+          <option value="spot">spot</option>
+          <option value="linear">linear</option>
+        </select>
+      </div>
+      <div class="control control-topn">
+        <label>Top N</label>
+        <input id="topN" type="number" value="50" min="1" max="200"/>
+      </div>
+      <div class="control control-conf">
+        <label>Мин. уверенность</label>
+        <input id="minConf" type="number" value="0.52" step="0.05" min="0" max="1"/>
+      </div>
+      <div class="control control-btns">
+        <div class="btn-row">
+          <button id="decisionsBtn" class="btn secondary">Журнал</button>
+          <button id="healthBtn" class="btn secondary">Здоровье</button>
+          <button id="outcomesBtn" class="btn secondary">Исходы</button>
+          <button id="riskBtn" class="btn secondary">Риски</button>
+        </div>
+      </div>
     </div>
-    <div class="control control-topn">
-      <label>Top N</label>
-      <input id="topN" type="number" value="50" min="1" max="200"/>
-    </div>
-    <div class="control control-conf">
-      <label>Мин. уверенность</label>
-      <input id="minConf" type="number" value="0.52" step="0.05" min="0" max="1"/>
-    </div>
-    <div class="control control-btns">
-      <label>Admin API key</label>
-      <input id="adminApiKey" type="password" placeholder="X-API-Key для execute/ignore/stop/trades" autocomplete="off"/>
-      <div class="btn-row">
-        <button id="decisionsBtn" class="btn secondary">Журнал</button>
-        <button id="healthBtn" class="btn secondary">Здоровье</button>
-        <button id="outcomesBtn" class="btn secondary">Исходы</button>
-        <button id="riskBtn" class="btn secondary">Риски</button>
+    <div class="controls-right">
+      <div class="control control-admin">
+        <label>Admin API key</label>
+        <input id="adminApiKey" type="password" placeholder="X-API-Key для execute/ignore/stop/trades" autocomplete="off"/>
       </div>
     </div>
   </section>
