@@ -317,7 +317,7 @@ async def startup_event():
 def api_status() -> dict[str, Any]:
     """System health: calibrator state, outcome progress, sentiment, collect errors."""
     with closing(_get_conn()) as conn:
-        from .calibration import load_logreg_from_db, GLOBAL_LOGREG_KEY, BOT_LOGREG_KEYS
+        from .calibration import load_logreg_from_db, GLOBAL_LOGREG_KEY, BOT_CALIB_KEYS
 
         # Global LogReg+Platt model
         global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
@@ -327,7 +327,7 @@ def api_status() -> dict[str, Any]:
 
         # Per-bot model summary
         bot_status = {}
-        for bt, key in BOT_LOGREG_KEYS.items():
+        for bt, key in BOT_CALIB_KEYS.items():
             m = load_logreg_from_db(conn, key)
             bot_status[bt] = {
                 "fitted":       bool(m and m.fitted),

@@ -13,13 +13,9 @@ from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
-    extract_features, BOT_LOGREG_KEYS, GLOBAL_LOGREG_KEY,
+    extract_features, GLOBAL_LOGREG_KEY, CALIB_REFIT_INTERVAL_SEC,
 )
 # Note: calibrators use db.get_outcomes_with_recs (single JOIN query) to avoid N+1 pattern
-
-# Re-fit calibrators every hour even if a saved version exists.
-# New outcomes accumulate continuously, so models trained once become stale.
-CALIB_REFIT_INTERVAL_SEC = 3600
 
 BOT_TYPES_BYBIT = [
     "spot_grid",
@@ -492,6 +488,14 @@ def _score(bot_type: str, venue: str, f: dict[str, Any], taker_fee_bps: float, g
     }
     return score, conf0, reasons
 
+# ── Persistence gate state ───────────────────────────────────────────────────
+# Tracks which (venue, symbol, bot_type) combos were 'recommended' in the
+# previous cycle. Only directional bots require 2 consecutive confirmations.
+# Key: (venue, symbol, bot_type) → ts of last recommended cycle
+_prev_recommended: dict[tuple, int] = {}
+PERSISTENCE_BOTS = {"futures_martingale", "dca_bot"}  # bots that need 2-cycle confirmation
+
+
 def _fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
     """Fit global LogReg+Platt calibrator on all outcome rows."""
     rows = db.get_outcomes_with_recs(conn, limit=6000)
@@ -510,7 +514,7 @@ def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
     for bt, bt_rows in data.items():
         model = fit_logreg(bt_rows, min_samples=min_samples)
         if model.fitted:
-            save_logreg_to_db(conn, BOT_LOGREG_KEYS.get(bt, f"logreg_{bt}_v1"), model)
+            save_logreg_to_db(conn, BOT_CALIB_KEYS.get(bt, f"logreg_{bt}_v1"), model)
         result[bt] = model
     return result
 
@@ -537,7 +541,7 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
     calibrators: dict[str, LogRegScaler] = {}
     needs_refit: list[str] = []
 
-    for bt, key in BOT_LOGREG_KEYS.items():
+    for bt, key in BOT_CALIB_KEYS.items():
         saved = load_logreg_from_db(conn, key)
         if saved and saved.fitted:
             if now - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
@@ -610,7 +614,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     # Use 6h EWMA as the primary numeric sentiment input for scoring
     global_sent = float(sent_agg.get("ewma", {}).get("6h", 0.0))
     # Per-symbol sentiment map: {SYMBOL: float} blended from RSS/Reddit/CoinGecko
-    symbol_sent_map: dict[str, float] = compute_symbol_sentiment_map(conn)
+    symbol_sent_map: dict[str, tuple[float, int]] = compute_symbol_sentiment_map(conn)
 
     # LogReg+Platt calibrators (new) — replace legacy Platt-on-score
     global_calibrator  = _load_or_fit_global_logreg(conn, min_samples=settings.calib_min_samples)
@@ -765,10 +769,18 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             else:
                 oi_sig["signal"] = "neutral"
 
-            # Blend global and per-symbol sentiment: 50/50 when symbol data exists
+            # Adaptive sentiment blend: symbol weight grows with number of data points.
+            # Few points (< 5) → 90% global / 10% symbol — don't amplify noisy signal.
+            # Many points (≥ 20) → 50% global / 50% symbol — full trust.
             # MUST be computed before feasibility checks that reference effective_sent
-            sym_sent = symbol_sent_map.get(sym)
-            effective_sent = (0.5 * global_sent + 0.5 * sym_sent) if sym_sent is not None else global_sent
+            _sym_entry = symbol_sent_map.get(sym)
+            if _sym_entry is not None:
+                sym_sent, _sym_n = _sym_entry
+                _sym_weight = float(_clamp(_sym_n / 20.0, 0.1, 0.5))
+                effective_sent = (1.0 - _sym_weight) * global_sent + _sym_weight * sym_sent
+            else:
+                sym_sent = None
+                effective_sent = global_sent
 
             feasibility_blocks = []
 
@@ -837,10 +849,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             _reasons_for_cal = {
                 "effective_sentiment": effective_sent,
-                "cost_model": {"spread_bps": float(f.get("spread_bps") or 8.0)},
+                "cost_model": (reasons.get("cost_model") or {"spread_bps": float(f.get("spread_bps") or 8.0)}),
                 "direction_agg": _dir_agg_for_cal,  # includes calibrated dir_conf
                 "top_positive_factors": (reasons.get("top_positive_factors") or []),
                 "top_negative_factors": (reasons.get("top_negative_factors") or []),
+                "open_interest": oi_sig if venue == "linear" else {},
+                "funding": fr_sig if venue == "linear" else {},
+                "liquidity": {"tier": liq_tier, "turnover24h_usd": turnover},
+                "btc_beta": f.get("_btc_beta", {}),
             }
             _row_for_cal = {"score": score, "reasons": _reasons_for_cal, "success": 0}
             _fv = extract_features(_row_for_cal)
@@ -866,8 +882,32 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 conf_cal = float(conf0)
                 _cal_source = "raw"
                 _active_cal = None
-            # Blend raw sigmoid with calibrated to avoid overconfident cold-start
-            conf = float(_clamp(0.5*conf_raw + 0.5*conf_cal, 0.0, 1.0))
+            # Adaptive blend: calibration weight grows with n_samples.
+            # At n=0 (unfitted): 10% calibrated / 90% raw — mostly raw sigmoid.
+            # At n=80 (min_samples): ~22% calibrated.
+            # At n≥300: 50% calibrated — full trust in the model.
+            # This prevents the cold-start problem where an undertrained calibrator
+            # with degenerate WR drags all confidence toward an extreme value.
+            _n_cal = (_active_cal.n_samples if _active_cal is not None and _active_cal.fitted else 0)
+            _cal_weight = float(_clamp(_n_cal / 300.0, 0.0, 1.0)) * 0.40 + 0.10
+            conf = float(_clamp((1.0 - _cal_weight) * conf_raw + _cal_weight * conf_cal, 0.0, 1.0))
+
+            # Context completeness penalty — reduce confidence when key signals are missing.
+            # The system already falls back gracefully; this makes the uncertainty explicit.
+            _ctx_mult = 1.0
+            if not f.get("_atr_pct_1h"):
+                _ctx_mult *= 0.92  # no 1h ATR
+            if venue == "linear":
+                if oi_sig.get("oi_now") is None:
+                    _ctx_mult *= 0.96  # no OI data
+                if fr_sig.get("value") is None:
+                    _ctx_mult *= 0.98  # no funding data
+            _dir_tf_count = len((f.get("_direction_agg") or {}).get("tf_used") or [])
+            if _dir_tf_count < 3:
+                _ctx_mult *= 0.93  # sparse TF coverage
+            if _ctx_mult < 1.0:
+                conf = float(_clamp(conf * _ctx_mult, 0.0, 1.0))
+
             # OI unwinding → reduce confidence
             if venue == "linear" and oi_sig["signal"] == "caution":
                 conf = float(_clamp(conf * 0.88, 0.0, 1.0))
@@ -886,6 +926,28 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             elif settings.require_conf_gate and conf < settings.min_conf_to_recommend:
                 status = "no_trade"
 
+            # Persistence gate for directional bots: require 2 consecutive cycles
+            # to promote a recommendation. Filters one-off noisy spikes.
+            # Grid bots exempt — they don't need directional conviction.
+            import time as _rtime
+            if status == "recommended" and bot_type in PERSISTENCE_BOTS:
+                _pkey = (venue, sym, bot_type, direction)
+                _now_ts = int(_rtime.time())
+                _persist_window = max(2 * int(settings.reco_interval_sec), int(settings.reco_interval_sec) + 5)
+                _prev_ts = _prev_recommended.get(_pkey, 0)
+                if _now_ts - _prev_ts > _persist_window:
+                    status = "suppressed"      # suppress first appearance of this exact signal
+                _prev_recommended[_pkey] = _now_ts
+                # Drop opposite-direction stale state for the same bot/symbol so a flip
+                # does not inherit persistence from the previous direction.
+                if bot_type == "futures_martingale":
+                    _opp = "short" if direction == "long" else "long" if direction == "short" else None
+                    if _opp is not None:
+                        _prev_recommended.pop((venue, sym, bot_type, _opp), None)
+            elif status != "recommended":
+                for _d in ("long", "short", "neutral", "hedge"):
+                    _prev_recommended.pop((venue, sym, bot_type, _d), None)
+
             risk_score = float(_clamp(atr_pct/0.02, 0.0, 1.0))
 
             params = _params(
@@ -901,6 +963,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             )
             # Add execution guide for UI "Details" panel.
             params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params)
+            if isinstance(params.get("trade_plan"), dict):
+                params["trade_plan"]["cost_model"] = dict(reasons.get("cost_model") or {})
 
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)

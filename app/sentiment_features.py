@@ -115,7 +115,7 @@ def compute_sentiment_agg(conn, scope: str = "global", key: str = "crypto") -> d
 
 def compute_symbol_sentiment_map(conn, horizon_sec: int = 3600 * 6) -> dict[str, float]:
     """
-    Returns {SYMBOL: blended_sentiment_float} for all symbols that have
+    Returns {SYMBOL: (blended_sentiment_float, n_points)} for all symbols that have
     scope='symbol' points in the last `horizon_sec` seconds.
     Uses simple weighted mean by volume over the window.
     """
@@ -135,9 +135,12 @@ def compute_symbol_sentiment_map(conn, horizon_sec: int = 3600 * 6) -> dict[str,
         v   = max(1.0, float(row["volume"] or 1))
         agg.setdefault(sym, []).append((s, v))
 
-    result: dict[str, float] = {}
+    # Returns dict[symbol] = (sentiment_float, n_points)
+    # n_points drives the adaptive blending weight in recommender:
+    # few data points → trust global more; many points → trust symbol more.
+    result: dict[str, tuple[float, int]] = {}
     for sym, pairs in agg.items():
         total_w = sum(v for _, v in pairs)
         if total_w > 0:
-            result[sym] = sum(s * v for s, v in pairs) / total_w
+            result[sym] = (sum(s * v for s, v in pairs) / total_w, len(pairs))
     return result
