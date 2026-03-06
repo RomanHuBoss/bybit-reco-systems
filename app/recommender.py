@@ -1006,11 +1006,22 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             _dir_conf_pre = dir_calibrator.predict(_xdir_pre) if dir_calibrator.fitted else _xdir_pre
             _dir_agg_for_cal = dict(_dtmp_pre)
             _dir_agg_for_cal["direction_confidence_calibrated"] = _dir_conf_pre
+            feature_snapshot = _build_feature_snapshot(
+                score=score,
+                atr_pct=atr_pct,
+                effective_sent=effective_sent,
+                cost_model=cost_model,
+                direction_agg=_dir_agg_for_cal,
+                oi_sig=oi_sig,
+                liq_tier=liq_tier,
+                beta_info=beta_info,
+            )
 
             _reasons_for_cal = {
                 "effective_sentiment": effective_sent,
                 "cost_model": cost_model,
                 "direction_agg": _dir_agg_for_cal,  # includes calibrated dir_conf
+                "feature_snapshot": dict(feature_snapshot),
                 "top_positive_factors": (reasons.get("top_positive_factors") or []),
                 "top_negative_factors": (reasons.get("top_negative_factors") or []),
             }
@@ -1146,7 +1157,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     "next_funding_ts": cost_model.get("next_funding_ts"),
                 }
                 reasons2["open_interest"] = oi_sig
-            reasons2["feature_snapshot"] = dict(_feature_snapshot)
+            reasons2["feature_snapshot"] = dict(feature_snapshot)
             reasons2["symbol_sentiment"] = {
                 "value": float(sym_sent) if sym_sent is not None else None,
                 "effective": float(effective_sent),
