@@ -7,11 +7,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def _env(key: str, default: str | None = None) -> str:
     v = os.getenv(key, default)
     if v is None:
         raise RuntimeError(f"Missing required env var: {key}")
     return v
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -22,7 +24,7 @@ class Settings:
     bybit_base_url: str
 
     collect_interval_sec: int
-    stale_data_max_sec: int  # skip symbol if newest 1m candle is older than this
+    stale_data_max_sec: int
     reco_interval_sec: int
     top_n: int
 
@@ -38,33 +40,38 @@ class Settings:
     taker_fee_bps_linear: float
 
     master_key: str | None
+    admin_api_key: str | None
     sentiment_interval_sec: int
     telegram_token: str | None
     telegram_chat_id: str | None
 
     require_conf_gate: bool = False
 
+
 def load_settings() -> Settings:
     venues = [v.strip() for v in _env("VENUES", "spot,linear").split(",") if v.strip()]
     symbols_spot = [s.strip().upper() for s in _env("SYMBOLS_SPOT", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
     symbols_linear = [s.strip().upper() for s in _env("SYMBOLS_LINEAR", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
 
-    risk_limits_json = _env("RISK_LIMITS_JSON", '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1}')
+    risk_limits_json = _env(
+        "RISK_LIMITS_JSON",
+        '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1}',
+    )
     risk_limits = json.loads(risk_limits_json)
 
     master_key = os.getenv("MASTER_KEY", "") or None
+    admin_api_key = os.getenv("ADMIN_API_KEY", "") or None
 
     outcome_horizon_sec = int(_env("OUTCOME_HORIZON_SEC", "900"))
     calib_min_samples = int(_env("CALIB_MIN_SAMPLES", "60"))
-
-    require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1","true","yes","y")
+    require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1", "true", "yes", "y")
 
     return Settings(
         require_conf_gate=require_conf_gate,
         db_path=_env("DB_PATH", "./data/app.db"),
         bybit_base_url=_env("BYBIT_BASE_URL", "https://api.bybit.com"),
         collect_interval_sec=int(_env("COLLECT_INTERVAL_SEC", "20")),
-        stale_data_max_sec=int(_env("STALE_DATA_MAX_SEC", "300")),  # 5 min default
+        stale_data_max_sec=int(_env("STALE_DATA_MAX_SEC", "300")),
         reco_interval_sec=int(_env("RECO_INTERVAL_SEC", "20")),
         top_n=int(_env("TOP_N", "20")),
         venues=venues,
@@ -76,6 +83,7 @@ def load_settings() -> Settings:
         taker_fee_bps_spot=float(_env("TAKER_FEE_BPS_SPOT", "10")),
         taker_fee_bps_linear=float(_env("TAKER_FEE_BPS_LINEAR", "6")),
         master_key=master_key,
+        admin_api_key=admin_api_key,
         sentiment_interval_sec=int(_env("SENTIMENT_INTERVAL_SEC", "60")),
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,

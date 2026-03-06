@@ -151,6 +151,94 @@ def stop_bot(conn: sqlite3.Connection, bot_id: str) -> bool:
     conn.commit()
     return True
 
+def _decode_bot_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not r:
+        return None
+    return {
+        "bot_id": r["bot_id"],
+        "started_ts": r["started_ts"],
+        "stopped_ts": r["stopped_ts"],
+        "venue": r["venue"],
+        "symbol": r["symbol"],
+        "bot_type": r["bot_type"],
+        "mode": json.loads(r["mode_json"]),
+        "params": json.loads(r["params_json"]),
+        "state": json.loads(r["state_json"]),
+        "status": r["status"],
+        "origin_rec_id": r["origin_rec_id"],
+    }
+
+
+def get_bot_instance(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any] | None:
+    cur = conn.execute("SELECT * FROM bot_instances WHERE bot_id=?", (bot_id,))
+    return _decode_bot_row(cur.fetchone())
+
+
+def get_bot_by_origin_rec(conn: sqlite3.Connection, origin_rec_id: str) -> dict[str, Any] | None:
+    cur = conn.execute("SELECT * FROM bot_instances WHERE origin_rec_id=? ORDER BY started_ts DESC LIMIT 1", (origin_rec_id,))
+    return _decode_bot_row(cur.fetchone())
+
+
+def list_bot_instances(conn: sqlite3.Connection, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    if status:
+        cur = conn.execute("SELECT * FROM bot_instances WHERE status=? ORDER BY started_ts DESC LIMIT ?", (status, limit))
+    else:
+        cur = conn.execute("SELECT * FROM bot_instances ORDER BY started_ts DESC LIMIT ?", (limit,))
+    return [_decode_bot_row(r) for r in cur.fetchall()]
+
+
+def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any], merge: bool = True) -> bool:
+    cur = conn.execute("SELECT state_json FROM bot_instances WHERE bot_id=?", (bot_id,))
+    row = cur.fetchone()
+    if not row:
+        return False
+    state = json.loads(row["state_json"]) if row["state_json"] else {}
+    state = {**state, **patch} if merge else dict(patch)
+    conn.execute("UPDATE bot_instances SET state_json=? WHERE bot_id=?", (json.dumps(state, ensure_ascii=False), bot_id))
+    conn.commit()
+    return True
+
+
+def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any]) -> None:
+    conn.execute(
+        """INSERT OR REPLACE INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)
+           VALUES(?,?,?,?,?,?,?)""",
+        (
+            trade["trade_id"],
+            trade["bot_id"],
+            int(trade["ts"]),
+            trade["symbol"],
+            float(trade.get("pnl") or 0.0),
+            float(trade.get("fee") or 0.0),
+            json.dumps(trade.get("meta") or {}, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+
+
+def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    if bot_id:
+        cur = conn.execute(
+            "SELECT * FROM trades WHERE bot_id=? ORDER BY ts DESC LIMIT ?",
+            (bot_id, limit),
+        )
+    else:
+        cur = conn.execute("SELECT * FROM trades ORDER BY ts DESC LIMIT ?", (limit,))
+    out = []
+    for r in cur.fetchall():
+        out.append({
+            "trade_id": r["trade_id"],
+            "bot_id": r["bot_id"],
+            "ts": r["ts"],
+            "symbol": r["symbol"],
+            "pnl": r["pnl"],
+            "fee": r["fee"],
+            "meta": json.loads(r["meta_json"]),
+        })
+    return out
+
+
+
 def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int, min_conf: float, statuses: list[str] | None = None, snapshot_ts: int | None = None) -> list[dict[str, Any]]:
     if snapshot_ts is not None:
         q = """SELECT * FROM recommendations WHERE ts = ?"""

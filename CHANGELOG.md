@@ -672,3 +672,13 @@ Pre-market контракты не отдают kline данные через с
 - Tactical vs structural scores
 - Separate direction-confidence calibration persisted in SQLite
 - Multi-horizon sentiment EWMA voting (1h/6h/1d/7d) with risk_on/off/neutral
+
+## 2026-03-07 — audited finished build
+- fixed calibration train/inference mismatch with persisted feature_snapshot
+- fixed funding cost model to be direction-aware and event-aware
+- added path-based martingale outcome labeling
+- added admin-key protected mutating endpoints
+- added bot lifecycle and trade ingestion endpoints
+- scrubbed shipped secrets from .env and raised CALIB_MIN_SAMPLES to 60
+- blocked publication of futures_combo as action-ready recommendation without two-leg PnL model
+

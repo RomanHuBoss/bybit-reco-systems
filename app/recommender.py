@@ -63,13 +63,16 @@ def _estimate_cost_model(
     venue: str,
     f: dict[str, Any],
     taker_fee_bps: float,
+    direction: str,
     funding_rate: float | None = None,
+    next_funding_ts: int | None = None,
+    ts_now: int | None = None,
 ) -> dict[str, Any]:
-    """Approximate round-trip execution costs used consistently in scoring/params/outcomes.
+    """Approximate round-trip execution costs used in scoring/params/outcomes.
 
-    This project does not simulate actual fills, so the model must stay simple and conservative.
-    We explicitly avoid silent underestimation by carrying a slippage term and (for linear bots)
-    expected funding over the bot horizon.
+    Funding is direction-sensitive and event-based. We do not pro-rate abs(rate)
+    over the whole horizon because that creates fake carry costs on trades that exit
+    before the next funding timestamp and gets long/short economics backwards.
     """
     spread_bps = f.get("spread_bps")
     spread_bps = float(spread_bps) if spread_bps is not None else None
@@ -83,26 +86,93 @@ def _estimate_cost_model(
         spread_missing = False
 
     fee_bps_round_trip = max(0.0, float(taker_fee_bps)) * 2.0
-
-    # One full spread round-trip plus a conservative slippage term.
     slippage_bps = max(1.0 if venue == "spot" else 0.8, spread_bps_used * (0.35 if bot_type in ("spot_grid", "futures_grid") else 0.50))
 
     horizon_sec = BOT_HORIZONS.get(bot_type, 0)
-    expected_funding_bps = 0.0
-    if venue == "linear" and funding_rate is not None and horizon_sec > 0:
-        expected_funding_bps = abs(float(funding_rate)) * 10000.0 * (float(horizon_sec) / (8.0 * 3600.0))
+    fr = float(funding_rate) if funding_rate is not None else None
+    directional_funding_bps_8h = 0.0
+    if fr is not None:
+        if direction == "long":
+            directional_funding_bps_8h = fr * 10000.0
+        elif direction == "short":
+            directional_funding_bps_8h = -fr * 10000.0
 
-    total_cost_bps = fee_bps_round_trip + spread_bps_used + slippage_bps + expected_funding_bps
+    expected_funding_events = 0
+    expected_funding_bps = 0.0
+    if venue == "linear" and fr is not None and horizon_sec > 0:
+        now = int(ts_now or 0)
+        nfts = int(next_funding_ts or 0)
+        if now > 0 and nfts > 0:
+            if now + horizon_sec >= nfts:
+                expected_funding_events = 1
+                if now + horizon_sec >= nfts + 8 * 3600:
+                    expected_funding_events = 2
+        else:
+            expected_funding_events = 1 if horizon_sec >= 8 * 3600 else 0
+        expected_funding_bps = directional_funding_bps_8h * expected_funding_events
+
+    total_cost_bps = fee_bps_round_trip + spread_bps_used + slippage_bps + max(0.0, expected_funding_bps)
 
     return {
         "spread_bps": spread_bps_used,
         "spread_missing": spread_missing,
         "fee_bps_round_trip": fee_bps_round_trip,
         "slippage_bps": float(slippage_bps),
-        "funding_rate": float(funding_rate) if funding_rate is not None else None,
+        "funding_rate": fr,
+        "direction": direction,
+        "directional_funding_bps_8h": float(directional_funding_bps_8h),
+        "next_funding_ts": int(next_funding_ts) if next_funding_ts else None,
+        "expected_funding_events": int(expected_funding_events),
         "expected_funding_bps": float(expected_funding_bps),
         "total_cost_bps": float(total_cost_bps),
         "horizon_sec": int(horizon_sec),
+    }
+
+
+def _funding_score_adjustment(direction: str, fr_sig: dict[str, Any]) -> float:
+    sig = str(fr_sig.get("signal") or "unknown")
+    if direction == "long":
+        if sig == "bullish":
+            return 0.04
+        if sig == "bearish":
+            return -0.06
+    elif direction == "short":
+        if sig == "bearish":
+            return 0.04
+        if sig == "bullish":
+            return -0.06
+    return 0.0
+
+
+def _build_feature_snapshot(
+    score: float,
+    atr_pct: float,
+    effective_sent: float,
+    cost_model: dict[str, Any],
+    direction_agg: dict[str, Any],
+    oi_sig: dict[str, Any],
+    liq_tier: str,
+    beta_info: dict[str, Any],
+) -> dict[str, float]:
+    liq_map = {"micro": 0.0, "low": 0.33, "medium": 0.67, "high": 1.0, "unknown": 0.5}
+    trendiness = abs(float(direction_agg.get("trendiness") or 0.0))
+    dir_conf = direction_agg.get("direction_confidence_calibrated")
+    if dir_conf is None:
+        dir_conf = direction_agg.get("direction_confidence")
+    return {
+        "range_score": _clamp(1.0 - trendiness, 0.0, 1.0),
+        "trend_strength": _clamp(trendiness, 0.0, 1.0),
+        "atr_pct_norm": _clamp(float(atr_pct) / 0.10, 0.0, 2.0),
+        "effective_sentiment": _clamp(float(effective_sent), -1.0, 1.0),
+        "dir_conf": _clamp(float(dir_conf if dir_conf is not None else 0.5), 0.0, 1.0),
+        "coherence": _clamp(float(direction_agg.get("coherence") or 0.5), 0.0, 1.0),
+        "spread_bps_norm": _clamp(float(cost_model.get("spread_bps") or cost_model.get("total_cost_bps") or 8.0) / 10.0, 0.0, 5.0),
+        "score": _clamp(float(score), -1.0, 1.0),
+        "oi_4h_norm": _clamp(float(oi_sig.get("oi_4h_chg_pct") or 0.0) / 10.0, -3.0, 3.0),
+        "funding_norm": _clamp(float(cost_model.get("directional_funding_bps_8h") or 0.0) / 20.0, -2.0, 2.0),
+        "liq_tier_num": float(liq_map.get(str(liq_tier).lower(), 0.67)),
+        "btc_corr": _clamp(float(beta_info.get("correlation") or 0.0), -1.0, 1.0),
+        "regime_conf": _clamp(float(direction_agg.get("regime_confidence") or 0.5), 0.0, 1.0),
     }
 
 def _build_trade_plan(
@@ -821,12 +891,16 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             oi_rows  = db.get_oi_series(conn, sym, limit=48)  if venue == "linear" else []
             fr_sig   = funding_signal(fr_data["funding_rate"] if fr_data else None)
             oi_sig   = oi_trend(oi_rows)
+            direction = _direction(bot_type, f.get('_direction_agg', {}))
             cost_model = _estimate_cost_model(
                 bot_type=bot_type,
                 venue=venue,
                 f=f,
                 taker_fee_bps=taker_fee_bps,
+                direction=direction,
                 funding_rate=(fr_data["funding_rate"] if fr_data else None),
+                next_funding_ts=(fr_data["next_funding_ts"] if fr_data else None),
+                ts_now=ts_now,
             )
             # Combine OI trend with price direction for final signal
             if oi_sig["trend"] == "growing":
@@ -917,10 +991,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             # ── Funding + OI score adjustments ──
             if venue == "linear":
-                if fr_sig["signal"] == "bullish":
-                    score = _clamp(score + 0.04, -1.0, 1.0)  # longs being paid → small bonus
-                elif fr_sig["signal"] == "bearish":
-                    score = _clamp(score - 0.06, -1.0, 1.0)  # crowded long → penalty
+                score = _clamp(score + _funding_score_adjustment(direction, fr_sig), -1.0, 1.0)
 
             conf_raw = float(conf0)
             # ── Two-stage calibration: LogReg(features) → Platt ──────────────────
@@ -1002,7 +1073,6 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 conf = float(min(conf, 0.68))
 
             expected_rr = _expected_rr(bot_type, f)
-            direction = _direction(bot_type, f.get('_direction_agg', {}))
             account_mode, margin_mode = _mode(venue, direction)
 
             blocks = list(feasibility_blocks)  # risk_blocks already included via feasibility_blocks.extend()
@@ -1067,8 +1137,16 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "turnover24h_usd": turnover,
             }
             if venue == "linear":
-                reasons2["funding"] = fr_sig
+                reasons2["funding"] = {
+                    **fr_sig,
+                    "direction": direction,
+                    "directional_funding_bps_8h": float(cost_model.get("directional_funding_bps_8h") or 0.0),
+                    "expected_funding_bps": float(cost_model.get("expected_funding_bps") or 0.0),
+                    "expected_funding_events": int(cost_model.get("expected_funding_events") or 0),
+                    "next_funding_ts": cost_model.get("next_funding_ts"),
+                }
                 reasons2["open_interest"] = oi_sig
+            reasons2["feature_snapshot"] = dict(_feature_snapshot)
             reasons2["symbol_sentiment"] = {
                 "value": float(sym_sent) if sym_sent is not None else None,
                 "effective": float(effective_sent),

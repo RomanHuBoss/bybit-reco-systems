@@ -2,17 +2,16 @@ from __future__ import annotations
 
 from . import db
 
-# Per-bot-type outcome horizons
 BOT_HORIZONS: dict[str, int] = {
-    "spot_grid":          4 * 3600,
-    "futures_grid":       4 * 3600,
-    "dca_bot":           24 * 3600,
+    "spot_grid": 4 * 3600,
+    "futures_grid": 4 * 3600,
+    "dca_bot": 24 * 3600,
     "futures_martingale": 1 * 3600,
-    "futures_combo":      2 * 3600,
+    "futures_combo": 2 * 3600,
 }
 HORIZON_SEC_DEFAULT = 30 * 60
 
-GRID_BOTS        = {"spot_grid", "futures_grid"}
+GRID_BOTS = {"spot_grid", "futures_grid"}
 DIRECTIONAL_BOTS = {"dca_bot", "futures_martingale", "futures_combo"}
 
 
@@ -27,9 +26,7 @@ def _get_close_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | No
     return float(r["close"]) if r else None
 
 
-def _get_price_range_in_window(
-    conn, venue: str, symbol: str, ts_start: int, ts_end: int
-) -> tuple[float, float] | None:
+def _get_price_range_in_window(conn, venue: str, symbol: str, ts_start: int, ts_end: int) -> tuple[float, float] | None:
     cur = conn.execute(
         """SELECT MIN(low) as lo, MAX(high) as hi FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=60
@@ -68,10 +65,7 @@ def _get_rec_params(conn, rec_id: str) -> dict | None:
 def _extract_total_cost_bps(params: dict | None, fallback: float = 15.0) -> float:
     if not params:
         return float(fallback)
-    for block in (
-        params.get("cost_model") or {},
-        (params.get("trade_plan") or {}).get("cost_model") or {},
-    ):
+    for block in (params.get("cost_model") or {}, (params.get("trade_plan") or {}).get("cost_model") or {}):
         if block.get("total_cost_bps") is not None:
             try:
                 return float(block.get("total_cost_bps"))
@@ -91,12 +85,6 @@ def _tp_sl_success(
     atr_1h: float,
     total_cost_bps: float = 15.0,
 ) -> int | None:
-    """Determine martingale success by TP/SL hit using 1m candles.
-
-    Conservative rule for ambiguous candles: if both TP and SL are touched inside
-    the same 1m candle, count it as failure. Anything else would inject an
-    arbitrary optimistic path assumption into the training labels.
-    """
     cost_floor = total_cost_bps / 10_000
     tp_pct = max(cost_floor * 1.5, 0.30 * atr_1h)
     sl_pct = 2.0 * tp_pct
@@ -133,16 +121,104 @@ def _tp_sl_success(
     return 0
 
 
-def _grid_success(
+def _simulate_martingale_success(
     conn,
     venue: str,
     symbol: str,
     entry: float,
-    exitp: float,
+    direction: str,
     ts_start: int,
     ts_end: int,
     params: dict | None,
-) -> int:
+    total_cost_bps: float,
+) -> int | None:
+    rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
+    if not rows:
+        return None
+
+    params = params or {}
+    trade_plan = params.get("trade_plan") or {}
+    levels = trade_plan.get("levels") or {}
+    cost_floor = max(0.0, float(total_cost_bps) / 10_000.0)
+
+    step_pct = float(params.get("step_pct") or 0.0) / 100.0
+    max_steps = int(params.get("max_steps") or 0)
+    if step_pct <= 0:
+        step_pct = max(0.003, cost_floor * 1.25)
+
+    tp_list = levels.get("take_profit") or []
+    tp_price_hint = None
+    if isinstance(tp_list, list) and tp_list:
+        try:
+            tp_price_hint = float((tp_list[0] or {}).get("price"))
+        except Exception:
+            tp_price_hint = None
+    try:
+        sl_price_hint = float((levels.get("stop_loss") or {}).get("price"))
+    except Exception:
+        sl_price_hint = None
+    try:
+        kill_abs = float((levels.get("risk_kill_switch") or {}).get("max_adverse_move"))
+    except Exception:
+        kill_abs = None
+
+    fills = [float(entry)]
+    next_step_idx = 1
+
+    for row in rows:
+        high = float(row["high"])
+        low = float(row["low"])
+
+        while next_step_idx <= max_steps:
+            if direction == "long":
+                ladder_px = entry * (1.0 - step_pct * next_step_idx)
+                triggered = low <= ladder_px
+            else:
+                ladder_px = entry * (1.0 + step_pct * next_step_idx)
+                triggered = high >= ladder_px
+            if triggered:
+                fills.append(ladder_px)
+                next_step_idx += 1
+            else:
+                break
+
+        avg_entry = sum(fills) / len(fills)
+        if tp_price_hint is not None and entry > 0:
+            tp_pct = abs(tp_price_hint - entry) / entry
+        else:
+            tp_pct = max(cost_floor * 1.5, 0.0035)
+        if sl_price_hint is not None and entry > 0:
+            sl_pct = abs(sl_price_hint - entry) / entry
+        elif kill_abs is not None and avg_entry > 0:
+            sl_pct = max(cost_floor * 2.0, abs(kill_abs) / avg_entry)
+        else:
+            sl_pct = max(tp_pct * 2.0, cost_floor * 2.0, 0.007)
+
+        if direction == "long":
+            tp_price = avg_entry * (1.0 + tp_pct)
+            stop_price = avg_entry * (1.0 - sl_pct)
+            hit_tp = high >= tp_price
+            hit_stop = low <= stop_price
+        else:
+            tp_price = avg_entry * (1.0 - tp_pct)
+            stop_price = avg_entry * (1.0 + sl_pct)
+            hit_tp = low <= tp_price
+            hit_stop = high >= stop_price
+
+        if hit_tp and hit_stop:
+            return 0
+        if hit_tp:
+            return 1
+        if hit_stop:
+            return 0
+
+    final_close = float(rows[-1]["close"])
+    avg_entry = sum(fills) / len(fills)
+    direction_ret = ((final_close - avg_entry) / avg_entry) if direction == "long" else ((avg_entry - final_close) / avg_entry)
+    return 1 if direction_ret > max(cost_floor, 0.001) else 0
+
+
+def _grid_success(conn, venue: str, symbol: str, entry: float, exitp: float, ts_start: int, ts_end: int, params: dict | None) -> int:
     cost_floor = _extract_total_cost_bps(params) / 10_000
     lo = params.get("price_range_lower") if params else None
     hi = params.get("price_range_upper") if params else None
@@ -161,28 +237,11 @@ def _grid_success(
         in_range_at_exit = lo <= exitp <= hi
         return 1 if (in_range_at_exit and not range_breach and realized_span_pct >= min_required_span) else 0
 
-    # Fallback when exact range is missing: require flat-ish final outcome AND enough oscillation to matter.
     price_ret = abs((exitp - entry) / entry) if entry else 0.0
     return 1 if price_ret < 0.015 and realized_span_pct >= min_required_span else 0
 
 
-def _simulate_dca_long_success(
-    conn,
-    venue: str,
-    symbol: str,
-    entry: float,
-    ts_start: int,
-    ts_end: int,
-    params: dict | None,
-) -> tuple[int, float | None]:
-    """Path-based approximation of DCA mechanics.
-
-    Equal-sized ladder from the initial entry:
-    - buy more every `dca_step_pct` below entry, up to `max_orders`
-    - TP from average entry using trade_plan.take_profit_from_avg (or cost floor fallback)
-    - stop out at trade_plan.stop_out
-    Returns (success, final_exit_close_if_available).
-    """
+def _simulate_dca_long_success(conn, venue: str, symbol: str, entry: float, ts_start: int, ts_end: int, params: dict | None) -> tuple[int, float | None]:
     rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
     if not rows:
         return 0, None
@@ -230,10 +289,7 @@ def _simulate_dca_long_success(
     return success, final_close
 
 
-def compute_outcomes_once(
-    conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500
-) -> int:
-    """Compute and store outcomes for recommendations whose horizon has passed."""
+def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
     min_horizon = min(BOT_HORIZONS.values())
 
     cur = conn.execute(
@@ -249,12 +305,12 @@ def compute_outcomes_once(
     done = 0
 
     for r in rows:
-        rec_id    = r["rec_id"]
-        bot_type  = r["bot_type"]
-        venue     = r["venue"]
-        symbol    = r["symbol"]
+        rec_id = r["rec_id"]
+        bot_type = r["bot_type"]
+        venue = r["venue"]
+        symbol = r["symbol"]
         direction = r["direction"]
-        ts0       = int(r["ts"])
+        ts0 = int(r["ts"])
 
         effective_horizon = BOT_HORIZONS.get(bot_type, horizon_sec)
         if db.now_ts() < ts0 + effective_horizon:
@@ -286,8 +342,6 @@ def compute_outcomes_once(
             price_ret = (exitp - entry) / entry
 
             if bot_type == "futures_combo" or direction == "hedge":
-                # The project does not model two-leg hedge PnL, so use a conservative
-                # volatility-realisation proxy instead of pretending to know exact returns.
                 vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
                 atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.0)
                 cost_floor = _extract_total_cost_bps(params) / 10_000
@@ -300,25 +354,23 @@ def compute_outcomes_once(
                 success = 1 if realized_move > atr_thresh else 0
 
             elif bot_type == "futures_martingale" and direction in ("long", "short"):
-                vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
-                atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.02)
                 total_cost_bps = _extract_total_cost_bps(params)
-
-                tp_sl = _tp_sl_success(
-                    conn, venue, symbol, entry, direction,
-                    ts0, ts_exit, atr_1h, total_cost_bps,
-                )
-                if tp_sl is not None:
-                    success = tp_sl
+                sim = _simulate_martingale_success(conn, venue, symbol, entry, direction, ts0, ts_exit, params, total_cost_bps)
+                if sim is not None:
+                    success = sim
                 else:
-                    direction_ret = -price_ret if direction == "short" else price_ret
-                    cost_floor = total_cost_bps / 10_000
-                    success = 1 if direction_ret > cost_floor * 1.5 else 0
+                    vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
+                    atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.02)
+                    tp_sl = _tp_sl_success(conn, venue, symbol, entry, direction, ts0, ts_exit, atr_1h, total_cost_bps)
+                    if tp_sl is not None:
+                        success = tp_sl
+                    else:
+                        direction_ret = -price_ret if direction == "short" else price_ret
+                        cost_floor = total_cost_bps / 10_000
+                        success = 1 if direction_ret > cost_floor * 1.5 else 0
 
             elif bot_type == "dca_bot" and direction == "long":
-                success, exit_fallback = _simulate_dca_long_success(
-                    conn, venue, symbol, entry, ts0, ts_exit, params,
-                )
+                success, exit_fallback = _simulate_dca_long_success(conn, venue, symbol, entry, ts0, ts_exit, params)
                 if exit_fallback is not None:
                     exitp = float(exit_fallback)
                     price_ret = (exitp - entry) / entry
@@ -333,19 +385,22 @@ def compute_outcomes_once(
         else:
             continue
 
-        db.insert_outcome(conn, {
-            "rec_id":      rec_id,
-            "ts":          ts0,
-            "venue":       venue,
-            "symbol":      symbol,
-            "bot_type":    bot_type,
-            "direction":   direction,
-            "horizon_sec": effective_horizon,
-            "entry_close": float(entry),
-            "exit_close":  float(exitp),
-            "ret":         float(price_ret),
-            "success":     int(success),
-        })
+        db.insert_outcome(
+            conn,
+            {
+                "rec_id": rec_id,
+                "ts": ts0,
+                "venue": venue,
+                "symbol": symbol,
+                "bot_type": bot_type,
+                "direction": direction,
+                "horizon_sec": effective_horizon,
+                "entry_close": float(entry),
+                "exit_close": float(exitp),
+                "ret": float(price_ret),
+                "success": int(success),
+            },
+        )
         done += 1
 
     return done

@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS bot_instances (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bots_status ON bot_instances(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_origin_rec_unique ON bot_instances(origin_rec_id) WHERE origin_rec_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS trades (
   trade_id TEXT PRIMARY KEY,
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_bot_id ON trades(bot_id, ts DESC);
 
 CREATE TABLE IF NOT EXISTS app_config (
   key TEXT PRIMARY KEY,

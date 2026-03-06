@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -20,12 +21,15 @@ from .sentiment import collect_sentiment_once
 from .outcomes import compute_outcomes_once
 from .recommender import run_recommender_once
 from .risk import get_risk_limits, compute_risk_status
+from .security import is_authorized
 from . import db
 
 settings = load_settings()
 
+
 def _get_conn():
     return db.connect(settings.db_path)
+
 
 def _bootstrap_db() -> None:
     with closing(_get_conn()) as conn:
@@ -34,16 +38,19 @@ def _bootstrap_db() -> None:
         if not active:
             db.upsert_risk_limits(conn, version="bootstrap", limits=settings.risk_limits, is_active=True)
 
+
 _bootstrap_db()
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="0.9.3")
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.0")
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+
 class UpdateRiskLimitsRequest(BaseModel):
     version: str
     limits: dict[str, Any]
+
 
 class SentimentPointRequest(BaseModel):
     scope: str = Field(..., pattern="^(global|symbol|topic)$")
@@ -55,9 +62,81 @@ class SentimentPointRequest(BaseModel):
     sources: dict[str, Any] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
 
+
+class RecoActionRequest(BaseModel):
+    action: str
+    operator: str | None = None
+
+
+class BotStopRequest(BaseModel):
+    operator: str | None = None
+    reason: str | None = None
+
+
+class BotTradeRequest(BaseModel):
+    trade_id: str | None = None
+    ts: int | None = None
+    pnl: float
+    fee: float = 0.0
+    operator: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+    stop_bot: bool = False
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return (static_dir / "index.html").read_text(encoding="utf-8")
+
+
+def _require_admin_key(x_api_key: str | None) -> None:
+    if not is_authorized(settings.admin_api_key, x_api_key):
+        raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
+
+
+def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) -> tuple[dict[str, Any], bool]:
+    rec = db.get_recommendation_by_id(conn, rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="rec_id not found")
+
+    existing = db.get_bot_by_origin_rec(conn, rec_id)
+    if existing:
+        if rec.get("status") != "executed":
+            db.update_recommendation_status(conn, rec_id, "executed", operator)
+        return existing, True
+
+    if rec["status"] in {"blocked", "no_trade", "expired", "ignored"}:
+        raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
+
+    bot = {
+        "bot_id": f"B-{int(time.time())}-{rec['symbol']}-{secrets.token_hex(4)}",
+        "started_ts": int(time.time()),
+        "stopped_ts": None,
+        "venue": rec["venue"],
+        "symbol": rec["symbol"],
+        "bot_type": rec["bot_type"],
+        "mode": {
+            "account_mode": rec["account_mode"],
+            "margin_mode": rec["margin_mode"],
+            "direction": rec["direction"],
+        },
+        "params": rec["params"],
+        "state": {
+            "created_from_rec_id": rec_id,
+            "operator": operator,
+            "trade_count": 0,
+            "realized_pnl": 0.0,
+            "realized_fee": 0.0,
+            "last_trade_ts": None,
+        },
+        "status": "running",
+        "origin_rec_id": rec_id,
+    }
+    db.insert_bot_instance(conn, bot)
+    db.update_recommendation_status(conn, rec_id, "executed", operator)
+    db.log_decision(conn, "BOT_STARTED", rec_id, operator, {"bot_id": bot["bot_id"], "symbol": bot["symbol"], "bot_type": bot["bot_type"]})
+    created = db.get_bot_instance(conn, bot["bot_id"])
+    return created or bot, False
+
 
 @app.get("/api/v1/recommendations")
 def api_recommendations(
@@ -85,14 +164,7 @@ def api_recommendations(
         if snapshot == "latest":
             snapshot_ts = db.get_latest_reco_ts(conn, venue=venue)
 
-        items = db.get_recommendations(
-            conn,
-            venue=venue,
-            top_n=top_n,
-            min_conf=min_conf,
-            statuses=statuses,          # empty list → returns nothing (correct); None → no filter
-            snapshot_ts=snapshot_ts,
-        )
+        items = db.get_recommendations(conn, venue=venue, top_n=top_n, min_conf=min_conf, statuses=statuses, snapshot_ts=snapshot_ts)
 
         no_trade = True
         if snapshot_ts is not None:
@@ -101,9 +173,9 @@ def api_recommendations(
                    WHERE ts=? AND (? IS NULL OR venue=?) AND status='recommended'""",
                 (snapshot_ts, venue, venue),
             )
-            no_trade = (int(cur.fetchone()["c"]) == 0)
+            no_trade = int(cur.fetchone()["c"]) == 0
 
-        cur = conn.execute("""SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1""")
+        cur = conn.execute("SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1")
         row = cur.fetchone()
         regime = json.loads(row["regime_json"]) if row else {
             "vol_state": "unknown",
@@ -114,14 +186,15 @@ def api_recommendations(
 
         return {"ts": int(time.time()), "regime": regime, "items": items, "no_trade": no_trade}
 
+
 @app.get("/api/v1/recommendations/{rec_id}")
 def api_reco_details(rec_id: str) -> dict[str, Any]:
     with closing(_get_conn()) as conn:
-        rec_id = str(rec_id)
-        r = db.get_recommendation_by_id(conn, rec_id)
+        r = db.get_recommendation_by_id(conn, str(rec_id))
         if not r:
             raise HTTPException(status_code=404, detail="rec_id not found")
         return r
+
 
 @app.get("/api/v1/risk/status")
 def api_risk_status() -> dict[str, Any]:
@@ -137,49 +210,132 @@ def api_risk_status() -> dict[str, Any]:
             "symbol_bot_counts": rs.symbol_bot_counts,
         }
 
+
 @app.post("/api/v1/risk/limits")
-def api_update_risk_limits(req: UpdateRiskLimitsRequest) -> dict[str, Any]:
+def api_update_risk_limits(req: UpdateRiskLimitsRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key)
     with closing(_get_conn()) as conn:
         db.upsert_risk_limits(conn, version=req.version, limits=req.limits, is_active=True)
         db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": req.version, "limits": req.limits})
         return {"ok": True, "version": req.version}
 
-class RecoActionRequest(BaseModel):
-    action: str   # "executed" | "ignored"
-    operator: str | None = None
 
 @app.post("/api/v1/recommendations/{rec_id}/action")
-def api_reco_action(rec_id: str, req: RecoActionRequest) -> dict[str, Any]:
+def api_reco_action(rec_id: str, req: RecoActionRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key)
     allowed = {"executed", "ignored"}
     if req.action not in allowed:
         return {"ok": False, "error": f"action must be one of {allowed}"}
     with closing(_get_conn()) as conn:
+        if req.action == "executed":
+            bot, existed = _materialize_bot_from_rec(conn, rec_id, req.operator)
+            return {"ok": True, "rec_id": rec_id, "new_status": "executed", "bot_id": bot["bot_id"], "bot": bot, "idempotent": existed}
         ok = db.update_recommendation_status(conn, rec_id, req.action, req.operator)
         return {"ok": ok, "rec_id": rec_id, "new_status": req.action}
+
+
+@app.get("/api/v1/bots")
+def api_bots(status: str | None = None, limit: int = 200) -> dict[str, Any]:
+    with closing(_get_conn()) as conn:
+        items = db.list_bot_instances(conn, status=status, limit=limit)
+        return {"items": items, "count": len(items)}
+
+
+@app.get("/api/v1/bots/{bot_id}")
+def api_bot_details(bot_id: str) -> dict[str, Any]:
+    with closing(_get_conn()) as conn:
+        bot = db.get_bot_instance(conn, bot_id)
+        if not bot:
+            raise HTTPException(status_code=404, detail="bot_id not found")
+        return bot
+
+
+@app.post("/api/v1/bots/{bot_id}/stop")
+def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key)
+    with closing(_get_conn()) as conn:
+        bot = db.get_bot_instance(conn, bot_id)
+        if not bot:
+            raise HTTPException(status_code=404, detail="bot_id not found")
+        ok = db.stop_bot(conn, bot_id)
+        if not ok:
+            return {"ok": False, "bot_id": bot_id, "status": bot["status"]}
+        db.update_bot_state(conn, bot_id, {"stop_reason": req.reason, "stopped_by": req.operator, "stopped_ts": int(time.time())})
+        db.log_decision(conn, "BOT_STOPPED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "reason": req.reason})
+        return {"ok": True, "bot_id": bot_id, "status": "stopped"}
+
+
+@app.post("/api/v1/bots/{bot_id}/trades")
+def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key)
+    with closing(_get_conn()) as conn:
+        bot = db.get_bot_instance(conn, bot_id)
+        if not bot:
+            raise HTTPException(status_code=404, detail="bot_id not found")
+
+        trade_id = req.trade_id or f"T-{int(time.time())}-{secrets.token_hex(4)}"
+        ts = req.ts or int(time.time())
+        trade = {
+            "trade_id": trade_id,
+            "bot_id": bot_id,
+            "ts": ts,
+            "symbol": bot["symbol"],
+            "pnl": req.pnl,
+            "fee": req.fee,
+            "meta": req.meta,
+        }
+        db.insert_trade(conn, trade)
+
+        trades = db.list_trades(conn, bot_id=bot_id, limit=10_000)
+        realized_pnl = float(sum(float(t["pnl"]) for t in trades))
+        realized_fee = float(sum(float(t["fee"]) for t in trades))
+        db.update_bot_state(
+            conn,
+            bot_id,
+            {
+                "trade_count": len(trades),
+                "realized_pnl": realized_pnl,
+                "realized_fee": realized_fee,
+                "last_trade_ts": ts,
+                "last_trade_id": trade_id,
+                "last_trade_meta": req.meta,
+                "last_operator": req.operator,
+            },
+        )
+        if req.stop_bot:
+            db.stop_bot(conn, bot_id)
+            db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": req.operator, "stopped_ts": int(time.time())})
+        db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "trade_id": trade_id, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot})
+        return {"ok": True, "trade_id": trade_id, "bot_id": bot_id, "trade_count": len(trades), "realized_pnl": realized_pnl, "realized_fee": realized_fee, "bot_status": "stopped" if req.stop_bot else bot["status"]}
+
+
+@app.get("/api/v1/trades")
+def api_trades(bot_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+    with closing(_get_conn()) as conn:
+        items = db.list_trades(conn, bot_id=bot_id, limit=limit)
+        return {"items": items, "count": len(items)}
+
 
 @app.get("/api/v1/outcomes/stats")
 def api_outcomes_stats() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
         return db.get_outcomes_stats(conn)
 
+
 @app.get("/api/v1/health/symbols")
 def api_symbol_health() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
-        items = db.get_symbol_health(
-            conn,
-            settings.symbols_spot,
-            settings.symbols_linear,
-            stale_sec=settings.stale_data_max_sec,
-        )
-        n_ok      = sum(1 for i in items if i["status"] == "ok")
-        n_stale   = sum(1 for i in items if i["status"] == "stale")
+        items = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
+        n_ok = sum(1 for i in items if i["status"] == "ok")
+        n_stale = sum(1 for i in items if i["status"] == "stale")
         n_missing = sum(1 for i in items if i["status"] == "missing")
-        n_errors  = sum(i["error_count_10m"] for i in items)
+        n_errors = sum(i["error_count_10m"] for i in items)
         return {
             "ts": int(time.time()),
             "summary": {"ok": n_ok, "stale": n_stale, "missing": n_missing, "errors_10m": n_errors},
             "symbols": items,
         }
+
 
 @app.get("/api/v1/decisions")
 def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
@@ -200,13 +356,16 @@ def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
             })
         return out
 
+
 @app.post("/api/v1/sentiment")
-def api_sentiment_put(req: SentimentPointRequest) -> dict[str, Any]:
+def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key)
     with closing(_get_conn()) as conn:
         ts = req.ts or int(time.time())
         db.insert_sentiment_point(conn, req.scope, req.key, ts, req.sentiment, req.velocity, req.volume, req.sources, req.tags)
         db.log_decision(conn, "SENTIMENT_PUT", None, None, {"scope": req.scope, "key": req.key, "ts": ts, "sentiment": req.sentiment})
         return {"ok": True, "ts": ts}
+
 
 @app.get("/api/v1/sentiment")
 def api_sentiment_get(scope: str, key: str, limit: int = 120) -> dict[str, Any]:
@@ -214,10 +373,11 @@ def api_sentiment_get(scope: str, key: str, limit: int = 120) -> dict[str, Any]:
         series = db.get_sentiment_series(conn, scope, key, limit=limit)
         return {"scope": scope, "key": key, "items": series}
 
+
 def _collector_thread():
     client = BybitPublicClient(settings.bybit_base_url)
-    _last_futures_collect = 0.0  # throttle: funding every 30min, OI every 15min
-    FUTURES_COLLECT_INTERVAL = 900  # 15 min — OI updates hourly, funding every 8h
+    _last_futures_collect = 0.0
+    FUTURES_COLLECT_INTERVAL = 900
     try:
         while True:
             with closing(_get_conn()) as conn:
@@ -227,7 +387,6 @@ def _collector_thread():
                         collect_once(conn, client, venue, symbols)
                     except Exception as e:
                         db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
-            # Funding rate + OI throttled to every 15min (was every 20s — 45x too often)
             if time.time() - _last_futures_collect >= FUTURES_COLLECT_INTERVAL:
                 with closing(_get_conn()) as conn:
                     try:
@@ -238,6 +397,7 @@ def _collector_thread():
             time.sleep(settings.collect_interval_sec)
     finally:
         client.close()
+
 
 def _sentiment_thread():
     while True:
@@ -251,9 +411,10 @@ def _sentiment_thread():
                 db.log_decision(conn, "SENTIMENT_ERROR", None, None, {"err": str(e)})
         time.sleep(settings.sentiment_interval_sec)
 
+
 def _reco_thread():
     _last_prune = 0.0
-    PRUNE_INTERVAL = 3600  # prune old DB rows once per hour
+    PRUNE_INTERVAL = 3600
     while True:
         result = {}
         with closing(_get_conn()) as conn:
@@ -263,14 +424,12 @@ def _reco_thread():
             except Exception as e:
                 db.log_decision(conn, "RECO_ERROR", None, None, {"err": str(e)})
 
-        # TTL expiry — must run every cycle outside the main try/except
         with closing(_get_conn()) as conn:
             try:
                 db.expire_stale_recommendations(conn)
             except Exception:
                 pass
 
-        # DB pruning — once per hour to prevent unbounded growth
         if time.time() - _last_prune >= PRUNE_INTERVAL:
             with closing(_get_conn()) as conn:
                 try:
@@ -280,31 +439,22 @@ def _reco_thread():
                 except Exception:
                     pass
 
-        # Telegram alerts (no-op if token not configured)
         if settings.telegram_token:
             try:
                 with closing(_get_conn()) as conn:
-                    health = db.get_symbol_health(
-                        conn, settings.symbols_spot, settings.symbols_linear,
-                        stale_sec=settings.stale_data_max_sec,
-                    )
+                    health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
                     err_cur = conn.execute(
                         """SELECT COUNT(*) as c FROM decision_log
                            WHERE action='COLLECT_ERROR' AND ts >= ?""",
                         (int(time.time()) - 600,),
                     )
                     err_count = int(err_cur.fetchone()["c"])
-                check_and_alert(
-                    token=settings.telegram_token,
-                    chat_id=settings.telegram_chat_id,
-                    symbol_health=health,
-                    collect_errors_10m=err_count,
-                    reco_count=int(result.get("count", 0)),
-                )
+                check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count", 0)))
             except Exception:
                 pass
 
         time.sleep(settings.reco_interval_sec)
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -315,60 +465,54 @@ async def startup_event():
 
 @app.get("/api/v1/status")
 def api_status() -> dict[str, Any]:
-    """System health: calibrator state, outcome progress, sentiment, collect errors."""
     with closing(_get_conn()) as conn:
         from .calibration import load_logreg_from_db, GLOBAL_LOGREG_KEY, BOT_CALIB_KEYS
+        from .sentiment_features import compute_sentiment_agg
 
-        # Global LogReg+Platt model
         global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
-        calib_fitted  = bool(global_model and global_model.fitted)
-        calib_n       = int(global_model.n_samples) if global_model and global_model.fitted else 0
-        calib_logreg  = bool(global_model and global_model.fitted and len(global_model.coef) > 0)
+        calib_fitted = bool(global_model and global_model.fitted)
+        calib_n = int(global_model.n_samples) if global_model and global_model.fitted else 0
+        calib_logreg = bool(global_model and global_model.fitted and len(global_model.coef) > 0)
 
-        # Per-bot model summary
         bot_status = {}
         for bt, key in BOT_CALIB_KEYS.items():
             m = load_logreg_from_db(conn, key)
             bot_status[bt] = {
-                "fitted":       bool(m and m.fitted),
+                "fitted": bool(m and m.fitted),
                 "logreg_active": bool(m and m.fitted and len(m.coef) > 0),
-                "n_samples":    int(m.n_samples) if m and m.fitted else 0,
+                "n_samples": int(m.n_samples) if m and m.fitted else 0,
             }
 
         cur = conn.execute("SELECT COUNT(*) AS c FROM reco_outcomes")
         outcome_count = int(cur.fetchone()["c"])
-
         last_reco_ts = db.get_latest_reco_ts(conn)
-
-        cur = conn.execute(
-            "SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?",
-            (db.now_ts() - 600,)
-        )
+        cur = conn.execute("SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?", (db.now_ts() - 600,))
         collect_errors_10m = int(cur.fetchone()["c"])
-
-        from .sentiment_features import compute_sentiment_agg
         sent = compute_sentiment_agg(conn, scope="global", key="crypto")
 
         return {
-            "calibrator_fitted":  calib_fitted,
-            "calibrator_logreg":  calib_logreg,
-            "calibrator_n":       calib_n,
-            "calibrator_params":  {
+            "calibrator_fitted": calib_fitted,
+            "calibrator_logreg": calib_logreg,
+            "calibrator_n": calib_n,
+            "calibrator_params": {
                 "a": float(global_model.platt.a) if global_model and global_model.fitted else None,
                 "b": float(global_model.platt.b) if global_model and global_model.fitted else None,
             },
-            "bot_calibrators":    bot_status,
-            "outcome_count":      outcome_count,
-            "calib_min_samples":  settings.calib_min_samples,
-            "last_reco_ts":       last_reco_ts,
+            "bot_calibrators": bot_status,
+            "outcome_count": outcome_count,
+            "calib_min_samples": settings.calib_min_samples,
+            "last_reco_ts": last_reco_ts,
             "collect_errors_10m": collect_errors_10m,
+            "admin_key_configured": bool(settings.admin_api_key),
             "sentiment": {
-                "regime":   sent.get("regime"),
+                "regime": sent.get("regime"),
                 "strength": sent.get("strength"),
-                "ewma_6h":  sent.get("ewma", {}).get("6h"),
-                "flags":    sent.get("flags"),
+                "ewma_6h": sent.get("ewma", {}).get("6h"),
+                "flags": sent.get("flags"),
+                "data_quality": sent.get("data_quality"),
             },
         }
+
 
 def main():
     import uvicorn
