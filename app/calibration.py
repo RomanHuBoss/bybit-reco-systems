@@ -46,6 +46,14 @@ def fit_platt(
 ) -> PlattScaler:
     if len(xs) < min_samples:
         return PlattScaler(fitted=False)
+
+    # Guard: near-homogeneous labels make Platt scaling numerically valid but
+    # practically meaningless. The optimizer drives the intercept to extremes,
+    # collapsing calibrated probabilities toward 0 or 1 regardless of x.
+    win_rate = sum(int(y) for y in ys) / len(ys)
+    if win_rate < 0.05 or win_rate > 0.95:
+        return PlattScaler(fitted=False)
+
     a, b = 1.0, 0.0
     n = len(xs)
     for _ in range(iters):
@@ -404,7 +412,6 @@ BOT_LOGREG_KEYS = {
     "futures_combo":      "logreg_combo_v2",
 }
 GLOBAL_LOGREG_KEY    = "logreg_global_v2"
-DIRECTION_LOGREG_KEY = "logreg_direction_v1"
 
 # Legacy Platt keys (kept for direction calibrator + backward compat)
 BOT_CALIB_KEYS = {
