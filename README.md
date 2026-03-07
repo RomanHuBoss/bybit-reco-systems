@@ -43,7 +43,7 @@ API поднимется на `127.0.0.1:8000`.
 - `DB_PATH` — путь к SQLite;
 - `SYMBOLS_SPOT`, `SYMBOLS_LINEAR` — списки символов;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — пороги публикации;
-- `CALIB_MIN_SAMPLES=60` — минимум before calibration;
+- `CALIB_MIN_SAMPLES=80` — минимум before calibration;
 - `ADMIN_API_KEY` — если задан, обязателен для mutating endpoints;
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.
 

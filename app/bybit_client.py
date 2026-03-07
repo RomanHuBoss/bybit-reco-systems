@@ -40,10 +40,14 @@ class BybitPublicClient:
             if not items:
                 return None
             t = items[0]
+            next_funding_raw = int(t.get("nextFundingTime") or 0)
+            # Bybit returns nextFundingTime in milliseconds. Normalize to seconds so
+            # all downstream horizon comparisons use one unit system.
+            next_funding_ts = next_funding_raw // 1000 if next_funding_raw > 10**11 else next_funding_raw
             return {
                 "symbol": symbol,
                 "funding_rate": float(t.get("fundingRate") or 0.0),
-                "next_funding_ts": int(t.get("nextFundingTime") or 0),
+                "next_funding_ts": next_funding_ts,
             }
         except Exception:
             return None

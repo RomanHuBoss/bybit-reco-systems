@@ -69,8 +69,10 @@ def fit_platt(
     # Guard: near-homogeneous labels make Platt scaling numerically valid but
     # practically meaningless. The optimizer drives the intercept to extremes,
     # collapsing calibrated probabilities toward 0 or 1 regardless of x.
+    # We use a stricter band than 5/95 because crypto recommendation labels can
+    # look deceptively "accurate" on small, regime-specific samples.
     win_rate = sum(int(y) for y in ys) / len(ys)
-    if win_rate < 0.05 or win_rate > 0.95:
+    if win_rate < 0.15 or win_rate > 0.85:
         return PlattScaler(fitted=False)
 
     weights = ws if (ws and len(ws) == len(xs)) else [1.0] * len(xs)
@@ -286,9 +288,10 @@ def fit_logreg(
     if n < min_samples:
         return LogRegScaler(fitted=False)
 
-    # Guard: degenerate class balance
+    # Guard: degenerate class balance. A 90%+ hit-rate on proxy labels is not a
+    # trustworthy basis for probability calibration; keep confidence heuristic.
     win_rate = sum(ys) / n
-    if win_rate < 0.05 or win_rate > 0.95:
+    if win_rate < 0.15 or win_rate > 0.85:
         return LogRegScaler(fitted=False)
 
     ws = _recency_weights(tss, half_life_days=half_life_days)

@@ -120,7 +120,11 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
     ts_now = db.now_ts()
     funding_rows: list[dict] = []
 
+    disabled = _DISABLED_SYMBOLS.setdefault("linear", set())
+
     for sym in symbols_linear:
+        if sym in disabled:
+            continue
         # Funding rate — reuse linear tickers (already fetched in collect_once,
         # but fundingRate is in the ticker payload, so we grab it separately here
         # to keep concerns separated and allow different call frequencies)
@@ -130,6 +134,10 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
                 fr["ts"] = ts_now
                 funding_rows.append(fr)
         except Exception as e:
+            if _is_not_supported_symbol(e):
+                disabled.add(sym)
+                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": sym, "reason": str(e), "field": "funding_rate"})
+                continue
             db.log_decision(conn, "COLLECT_ERROR", None, None,
                             {"venue": "linear", "symbol": sym, "field": "funding_rate", "err": str(e)})
 
@@ -139,6 +147,10 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
             if oi_rows:
                 db.upsert_open_interest(conn, sym, oi_rows)
         except Exception as e:
+            if _is_not_supported_symbol(e):
+                disabled.add(sym)
+                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": sym, "reason": str(e), "field": "open_interest"})
+                continue
             db.log_decision(conn, "COLLECT_ERROR", None, None,
                             {"venue": "linear", "symbol": sym, "field": "open_interest", "err": str(e)})
 

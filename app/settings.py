@@ -63,7 +63,7 @@ def load_settings() -> Settings:
     admin_api_key = os.getenv("ADMIN_API_KEY", "") or None
 
     outcome_horizon_sec = int(_env("OUTCOME_HORIZON_SEC", "900"))
-    calib_min_samples = int(_env("CALIB_MIN_SAMPLES", "60"))
+    calib_min_samples = max(80, int(_env("CALIB_MIN_SAMPLES", "80")))
     require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1", "true", "yes", "y")
 
     return Settings(

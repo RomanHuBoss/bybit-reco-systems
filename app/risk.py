@@ -55,7 +55,26 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
 
     start = day_start_ts_utc()
     daily_pnl = db.sum_daily_pnl(conn, start)
-    daily_dd = -daily_pnl if daily_pnl < 0 else 0.0
+
+    # True realised intraday drawdown = peak-to-trough drop of cumulative net PnL,
+    # not merely the negative value of current day net PnL. Otherwise a sequence like
+    # +300, -250 leaves daily_pnl positive while hiding a $250 drawdown.
+    cur = conn.execute(
+        """SELECT ts, (pnl - fee) AS net_pnl
+           FROM trades WHERE ts >= ? ORDER BY ts ASC, trade_id ASC""",
+        (start,),
+    )
+    cumulative = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for row in cur.fetchall():
+        cumulative += float(row["net_pnl"] or 0.0)
+        if cumulative > peak:
+            peak = cumulative
+        dd = peak - cumulative
+        if dd > max_dd:
+            max_dd = dd
+    daily_dd = float(max_dd)
 
     # cooldown: use the latest realised loss from trades first; fall back to explicit LOSS log entry.
     # The previous implementation only looked for action='LOSS', but no code path emits that

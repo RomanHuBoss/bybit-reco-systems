@@ -74,7 +74,24 @@ def _extract_total_cost_bps(params: dict | None, fallback: float = 15.0) -> floa
     return float(fallback)
 
 
-def _tp_sl_success(
+def _signed_return(entry: float, exitp: float, direction: str) -> float:
+    if not entry:
+        return 0.0
+    raw = (float(exitp) - float(entry)) / float(entry)
+    return -raw if direction == "short" else raw
+
+
+# Outcome 'ret' is used later for diagnostics/calibration summaries.
+# Keep it net-of-cost and aligned with the mechanics of each bot, otherwise
+# the database shows absurd combinations like win_rate=1.0 with strongly
+# negative average return for range/grid bots.
+def _net_return(entry: float, exitp: float, direction: str, total_cost_bps: float, turns: float = 1.0) -> float:
+    gross = _signed_return(entry, exitp, direction)
+    cost_pct = max(0.0, float(total_cost_bps)) / 10_000.0 * max(1.0, float(turns))
+    return gross - cost_pct
+
+
+def _tp_sl_outcome(
     conn,
     venue: str,
     symbol: str,
@@ -84,7 +101,7 @@ def _tp_sl_success(
     ts_end: int,
     atr_1h: float,
     total_cost_bps: float = 15.0,
-) -> int | None:
+) -> tuple[int, float, float] | None:
     cost_floor = total_cost_bps / 10_000
     tp_pct = max(cost_floor * 1.5, 0.30 * atr_1h)
     sl_pct = 2.0 * tp_pct
@@ -103,25 +120,28 @@ def _tp_sl_success(
     for row in rows:
         hi = float(row["high"])
         lo = float(row["low"])
+        close = float(row["close"])
         if direction == "long":
             if hi >= tp_price and lo <= sl_price:
-                return 0
+                return 0, _net_return(entry, sl_price, direction, total_cost_bps), close
             if hi >= tp_price:
-                return 1
+                return 1, _net_return(entry, tp_price, direction, total_cost_bps), close
             if lo <= sl_price:
-                return 0
+                return 0, _net_return(entry, sl_price, direction, total_cost_bps), close
         else:
             if lo <= tp_price and hi >= sl_price:
-                return 0
+                return 0, _net_return(entry, sl_price, direction, total_cost_bps), close
             if lo <= tp_price:
-                return 1
+                return 1, _net_return(entry, tp_price, direction, total_cost_bps), close
             if hi >= sl_price:
-                return 0
+                return 0, _net_return(entry, sl_price, direction, total_cost_bps), close
 
-    return 0
+    final_close = float(rows[-1]["close"])
+    ret_proxy = _net_return(entry, final_close, direction, total_cost_bps)
+    return (1 if ret_proxy > 0 else 0), ret_proxy, final_close
 
 
-def _simulate_martingale_success(
+def _simulate_martingale_outcome(
     conn,
     venue: str,
     symbol: str,
@@ -131,7 +151,7 @@ def _simulate_martingale_success(
     ts_end: int,
     params: dict | None,
     total_cost_bps: float,
-) -> int | None:
+) -> tuple[int, float, float] | None:
     rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
     if not rows:
         return None
@@ -168,6 +188,7 @@ def _simulate_martingale_success(
     for row in rows:
         high = float(row["high"])
         low = float(row["low"])
+        close = float(row["close"])
 
         while next_step_idx <= max_steps:
             if direction == "long":
@@ -194,6 +215,7 @@ def _simulate_martingale_success(
         else:
             sl_pct = max(tp_pct * 2.0, cost_floor * 2.0, 0.007)
 
+        turns = max(1.0, len(fills))
         if direction == "long":
             tp_price = avg_entry * (1.0 + tp_pct)
             stop_price = avg_entry * (1.0 - sl_pct)
@@ -206,45 +228,62 @@ def _simulate_martingale_success(
             hit_stop = high >= stop_price
 
         if hit_tp and hit_stop:
-            return 0
+            return 0, _net_return(avg_entry, stop_price, direction, total_cost_bps, turns=turns), close
         if hit_tp:
-            return 1
+            return 1, _net_return(avg_entry, tp_price, direction, total_cost_bps, turns=turns), close
         if hit_stop:
-            return 0
+            return 0, _net_return(avg_entry, stop_price, direction, total_cost_bps, turns=turns), close
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)
-    direction_ret = ((final_close - avg_entry) / avg_entry) if direction == "long" else ((avg_entry - final_close) / avg_entry)
-    return 1 if direction_ret > max(cost_floor, 0.001) else 0
+    ret_proxy = _net_return(avg_entry, final_close, direction, total_cost_bps, turns=max(1.0, len(fills)))
+    return (1 if ret_proxy > max(cost_floor, 0.001) else 0), ret_proxy, final_close
 
 
-def _grid_success(conn, venue: str, symbol: str, entry: float, exitp: float, ts_start: int, ts_end: int, params: dict | None) -> int:
+def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_start: int, ts_end: int, params: dict | None) -> tuple[int, float]:
+    params = params or {}
     cost_floor = _extract_total_cost_bps(params) / 10_000
-    lo = params.get("price_range_lower") if params else None
-    hi = params.get("price_range_upper") if params else None
-    grid_spacing_pct = float(params.get("grid_spacing_pct") or 0.0) if params else 0.0
+    lo = params.get("price_range_lower")
+    hi = params.get("price_range_upper")
+    grid_spacing_pct = float(params.get("grid_spacing_pct") or 0.0)
+    grid_levels = int(params.get("grid_levels") or 0)
 
     price_window = _get_price_range_in_window(conn, venue, symbol, ts_start, ts_end)
-    if price_window is None:
-        return 0
+    if price_window is None or not entry:
+        return 0, -cost_floor
 
     min_p, max_p = price_window
-    realized_span_pct = (max_p - min_p) / entry if entry else 0.0
-    min_required_span = max(grid_spacing_pct / 100.0, cost_floor * 1.25, 0.002)
+    realized_span_pct = max(0.0, (max_p - min_p) / entry)
+    step_pct = max(grid_spacing_pct / 100.0, cost_floor * 1.25, 0.002)
+    completed_steps = int(realized_span_pct / step_pct) if step_pct > 0 else 0
+    if grid_levels > 0:
+        completed_steps = min(completed_steps, grid_levels)
+
+    # Approximate per-leg grid capture using the same ~0.6-0.8 step heuristic as trade_plan.
+    gross_leg_pct = max(step_pct * 0.70, cost_floor * 1.10)
+    gross_proxy = completed_steps * gross_leg_pct
+    net_proxy = gross_proxy - (max(1, completed_steps) * cost_floor)
 
     if lo and hi and lo > 0 and hi > lo:
         range_breach = (min_p < lo * 0.995) or (max_p > hi * 1.005)
         in_range_at_exit = lo <= exitp <= hi
-        return 1 if (in_range_at_exit and not range_breach and realized_span_pct >= min_required_span) else 0
+        if range_breach:
+            net_proxy -= max(cost_floor, abs(min(lo - min_p, 0.0)) / entry, abs(max(max_p - hi, 0.0)) / entry)
+        if not in_range_at_exit:
+            net_proxy -= abs((exitp - entry) / entry)
+        success = 1 if (in_range_at_exit and not range_breach and completed_steps >= 1 and net_proxy > 0) else 0
+        return success, net_proxy
 
-    price_ret = abs((exitp - entry) / entry) if entry else 0.0
-    return 1 if price_ret < 0.015 and realized_span_pct >= min_required_span else 0
+    end_drift = abs((exitp - entry) / entry) if entry else 0.0
+    net_proxy -= end_drift
+    success = 1 if (end_drift < 0.015 and completed_steps >= 1 and net_proxy > 0) else 0
+    return success, net_proxy
 
 
-def _simulate_dca_long_success(conn, venue: str, symbol: str, entry: float, ts_start: int, ts_end: int, params: dict | None) -> tuple[int, float | None]:
+def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_start: int, ts_end: int, params: dict | None) -> tuple[int, float, float] | None:
     rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
     if not rows:
-        return 0, None
+        return None
 
     params = params or {}
     trade_plan = params.get("trade_plan") or {}
@@ -275,18 +314,21 @@ def _simulate_dca_long_success(conn, venue: str, symbol: str, entry: float, ts_s
                 break
 
         avg_entry = sum(fills) / len(fills)
+        turns = max(1.0, 0.5 + 0.5 * len(fills))
         tp_pct = max(cost_floor * 1.25, (float(tp_abs) / avg_entry) if tp_abs else 0.003)
         tp_price = avg_entry * (1.0 + tp_pct)
         if high >= tp_price:
-            return 1, close
+            return 1, _net_return(avg_entry, tp_price, "long", _extract_total_cost_bps(params), turns=turns), close
 
         if stop_out_price is not None and low <= float(stop_out_price):
-            return 0, close
+            sop = float(stop_out_price)
+            return 0, _net_return(avg_entry, sop, "long", _extract_total_cost_bps(params), turns=turns), close
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)
-    success = 1 if final_close > avg_entry * (1.0 + cost_floor) else 0
-    return success, final_close
+    ret_proxy = _net_return(avg_entry, final_close, "long", _extract_total_cost_bps(params), turns=max(1.0, 0.5 + 0.5 * len(fills)))
+    success = 1 if ret_proxy > 0 else 0
+    return success, ret_proxy, final_close
 
 
 def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
@@ -333,8 +375,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 continue
             exitp = ep
             price_ret = (exitp - entry) / entry
-            ret_proxy = price_ret
-            success = _grid_success(conn, venue, symbol, entry, exitp, ts0, ts_exit, params)
+            success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, ts0, ts_exit, params)
 
         elif bot_type in DIRECTIONAL_BOTS:
             ep = _get_close_at_or_after(conn, venue, symbol, ts_exit)
@@ -342,12 +383,13 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 continue
             exitp = ep
             price_ret = (exitp - entry) / entry
-            ret_proxy = (-price_ret if direction == "short" else price_ret) if direction in ("long", "short") else price_ret
+            total_cost_bps = _extract_total_cost_bps(params)
+            ret_proxy = _net_return(entry, exitp, direction if direction in ("long", "short") else "long", total_cost_bps) if direction in ("long", "short") else price_ret
 
             if bot_type == "futures_combo" or direction == "hedge":
                 vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
                 atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.0)
-                cost_floor = _extract_total_cost_bps(params) / 10_000
+                cost_floor = total_cost_bps / 10_000
                 window = _get_price_range_in_window(conn, venue, symbol, ts0, ts_exit)
                 if window is None:
                     continue
@@ -358,34 +400,33 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 success = 1 if realized_move > atr_thresh else 0
 
             elif bot_type == "futures_martingale" and direction in ("long", "short"):
-                total_cost_bps = _extract_total_cost_bps(params)
-                sim = _simulate_martingale_success(conn, venue, symbol, entry, direction, ts0, ts_exit, params, total_cost_bps)
+                sim = _simulate_martingale_outcome(conn, venue, symbol, entry, direction, ts0, ts_exit, params, total_cost_bps)
                 if sim is not None:
-                    success = sim
+                    success, ret_proxy, exitp = sim
+                    price_ret = (exitp - entry) / entry
                 else:
                     vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
                     atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.02)
-                    tp_sl = _tp_sl_success(conn, venue, symbol, entry, direction, ts0, ts_exit, atr_1h, total_cost_bps)
+                    tp_sl = _tp_sl_outcome(conn, venue, symbol, entry, direction, ts0, ts_exit, atr_1h, total_cost_bps)
                     if tp_sl is not None:
-                        success = tp_sl
+                        success, ret_proxy, exitp = tp_sl
+                        price_ret = (exitp - entry) / entry
                     else:
                         direction_ret = -price_ret if direction == "short" else price_ret
-                        ret_proxy = direction_ret
+                        ret_proxy = direction_ret - (total_cost_bps / 10_000)
                         cost_floor = total_cost_bps / 10_000
-                        success = 1 if direction_ret > cost_floor * 1.5 else 0
+                        success = 1 if ret_proxy > cost_floor * 0.5 else 0
 
             elif bot_type == "dca_bot" and direction == "long":
-                success, exit_fallback = _simulate_dca_long_success(conn, venue, symbol, entry, ts0, ts_exit, params)
-                if exit_fallback is not None:
-                    exitp = float(exit_fallback)
+                dca = _simulate_dca_long_outcome(conn, venue, symbol, entry, ts0, ts_exit, params)
+                if dca is not None:
+                    success, ret_proxy, exitp = dca
                     price_ret = (exitp - entry) / entry
-                    ret_proxy = price_ret
 
             elif direction in ("long", "short"):
-                direction_ret = -price_ret if direction == "short" else price_ret
-                ret_proxy = direction_ret
-                cost_floor = _extract_total_cost_bps(params) / 10_000
-                success = 1 if direction_ret > cost_floor else 0
+                cost_floor = total_cost_bps / 10_000
+                ret_proxy = (-price_ret if direction == "short" else price_ret) - cost_floor
+                success = 1 if ret_proxy > 0 else 0
             else:
                 continue
 

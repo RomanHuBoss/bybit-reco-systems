@@ -1,6 +1,6 @@
 ## V4.1-docsync — documentation aligned to current branch
 
-- README updated to reflect current defaults from `settings.py` (`RECO_INTERVAL_SEC=20`, `CALIB_MIN_SAMPLES=60`, adaptive confidence blending, adaptive symbol-sentiment blending).
+- README updated to reflect current defaults from `settings.py` (`RECO_INTERVAL_SEC=20`, `CALIB_MIN_SAMPLES=80`, adaptive confidence blending, adaptive symbol-sentiment blending).
 - Calibration section updated to `*_v3` / `platt_direction_v3` keys and the 13-feature canonical vector.
 - Outcome-labeling section updated to describe the current martingale TP/SL and DCA cost-floor logic.
 - Specification now documents current caveats explicitly: persistence key shape, context-penalty field mismatch, trade-plan cost-model mismatch, and symbol-sentiment tuple return shape.
@@ -679,6 +679,6 @@ Pre-market контракты не отдают kline данные через с
 - added path-based martingale outcome labeling
 - added admin-key protected mutating endpoints
 - added bot lifecycle and trade ingestion endpoints
-- scrubbed shipped secrets from .env and raised CALIB_MIN_SAMPLES to 60
+- scrubbed shipped secrets from .env and raised CALIB_MIN_SAMPLES to 80
 - blocked publication of futures_combo as action-ready recommendation without two-leg PnL model
 

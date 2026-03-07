@@ -687,12 +687,14 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
            WHERE action='COLLECT_ERROR' AND ts >= ?""",
         (now - 600,),
     )
-    error_counts: dict[str, int] = {}
+    error_counts: dict[tuple[str, str], int] = {}
     for row in cur.fetchall():
         try:
             d = json.loads(row["details_json"])
-            sym = d.get("symbol", "UNKNOWN")
-            error_counts[sym] = error_counts.get(sym, 0) + 1
+            venue = str(d.get("venue") or "")
+            sym = str(d.get("symbol") or "UNKNOWN")
+            key = (venue, sym)
+            error_counts[key] = error_counts.get(key, 0) + 1
         except Exception:
             pass
 
@@ -702,11 +704,11 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
            WHERE action='SYMBOL_DISABLED' AND ts >= ?""",
         (now - 86400,),
     )
-    disabled_syms: set[str] = set()
+    disabled_syms: set[tuple[str, str]] = set()
     for row in cur.fetchall():
         try:
             d = json.loads(row["details_json"])
-            disabled_syms.add(d.get("symbol", ""))
+            disabled_syms.add((str(d.get("venue") or ""), str(d.get("symbol") or "")))
         except Exception:
             pass
 
@@ -716,12 +718,14 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
            WHERE action='STALE_DATA_SKIP' AND ts >= ?""",
         (now - 3600,),
     )
-    stale_counts: dict[str, int] = {}
+    stale_counts: dict[tuple[str, str], int] = {}
     for row in cur.fetchall():
         try:
             d = json.loads(row["details_json"])
-            sym = d.get("symbol", "UNKNOWN")
-            stale_counts[sym] = stale_counts.get(sym, 0) + 1
+            venue = str(d.get("venue") or "")
+            sym = str(d.get("symbol") or "UNKNOWN")
+            key = (venue, sym)
+            stale_counts[key] = stale_counts.get(key, 0) + 1
         except Exception:
             pass
 
@@ -756,9 +760,9 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
                 "last_ticker_ts":  last_ticker_ts,
                 "age_sec":         age_sec,
                 "status":          status,
-                "error_count_10m": error_counts.get(sym, 0),
-                "stale_skips_1h":  stale_counts.get(sym, 0),
-                "disabled":        sym in disabled_syms,
+                "error_count_10m": error_counts.get((venue, sym), 0),
+                "stale_skips_1h":  stale_counts.get((venue, sym), 0),
+                "disabled":        (venue, sym) in disabled_syms,
             })
 
     return sorted(result, key=lambda x: (x["status"] != "missing", x["status"] != "stale", x["symbol"]))

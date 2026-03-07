@@ -102,6 +102,10 @@ def _estimate_cost_model(
     if venue == "linear" and fr is not None and horizon_sec > 0:
         now = int(ts_now or 0)
         nfts = int(next_funding_ts or 0)
+        # Defensive normalization for legacy/state payloads that may still carry
+        # Bybit's millisecond timestamp even if the client was already fixed.
+        if nfts > 10**11:
+            nfts //= 1000
         if now > 0 and nfts > 0:
             if now + horizon_sec >= nfts:
                 expected_funding_events = 1
@@ -1050,15 +1054,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 conf_cal = float(bot_cal.predict_score_only(score))
                 _cal_source = "bot_platt"
                 _active_cal = bot_cal
-            elif global_calibrator.fitted and len(global_calibrator.coef) > 0 and _fv is not None:
-                conf_cal = float(global_calibrator.predict(_fv))
-                _cal_source = "global_logreg"
-                _active_cal = global_calibrator
-            elif global_calibrator.fitted:
-                conf_cal = float(global_calibrator.predict_score_only(score))
-                _cal_source = "global_platt"
-                _active_cal = global_calibrator
             else:
+                # Do NOT fall back to a cross-bot/global calibrator for inference.
+                # Outcome labels are bot-mechanics-specific (grid/range, DCA, martingale,
+                # hedge proxy), so a pooled probability creates pseudo-statistical confidence.
                 conf_cal = float(conf0)
                 _cal_source = "raw"
                 _active_cal = None
@@ -1071,6 +1070,17 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             _n_cal = (_active_cal.n_samples if _active_cal is not None and _active_cal.fitted else 0)
             _cal_weight = float(_clamp(_n_cal / 300.0, 0.0, 1.0)) * 0.40 + 0.10
             conf = float(_clamp((1.0 - _cal_weight) * conf_raw + _cal_weight * conf_cal, 0.0, 1.0))
+
+            # Heuristic-only confidence must stay visibly conservative.
+            if _active_cal is None:
+                _heur_cap = {
+                    "spot_grid": 0.74,
+                    "futures_grid": 0.72,
+                    "dca_bot": 0.72,
+                    "futures_martingale": 0.70,
+                    "futures_combo": 0.68,
+                }.get(bot_type, 0.72)
+                conf = float(min(conf, _heur_cap))
 
             # Context completeness penalty — reduce confidence when key signals are missing.
             # The system already falls back gracefully; this makes the uncertainty explicit.
