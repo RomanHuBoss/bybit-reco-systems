@@ -99,23 +99,31 @@ def _estimate_cost_model(
 
     expected_funding_events = 0
     expected_funding_bps = 0.0
+    nfts_out: int | None = None
     if venue == "linear" and fr is not None and horizon_sec > 0:
         now = int(ts_now or 0)
         nfts = int(next_funding_ts or 0)
+        funding_interval_sec = 8 * 3600
         # Defensive normalization for legacy/state payloads that may still carry
         # Bybit's millisecond timestamp even if the client was already fixed.
         if nfts > 10**11:
             nfts //= 1000
         if now > 0 and nfts > 0:
-            if now + horizon_sec >= nfts:
-                expected_funding_events = 1
-                if now + horizon_sec >= nfts + 8 * 3600:
-                    expected_funding_events = 2
+            # If the stored next_funding_ts is already in the past (e.g. collector has
+            # not refreshed yet after a funding event), roll it forward to the next
+            # actual future event instead of charging a stale funding event immediately.
+            while nfts <= now:
+                nfts += funding_interval_sec
+            horizon_end = now + horizon_sec
+            if horizon_end >= nfts:
+                expected_funding_events = 1 + max(0, (horizon_end - nfts) // funding_interval_sec)
+            nfts_out = nfts
         else:
-            expected_funding_events = 1 if horizon_sec >= 8 * 3600 else 0
+            expected_funding_events = 1 if horizon_sec >= funding_interval_sec else 0
+            nfts_out = nfts if nfts > 0 else None
         expected_funding_bps = directional_funding_bps_8h * expected_funding_events
 
-    total_cost_bps = fee_bps_round_trip + spread_bps_used + slippage_bps + max(0.0, expected_funding_bps)
+    total_cost_bps = max(0.0, fee_bps_round_trip + spread_bps_used + slippage_bps + expected_funding_bps)
 
     return {
         "spread_bps": spread_bps_used,
@@ -125,7 +133,7 @@ def _estimate_cost_model(
         "funding_rate": fr,
         "direction": direction,
         "directional_funding_bps_8h": float(directional_funding_bps_8h),
-        "next_funding_ts": int(next_funding_ts) if next_funding_ts else None,
+        "next_funding_ts": int(nfts_out) if nfts_out else (int(next_funding_ts) if next_funding_ts else None),
         "expected_funding_events": int(expected_funding_events),
         "expected_funding_bps": float(expected_funding_bps),
         "total_cost_bps": float(total_cost_bps),
@@ -133,18 +141,39 @@ def _estimate_cost_model(
     }
 
 
-def _funding_score_adjustment(direction: str, fr_sig: dict[str, Any]) -> float:
+def _funding_score_adjustment(direction: str, fr_sig: dict[str, Any], cost_model: dict[str, Any]) -> float:
+    """Event-aware funding adjustment for the heuristic score.
+
+    Funding should only affect the score if the trade horizon is actually expected to
+    cross one or more funding events. Otherwise we create an economic signal that the
+    execution model never realises. The adjustment is also direction-aware: expensive
+    long carry should penalise longs, while the same regime can be mildly supportive
+    for shorts that are expected to receive funding.
+    """
+    if direction not in ("long", "short"):
+        return 0.0
+    if int(cost_model.get("expected_funding_events") or 0) <= 0:
+        return 0.0
+
+    expected_bps = float(cost_model.get("expected_funding_bps") or 0.0)
+    if expected_bps >= 8.0:
+        return -0.08
+    if expected_bps >= 4.0:
+        return -0.05
+    if expected_bps >= 1.5:
+        return -0.02
+    if expected_bps <= -8.0:
+        return 0.05
+    if expected_bps <= -3.0:
+        return 0.03
+    if expected_bps <= -1.0:
+        return 0.015
+
     sig = str(fr_sig.get("signal") or "unknown")
-    if direction == "long":
-        if sig == "bullish":
-            return 0.04
-        if sig == "bearish":
-            return -0.06
-    elif direction == "short":
-        if sig == "bearish":
-            return 0.04
-        if sig == "bullish":
-            return -0.06
+    if direction == "long" and sig == "bullish":
+        return 0.01
+    if direction == "short" and sig == "bearish":
+        return 0.01
     return 0.0
 
 
@@ -179,7 +208,7 @@ def _build_feature_snapshot(
         "spread_bps_norm": _clamp(_value_or_default(spread_bps, 8.0) / 10.0, 0.0, 5.0),
         "score": _clamp(float(score), -1.0, 1.0),
         "oi_4h_norm": _clamp(_value_or_default(oi_sig.get("oi_4h_chg_pct"), 0.0) / 10.0, -3.0, 3.0),
-        "funding_norm": _clamp(_value_or_default(cost_model.get("directional_funding_bps_8h"), 0.0) / 20.0, -2.0, 2.0),
+        "funding_norm": _clamp(_value_or_default(cost_model.get("expected_funding_bps"), 0.0) / 20.0, -2.0, 2.0),
         "liq_tier_num": float(liq_map.get(str(liq_tier).lower(), 0.67)),
         "btc_corr": _clamp(_value_or_default(beta_info.get("correlation"), 0.0), -1.0, 1.0),
         "regime_conf": _clamp(_value_or_default(direction_agg.get("regime_confidence"), 0.5), 0.0, 1.0),
@@ -959,10 +988,18 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     "msg": "bid/ask отсутствуют — нельзя надёжно оценить execution cost"})
 
             # ── Funding rate gate (futures only) ──
-            if venue == "linear" and fr_sig["signal"] == "bearish" and fr_sig["value"] is not None:
-                if float(fr_sig["value"]) > 0.0006:   # > 0.06% per 8h = ~66% annualized — extreme
-                    feasibility_blocks.append({"code": "FUNDING_EXTREME",
-                        "msg": f"funding_rate={fr_sig['value']:.4f} ({fr_sig['annualized_pct']:.0f}%/year) — crowded long, высокий carry-cost"})
+            # Gate must be direction-aware. Extreme positive funding is a real carry-cost
+            # problem for longs, but the same regime can be supportive for shorts that are
+            # expected to receive funding.
+            if (
+                venue == "linear"
+                and direction == "long"
+                and fr_sig["value"] is not None
+                and int(cost_model.get("expected_funding_events") or 0) > 0
+                and float(cost_model.get("expected_funding_bps") or 0.0) >= 6.0
+            ):
+                feasibility_blocks.append({"code": "FUNDING_EXTREME",
+                    "msg": f"expected_funding_bps={float(cost_model.get('expected_funding_bps') or 0.0):.2f} over horizon — crowded long, высокий carry-cost"})
 
             if bot_type in ("spot_grid","futures_grid") and spread is not None and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
@@ -1001,7 +1038,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             # ── Funding + OI score adjustments ──
             if venue == "linear":
-                score = _clamp(score + _funding_score_adjustment(direction, fr_sig), -1.0, 1.0)
+                score = _clamp(score + _funding_score_adjustment(direction, fr_sig, cost_model), -1.0, 1.0)
 
             conf_raw = float(conf0)
             # ── Two-stage calibration: LogReg(features) → Platt ──────────────────

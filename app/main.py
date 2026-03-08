@@ -104,6 +104,12 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             db.update_recommendation_status(conn, rec_id, "executed", operator)
         return existing, True
 
+    ttl_sec = int(rec.get("ttl_sec") or 0)
+    rec_ts = int(rec.get("ts") or 0)
+    if ttl_sec > 0 and rec_ts > 0 and int(time.time()) > rec_ts + ttl_sec:
+        db.update_recommendation_status(conn, rec_id, "expired", operator)
+        raise HTTPException(status_code=409, detail="recommendation already expired")
+
     if rec["status"] in {"blocked", "no_trade", "suppressed", "expired", "ignored"}:
         raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
     if rec.get("bot_type") == "futures_combo":
@@ -293,20 +299,20 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
-        trades = db.list_trades(conn, bot_id=bot_id, limit=10_000)
-        realized_pnl_gross = float(sum(float(t["pnl"]) for t in trades))
-        realized_fee = float(sum(float(t["fee"]) for t in trades))
-        realized_pnl_net = realized_pnl_gross - realized_fee
+        trade_summary = db.get_bot_trade_summary(conn, bot_id)
+        realized_pnl_gross = float(trade_summary["realized_pnl_gross"])
+        realized_fee = float(trade_summary["realized_fee"])
+        realized_pnl_net = float(trade_summary["realized_pnl_net"])
         db.update_bot_state(
             conn,
             bot_id,
             {
-                "trade_count": len(trades),
+                "trade_count": int(trade_summary["trade_count"]),
                 "realized_pnl": realized_pnl_net,
                 "realized_pnl_gross": realized_pnl_gross,
                 "realized_pnl_net": realized_pnl_net,
                 "realized_fee": realized_fee,
-                "last_trade_ts": ts,
+                "last_trade_ts": int(trade_summary.get("last_trade_ts") or ts),
                 "last_trade_id": trade_id,
                 "last_trade_meta": req.meta,
                 "last_operator": req.operator,
@@ -320,7 +326,7 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
             "ok": True,
             "trade_id": trade_id,
             "bot_id": bot_id,
-            "trade_count": len(trades),
+            "trade_count": int(trade_summary["trade_count"]),
             "insert_result": insert_result,
             "realized_pnl": realized_pnl_net,
             "realized_pnl_gross": realized_pnl_gross,

@@ -270,6 +270,30 @@ def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int 
 
 
 
+def get_bot_trade_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any]:
+    cur = conn.execute(
+        """SELECT COUNT(*) AS trade_count,
+                  COALESCE(SUM(pnl), 0.0) AS realized_pnl_gross,
+                  COALESCE(SUM(fee), 0.0) AS realized_fee,
+                  MAX(ts) AS last_trade_ts
+           FROM trades WHERE bot_id=?""",
+        (bot_id,),
+    )
+    row = cur.fetchone()
+    trade_count = int(row["trade_count"] or 0) if row else 0
+    realized_pnl_gross = float(row["realized_pnl_gross"] or 0.0) if row else 0.0
+    realized_fee = float(row["realized_fee"] or 0.0) if row else 0.0
+    realized_pnl_net = realized_pnl_gross - realized_fee
+    return {
+        "trade_count": trade_count,
+        "realized_pnl_gross": realized_pnl_gross,
+        "realized_fee": realized_fee,
+        "realized_pnl_net": realized_pnl_net,
+        "realized_pnl": realized_pnl_net,
+        "last_trade_ts": int(row["last_trade_ts"]) if row and row["last_trade_ts"] is not None else None,
+    }
+
+
 def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int, min_conf: float, statuses: list[str] | None = None, snapshot_ts: int | None = None) -> list[dict[str, Any]]:
     if snapshot_ts is not None:
         q = """SELECT * FROM recommendations WHERE ts = ?"""

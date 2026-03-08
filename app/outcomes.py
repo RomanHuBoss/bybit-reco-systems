@@ -354,16 +354,31 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         direction = r["direction"]
         ts0 = int(r["ts"])
 
-        effective_horizon = BOT_HORIZONS.get(bot_type, horizon_sec)
-        if db.now_ts() < ts0 + effective_horizon:
-            continue
-        ts_exit = ts0 + effective_horizon
+        params = _get_rec_params(conn, rec_id)
+        cur_rec = conn.execute(
+            "SELECT features_ref_ts FROM recommendations WHERE rec_id=?",
+            (rec_id,),
+        )
+        rec_row = cur_rec.fetchone()
+        entry_ts = int(rec_row["features_ref_ts"]) if rec_row and rec_row["features_ref_ts"] is not None else ts0
 
-        entry = _get_close_at_or_after(conn, venue, symbol, ts0)
+        effective_horizon = BOT_HORIZONS.get(bot_type, horizon_sec)
+        if db.now_ts() < entry_ts + effective_horizon:
+            continue
+        ts_exit = entry_ts + effective_horizon
+
+        entry = None
+        trade_plan = ((params or {}).get("trade_plan") or {}) if isinstance(params, dict) else {}
+        ref_price = trade_plan.get("reference_price")
+        try:
+            if ref_price is not None and float(ref_price) > 0:
+                entry = float(ref_price)
+        except Exception:
+            entry = None
+        if entry is None:
+            entry = _get_close_at_or_after(conn, venue, symbol, entry_ts)
         if entry is None or entry == 0:
             continue
-
-        params = _get_rec_params(conn, rec_id)
         price_ret: float
         ret_proxy: float
         success: int

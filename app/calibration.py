@@ -187,7 +187,9 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
     oi_4h_norm = _clamp(float(oi_4h_raw) / 10.0, -3.0, 3.0) if oi_4h_raw is not None else 0.0
 
     fund_block = reasons.get("funding") or {}
-    fund_raw = fund_block.get("directional_funding_bps_8h")
+    fund_raw = fund_block.get("expected_funding_bps")
+    if fund_raw is None:
+        fund_raw = fund_block.get("directional_funding_bps_8h")
     if fund_raw is None:
         fund_raw = fund_block.get("carry_cost_bps_8h")
     funding_norm = _clamp(float(fund_raw) / 20.0, -2.0, 2.0) if fund_raw is not None else 0.0
