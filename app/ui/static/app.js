@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 let recoAbort = null;
 let recoDebounce = null;
-let calibFitted = false;
+let statusPayload = null;
 let countdownTimer = null;
 let countdownVal = 10;
 let currentRecId = null;   // rec_id currently shown in Details panel
@@ -39,16 +39,144 @@ function pillStatus(status) {
   return `<span class="${cls}">${status}</span>`;
 }
 
-function confCell(conf) {
-  const v = Number(conf);
+function getConfModel(item) {
+  return ((item || {}).reasons || {}).confidence_model || {};
+}
+
+function confCell(item) {
+  const v = Number((item || {}).confidence);
   if (isNaN(v)) return "-";
+
+  const confModel = getConfModel(item);
+  const fitted = !!confModel.fitted;
+  const logregActive = !!confModel.logreg_active;
+
   let cls = "conf-val";
-  if (!calibFitted) cls += " conf-uncal";
+  if (!fitted) cls += " conf-uncal";
   else if (v >= 0.75) cls += " conf-high";
   else if (v >= 0.60) cls += " conf-mid";
   else cls += " conf-low";
-  const warn = !calibFitted ? " <span class='conf-warn-icon' title='Не откалибровано'>⚠</span>" : "";
-  return `<span class="${cls}">${v.toFixed(2)}${warn}</span>`;
+
+  let marker = "";
+  if (!fitted) {
+    const src = confModel.source || "raw";
+    marker = ` <span class='conf-warn-icon' title='Не откалибровано: используется ${src}'>⚠</span>`;
+  } else if (logregActive) {
+    marker = " <span class='conf-ok-icon' title='Откалибровано: LogReg + Platt'>✓</span>";
+  } else {
+    const nSamples = Number(confModel.n_samples || 0);
+    marker = ` <span class='conf-soft-icon' title='Частично откалибровано: Platt only (n=${nSamples})'>~</span>`;
+  }
+
+  return `<span class="${cls}">${v.toFixed(2)}${marker}</span>`;
+}
+
+function summariseCalibState(items) {
+  const summary = { unfitted: 0, platt: 0, logreg: 0, total: 0 };
+  (items || []).forEach((it) => {
+    const confModel = getConfModel(it);
+    summary.total += 1;
+    if (!confModel.fitted) summary.unfitted += 1;
+    else if (confModel.logreg_active) summary.logreg += 1;
+    else summary.platt += 1;
+  });
+  return summary;
+}
+
+function buildBotCalibText(botType, info, totalOutcomeCount) {
+  const total = Number(info?.outcomes_total || 0);
+  const needed = Number(info?.min_samples || statusPayload?.calib_min_samples || 80);
+  const winRate = info?.win_rate;
+  const winRateText = (winRate === null || winRate === undefined) ? "—" : Number(winRate).toFixed(2);
+  const allText = Number(totalOutcomeCount || 0);
+
+  if (info?.fitted) {
+    if (info?.logreg_active) {
+      return `${botType}: калибратор активен (LogReg + Platt, n=${Number(info.n_samples || 0)}).`;
+    }
+    return `${botType}: включён Platt-only (n=${Number(info.n_samples || 0)} / ${Number(info.logreg_min_samples || 300)} для полного LogReg).`;
+  }
+
+  if ((info?.unfitted_reason || "") === "degenerate_win_rate") {
+    return `${botType}: пригодных исходов ${total} / ${needed}, но win-rate=${winRateText} вне диапазона 0.15–0.85. Всего исходов в базе: ${allText}.`;
+  }
+  if ((info?.unfitted_reason || "") === "pending_refit") {
+    return `${botType}: исходов уже достаточно (${total} / ${needed}, win-rate=${winRateText}). Модель ещё не обновлена в текущем цикле.`;
+  }
+  return `${botType}: пригодных исходов ${total} / ${needed}. Всего исходов в базе: ${allText}.`;
+}
+
+function updateCalibrationUi(items) {
+  const header = $("confHeader");
+  const banner = $("calibBanner");
+  if (!header || !banner) return;
+
+  const summary = summariseCalibState(items || []);
+  if (summary.total === 0) {
+    const globalFitted = !!statusPayload?.calibrator_fitted;
+    const globalLogreg = !!statusPayload?.calibrator_logreg;
+    if (globalFitted && globalLogreg) {
+      header.textContent = "Увер ✓";
+      header.title = "Уверенность откалибрована";
+      banner.classList.add("hidden");
+    } else if (globalFitted) {
+      header.textContent = "Увер ~";
+      header.title = "Уверенность частично откалибрована (Platt only)";
+      banner.classList.add("hidden");
+    } else {
+      header.textContent = "Увер ?";
+      header.title = "Уверенность не откалибрована";
+      banner.classList.remove("hidden");
+      const count = Number(statusPayload?.outcome_count || 0);
+      const needed = Number(statusPayload?.calib_min_samples || 80);
+      const pct = needed > 0 ? Math.min(100, Math.round(count / needed * 100)) : 0;
+      $("calibProgress").textContent = `Всего исходов: ${count} / ${needed}. Калибровка включится автоматически.`;
+      $("calibBarFill").style.width = `${pct}%`;
+    }
+    return;
+  }
+
+  if (summary.unfitted === 0 && summary.platt === 0) {
+    header.textContent = "Увер ✓";
+    header.title = `Все строки откалиброваны: LogReg + Platt (${summary.logreg}/${summary.total}).`;
+    banner.classList.add("hidden");
+    return;
+  }
+  if (summary.unfitted === 0) {
+    header.textContent = summary.logreg > 0 ? "Увер ~" : "Увер ~";
+    header.title = `Все строки имеют калибровку, но часть работает в режиме Platt only (LogReg: ${summary.logreg}, Platt: ${summary.platt}).`;
+    banner.classList.add("hidden");
+    return;
+  }
+
+  header.textContent = (summary.logreg > 0 || summary.platt > 0) ? "Увер ?" : "Увер ⚠";
+  header.title = `Есть неоткалиброванные строки: raw=${summary.unfitted}, Platt=${summary.platt}, LogReg=${summary.logreg}.`;
+
+  const botTypes = [...new Set((items || []).map(it => it.bot_type).filter(Boolean))];
+  const botCalibs = statusPayload?.bot_calibrators || {};
+  const totalOutcomeCount = Number(statusPayload?.outcome_count || 0);
+  const messages = botTypes.slice(0, 3).map((botType) => buildBotCalibText(botType, botCalibs[botType], totalOutcomeCount));
+  if (botTypes.length > 3) messages.push(`И ещё ${botTypes.length - 3} bot_type.`);
+
+  const primaryBot = botTypes.length === 1 ? botTypes[0] : null;
+  const primaryInfo = primaryBot ? botCalibs[primaryBot] : null;
+  const total = Number(primaryInfo?.outcomes_total || 0);
+  const needed = Number(primaryInfo?.min_samples || statusPayload?.calib_min_samples || 80);
+  const pct = needed > 0 ? Math.min(100, Math.round(total / needed * 100)) : 0;
+
+  banner.classList.remove("hidden");
+  if (primaryBot) {
+    const title = primaryInfo?.fitted
+      ? (primaryInfo?.logreg_active
+        ? `Текущий bot_type ${primaryBot}: калибратор активен`
+        : `Текущий bot_type ${primaryBot}: работает Platt-only`) 
+      : `Текущий bot_type ${primaryBot}: калибратор не обучен`;
+    document.querySelector(".calib-title").innerHTML = `${title} — уверенность <b>${primaryInfo?.fitted ? "частично/полностью откалибрована" : "не откалибрована"}</b>`;
+  } else {
+    document.querySelector(".calib-title").innerHTML = `Калибровка по текущему набору <b>смешанная</b>`;
+  }
+  $("calibProgress").textContent = messages.join(" ");
+  $("calibBarFill").style.width = `${pct}%`;
 }
 
 function dirConfCell(dirConf) {
@@ -90,35 +218,8 @@ async function loadStatus() {
     const res = await fetch("/api/v1/status");
     if (!res.ok) return;
     const s = await res.json();
-
-    calibFitted = !!s.calibrator_fitted;
-    const logregActive = !!s.calibrator_logreg;
-    const calibN  = s.calibrator_n  || 0;
-    const count   = s.outcome_count || 0;
-    const needed  = s.calib_min_samples || 80;
-    const logreg_needed = 300;  // matches fit_logreg logreg_min_samples
-    const pct = Math.min(100, Math.round(count / needed * 100));
-
-    // calibration banner
-    const banner = $("calibBanner");
-    const header = $("confHeader");
-    if (!calibFitted) {
-      banner.classList.remove("hidden");
-      $("calibProgress").textContent =
-        `Накоплено ${count} / ${needed} исходов (${pct}%). Калибровка включится автоматически.`;
-      $("calibBarFill").style.width = pct + "%";
-      header.textContent = "Увер ⚠";
-      header.title = "Уверенность НЕ откалибрована — числа ненадёжны";
-    } else if (!logregActive) {
-      banner.classList.add("hidden");
-      const pct2 = Math.min(100, Math.round(calibN / logreg_needed * 100));
-      header.textContent = "Увер ~";
-      header.title = `Platt scaling активен (${calibN} исходов). LogReg включится после ${logreg_needed} — накоплено ${pct2}%`;
-    } else {
-      banner.classList.add("hidden");
-      header.textContent = "Увер ✓";
-      header.title = `LogReg + Platt активен (${calibN} исходов на глобальной модели)`;
-    }
+    statusPayload = s;
+    updateCalibrationUi(lastItems);
 
     // collect error banner
     const errBanner = $("collectErrBanner");
@@ -197,6 +298,7 @@ async function loadRecommendations() {
   const items = data.items || [];
   lastItems = items;
   renderRecoTable(items);
+  updateCalibrationUi(items);
 
   const banner = $("noTrade");
   const hasRecommended = items.some(it => it.status === "recommended");
@@ -254,7 +356,7 @@ function renderRecoTable(items) {
       <td>${directionBadge(it.direction)}</td>
       <td>${dirConfCell(dirConf)}</td>
       <td>${fmt(it.score)}</td>
-      <td>${confCell(it.confidence)}</td>
+      <td>${confCell(it)}</td>
       <td>${fmt(it.expected_rr)}</td>
       <td>${pillStatus(it.status)}</td>
       <td>
@@ -717,10 +819,5 @@ setInterval(refreshAll, 10000);
 
 const adminApiKeyEl = $("adminApiKey");
 if (adminApiKeyEl) {
-    const persistedAdminKey = sessionStorage.getItem("admin_api_key") || localStorage.getItem("admin_api_key") || "";
-  adminApiKeyEl.value = persistedAdminKey;
-  try { localStorage.removeItem("admin_api_key"); } catch (_) {}
-  adminApiKeyEl.addEventListener("input", () => {
-    sessionStorage.setItem("admin_api_key", adminApiKeyEl.value || "");
-  });
+  adminApiKeyEl.value = "";
 }

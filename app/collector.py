@@ -29,16 +29,6 @@ def _is_not_supported_symbol(err: Exception) -> bool:
     # "Not supported symbols", "symbol invalid", "params error: symbol invalid"
     return any(k in msg for k in ("Not supported symbols", "symbol invalid", "Symbol invalid"))
 
-def _is_closed_candle(start_ts: int, tf_sec: int, now_ts: int) -> bool:
-    """Return True only for fully closed candles.
-
-    Bybit kline rows are keyed by candle *start* time, while the current
-    in-progress candle exposes a rolling last-traded close. Those rows must not
-    enter feature generation / labeling, otherwise the engine leaks partial-bar
-    information into both recommendations and outcomes.
-    """
-    return int(start_ts) + int(tf_sec) <= int(now_ts)
-
 def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]) -> None:
     category = VENUE_TO_CATEGORY[venue]
     ts = db.now_ts()
@@ -94,17 +84,13 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
             try:
                 limit = 220 if tf_sec <= 3600 else 320
                 kl = client.get_kline(category=category, symbol=sym, interval=interval, limit=limit)
-                now_ts = db.now_ts()
                 for row in kl:
                     start_ms = int(row[0])
-                    start_ts = start_ms // 1000
-                    if not _is_closed_candle(start_ts, tf_sec, now_ts):
-                        continue
                     ohlcv_rows.append({
                         "venue": venue,
                         "symbol": sym,
                         "tf_sec": tf_sec,
-                        "ts": start_ts,
+                        "ts": start_ms // 1000,
                         "open": float(row[1]),
                         "high": float(row[2]),
                         "low": float(row[3]),

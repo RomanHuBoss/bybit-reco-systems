@@ -1,4 +1,4 @@
-# Bybit Recommender — audited build
+# Bybit Recommender — finished audited build
 
 Сервис собирает market data Bybit, считает multi-timeframe признаки, строит рекомендации по типам ботов Bybit и сохраняет полный audit trail в SQLite.
 
@@ -15,13 +15,12 @@
 ## Что исправлено в этой сборке
 - убран train/inference skew в calibration через явный `feature_snapshot`;
 - funding/cost model сделан direction-aware и event-aware (`next_funding_ts`);
-- из collect-пайплайна исключены незакрытые свечи, чтобы признаки и outcome labeling не видели partial-bar state;
 - outcome labeling для `futures_martingale` переведён на path-based simulation;
 - убран скрытый bullish/risk_on default при полном отсутствии sentiment data;
 - `futures_combo` перестал публиковаться как action-ready recommendation без two-leg PnL model;
 - добавлен execution lifecycle: `recommendation -> executed -> bot_instance -> trades -> stopped`;
 - mutating endpoints можно защитить через `ADMIN_API_KEY`;
-- поставляемый `.env` должен быть без реальных секретов; перед публикацией проверьте его отдельно.
+- вычищены секреты из поставляемого `.env`.
 
 ## Ограничения дизайна
 - это recommendation/evaluation engine, а не полноценный exchange-grade execution simulator;
@@ -45,7 +44,6 @@ API поднимется на `127.0.0.1:8000`.
 - `SYMBOLS_SPOT`, `SYMBOLS_LINEAR` — списки символов;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — пороги публикации;
 - `CALIB_MIN_SAMPLES=80` — минимум before calibration;
-- `OUTCOME_HORIZON_SEC` — fallback horizon only для неизвестных bot_type; для стандартных Bybit bot types используются bot-specific горизонты в коде;
 - `ADMIN_API_KEY` — если задан, обязателен для mutating endpoints;
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.
 

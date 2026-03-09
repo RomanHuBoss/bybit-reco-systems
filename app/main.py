@@ -501,17 +501,62 @@ def api_status() -> dict[str, Any]:
         calib_n = int(global_model.n_samples) if global_model and global_model.fitted else 0
         calib_logreg = bool(global_model and global_model.fitted and len(global_model.coef) > 0)
 
+        min_samples = int(settings.calib_min_samples)
+        logreg_min_samples = 300
+
+        cur = conn.execute(
+            """SELECT bot_type, COUNT(*) AS total, COALESCE(SUM(success), 0) AS wins
+                   FROM reco_outcomes
+                   GROUP BY bot_type"""
+        )
+        outcome_stats_by_bot: dict[str, dict[str, Any]] = {}
+        outcome_count = 0
+        for row in cur.fetchall():
+            total = int(row["total"] or 0)
+            wins = int(row["wins"] or 0)
+            outcome_count += total
+            win_rate = float(wins / total) if total else None
+            outcome_stats_by_bot[str(row["bot_type"])] = {
+                "total": total,
+                "wins": wins,
+                "win_rate": round(win_rate, 4) if win_rate is not None else None,
+            }
+
+        def _bot_gate(total: int, win_rate: float | None, fitted: bool) -> tuple[bool, str | None]:
+            if fitted:
+                return True, None
+            if total < min_samples:
+                return False, "not_enough_samples"
+            if win_rate is None:
+                return False, "not_enough_samples"
+            if win_rate < 0.15 or win_rate > 0.85:
+                return False, "degenerate_win_rate"
+            return True, "pending_refit"
+
         bot_status = {}
         for bt, key in BOT_CALIB_KEYS.items():
             m = load_logreg_from_db(conn, key)
+            fitted = bool(m and m.fitted)
+            logreg_active = bool(m and m.fitted and len(m.coef) > 0)
+            stats = outcome_stats_by_bot.get(bt, {"total": 0, "wins": 0, "win_rate": None})
+            eligible, unfitted_reason = _bot_gate(
+                int(stats["total"]),
+                float(stats["win_rate"]) if stats["win_rate"] is not None else None,
+                fitted,
+            )
             bot_status[bt] = {
-                "fitted": bool(m and m.fitted),
-                "logreg_active": bool(m and m.fitted and len(m.coef) > 0),
+                "fitted": fitted,
+                "logreg_active": logreg_active,
                 "n_samples": int(m.n_samples) if m and m.fitted else 0,
+                "outcomes_total": int(stats["total"]),
+                "wins": int(stats["wins"]),
+                "win_rate": stats["win_rate"],
+                "eligible_for_fit": bool(eligible),
+                "unfitted_reason": unfitted_reason,
+                "min_samples": min_samples,
+                "logreg_min_samples": logreg_min_samples,
             }
 
-        cur = conn.execute("SELECT COUNT(*) AS c FROM reco_outcomes")
-        outcome_count = int(cur.fetchone()["c"])
         last_reco_ts = db.get_latest_reco_ts(conn)
         cur = conn.execute("SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?", (db.now_ts() - 600,))
         collect_errors_10m = int(cur.fetchone()["c"])
@@ -527,7 +572,8 @@ def api_status() -> dict[str, Any]:
             },
             "bot_calibrators": bot_status,
             "outcome_count": outcome_count,
-            "calib_min_samples": settings.calib_min_samples,
+            "calib_min_samples": min_samples,
+            "calib_logreg_min_samples": logreg_min_samples,
             "last_reco_ts": last_reco_ts,
             "collect_errors_10m": collect_errors_10m,
             "admin_key_configured": bool(settings.admin_api_key),
