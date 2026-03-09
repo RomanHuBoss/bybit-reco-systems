@@ -557,7 +557,9 @@ def api_status() -> dict[str, Any]:
                 "win_rate": round(win_rate, 4) if win_rate is not None else None,
             }
 
-        def _bot_gate(total: int, win_rate: float | None, fitted: bool) -> tuple[bool, str | None]:
+        def _bot_gate(bt: str, total: int, win_rate: float | None, fitted: bool) -> tuple[bool, str | None]:
+            if bt == "futures_combo":
+                return False, "unsupported_proxy_outcome_model"
             if fitted:
                 return True, None
             if total < min_samples:
@@ -570,11 +572,12 @@ def api_status() -> dict[str, Any]:
 
         bot_status = {}
         for bt, key in BOT_CALIB_KEYS.items():
-            m = load_logreg_from_db(conn, key)
+            m = None if bt == "futures_combo" else load_logreg_from_db(conn, key)
             fitted = bool(m and m.fitted)
             logreg_active = bool(m and m.fitted and len(m.coef) > 0)
             stats = outcome_stats_by_bot.get(bt, {"total": 0, "wins": 0, "win_rate": None})
             eligible, unfitted_reason = _bot_gate(
+                bt,
                 int(stats["total"]),
                 float(stats["win_rate"]) if stats["win_rate"] is not None else None,
                 fitted,

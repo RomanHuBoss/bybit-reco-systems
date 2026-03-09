@@ -136,6 +136,28 @@ def _net_return(entry: float, exitp: float, direction: str, total_cost_bps: floa
     return gross - cost_pct
 
 
+def _barrier_fill_price(openp: float, barrier: float, direction: str, kind: str) -> float:
+    """Conservative fill proxy for TP/SL barriers on 1m OHLC data.
+
+    Using the raw barrier price for stop-outs is optimistic when the market gaps
+    through the level. We therefore degrade stop fills to the candle open whenever
+    the open is already beyond the stop. For take-profit barriers we allow the
+    better of open/barrier, which is path-consistent for resting limit exits.
+    """
+    openp = float(openp)
+    barrier = float(barrier)
+    kind = str(kind)
+    if direction == "long":
+        if kind == "stop":
+            return min(openp, barrier)
+        return max(openp, barrier)
+    if direction == "short":
+        if kind == "stop":
+            return max(openp, barrier)
+        return min(openp, barrier)
+    return barrier
+
+
 def _tp_sl_outcome(
     conn,
     venue: str,
@@ -163,23 +185,30 @@ def _tp_sl_outcome(
         return None
 
     for row in rows:
+        openp = float(row["open"])
         hi = float(row["high"])
         lo = float(row["low"])
         close = float(row["close"])
         if direction == "long":
             if hi >= tp_price and lo <= sl_price:
-                return 0, _net_return(entry, sl_price, direction, total_cost_bps), sl_price
+                fill = _barrier_fill_price(openp, sl_price, direction, "stop")
+                return 0, _net_return(entry, fill, direction, total_cost_bps), fill
             if hi >= tp_price:
-                return 1, _net_return(entry, tp_price, direction, total_cost_bps), tp_price
+                fill = _barrier_fill_price(openp, tp_price, direction, "tp")
+                return 1, _net_return(entry, fill, direction, total_cost_bps), fill
             if lo <= sl_price:
-                return 0, _net_return(entry, sl_price, direction, total_cost_bps), sl_price
+                fill = _barrier_fill_price(openp, sl_price, direction, "stop")
+                return 0, _net_return(entry, fill, direction, total_cost_bps), fill
         else:
             if lo <= tp_price and hi >= sl_price:
-                return 0, _net_return(entry, sl_price, direction, total_cost_bps), sl_price
+                fill = _barrier_fill_price(openp, sl_price, direction, "stop")
+                return 0, _net_return(entry, fill, direction, total_cost_bps), fill
             if lo <= tp_price:
-                return 1, _net_return(entry, tp_price, direction, total_cost_bps), tp_price
+                fill = _barrier_fill_price(openp, tp_price, direction, "tp")
+                return 1, _net_return(entry, fill, direction, total_cost_bps), fill
             if hi >= sl_price:
-                return 0, _net_return(entry, sl_price, direction, total_cost_bps), sl_price
+                fill = _barrier_fill_price(openp, sl_price, direction, "stop")
+                return 0, _net_return(entry, fill, direction, total_cost_bps), fill
 
     final_close = float(rows[-1]["close"])
     ret_proxy = _net_return(entry, final_close, direction, total_cost_bps)
@@ -263,13 +292,19 @@ def _simulate_martingale_outcome(
             tp_pct = max(cost_floor * 1.5, 0.0035)
             tp_price = avg_entry * (1.0 + tp_pct) if direction == "long" else avg_entry * (1.0 - tp_pct)
 
+        stop_price = None
         if sl_price_hint is not None:
-            stop_price = float(sl_price_hint)
-            sl_pct = abs(stop_price - avg_entry) / avg_entry if avg_entry > 0 else max(cost_floor * 2.0, 0.007)
-        elif kill_abs is not None and avg_entry > 0:
+            hinted_stop = float(sl_price_hint)
+            # A fixed absolute stop generated from the original entry can end up on the
+            # profitable side of the averaged position after several martingale fills.
+            # Treat such a stale level as invalid and rebuild the stop from avg_entry.
+            if avg_entry > 0 and ((direction == "long" and hinted_stop < avg_entry) or (direction == "short" and hinted_stop > avg_entry)):
+                stop_price = hinted_stop
+                sl_pct = abs(stop_price - avg_entry) / avg_entry if avg_entry > 0 else max(cost_floor * 2.0, 0.007)
+        if stop_price is None and kill_abs is not None and avg_entry > 0:
             sl_pct = max(cost_floor * 2.0, abs(kill_abs) / avg_entry)
             stop_price = avg_entry * (1.0 - sl_pct) if direction == "long" else avg_entry * (1.0 + sl_pct)
-        else:
+        if stop_price is None:
             sl_pct = max(tp_pct * 2.0, cost_floor * 2.0, 0.007)
             stop_price = avg_entry * (1.0 - sl_pct) if direction == "long" else avg_entry * (1.0 + sl_pct)
 
@@ -285,11 +320,14 @@ def _simulate_martingale_outcome(
             hit_stop = high >= stop_price
 
         if hit_tp and hit_stop:
-            return 0, _net_return(avg_entry, stop_price, direction, total_cost_bps, turns=turns), stop_price
+            fill = _barrier_fill_price(float(row["open"]), stop_price, direction, "stop")
+            return 0, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns), fill
         if hit_tp:
-            return 1, _net_return(avg_entry, tp_price, direction, total_cost_bps, turns=turns), tp_price
+            fill = _barrier_fill_price(float(row["open"]), tp_price, direction, "tp")
+            return 1, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns), fill
         if hit_stop:
-            return 0, _net_return(avg_entry, stop_price, direction, total_cost_bps, turns=turns), stop_price
+            fill = _barrier_fill_price(float(row["open"]), stop_price, direction, "stop")
+            return 0, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns), fill
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)
@@ -418,10 +456,11 @@ def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_s
         # from the averaged entry on the same 1m candle. OHLC data cannot prove that the
         # rebound happened after the lower fill levels were actually reached.
         if (not filled_this_bar) and high >= tp_price:
-            return 1, _net_return(avg_entry, tp_price, "long", _extract_total_cost_bps(params), turns=turns), tp_price
+            fill = _barrier_fill_price(float(row["open"]), tp_price, "long", "tp")
+            return 1, _net_return(avg_entry, fill, "long", _extract_total_cost_bps(params), turns=turns), fill
 
         if stop_out_price is not None and low <= float(stop_out_price):
-            sop = float(stop_out_price)
+            sop = _barrier_fill_price(float(row["open"]), float(stop_out_price), "long", "stop")
             return 0, _net_return(avg_entry, sop, "long", _extract_total_cost_bps(params), turns=turns), sop
 
     final_close = float(rows[-1]["close"])

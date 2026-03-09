@@ -26,6 +26,10 @@ BOT_TYPES_BYBIT = [
     "futures_combo",
 ]
 
+UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS = {"futures_combo"}
+MAX_FUNDING_STALENESS_SEC = 60 * 60
+MAX_OI_STALENESS_SEC = 3 * 60 * 60
+
 def _fmt_tf(tf_sec: int) -> str:
     if tf_sec % 86400 == 0:
         d = tf_sec // 86400
@@ -721,8 +725,9 @@ def _score(
     elif bot_type == "futures_combo":
         # No unconditional baseline: combo requires either elevated ATR or negative sentiment to be justified.
         # ATR normalizer 0.06: bonus reaches max at ~12% 1h ATR (extreme vol = hedge valuable).
-        rule = 0.7*_clamp(-sent, 0.0, 1.0) + 0.4*_clamp(atr_pct/0.06, 0.0, 2.0)
-        add_pos("effective_sentiment", sent, 0.7, "risk-off сентимент => комбо/хедж")
+        risk_off_sent = _clamp(-sent, 0.0, 1.0)
+        rule = 0.7*risk_off_sent + 0.4*_clamp(atr_pct/0.06, 0.0, 2.0)
+        add_pos("risk_off_sentiment", risk_off_sent, 0.7, "risk-off сентимент => комбо/хедж")
         add_pos("atr_pct", atr_pct, 0.4, "рост волатильности => хеджирование")
 
     raw = rule - 0.35 * cost_penalty  # was 0.70 — much softer penalty
@@ -765,6 +770,9 @@ def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
 
     result: dict[str, LogRegScaler] = {}
     for bt, bt_rows in data.items():
+        if bt in UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS:
+            result[bt] = LogRegScaler(fitted=False)
+            continue
         model = fit_logreg(bt_rows, min_samples=min_samples)
         if model.fitted:
             save_logreg_to_db(conn, BOT_CALIB_KEYS.get(bt, f"logreg_{bt}_v1"), model)
@@ -795,6 +803,9 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
     needs_refit: list[str] = []
 
     for bt, key in BOT_CALIB_KEYS.items():
+        if bt in UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS:
+            calibrators[bt] = LogRegScaler(fitted=False)
+            continue
         saved = load_logreg_from_db(conn, key)
         if saved and saved.fitted:
             if now - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
@@ -1011,7 +1022,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             # ── Funding rate + OI (futures only) ──
             fr_data  = db.get_latest_funding_rate(conn, sym) if venue == "linear" else None
+            if fr_data and (ts_now - int(fr_data.get("ts") or 0) > MAX_FUNDING_STALENESS_SEC):
+                fr_data = None
             oi_rows  = db.get_oi_series(conn, sym, limit=48)  if venue == "linear" else []
+            if oi_rows:
+                latest_oi_ts = int((oi_rows[0] or {}).get("ts") or 0)
+                if latest_oi_ts <= 0 or (ts_now - latest_oi_ts > MAX_OI_STALENESS_SEC):
+                    oi_rows = []
             fr_sig   = funding_signal(fr_data["funding_rate"] if fr_data else None)
             oi_sig   = oi_trend(oi_rows)
             raw_direction = str((f.get('_direction_agg', {}) or {}).get('direction') or 'neutral')
