@@ -826,12 +826,24 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     cur = conn.execute("DELETE FROM reco_outcomes WHERE ts < ?", (cutoff_14d,))
     deleted["reco_outcomes"] = cur.rowcount
 
-    # ohlcv: keep 30 days. Without pruning this grows at ~216K rows/day
-    # (30 symbols × 5 TFs × 1440 1m candles/day). INSERT OR REPLACE only
-    # refreshes the last ~220-420 candles — older rows accumulate indefinitely.
-    # 30d is far more than any indicator needs (max window: 420 candles ≈ 7h for 1m).
-    cutoff_30d = now_ts() - 30 * 86400
-    cur = conn.execute("DELETE FROM ohlcv WHERE ts < ?", (cutoff_30d,))
+    # ohlcv: prune by timeframe, not with one flat horizon.
+    # Recommender requires up to 80 daily candles for the 1d vote. A single 30d cutoff
+    # silently kills the 1d branch after the system has been running for a month, because
+    # tf=86400 can never accumulate enough history again. Keep short TFs compact, but
+    # retain enough slow-TF history for the actual inference contract.
+    now = now_ts()
+    cutoff_ohlcv_1m = now - 30 * 86400
+    cutoff_ohlcv_15_30m = now - 90 * 86400
+    cutoff_ohlcv_1h_4h = now - 180 * 86400
+    cutoff_ohlcv_1d = now - 400 * 86400
+    cur = conn.execute(
+        """DELETE FROM ohlcv
+           WHERE (tf_sec = 60 AND ts < ?)
+              OR (tf_sec IN (900, 1800) AND ts < ?)
+              OR (tf_sec IN (3600, 14400) AND ts < ?)
+              OR (tf_sec >= 86400 AND ts < ?)""",
+        (cutoff_ohlcv_1m, cutoff_ohlcv_15_30m, cutoff_ohlcv_1h_4h, cutoff_ohlcv_1d),
+    )
     deleted["ohlcv"] = cur.rowcount
 
     # ticker_snap: keep 2 days (only latest snapshot is used at inference time)

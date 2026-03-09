@@ -64,8 +64,9 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
         risk_state = "neutral"
 
     # ── Dynamic confidence ───────────────────────────────────────────────────
-    # Based on agreement between symbols — low variance = high confidence
-    n = max(1, len(atr_pcts))
+    # Confidence must reflect BOTH agreement and sample size / coverage. With one symbol
+    # there is no cross-sectional confirmation, so high confidence would be pseudo-statistical.
+    effective_n = max(1, min(len(atr_pcts) or len(features_by_symbol), len(trend) or len(features_by_symbol), len(features_by_symbol)))
 
     def _cv(vals: list[float]) -> float:
         """Coefficient of variation (std/mean). 0 = perfect agreement."""
@@ -77,16 +78,15 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
         variance = sum((x - mean) ** 2 for x in vals) / len(vals)
         return (variance ** 0.5) / mean
 
-    cv_atr   = _cv(atr_pcts)   # 0 = all symbols same vol tier
-    cv_trend = _cv(trend)       # 0 = all symbols same trend strength
+    cv_atr = _cv(atr_pcts)       # 0 = all symbols same vol tier
+    cv_trend = _cv(trend)        # 0 = all symbols same trend strength
 
-    # Agreement score: 1.0 = perfect, 0.0 = complete disagreement
+    # Agreement score: 1.0 = perfect, 0.0 = complete disagreement.
     agreement = max(0.0, 1.0 - 0.5 * cv_atr - 0.5 * min(cv_trend, 1.0))
-
-    # Sample size bonus: more symbols → more reliable
-    sample_bonus = min(0.10, (n - 1) * 0.005)
-
-    confidence = round(min(0.95, max(0.20, 0.45 + 0.40 * agreement + sample_bonus)), 3)
+    sample_factor = max(0.0, min(1.0, (effective_n - 1) / 5.0))
+    raw_conf = 0.25 + 0.40 * agreement + 0.20 * sample_factor
+    cap = 0.40 if effective_n <= 1 else (0.52 if effective_n == 2 else (0.64 if effective_n == 3 else (0.75 if effective_n == 4 else 0.85)))
+    confidence = round(min(cap, max(0.20, raw_conf)), 3)
 
     return {
         "vol_state": vol_state,
@@ -101,6 +101,7 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
             "agreement": round(agreement, 3),
             "cv_atr": round(cv_atr, 3),
             "cv_trend": round(cv_trend, 3),
-            "n_symbols": n,
+            "n_symbols": len(features_by_symbol),
+            "n_effective": effective_n,
         },
     }

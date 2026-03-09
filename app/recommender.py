@@ -650,10 +650,23 @@ def _score(
         add_neg("atr_pct", atr_pct, -0.7, "волатильность повышает риск ликвидации")
         add_pos("effective_sentiment", sent, 0.2, "сентимент учитывается")
     elif bot_type == "dca_bot":
-        # ATR normalizer 0.12: DCA is more tolerant of volatility (spot accumulation)
-        rule = 0.4 + 0.5*_clamp(0.5 + sent, 0.0, 1.0) - 0.7*_clamp(atr_pct/0.12, 0.0, 2.0)
+        # ATR normalizer 0.12: DCA is more tolerant of volatility (spot accumulation),
+        # but it still must respect strong multi-TF bearish context.
+        dir_info = f.get("_direction_agg", {}) if hasattr(f, "get") else {}
+        dir_state = str(dir_info.get("direction") or "neutral")
+        dir_conf = dir_info.get("direction_confidence_calibrated")
+        if dir_conf is None:
+            dir_conf = dir_info.get("direction_confidence")
+        dir_conf = float(dir_conf if dir_conf is not None else 0.5)
+        dir_coherence = float(dir_info.get("coherence") or 0.5)
+        short_pressure = 0.0
+        if dir_state == "short":
+            short_pressure = _clamp((dir_conf - 0.50) / 0.50, 0.0, 1.0) * _clamp((dir_coherence - 0.45) / 0.35, 0.0, 1.0)
+        rule = 0.4 + 0.5*_clamp(0.5 + sent, 0.0, 1.0) - 0.7*_clamp(atr_pct/0.12, 0.0, 2.0) - 0.85*short_pressure
         add_pos("effective_sentiment", sent, 0.5, "нейтральный/позитивный сентимент поддерживает DCA")
         add_neg("atr_pct", atr_pct, -0.7, "высокая волатильность повышает риск просадки")
+        if short_pressure > 0:
+            add_neg("short_pressure", short_pressure, -0.85, "сильный multi-TF bearish context конфликтует с long-only DCA")
     elif bot_type == "futures_martingale":
         # Add directional coherence bonus: martingale profits only when direction is clear
         dir_info = f.get("_direction_agg", {}) if hasattr(f, "get") else {}
@@ -1052,8 +1065,22 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if bot_type == "futures_martingale" and (atr_pct > 0.05 or sent_agg.get("flags", {}).get("panic") or (sent_agg.get("regime") == "risk_off" and sent_agg.get("strength", 0.0) >= 0.35) or effective_sent < -0.45 or dir_conf < 0.65):
                 code = "DIR_CONF_TOO_LOW" if dir_conf < 0.65 else "MARTINGALE_BLOCKED"
                 feasibility_blocks.append({"code": code, "msg": f"atr_pct={atr_pct:.4f}, sentiment6h={effective_sent:.2f}, dir_conf={dir_conf:.2f} => запрет"})
-            if bot_type == "dca_bot" and (sent_agg.get("flags", {}).get("panic") or effective_sent < -0.70):
-                feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={effective_sent:.2f} panic => запрет"})
+            if bot_type == "dca_bot":
+                if sent_agg.get("flags", {}).get("panic") or effective_sent < -0.70:
+                    feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={effective_sent:.2f} panic => запрет"})
+                _dca_dir = f.get("_direction_agg", {}) if hasattr(f, "get") else {}
+                _dca_dir_state = str(_dca_dir.get("direction") or "neutral")
+                _dca_dir_conf = _dca_dir.get("direction_confidence_calibrated")
+                if _dca_dir_conf is None:
+                    _dca_dir_conf = _dca_dir.get("direction_confidence")
+                _dca_dir_conf = float(_dca_dir_conf if _dca_dir_conf is not None else 0.5)
+                _dca_coh = float(_dca_dir.get("coherence") or 0.5)
+                _dca_trendiness = float(_dca_dir.get("trendiness") or 0.0)
+                if _dca_dir_state == "short" and _dca_dir_conf >= 0.68 and (_dca_coh >= 0.55 or _dca_trendiness >= 0.60):
+                    feasibility_blocks.append({
+                        "code": "DCA_BLOCKED_STRONG_BEARISH_CONTEXT",
+                        "msg": f"direction=short dir_conf={_dca_dir_conf:.2f} coherence={_dca_coh:.2f} trendiness={_dca_trendiness:.2f} => long-only DCA blocked",
+                    })
 
             # ── Risk gate — uses cached risk_status (computed once per cycle) ──
             risk_blocks = gate_candidate(conn, venue, sym, limits, cached_status=_cached_risk_status)

@@ -26,6 +26,26 @@ def _get_close_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | No
     return float(r["close"]) if r else None
 
 
+def _get_first_tradeable_candle_after(conn, venue: str, symbol: str, ts: int) -> tuple[int, float] | None:
+    """Return the first 1m candle strictly after the signal reference candle.
+
+    Recommendation features are computed on the last fully closed candle whose timestamp is
+    stored as features_ref_ts (bar start time). Entering at that same candle close is mildly
+    look-ahead/optimistic because the signal itself already used that bar's full OHLC. The
+    earliest tradeable point from 1m OHLC data is therefore the NEXT candle open.
+    """
+    cur = conn.execute(
+        """SELECT ts, open FROM ohlcv
+           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts>?
+           ORDER BY ts ASC LIMIT 1""",
+        (venue, symbol, ts),
+    )
+    r = cur.fetchone()
+    if not r:
+        return None
+    return int(r["ts"]), float(r["open"])
+
+
 def _get_price_range_in_window(conn, venue: str, symbol: str, ts_start: int, ts_end: int) -> tuple[float, float] | None:
     cur = conn.execute(
         """SELECT MIN(low) as lo, MAX(high) as hi FROM ohlcv
@@ -408,23 +428,18 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             (rec_id,),
         )
         rec_row = cur_rec.fetchone()
-        entry_ts = int(rec_row["features_ref_ts"]) if rec_row and rec_row["features_ref_ts"] is not None else ts0
+        signal_ref_ts = int(rec_row["features_ref_ts"]) if rec_row and rec_row["features_ref_ts"] is not None else ts0
+
+        tradeable = _get_first_tradeable_candle_after(conn, venue, symbol, signal_ref_ts)
+        if tradeable is None:
+            continue
+        entry_ts, entry = tradeable
 
         effective_horizon = BOT_HORIZONS.get(bot_type, horizon_sec)
         if db.now_ts() < entry_ts + effective_horizon:
             continue
         ts_exit = entry_ts + effective_horizon
 
-        entry = None
-        trade_plan = ((params or {}).get("trade_plan") or {}) if isinstance(params, dict) else {}
-        ref_price = trade_plan.get("reference_price")
-        try:
-            if ref_price is not None and float(ref_price) > 0:
-                entry = float(ref_price)
-        except Exception:
-            entry = None
-        if entry is None:
-            entry = _get_close_at_or_after(conn, venue, symbol, entry_ts)
         if entry is None or entry == 0:
             continue
         price_ret: float
