@@ -598,19 +598,34 @@ def _params(
 
     return {"investment_risk_per_trade": risk_per_trade, "cost_model": cost_model}
 
-def _expected_rr(bot_type: str, f: dict[str, Any]) -> float:
+def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | None = None) -> float:
     atr_pct_1m = float(f.get("atr_pct") or 0.0)
     atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
     atr_pct = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
+
     if bot_type in ("spot_grid","futures_grid"):
-        return float(_clamp(1.2 - 8*atr_pct, 0.6, 2.0))
-    if bot_type == "dca_bot":
-        return float(_clamp(1.3 - 6*atr_pct, 0.7, 2.2))
-    if bot_type == "futures_martingale":
-        return float(_clamp(1.1 - 10*atr_pct, 0.5, 1.6))
-    if bot_type == "futures_combo":
+        base_rr = float(_clamp(1.2 - 8*atr_pct, 0.6, 2.0))
+    elif bot_type == "dca_bot":
+        base_rr = float(_clamp(1.3 - 6*atr_pct, 0.7, 2.2))
+    elif bot_type == "futures_martingale":
+        base_rr = float(_clamp(1.1 - 10*atr_pct, 0.5, 1.6))
+    elif bot_type == "futures_combo":
         return 1.0
-    return 1.0
+    else:
+        return 1.0
+
+    cost_bps = float((cost_model or {}).get("total_cost_bps") or 0.0)
+    if cost_bps <= 0:
+        return base_rr
+
+    # RR is a UI-facing heuristic, not a backtest metric, but it should still react to
+    # execution economics. Penalise RR when costs consume a meaningful share of the
+    # underlying move scale (ATR proxy) instead of showing a cost-blind optimistic ratio.
+    move_scale = max(atr_pct, 0.002)
+    cost_share_of_move = (cost_bps / 10_000.0) / move_scale
+    rr_mult = 1.0 - _clamp(cost_share_of_move * 0.60, 0.0, 0.65)
+    lower_floor = 0.35 if bot_type == "futures_martingale" else 0.45
+    return float(_clamp(base_rr * rr_mult, lower_floor, 2.2))
 
 def _score(
     bot_type: str,
@@ -1001,6 +1016,17 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 next_funding_ts=(fr_data["next_funding_ts"] if fr_data else None),
                 ts_now=ts_now,
             )
+
+            # Compute calibrated direction confidence once and reuse it everywhere
+            # in this cycle (gates, feature snapshot, stored reasons, UI details).
+            # Using raw confidence in one branch and calibrated confidence elsewhere
+            # creates contradictory allow/block decisions for the same signal.
+            _dir_agg_raw = dict(f.get("_direction_agg", {}))
+            _xdir_pre = _raw_direction_confidence(_dir_agg_raw)
+            _dir_conf_pre = dir_calibrator.predict(_xdir_pre) if dir_calibrator.fitted else _xdir_pre
+            _dir_agg_cal = dict(_dir_agg_raw)
+            _dir_agg_cal["direction_confidence_calibrated"] = _dir_conf_pre
+
             # Combine OI trend with price direction for final signal
             if oi_sig["trend"] == "growing":
                 dir_agg_tmp = f.get("_direction_agg", {})
@@ -1072,12 +1098,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     "msg": "нет ни глобального, ни per-symbol sentiment data — long-only DCA нельзя публиковать на скрытом bullish default",
                 })
             # Use multi-TF trendiness for gate (same source as _score uses)
-            _dir_agg_gate = f.get("_direction_agg") or {}
+            _dir_agg_gate = _dir_agg_cal
             _multitf_trendiness = float(_dir_agg_gate.get("trendiness") or 0.0)
             if bot_type in ("spot_grid","futures_grid") and _multitf_trendiness > 0.60:
                 feasibility_blocks.append({"code":"TREND_TOO_STRONG", "msg": f"multi_tf_trendiness={_multitf_trendiness:.2f} слишком сильный тренд для grid"})
-            dir_tmp = f.get("_direction_agg", {})
-            dir_conf = float(dir_tmp.get("direction_confidence", 0.5))
+            dir_conf = float(_dir_agg_gate.get("direction_confidence_calibrated") or _dir_agg_gate.get("direction_confidence") or 0.5)
 
             # If symbol is highly correlated to BTC, direction is less independent
             beta_info = f.get("_btc_beta", {})
@@ -1091,7 +1116,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if bot_type == "dca_bot":
                 if sent_agg.get("flags", {}).get("panic") or effective_sent < -0.70:
                     feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={effective_sent:.2f} panic => запрет"})
-                _dca_dir = f.get("_direction_agg", {}) if hasattr(f, "get") else {}
+                _dca_dir = _dir_agg_cal if hasattr(f, "get") else {}
                 _dca_dir_state = str(_dca_dir.get("direction") or "neutral")
                 _dca_dir_conf = _dca_dir.get("direction_confidence_calibrated")
                 if _dca_dir_conf is None:
@@ -1130,11 +1155,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # value — matching what was stored in reasons_json during training.
             # (Previously dir_conf_cal was computed after extract_features, causing
             # a train/inference skew: model trained on calibrated conf, inferred on raw.)
-            _dtmp_pre = dict(f.get("_direction_agg", {}))
-            _xdir_pre = _raw_direction_confidence(_dtmp_pre)
-            _dir_conf_pre = dir_calibrator.predict(_xdir_pre) if dir_calibrator.fitted else _xdir_pre
-            _dir_agg_for_cal = dict(_dtmp_pre)
-            _dir_agg_for_cal["direction_confidence_calibrated"] = _dir_conf_pre
+            _dir_agg_for_cal = dict(_dir_agg_cal)
             feature_snapshot = _build_feature_snapshot(
                 score=score,
                 atr_pct=atr_pct,
@@ -1222,7 +1243,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 # a naked short. Make that loss of executable expressiveness visible.
                 conf = float(_clamp(conf * 0.90, 0.0, 1.0))
 
-            expected_rr = _expected_rr(bot_type, f)
+            expected_rr = _expected_rr(bot_type, f, cost_model=cost_model)
             account_mode, margin_mode = _mode(venue, direction)
 
             blocks = list(feasibility_blocks)  # risk_blocks already included via feasibility_blocks.extend()

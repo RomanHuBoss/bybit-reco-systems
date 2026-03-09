@@ -251,29 +251,36 @@ def _simulate_martingale_outcome(
                 break
 
         avg_entry = sum(fills) / len(fills)
-        if tp_price_hint is not None and entry > 0:
-            tp_pct = abs(tp_price_hint - entry) / entry
+
+        # If trade_plan published explicit absolute TP/SL levels, outcome labelling must
+        # respect those same absolute levels. Re-expressing them as percentages from the
+        # original entry and then rebuilding prices from avg_entry silently moves the stop
+        # farther away after averaging, which overstates martingale survivability.
+        if tp_price_hint is not None:
+            tp_price = float(tp_price_hint)
+            tp_pct = abs(tp_price - avg_entry) / avg_entry if avg_entry > 0 else max(cost_floor * 1.5, 0.0035)
         else:
             tp_pct = max(cost_floor * 1.5, 0.0035)
-        if sl_price_hint is not None and entry > 0:
-            sl_pct = abs(sl_price_hint - entry) / entry
+            tp_price = avg_entry * (1.0 + tp_pct) if direction == "long" else avg_entry * (1.0 - tp_pct)
+
+        if sl_price_hint is not None:
+            stop_price = float(sl_price_hint)
+            sl_pct = abs(stop_price - avg_entry) / avg_entry if avg_entry > 0 else max(cost_floor * 2.0, 0.007)
         elif kill_abs is not None and avg_entry > 0:
             sl_pct = max(cost_floor * 2.0, abs(kill_abs) / avg_entry)
+            stop_price = avg_entry * (1.0 - sl_pct) if direction == "long" else avg_entry * (1.0 + sl_pct)
         else:
             sl_pct = max(tp_pct * 2.0, cost_floor * 2.0, 0.007)
+            stop_price = avg_entry * (1.0 - sl_pct) if direction == "long" else avg_entry * (1.0 + sl_pct)
 
         turns = max(1.0, len(fills))
         if direction == "long":
-            tp_price = avg_entry * (1.0 + tp_pct)
-            stop_price = avg_entry * (1.0 - sl_pct)
             # Conservative intrabar rule: a fresh martingale fill and TP exit from the
             # averaged entry cannot be proven from OHLC alone. Allow stop/kill-switch on
             # the same bar, but require TP to happen on a later candle.
             hit_tp = (not filled_this_bar) and high >= tp_price
             hit_stop = low <= stop_price
         else:
-            tp_price = avg_entry * (1.0 - tp_pct)
-            stop_price = avg_entry * (1.0 + sl_pct)
             hit_tp = (not filled_this_bar) and low <= tp_price
             hit_stop = high >= stop_price
 

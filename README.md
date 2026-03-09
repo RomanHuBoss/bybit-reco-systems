@@ -1,4 +1,4 @@
-# Bybit Recommender — finished audited build
+# Bybit Recommender — post-audit patched build
 
 Сервис собирает market data Bybit, считает multi-timeframe признаки, строит рекомендации по типам ботов Bybit и сохраняет полный audit trail в SQLite.
 
@@ -23,6 +23,7 @@
 - вычищены секреты из поставляемого `.env`.
 
 ## Ограничения дизайна
+- проект прошёл forensic-ревизию и содержит post-audit исправления, но это не exchange-grade execution simulator и не формальная гарантия качества статистики;
 - это recommendation/evaluation engine, а не полноценный exchange-grade execution simulator;
 - `futures_combo` остаётся эвристическим режимом и блокируется на публикации;
 - grid/DCA outcomes остаются упрощёнными path approximations;

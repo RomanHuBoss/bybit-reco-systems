@@ -192,8 +192,8 @@ def api_recommendations(
         if snapshot_ts is not None:
             cur = conn.execute(
                 """SELECT COUNT(*) AS c FROM recommendations
-                   WHERE ts=? AND (? IS NULL OR venue=?) AND status='recommended'""",
-                (snapshot_ts, venue, venue),
+                   WHERE ts=? AND (? IS NULL OR venue=?) AND status='recommended' AND confidence >= ?""",
+                (snapshot_ts, venue, venue, float(min_conf)),
             )
             no_trade = int(cur.fetchone()["c"]) == 0
 
