@@ -399,8 +399,10 @@ def _build_trade_plan(
         ]
         if venue == "linear" and int(params.get("leverage") or 1) > 1:
             ks = plan["levels"].get("kill_switch") or {}
+            _span_note = params.get("range_span_pct_total")
+            _span_str = f"{float(_span_note):.2f}" if _span_note is not None else "n/a"
             plan["notes"] += (
-                f" Для futures_grid с leverage={int(params.get('leverage') or 1)} и span≈{span_pct:.2f}% проверьте, что liquidation price лежит за пределами kill_switch "
+                f" Для futures_grid с leverage={int(params.get('leverage') or 1)} и span≈{_span_str}% проверьте, что liquidation price лежит за пределами kill_switch "
                 f"[{ks.get('lower')}, {ks.get('upper')}]."
             )
 
