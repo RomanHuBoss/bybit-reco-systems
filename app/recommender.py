@@ -149,20 +149,25 @@ def _estimate_cost_model(
             nfts_out = nfts if nfts > 0 else None
         expected_funding_bps = directional_funding_bps_8h * expected_funding_events
 
-    total_cost_bps = max(0.0, fee_bps_round_trip + spread_bps_used + slippage_bps + expected_funding_bps)
+    execution_cost_bps = max(0.0, fee_bps_round_trip + spread_bps_used + slippage_bps)
+    net_cost_bps = execution_cost_bps + expected_funding_bps
 
     return {
         "spread_bps": spread_bps_used,
         "spread_missing": spread_missing,
         "fee_bps_round_trip": fee_bps_round_trip,
         "slippage_bps": float(slippage_bps),
+        "execution_cost_bps": float(execution_cost_bps),
         "funding_rate": fr,
         "direction": direction,
         "directional_funding_bps_8h": float(directional_funding_bps_8h),
         "next_funding_ts": int(nfts_out) if nfts_out else (int(next_funding_ts) if next_funding_ts else None),
         "expected_funding_events": int(expected_funding_events),
         "expected_funding_bps": float(expected_funding_bps),
-        "total_cost_bps": float(total_cost_bps),
+        # Canonical cost floor for scoring / RR / labels must reflect unavoidable
+        # execution friction only. Funding carry stays explicit in net_cost_bps.
+        "total_cost_bps": float(execution_cost_bps),
+        "net_cost_bps": float(net_cost_bps),
         "horizon_sec": int(horizon_sec),
     }
 
@@ -223,7 +228,7 @@ def _build_feature_snapshot(
         dir_conf = direction_agg.get("direction_confidence")
     spread_bps = cost_model.get("spread_bps")
     if spread_bps is None:
-        spread_bps = cost_model.get("total_cost_bps")
+        spread_bps = cost_model.get("execution_cost_bps") or cost_model.get("total_cost_bps")
     return {
         "range_score": _clamp(1.0 - trendiness, 0.0, 1.0),
         "trend_strength": _clamp(trendiness, 0.0, 1.0),
@@ -261,8 +266,9 @@ def _build_trade_plan(
     atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
     atr_pct_4h = float(f.get("_atr_pct_4h") or 0.0)
     atr_pct_slow = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
+    atr_source = "1h" if atr_pct_1h > 0 else "1m"
 
-    atr_abs_1h = (price * atr_pct_slow) if (price is not None and atr_pct_slow > 0) else None
+    atr_abs_used = (price * atr_pct_slow) if (price is not None and atr_pct_slow > 0) else None
     atr_abs_15m = (price * atr_pct_15m) if (price is not None and atr_pct_15m > 0) else None
     atr_abs_4h = (price * atr_pct_4h) if (price is not None and atr_pct_4h > 0) else None
 
@@ -307,7 +313,8 @@ def _build_trade_plan(
             "atr_pct_1h": atr_pct_1h if atr_pct_1h > 0 else None,
             "atr_pct_4h": atr_pct_4h if atr_pct_4h > 0 else None,
             "atr_pct_used": atr_pct_slow,
-            "atr_abs_used": _round_price(atr_abs_1h, decimals=10) if atr_abs_1h is not None else None,
+            "atr_abs_used": _round_price(atr_abs_used, decimals=10) if atr_abs_used is not None else None,
+            "atr_source": atr_source,
         },
         "regime": {
             "name": regime,
@@ -321,24 +328,24 @@ def _build_trade_plan(
         "cost_model": dict(cost_model or {}),
         "levels": {},
         "close_conditions": [],
-        "notes": "Ориентиры уровней (TP/SL/диапазон) масштабируются по ATR старшего ТФ (предпочтительно 1h). Это подсказка для запуска/контроля бота, а не обещание результата.",
+        "notes": "Ориентиры уровней (TP/SL/диапазон) масштабируются по ATR старшего ТФ (предпочтительно 1h, fallback = 1m). Это подсказка для запуска/контроля бота, а не обещание результата.",
     }
 
     # ── Martingale: TP/SL ladder (directional reference) ──
     if bot_type in ("futures_martingale",):
-        if price is not None and atr_abs_1h is not None and atr_abs_1h > 0 and direction in ("long", "short"):
+        if price is not None and atr_abs_used is not None and atr_abs_used > 0 and direction in ("long", "short"):
             sgn = 1.0 if direction == "long" else -1.0
-            sl = price - sgn * (1.0 * atr_abs_1h)
-            tp1 = price + sgn * (0.9 * atr_abs_1h)
-            tp2 = price + sgn * (1.6 * atr_abs_1h)
-            tp3 = price + sgn * (2.3 * atr_abs_1h)
-            trail = atr_abs_15m if (atr_abs_15m is not None and atr_abs_15m > 0) else (0.5 * atr_abs_1h)
+            sl = price - sgn * (1.0 * atr_abs_used)
+            tp1 = price + sgn * (0.9 * atr_abs_used)
+            tp2 = price + sgn * (1.6 * atr_abs_used)
+            tp3 = price + sgn * (2.3 * atr_abs_used)
+            trail = atr_abs_15m if (atr_abs_15m is not None and atr_abs_15m > 0) else (0.5 * atr_abs_used)
             plan["levels"] = {
                 "stop_loss": lvl("SL", sl),
                 "take_profit": [lvl("TP1", tp1), lvl("TP2", tp2), lvl("TP3", tp3)],
                 "trailing_stop": {"distance": _round_price(trail, decimals=10), "tf": "15m" if atr_abs_15m else "1h"},
                 "risk_kill_switch": {
-                    "max_adverse_move": _round_price(2.5 * atr_abs_1h, decimals=10),
+                    "max_adverse_move": _round_price(2.5 * atr_abs_used, decimals=10),
                     "comment": "Если цена ушла против позиции сильнее ~2.5 ATR(1h), лучше принудительно остановить/закрыть бота.",
                 },
             }
@@ -355,13 +362,13 @@ def _build_trade_plan(
     elif bot_type in ("spot_grid", "futures_grid"):
         lower = params.get("price_range_lower")
         upper = params.get("price_range_upper")
-        ks_pad = (0.6 * atr_abs_1h) if (atr_abs_1h is not None and atr_abs_1h > 0) else None
+        ks_pad = (0.6 * atr_abs_used) if (atr_abs_used is not None and atr_abs_used > 0) else None
         lower_ks = (float(lower) - ks_pad) if (lower is not None and ks_pad is not None) else None
         upper_ks = (float(upper) + ks_pad) if (upper is not None and ks_pad is not None) else None
 
         step_pct = params.get("grid_spacing_pct")
         step_abs = (price * float(step_pct) / 100.0) if (price is not None and step_pct is not None) else None
-        tp_leg_abs = (0.7 * step_abs) if step_abs is not None else (0.25 * atr_abs_1h if atr_abs_1h else None)
+        tp_leg_abs = (0.7 * step_abs) if step_abs is not None else (0.25 * atr_abs_used if atr_abs_used else None)
 
         plan["levels"] = {
             "range": {
@@ -397,7 +404,7 @@ def _build_trade_plan(
         max_orders = int(params.get("max_orders") or 0)
         step_abs = (price * step_pct / 100.0) if (price is not None and step_pct > 0) else None
 
-        tp_from_avg_abs = (0.8 * atr_abs_1h) if (atr_abs_1h is not None and atr_abs_1h > 0) else None
+        tp_from_avg_abs = (0.8 * atr_abs_used) if (atr_abs_used is not None and atr_abs_used > 0) else None
         stop_out_abs = ((max_orders + 1) * step_abs) if (step_abs is not None and max_orders > 0) else None
         stop_out_price = (price - stop_out_abs) if (price is not None and stop_out_abs is not None) else None
 
@@ -428,7 +435,8 @@ def _build_trade_plan(
     elif bot_type == "futures_combo":
         plan["levels"] = {
             "comment": "Для hedge/комбо ключевой ориентир — волатильность и риск-режим. TP/SL зависит от двух ног стратегии; используйте ATR(1h) как масштаб для контрольных уровней.",
-            "atr_abs_used": _round_price(atr_abs_1h, decimals=10) if atr_abs_1h is not None else None,
+            "atr_abs_used": _round_price(atr_abs_used, decimals=10) if atr_abs_used is not None else None,
+            "atr_source": atr_source,
         }
         plan["close_conditions"] = [
             "Истечение expected_horizon.max_hours или нормализация волатильности/сентимента.",
@@ -508,7 +516,7 @@ def _params(
         risk_per_trade *= 0.7
 
     if bot_type in ("spot_grid", "futures_grid"):
-        total_cost_bps = float(cost_model.get("total_cost_bps") or 0.0)
+        total_cost_bps = float(cost_model.get("execution_cost_bps") or cost_model.get("total_cost_bps") or 0.0)
 
         base_step_pct = atr_pct * 100.0 * 0.6
         # Grid leg capture is only a fraction of the configured spacing (see trade_plan /
@@ -630,7 +638,7 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
     else:
         return 1.0
 
-    cost_bps = float((cost_model or {}).get("total_cost_bps") or 0.0)
+    cost_bps = float((cost_model or {}).get("execution_cost_bps") or (cost_model or {}).get("total_cost_bps") or 0.0)
     if cost_bps <= 0:
         return base_rr
 
@@ -667,7 +675,7 @@ def _score(
     spread = cost_model.get("spread_bps", f.get("spread_bps"))
     spread = float(spread) if spread is not None else 8.0
 
-    cost_bps = float(cost_model.get("total_cost_bps") or (spread + taker_fee_bps))
+    cost_bps = float(cost_model.get("execution_cost_bps") or cost_model.get("total_cost_bps") or (spread + taker_fee_bps))
     # Use a softer but economically consistent penalty based on the full expected round-trip cost,
     # including slippage/funding when available. This avoids optimistic scores on expensive setups.
     cost_penalty = _clamp(cost_bps / 60.0, 0.0, 1.0)
@@ -740,7 +748,7 @@ def _score(
         "summary": "Рекомендация в терминах Bybit Trading Bot (Scenario B). Направление определяется голосованием индикаторов на 15m/30m/1h/4h/1d. Сентимент — multi-horizon EWMA (1h/6h/1d/7d) с консолидацией risk_on/off/neutral. Уверенность калибруется на фактических outcome-метках только там, где метка отражает механику стратегии; для futures_combo confidence intentionally remains heuristic because the project does not model full two-leg PnL.",
         "top_positive_factors": sorted(pos, key=lambda x: abs(x["weight"]), reverse=True)[:5],
         "top_negative_factors": sorted(neg, key=lambda x: abs(x["weight"]), reverse=True)[:5],
-        "cost_model": {**cost_model, "spread_bps": spread, "taker_fee_bps": taker_fee_bps, "total_cost_bps": cost_bps},
+        "cost_model": {**cost_model, "spread_bps": spread, "taker_fee_bps": taker_fee_bps, "execution_cost_bps": cost_bps, "total_cost_bps": cost_bps},
         "effective_sentiment": sent,
     }
     return score, conf0, reasons
@@ -753,6 +761,63 @@ def _score(
 # an interval-derived freshness window.
 _prev_recommended: dict[tuple, dict[str, int]] = {}
 PERSISTENCE_BOTS = {"futures_martingale", "dca_bot"}  # bots that need 2-cycle confirmation
+PERSISTENCE_STATE_APP_KEY = "reco_persistence_gate_v1"
+
+
+def _load_prev_recommended(conn) -> dict[tuple, dict[str, int]]:
+    raw = db.get_app_config_json(conn, PERSISTENCE_STATE_APP_KEY, default={}) or {}
+    out: dict[tuple, dict[str, int]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, state in raw.items():
+        if not isinstance(key, str) or not isinstance(state, dict):
+            continue
+        parts = key.split("|")
+        if len(parts) != 4:
+            continue
+        venue, sym, bot_type, direction = parts
+        try:
+            out[(venue, sym, bot_type, direction)] = {"ts": int(state.get("ts", 0) or 0), "count": int(state.get("count", 0) or 0)}
+        except Exception:
+            continue
+    return out
+
+
+def _save_prev_recommended(conn, state: dict[tuple, dict[str, int]], fresh_gap: int) -> None:
+    now = int(time.time())
+    payload: dict[str, dict[str, int]] = {}
+    ttl = max(int(fresh_gap) * 3, 600)
+    for key, meta in (state or {}).items():
+        if not isinstance(key, tuple) or len(key) != 4 or not isinstance(meta, dict):
+            continue
+        ts = int(meta.get("ts", 0) or 0)
+        count = int(meta.get("count", 0) or 0)
+        if ts <= 0 or count <= 0 or now - ts > ttl:
+            continue
+        payload["|".join(str(x) for x in key)] = {"ts": ts, "count": count}
+    db.set_app_config_json(conn, PERSISTENCE_STATE_APP_KEY, payload)
+
+
+def _advance_persistence_gate(venue: str, sym: str, bot_type: str, direction: str, now_ts: int, fresh_gap: int) -> int:
+    global _prev_recommended
+    pkey = (venue, sym, bot_type, direction)
+    state = _prev_recommended.get(pkey) or {"ts": 0, "count": 0}
+    if now_ts - int(state.get("ts", 0)) <= fresh_gap:
+        state = {"ts": now_ts, "count": int(state.get("count", 0)) + 1}
+    else:
+        state = {"ts": now_ts, "count": 1}
+    _prev_recommended[pkey] = state
+    for other_dir in ("long", "short", "neutral", "hedge"):
+        other_key = (venue, sym, bot_type, other_dir)
+        if other_key != pkey:
+            _prev_recommended.pop(other_key, None)
+    return int(state.get("count", 0))
+
+
+def _reset_persistence_gate(venue: str, sym: str, bot_type: str) -> None:
+    global _prev_recommended
+    for other_dir in ("long", "short", "neutral", "hedge"):
+        _prev_recommended.pop((venue, sym, bot_type, other_dir), None)
 
 
 def _fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
@@ -875,6 +940,9 @@ def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
 
 
 def run_recommender_once(conn, settings) -> dict[str, Any]:
+    global _prev_recommended
+    _fresh_gap = max(45, int(settings.reco_interval_sec * 2.5))
+    _prev_recommended = _load_prev_recommended(conn)
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
     # Use 6h EWMA as the primary numeric sentiment input for scoring
     global_sent = float(sent_agg.get("ewma", {}).get("6h", 0.0))
@@ -1169,10 +1237,12 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             risk_blocks = gate_candidate(conn, venue, sym, limits, cached_status=_cached_risk_status)
             feasibility_blocks.extend(risk_blocks)
 
+            f_for_score = dict(f)
+            f_for_score["_direction_agg"] = dict(_dir_agg_cal)
             score, conf0, reasons = _score(
                 bot_type,
                 venue,
-                f,
+                f_for_score,
                 taker_fee_bps=taker_fee_bps,
                 global_sent=effective_sent,
                 cost_model=cost_model,
@@ -1298,29 +1368,6 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     "msg": "futures_combo remains research-only until a real two-leg PnL/execution model exists",
                 }]
 
-            # Persistence gate for directional bots: require 2 consecutive cycles
-            # for the SAME signal signature. This avoids confirming a fresh short with a stale long.
-            if status == "recommended" and bot_type in PERSISTENCE_BOTS:
-                _pkey = (venue, sym, bot_type, direction)
-                _now_ts = int(time.time())
-                _fresh_gap = max(45, int(settings.reco_interval_sec * 2.5))
-                _state = _prev_recommended.get(_pkey) or {"ts": 0, "count": 0}
-                if _now_ts - int(_state.get("ts", 0)) <= _fresh_gap:
-                    _state = {"ts": _now_ts, "count": int(_state.get("count", 0)) + 1}
-                else:
-                    _state = {"ts": _now_ts, "count": 1}
-                _prev_recommended[_pkey] = _state
-                # remove stale opposite-direction state for same symbol/bot
-                for _other_dir in ("long", "short", "neutral", "hedge"):
-                    _other_key = (venue, sym, bot_type, _other_dir)
-                    if _other_key != _pkey:
-                        _prev_recommended.pop(_other_key, None)
-                if int(_state.get("count", 0)) < 2:
-                    status = "suppressed"
-            elif status != "recommended":
-                for _other_dir in ("long", "short", "neutral", "hedge"):
-                    _prev_recommended.pop((venue, sym, bot_type, _other_dir), None)
-
             risk_score = float(_clamp(atr_pct/0.10, 0.0, 1.0))
 
             params = _params(
@@ -1330,8 +1377,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 global_sent=effective_sent,
                 direction=direction,
                 taker_fee_bps=taker_fee_bps,
-                direction_bias=str(f.get("_direction_agg", {}).get("bias", "neutral")),
-                direction_bias_strength=float((f.get("_direction_agg", {}).get("strength", {}) or {}).get("all", 0.0) if isinstance(f.get("_direction_agg", {}).get("strength"), dict) else float(f.get("_direction_agg", {}).get("strength", 0.0))),
+                direction_bias=str(_dir_agg_cal.get("bias", "neutral")),
+                direction_bias_strength=float((_dir_agg_cal.get("strength", {}) or {}).get("all", 0.0) if isinstance(_dir_agg_cal.get("strength"), dict) else float(_dir_agg_cal.get("strength", 0.0))),
                 atr_pct_for_grid=f.get("_atr_pct_1h"),
                 cost_model=cost_model,
             )
@@ -1370,11 +1417,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "global_weight": float(1.0 - _sym_weight),
                 "n_points": int(_sym_n),
             }
-            # Calibrate direction confidence separately (if model fitted)
-            dtmp = dict(f.get("_direction_agg", {}))  # copy — don't mutate f in-place across bot_type loop
-            xdir = _raw_direction_confidence(dtmp)
-            dir_conf_cal = dir_calibrator.predict(xdir) if dir_calibrator.fitted else xdir
-            dtmp["direction_confidence_calibrated"] = dir_conf_cal
+            # Reuse the already calibrated direction aggregate built before the bot loop.
+            dtmp = dict(_dir_agg_cal)
             dtmp["direction_confidence_model"] = {"type":"platt_scaling","fitted": dir_calibrator.fitted, "a": getattr(dir_calibrator,"a",None), "b": getattr(dir_calibrator,"b",None)}
             reasons2["direction_agg"] = dtmp
             reasons2["execution_constraints"] = {
@@ -1452,6 +1496,32 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 # Only suppress 'recommended' recs — preserve 'blocked'/'no_trade' for audit
                 if r["status"] == "recommended":
                     r["status"] = "suppressed"
+
+        # Apply persistence gate only to FINAL published recommendations.
+        # This avoids confirming a bot that was internally recommended but then
+        # suppressed by the cross-bot best-per-symbol selector.
+        for r in recs:
+            if r.get("bot_type") not in PERSISTENCE_BOTS:
+                continue
+            if r.get("status") == "recommended":
+                count = _advance_persistence_gate(
+                    str(r.get("venue") or ""),
+                    str(r.get("symbol") or ""),
+                    str(r.get("bot_type") or ""),
+                    str(r.get("direction") or "neutral"),
+                    ts_now,
+                    _fresh_gap,
+                )
+                if count < 2:
+                    r["status"] = "suppressed"
+            else:
+                _reset_persistence_gate(
+                    str(r.get("venue") or ""),
+                    str(r.get("symbol") or ""),
+                    str(r.get("bot_type") or ""),
+                )
+
+        _save_prev_recommended(conn, _prev_recommended, _fresh_gap)
 
         for r in recs:
             st = str(r.get("status") or "")

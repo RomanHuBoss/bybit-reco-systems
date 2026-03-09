@@ -135,11 +135,12 @@ def _extract_total_cost_bps(params: dict | None, fallback: float = 15.0) -> floa
     if not params:
         return float(fallback)
     for block in (params.get("cost_model") or {}, (params.get("trade_plan") or {}).get("cost_model") or {}):
-        if block.get("total_cost_bps") is not None:
-            try:
-                return float(block.get("total_cost_bps"))
-            except Exception:
-                pass
+        for key in ("execution_cost_bps", "total_cost_bps", "net_cost_bps"):
+            if block.get(key) is not None:
+                try:
+                    return float(block.get(key))
+                except Exception:
+                    pass
     return float(fallback)
 
 
@@ -324,10 +325,9 @@ def _simulate_martingale_outcome(
             # Treat such a stale level as invalid and rebuild the stop from avg_entry.
             if avg_entry > 0 and ((direction == "long" and hinted_stop < avg_entry) or (direction == "short" and hinted_stop > avg_entry)):
                 stop_price = hinted_stop
-                sl_pct = abs(stop_price - avg_entry) / avg_entry if avg_entry > 0 else max(cost_floor * 2.0, 0.007)
-        if stop_price is None and kill_abs is not None and avg_entry > 0:
-            sl_pct = max(cost_floor * 2.0, abs(kill_abs) / avg_entry)
-            stop_price = avg_entry * (1.0 - sl_pct) if direction == "long" else avg_entry * (1.0 + sl_pct)
+        if stop_price is None and kill_abs is not None and entry > 0:
+            kill_abs = abs(float(kill_abs))
+            stop_price = entry - kill_abs if direction == "long" else entry + kill_abs
         if stop_price is None:
             sl_pct = max(tp_pct * 2.0, cost_floor * 2.0, 0.007)
             stop_price = avg_entry * (1.0 - sl_pct) if direction == "long" else avg_entry * (1.0 + sl_pct)

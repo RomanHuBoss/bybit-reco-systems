@@ -35,6 +35,25 @@ def init_db(conn: sqlite3.Connection) -> None:
 def now_ts() -> int:
     return int(time.time())
 
+
+def set_app_config_json(conn: sqlite3.Connection, key: str, value: Any) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO app_config(key, value_json, updated_ts) VALUES(?,?,?)",
+        (str(key), json.dumps(value, ensure_ascii=False), now_ts()),
+    )
+    conn.commit()
+
+
+def get_app_config_json(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
+    cur = conn.execute("SELECT value_json FROM app_config WHERE key=?", (str(key),))
+    row = cur.fetchone()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value_json"])
+    except Exception:
+        return default
+
 def upsert_ohlcv(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
     conn.executemany(
         """INSERT OR REPLACE INTO ohlcv(venue,symbol,tf_sec,ts,open,high,low,close,volume)
