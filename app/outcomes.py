@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from . import db
+import logging
+
+logger = logging.getLogger(__name__)
 
 BOT_HORIZONS: dict[str, int] = {
     "spot_grid": 6 * 3600,
@@ -138,12 +141,13 @@ def _extract_cost_components(params: dict | None, fallback_execution_bps: float 
                             execution_bps = float(block.get(key))
                             break
                         except Exception:
-                            pass
+                            logger.debug("cost block parse error", exc_info=True)
+
             if funding_bps is None and block.get("expected_funding_bps") is not None:
                 try:
                     funding_bps = float(block.get("expected_funding_bps"))
                 except Exception:
-                    pass
+                    logger.debug("funding block parse error", exc_info=True)
     return float(execution_bps if execution_bps is not None else fallback_execution_bps), float(funding_bps or 0.0)
 
 

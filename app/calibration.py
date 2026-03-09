@@ -66,6 +66,9 @@ def fit_platt(
     if len(xs) < min_samples:
         return PlattScaler(fitted=False)
 
+    if not ys:
+        return PlattScaler(fitted=False)
+
     # Guard: near-homogeneous labels make Platt scaling numerically valid but
     # practically meaningless. The optimizer drives the intercept to extremes,
     # collapsing calibrated probabilities toward 0 or 1 regardless of x.

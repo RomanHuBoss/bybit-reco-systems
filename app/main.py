@@ -25,7 +25,9 @@ from .recommender import run_recommender_once
 from .risk import get_risk_limits, compute_risk_status, gate_candidate
 from .security import is_authorized
 from . import db
+import logging
 
+logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 
@@ -515,7 +517,7 @@ def _reco_thread():
             try:
                 db.expire_stale_recommendations(conn)
             except Exception:
-                pass
+                logger.debug("expire_stale_recommendations error", exc_info=True)
 
         if time.time() - _last_prune >= PRUNE_INTERVAL:
             with closing(_get_conn()) as conn:
@@ -524,7 +526,7 @@ def _reco_thread():
                     db.log_decision(conn, "DB_PRUNE", None, None, deleted)
                     _last_prune = time.time()
                 except Exception:
-                    pass
+                    logger.debug("prune_old_data error", exc_info=True)
 
         if settings.telegram_token:
             try:
@@ -538,7 +540,7 @@ def _reco_thread():
                     err_count = int(err_cur.fetchone()["c"])
                 check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
             except Exception:
-                pass
+                logger.debug("telegram alert error", exc_info=True)
 
         time.sleep(settings.reco_interval_sec)
 

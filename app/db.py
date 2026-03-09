@@ -6,6 +6,9 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Iterable
+import logging
+
+logger = logging.getLogger(__name__)
 
 MIGRATION_INIT_SQL = Path(__file__).resolve().parent.parent / "migrations" / "init.sql"
 
@@ -19,7 +22,7 @@ def connect(db_path: str) -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout=60000;")
         conn.execute("PRAGMA foreign_keys=ON;")
     except Exception:
-        pass
+        logger.debug("PRAGMA setup error", exc_info=True)
     return conn
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -427,7 +430,7 @@ def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, tt
         try:
             conn.rollback()
         except Exception:
-            pass
+            logger.debug("rollback error", exc_info=True)
         return False
 
 
@@ -802,7 +805,7 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
             d = json.loads(row["details_json"])
             disabled_syms.add((str(d.get("venue") or ""), str(d.get("symbol") or "")))
         except Exception:
-            pass
+            logger.debug("health: error_counts parse error", exc_info=True)
 
     # stale skip counts per symbol in last hour
     cur = conn.execute(
@@ -819,7 +822,7 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
             key = (venue, sym)
             stale_counts[key] = stale_counts.get(key, 0) + 1
         except Exception:
-            pass
+            logger.debug("health: disabled_syms parse error", exc_info=True)
 
     for venue, symbols in [("spot", symbols_spot), ("linear", symbols_linear)]:
         for sym in symbols:
