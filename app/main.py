@@ -20,7 +20,7 @@ from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import compute_outcomes_once
 from .recommender import run_recommender_once
-from .risk import get_risk_limits, compute_risk_status
+from .risk import get_risk_limits, compute_risk_status, gate_candidate
 from .security import is_authorized
 from . import db
 
@@ -114,6 +114,16 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
     if rec.get("bot_type") == "futures_combo":
         raise HTTPException(status_code=409, detail="futures_combo is intentionally non-executable until a real two-leg PnL/execution model exists")
+
+    # Re-check current risk limits at execution time.
+    # Recommendation-time gates are only a snapshot; by the moment an operator clicks
+    # execute, active bot count / symbol cap / cooldown / day DD may already have changed.
+    limits = get_risk_limits(conn, settings.risk_limits)
+    exec_blocks = gate_candidate(conn, rec["venue"], rec["symbol"], limits)
+    if exec_blocks:
+        db.log_decision(conn, "EXECUTION_BLOCKED", rec_id, operator, {"blocks": exec_blocks})
+        codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in exec_blocks)
+        raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
 
     bot = {
         "bot_id": f"B-{int(time.time())}-{rec['symbol']}-{secrets.token_hex(4)}",

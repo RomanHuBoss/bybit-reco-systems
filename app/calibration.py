@@ -251,9 +251,11 @@ class LogRegScaler:
         """Return calibrated P(success) given a feature vector."""
         if not self.fitted:
             return 0.5
-        if len(self.coef) == 0 or len(features) < len(self.coef):
+        if len(self.coef) == 0:
             return 0.5
-        # Pad with zeros if incoming vector is shorter (old saved model, new features)
+        # Pad with zeros if incoming vector is shorter (schema drift / older snapshots).
+        # The previous guard returned 0.5 here, which silently collapsed confidence instead
+        # of preserving the existing coefficients on the shared prefix.
         fv = list(features) + [0.0] * max(0, len(self.coef) - len(features))
         z = self.intercept + sum(c * f for c, f in zip(self.coef, fv))
         p_raw = 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, z))))

@@ -189,6 +189,7 @@ def _simulate_martingale_outcome(
         high = float(row["high"])
         low = float(row["low"])
         close = float(row["close"])
+        filled_this_bar = False
 
         while next_step_idx <= max_steps:
             if direction == "long":
@@ -200,6 +201,7 @@ def _simulate_martingale_outcome(
             if triggered:
                 fills.append(ladder_px)
                 next_step_idx += 1
+                filled_this_bar = True
             else:
                 break
 
@@ -219,12 +221,15 @@ def _simulate_martingale_outcome(
         if direction == "long":
             tp_price = avg_entry * (1.0 + tp_pct)
             stop_price = avg_entry * (1.0 - sl_pct)
-            hit_tp = high >= tp_price
+            # Conservative intrabar rule: a fresh martingale fill and TP exit from the
+            # averaged entry cannot be proven from OHLC alone. Allow stop/kill-switch on
+            # the same bar, but require TP to happen on a later candle.
+            hit_tp = (not filled_this_bar) and high >= tp_price
             hit_stop = low <= stop_price
         else:
             tp_price = avg_entry * (1.0 - tp_pct)
             stop_price = avg_entry * (1.0 + sl_pct)
-            hit_tp = low <= tp_price
+            hit_tp = (not filled_this_bar) and low <= tp_price
             hit_stop = high >= stop_price
 
         if hit_tp and hit_stop:
@@ -253,11 +258,42 @@ def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_
         return 0, -cost_floor
 
     min_p, max_p = price_window
-    realized_span_pct = max(0.0, (max_p - min_p) / entry)
     step_pct = max(grid_spacing_pct / 100.0, cost_floor * 1.25, 0.002)
-    completed_steps = int(realized_span_pct / step_pct) if step_pct > 0 else 0
-    if grid_levels > 0:
-        completed_steps = min(completed_steps, grid_levels)
+    step_abs = entry * step_pct
+
+    # Conservative path approximation.
+    # A grid should earn on back-and-forth traversals between levels, not on a single
+    # monotonic drift that merely spans many levels. The previous implementation used
+    # only (max - min) inside the window and therefore could mark a one-way move inside
+    # the range as successful despite zero round-trips.
+    completed_steps = 0
+    if step_abs > 0 and lo is not None and hi is not None and float(hi) > float(lo):
+        rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
+        closes = [float(r["close"]) for r in rows] if rows else []
+        if closes:
+            lower = float(lo)
+            upper = float(hi)
+            n_levels = max(1, int(round((upper - lower) / step_abs)))
+
+            def _level_idx(px: float) -> int:
+                rel = (px - lower) / max(step_abs, 1e-12)
+                return max(0, min(n_levels, int(rel)))
+
+            idx_prev = _level_idx(closes[0])
+            up_moves = 0
+            down_moves = 0
+            for px in closes[1:]:
+                idx_now = _level_idx(px)
+                delta = idx_now - idx_prev
+                if delta > 0:
+                    up_moves += delta
+                elif delta < 0:
+                    down_moves += -delta
+                idx_prev = idx_now
+
+            completed_steps = min(up_moves, down_moves)
+            if grid_levels > 0:
+                completed_steps = min(completed_steps, grid_levels)
 
     # Approximate per-leg grid capture using the same ~0.6-0.8 step heuristic as trade_plan.
     gross_leg_pct = max(step_pct * 0.70, cost_floor * 1.10)
@@ -304,12 +340,14 @@ def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_s
         low = float(row["low"])
         high = float(row["high"])
         close = float(row["close"])
+        filled_this_bar = False
 
         while next_order_idx <= max_orders:
             ladder_px = entry * (1.0 - step_pct * next_order_idx)
             if low <= ladder_px:
                 fills.append(ladder_px)
                 next_order_idx += 1
+                filled_this_bar = True
             else:
                 break
 
@@ -317,7 +355,10 @@ def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_s
         turns = max(1.0, 0.5 + 0.5 * len(fills))
         tp_pct = max(cost_floor * 1.25, (float(tp_abs) / avg_entry) if tp_abs else 0.003)
         tp_price = avg_entry * (1.0 + tp_pct)
-        if high >= tp_price:
+        # Conservative intrabar sequencing: do not allow a fresh DCA fill and TP exit
+        # from the averaged entry on the same 1m candle. OHLC data cannot prove that the
+        # rebound happened after the lower fill levels were actually reached.
+        if (not filled_this_bar) and high >= tp_price:
             return 1, _net_return(avg_entry, tp_price, "long", _extract_total_cost_bps(params), turns=turns), close
 
         if stop_out_price is not None and low <= float(stop_out_price):
@@ -390,7 +431,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 continue
             exitp = ep
             price_ret = (exitp - entry) / entry
-            success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, ts0, ts_exit, params)
+            success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, params)
 
         elif bot_type in DIRECTIONAL_BOTS:
             ep = _get_close_at_or_after(conn, venue, symbol, ts_exit)
@@ -405,7 +446,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
                 atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.0)
                 cost_floor = total_cost_bps / 10_000
-                window = _get_price_range_in_window(conn, venue, symbol, ts0, ts_exit)
+                window = _get_price_range_in_window(conn, venue, symbol, entry_ts, ts_exit)
                 if window is None:
                     continue
                 min_p, max_p = window
@@ -415,14 +456,14 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 success = 1 if realized_move > atr_thresh else 0
 
             elif bot_type == "futures_martingale" and direction in ("long", "short"):
-                sim = _simulate_martingale_outcome(conn, venue, symbol, entry, direction, ts0, ts_exit, params, total_cost_bps)
+                sim = _simulate_martingale_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, params, total_cost_bps)
                 if sim is not None:
                     success, ret_proxy, exitp = sim
                     price_ret = (exitp - entry) / entry
                 else:
                     vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
                     atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.02)
-                    tp_sl = _tp_sl_outcome(conn, venue, symbol, entry, direction, ts0, ts_exit, atr_1h, total_cost_bps)
+                    tp_sl = _tp_sl_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, atr_1h, total_cost_bps)
                     if tp_sl is not None:
                         success, ret_proxy, exitp = tp_sl
                         price_ret = (exitp - entry) / entry
@@ -433,7 +474,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                         success = 1 if ret_proxy > cost_floor * 0.5 else 0
 
             elif bot_type == "dca_bot" and direction == "long":
-                dca = _simulate_dca_long_outcome(conn, venue, symbol, entry, ts0, ts_exit, params)
+                dca = _simulate_dca_long_outcome(conn, venue, symbol, entry, entry_ts, ts_exit, params)
                 if dca is not None:
                     success, ret_proxy, exitp = dca
                     price_ret = (exitp - entry) / entry
