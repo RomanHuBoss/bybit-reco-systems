@@ -15,12 +15,19 @@ GRID_BOTS = {"spot_grid", "futures_grid"}
 DIRECTIONAL_BOTS = {"dca_bot", "futures_martingale", "futures_combo"}
 
 
-def _get_close_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | None:
+def _get_close_at_or_before_close_ts(conn, venue: str, symbol: str, close_ts: int) -> float | None:
+    """Return the latest completed 1m close available at a target close timestamp.
+
+    OHLCV.ts stores candle *start* time. If the modeled entry/exit moment is a
+    candle close timestamp, selecting ts>=close_ts would overshoot by one whole
+    minute. Using ts<close_ts returns the candle that had already fully closed by
+    that moment.
+    """
     cur = conn.execute(
         """SELECT close FROM ohlcv
-           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts>=?
-           ORDER BY ts ASC LIMIT 1""",
-        (venue, symbol, ts),
+           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts<?
+           ORDER BY ts DESC LIMIT 1""",
+        (venue, symbol, close_ts),
     )
     r = cur.fetchone()
     return float(r["close"]) if r else None
@@ -30,7 +37,7 @@ def _get_price_range_in_window(conn, venue: str, symbol: str, ts_start: int, ts_
     cur = conn.execute(
         """SELECT MIN(low) as lo, MAX(high) as hi FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=60
-           AND ts>=? AND ts<=?""",
+           AND ts>=? AND ts<?""",
         (venue, symbol, ts_start, ts_end),
     )
     r = cur.fetchone()
@@ -43,7 +50,7 @@ def _iter_1m_candles(conn, venue: str, symbol: str, ts_start: int, ts_end: int):
     cur = conn.execute(
         """SELECT ts, open, high, low, close FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=60
-           AND ts>=? AND ts<=?
+           AND ts>=? AND ts<?
            ORDER BY ts ASC""",
         (venue, symbol, ts_start, ts_end),
     )
@@ -376,7 +383,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         except Exception:
             entry = None
         if entry is None:
-            entry = _get_close_at_or_after(conn, venue, symbol, entry_ts)
+            entry = _get_close_at_or_before_close_ts(conn, venue, symbol, entry_ts)
         if entry is None or entry == 0:
             continue
         price_ret: float
@@ -385,15 +392,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         exitp: float
 
         if bot_type in GRID_BOTS:
-            ep = _get_close_at_or_after(conn, venue, symbol, ts_exit)
+            ep = _get_close_at_or_before_close_ts(conn, venue, symbol, ts_exit)
             if ep is None:
                 continue
             exitp = ep
             price_ret = (exitp - entry) / entry
-            success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, ts0, ts_exit, params)
+            success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, params)
 
         elif bot_type in DIRECTIONAL_BOTS:
-            ep = _get_close_at_or_after(conn, venue, symbol, ts_exit)
+            ep = _get_close_at_or_before_close_ts(conn, venue, symbol, ts_exit)
             if ep is None:
                 continue
             exitp = ep
@@ -405,7 +412,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
                 atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.0)
                 cost_floor = total_cost_bps / 10_000
-                window = _get_price_range_in_window(conn, venue, symbol, ts0, ts_exit)
+                window = _get_price_range_in_window(conn, venue, symbol, entry_ts, ts_exit)
                 if window is None:
                     continue
                 min_p, max_p = window
@@ -415,14 +422,14 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 success = 1 if realized_move > atr_thresh else 0
 
             elif bot_type == "futures_martingale" and direction in ("long", "short"):
-                sim = _simulate_martingale_outcome(conn, venue, symbol, entry, direction, ts0, ts_exit, params, total_cost_bps)
+                sim = _simulate_martingale_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, params, total_cost_bps)
                 if sim is not None:
                     success, ret_proxy, exitp = sim
                     price_ret = (exitp - entry) / entry
                 else:
                     vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
                     atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.02)
-                    tp_sl = _tp_sl_outcome(conn, venue, symbol, entry, direction, ts0, ts_exit, atr_1h, total_cost_bps)
+                    tp_sl = _tp_sl_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, atr_1h, total_cost_bps)
                     if tp_sl is not None:
                         success, ret_proxy, exitp = tp_sl
                         price_ret = (exitp - entry) / entry
@@ -433,7 +440,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                         success = 1 if ret_proxy > cost_floor * 0.5 else 0
 
             elif bot_type == "dca_bot" and direction == "long":
-                dca = _simulate_dca_long_outcome(conn, venue, symbol, entry, ts0, ts_exit, params)
+                dca = _simulate_dca_long_outcome(conn, venue, symbol, entry, entry_ts, ts_exit, params)
                 if dca is not None:
                     success, ret_proxy, exitp = dca
                     price_ret = (exitp - entry) / entry

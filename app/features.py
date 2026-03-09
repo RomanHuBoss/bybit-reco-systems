@@ -24,6 +24,22 @@ def _sma(xs: list[float], n: int) -> float:
     n = max(1, min(n, len(xs)))
     return sum(xs[-n:]) / n
 
+def _infer_tf_sec(ohlcv_rows: list[dict[str, Any]] | list[Any]) -> int:
+    if len(ohlcv_rows) < 2:
+        return 60
+    diffs: list[int] = []
+    for i in range(1, min(len(ohlcv_rows), 12)):
+        try:
+            d = int(ohlcv_rows[-i]["ts"]) - int(ohlcv_rows[-i-1]["ts"])
+        except Exception:
+            continue
+        if d > 0:
+            diffs.append(int(d))
+    if not diffs:
+        return 60
+    diffs.sort()
+    return int(diffs[len(diffs) // 2])
+
 def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ticker: dict[str, Any] | None) -> dict[str, Any] | None:
     # expects rows ordered old->new with keys close/high/low/volume/ts
     if not ohlcv_rows or len(ohlcv_rows) < 30:
@@ -75,6 +91,10 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
             mid = (bid + ask) / 2
             spread_bps = (ask - bid) / mid * 1e4 if mid else None
 
+    ts_last_open = int(ohlcv_rows[-1]["ts"])
+    tf_sec_inferred = _infer_tf_sec(ohlcv_rows)
+    ts_last_close = ts_last_open + tf_sec_inferred
+
     return {
         "price": last,
         "rv": rv,
@@ -89,7 +109,12 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
         "spread_bps": float(spread_bps) if spread_bps is not None else None,
         "bid": bid,
         "ask": ask,
-        "ts_last": int(ohlcv_rows[-1]["ts"]),
+        # Contract: price is the last *close*, therefore ts_last must point to
+        # the close moment, not the candle open timestamp stored in OHLCV.ts.
+        "ts_last": ts_last_close,
+        "ts_last_open": ts_last_open,
+        "ts_close": ts_last_close,
+        "tf_sec_inferred": tf_sec_inferred,
     }
 
 

@@ -717,8 +717,10 @@ setInterval(refreshAll, 10000);
 
 const adminApiKeyEl = $("adminApiKey");
 if (adminApiKeyEl) {
-  adminApiKeyEl.value = localStorage.getItem("admin_api_key") || "";
+    const persistedAdminKey = sessionStorage.getItem("admin_api_key") || localStorage.getItem("admin_api_key") || "";
+  adminApiKeyEl.value = persistedAdminKey;
+  try { localStorage.removeItem("admin_api_key"); } catch (_) {}
   adminApiKeyEl.addEventListener("input", () => {
-    localStorage.setItem("admin_api_key", adminApiKeyEl.value || "");
+    sessionStorage.setItem("admin_api_key", adminApiKeyEl.value || "");
   });
 }
