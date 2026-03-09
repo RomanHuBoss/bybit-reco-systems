@@ -397,6 +397,12 @@ def _build_trade_plan(
             "Истечение expected_horizon.max_hours без возврата в диапазон/без набора прибыли.",
             "Рост trendiness/regime='trend' (по direction_agg) — сетку лучше остановить.",
         ]
+        if venue == "linear" and int(params.get("leverage") or 1) > 1:
+            ks = plan["levels"].get("kill_switch") or {}
+            plan["notes"] += (
+                f" Для futures_grid с leverage={int(params.get('leverage') or 1)} и span≈{span_pct:.2f}% проверьте, что liquidation price лежит за пределами kill_switch "
+                f"[{ks.get('lower')}, {ks.get('upper')}]."
+            )
 
     # ── DCA: steps + TP-from-avg + stop-out ──
     elif bot_type == "dca_bot":
@@ -470,7 +476,10 @@ def _direction(bot_type: str, agg: dict[str, Any]) -> str:
             # strong enough on its own; otherwise keep the signal explicitly neutral and let
             # the feasibility layer block publication.
             bias = str(agg.get("bias", "neutral"))
-            dir_conf = float(agg.get("direction_confidence") or 0.0)
+            _dc = agg.get("direction_confidence_calibrated")
+            if _dc is None:
+                _dc = agg.get("direction_confidence")
+            dir_conf = float(_dc or 0.0)
             coherence = float(agg.get("coherence") or 0.0)
             strength = (agg.get("strength") or {}).get("all", 0.0)
             strength = float(strength if strength is not None else 0.0)
@@ -560,6 +569,8 @@ def _params(
         grid_notes = "Levels/spacing рассчитываются по ATR% старшего ТФ (если доступно), с учётом cost-floor. Диапазон: price_range_lower/upper."
         if bot_type == "spot_grid" and direction == "neutral" and direction_bias == "short":
             grid_notes += " Bearish bias сохранён только как контекст: spot_grid не поддерживает naked short и поэтому публикуется лишь в neutral-режиме."
+        if venue == "linear" and leverage > 1:
+            grid_notes += f" Leverage={leverage} при полном span≈{span_pct:.2f}% повышает liquidation risk; перед запуском убедитесь, что ликвидационная цена остаётся за пределами kill_switch trade_plan."
 
         return {
             "bybit_category": "Spot Grid Bot" if bot_type == "spot_grid" else "Futures Grid Bot",

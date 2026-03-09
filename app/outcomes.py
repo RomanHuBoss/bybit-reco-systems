@@ -15,18 +15,23 @@ GRID_BOTS = {"spot_grid", "futures_grid"}
 DIRECTIONAL_BOTS = {"dca_bot", "futures_martingale", "futures_combo"}
 
 
-def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_horizon_sec: int) -> int:
+def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_horizon_sec: int) -> tuple[int, bool]:
     params = params or {}
     trade_plan = params.get("trade_plan") or {}
     expected_horizon = trade_plan.get("expected_horizon") or {}
     max_hours_raw = expected_horizon.get("max_hours")
+    builtin_horizon = BOT_HORIZONS.get(bot_type)
     if max_hours_raw is None:
-        return int(BOT_HORIZONS.get(bot_type, fallback_horizon_sec))
+        if builtin_horizon is not None:
+            return int(builtin_horizon), False
+        return int(fallback_horizon_sec), True
 
     try:
         max_hours = float(max_hours_raw)
     except Exception:
-        return int(BOT_HORIZONS.get(bot_type, fallback_horizon_sec))
+        if builtin_horizon is not None:
+            return int(builtin_horizon), False
+        return int(fallback_horizon_sec), True
 
     bounds = {
         "spot_grid": (6.0, 48.0),
@@ -36,7 +41,7 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
         "futures_combo": (2.0, 12.0),
     }
     lo, hi = bounds.get(bot_type, (0.5, 72.0))
-    return int(max(lo, min(hi, max_hours)) * 3600)
+    return int(max(lo, min(hi, max_hours)) * 3600), False
 
 
 def _is_supported_direction(bot_type: str, venue: str, direction: str) -> bool:
@@ -172,6 +177,15 @@ def _net_return(
     return gross - exec_cost_pct - fixed_cost_pct
 
 
+def _turns_from_entry_fills(n_fills: int) -> float:
+    """Approximate round-trip equivalents for N entry fills + one exit.
+
+    N staggered entries plus one final exit represent N + 1 one-way executions, i.e.
+    (N + 1) / 2 round trips in the same bps model used elsewhere in outcomes.
+    """
+    return max(1.0, 0.5 + 0.5 * int(max(1, n_fills)))
+
+
 def _barrier_fill_price(openp: float, barrier: float, direction: str, kind: str) -> float:
     """Conservative fill proxy for TP/SL barriers on 1m OHLC data.
 
@@ -207,8 +221,10 @@ def _tp_sl_outcome(
     fixed_cost_bps: float = 0.0,
 ) -> tuple[int, float, float] | None:
     cost_floor = total_cost_bps / 10_000
-    tp_pct = max(cost_floor * 1.5, 0.30 * atr_1h)
-    sl_pct = 2.0 * tp_pct
+    # Legacy fallback only: keep RR close to the published martingale trade plan
+    # (roughly 1 ATR stop vs ~0.9 ATR first TP), not the previously inverted 1:2 RR.
+    tp_pct = max(cost_floor * 1.5, 0.90 * atr_1h)
+    sl_pct = max(cost_floor * 1.5, 1.00 * atr_1h)
 
     if direction == "long":
         tp_price = entry * (1.0 + tp_pct)
@@ -342,10 +358,10 @@ def _simulate_martingale_outcome(
             kill_abs = abs(float(kill_abs))
             stop_price = entry - kill_abs if direction == "long" else entry + kill_abs
         if stop_price is None:
-            sl_pct = max(tp_pct * 2.0, cost_floor * 2.0, 0.007)
+            sl_pct = max(tp_pct * 1.10, cost_floor * 2.0, 0.007)
             stop_price = avg_entry * (1.0 - sl_pct) if direction == "long" else avg_entry * (1.0 + sl_pct)
 
-        turns = max(1.0, len(fills))
+        turns = _turns_from_entry_fills(len(fills))
         if direction == "long":
             # Conservative intrabar rule: a fresh martingale fill and TP exit from the
             # averaged entry cannot be proven from OHLC alone. Allow stop/kill-switch on
@@ -368,7 +384,7 @@ def _simulate_martingale_outcome(
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)
-    ret_proxy = _net_return(avg_entry, final_close, direction, total_cost_bps, turns=max(1.0, len(fills)), fixed_cost_bps=funding_cost_bps)
+    ret_proxy = _net_return(avg_entry, final_close, direction, total_cost_bps, turns=_turns_from_entry_fills(len(fills)), fixed_cost_bps=funding_cost_bps)
     return (1 if ret_proxy > max(cost_floor, 0.001) else 0), ret_proxy, final_close
 
 
@@ -442,7 +458,7 @@ def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_
             net_proxy -= max(cost_floor, abs(min(lo - min_p, 0.0)) / entry, abs(max(max_p - hi, 0.0)) / entry)
         if not in_range_at_exit:
             net_proxy -= abs((exitp - entry) / entry)
-        success = 1 if (in_range_at_exit and not range_breach and completed_steps >= 1 and net_proxy > 0) else 0
+        success = 1 if (completed_steps >= 1 and net_proxy > 0) else 0
         return success, net_proxy
 
     end_drift = abs((exitp - entry) / entry) if entry else 0.0
@@ -488,7 +504,7 @@ def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_s
                 break
 
         avg_entry = sum(fills) / len(fills)
-        turns = max(1.0, 0.5 + 0.5 * len(fills))
+        turns = _turns_from_entry_fills(len(fills))
         tp_pct = max(cost_floor * 1.25, (float(tp_abs) / avg_entry) if tp_abs else 0.003)
         tp_price = avg_entry * (1.0 + tp_pct)
         # Conservative intrabar sequencing: do not allow a fresh DCA fill and TP exit
@@ -504,7 +520,7 @@ def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_s
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)
-    ret_proxy = _net_return(avg_entry, final_close, "long", execution_cost_bps, turns=max(1.0, 0.5 + 0.5 * len(fills)), fixed_cost_bps=funding_cost_bps)
+    ret_proxy = _net_return(avg_entry, final_close, "long", execution_cost_bps, turns=_turns_from_entry_fills(len(fills)), fixed_cost_bps=funding_cost_bps)
     success = 1 if ret_proxy > 0 else 0
     return success, ret_proxy, final_close
 
@@ -554,7 +570,12 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             continue
         entry_ts, entry = tradeable
 
-        effective_horizon = _resolve_effective_horizon(bot_type, params, horizon_sec)
+        effective_horizon, used_fallback_horizon = _resolve_effective_horizon(bot_type, params, horizon_sec)
+        if used_fallback_horizon:
+            db.log_decision(conn, "OUTCOME_HORIZON_FALLBACK_USED", rec_id, None, {
+                "bot_type": bot_type,
+                "fallback_horizon_sec": effective_horizon,
+            })
         if db.now_ts() < entry_ts + effective_horizon:
             continue
         ts_exit = entry_ts + effective_horizon
@@ -603,21 +624,18 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
 
             elif bot_type == "futures_martingale" and direction in ("long", "short"):
                 sim = _simulate_martingale_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, params, total_cost_bps)
-                if sim is not None:
-                    success, ret_proxy, exitp = sim
-                    price_ret = (exitp - entry) / entry
-                else:
-                    vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
-                    atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.02)
-                    tp_sl = _tp_sl_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, atr_1h, total_cost_bps, fixed_cost_bps=funding_cost_bps)
-                    if tp_sl is not None:
-                        success, ret_proxy, exitp = tp_sl
-                        price_ret = (exitp - entry) / entry
-                    else:
-                        direction_ret = -price_ret if direction == "short" else price_ret
-                        ret_proxy = direction_ret - (total_cost_bps / 10_000) - (funding_cost_bps / 10_000)
-                        cost_floor = total_cost_bps / 10_000
-                        success = 1 if ret_proxy > cost_floor * 0.5 else 0
+                if sim is None:
+                    db.log_decision(conn, "OUTCOME_SKIP_NO_1M_PATH", rec_id, None, {
+                        "bot_type": bot_type,
+                        "venue": venue,
+                        "symbol": symbol,
+                        "direction": direction,
+                        "entry_ts": entry_ts,
+                        "ts_exit": ts_exit,
+                    })
+                    continue
+                success, ret_proxy, exitp = sim
+                price_ret = (exitp - entry) / entry
 
             elif bot_type == "dca_bot" and direction == "long":
                 dca = _simulate_dca_long_outcome(conn, venue, symbol, entry, entry_ts, ts_exit, params)

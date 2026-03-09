@@ -16,6 +16,9 @@
 - убран train/inference skew в calibration через явный `feature_snapshot`;
 - funding/cost model сделан direction-aware и event-aware (`next_funding_ts`);
 - outcome labeling для `futures_martingale` переведён на path-based simulation;
+- мартингейл outcome больше не пишет fallback-метки без 1m path;
+- grid success label теперь определяется по net profitability completed steps, а range breach учитывается штрафом, а не жёстким veto;
+- futures_grid notes теперь явно предупреждают о liquidation risk при leverage>1;
 - убран скрытый bullish/risk_on default при полном отсутствии sentiment data;
 - `futures_combo` перестал публиковаться как action-ready recommendation без two-leg PnL model;
 - добавлен execution lifecycle: `recommendation -> executed -> bot_instance -> trades -> stopped`;
@@ -49,6 +52,7 @@ API поднимется на `127.0.0.1:8000`.
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — пороги публикации;
 - `FUTURES_COLLECT_INTERVAL_SEC` — отдельный интервал обновления funding/open-interest;
 - `CALIB_MIN_SAMPLES=80` — минимум before calibration;
+- `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon только для неизвестных bot_type (legacy `OUTCOME_HORIZON_SEC` тоже принимается);
 - `ADMIN_API_KEY` — если задан, обязателен для mutating endpoints;
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.
 

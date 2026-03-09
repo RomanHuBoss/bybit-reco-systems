@@ -507,7 +507,7 @@ def _reco_thread():
         with closing(_get_conn()) as conn:
             try:
                 result = run_recommender_once(conn, settings)
-                compute_outcomes_once(conn, horizon_sec=settings.outcome_horizon_sec)
+                compute_outcomes_once(conn, horizon_sec=settings.outcome_horizon_fallback_sec)
             except Exception as e:
                 db.log_decision(conn, "RECO_ERROR", None, None, {"err": str(e)})
 

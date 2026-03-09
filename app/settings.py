@@ -17,7 +17,7 @@ def _env(key: str, default: str | None = None) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    outcome_horizon_sec: int
+    outcome_horizon_fallback_sec: int
     calib_min_samples: int
 
     db_path: str
@@ -63,7 +63,7 @@ def load_settings() -> Settings:
     master_key = os.getenv("MASTER_KEY", "") or None
     admin_api_key = os.getenv("ADMIN_API_KEY", "") or None
 
-    outcome_horizon_sec = int(_env("OUTCOME_HORIZON_SEC", "900"))
+    outcome_horizon_fallback_sec = int(os.getenv("OUTCOME_HORIZON_FALLBACK_SEC", os.getenv("OUTCOME_HORIZON_SEC", "900")))
     calib_min_samples = max(80, int(_env("CALIB_MIN_SAMPLES", "80")))
     require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1", "true", "yes", "y")
 
@@ -89,6 +89,6 @@ def load_settings() -> Settings:
         futures_collect_interval_sec=int(_env("FUTURES_COLLECT_INTERVAL_SEC", "900")),
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
-        outcome_horizon_sec=outcome_horizon_sec,
+        outcome_horizon_fallback_sec=outcome_horizon_fallback_sec,
         calib_min_samples=calib_min_samples,
     )
