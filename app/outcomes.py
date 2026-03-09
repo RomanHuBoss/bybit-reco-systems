@@ -15,6 +15,20 @@ GRID_BOTS = {"spot_grid", "futures_grid"}
 DIRECTIONAL_BOTS = {"dca_bot", "futures_martingale", "futures_combo"}
 
 
+def _is_supported_direction(bot_type: str, venue: str, direction: str) -> bool:
+    if bot_type == "spot_grid":
+        return direction in ("neutral", "long")
+    if bot_type == "futures_grid":
+        return direction in ("neutral", "long", "short")
+    if bot_type == "dca_bot":
+        return direction == "long"
+    if bot_type == "futures_martingale":
+        return direction in ("long", "short")
+    if bot_type == "futures_combo":
+        return direction == "hedge"
+    return True
+
+
 def _get_close_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | None:
     cur = conn.execute(
         """SELECT close FROM ohlcv
@@ -432,6 +446,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         symbol = r["symbol"]
         direction = r["direction"]
         ts0 = int(r["ts"])
+
+        if not _is_supported_direction(bot_type, venue, direction):
+            db.log_decision(conn, "OUTCOME_SKIP_UNSUPPORTED_DIRECTION", rec_id, None, {
+                "bot_type": bot_type,
+                "venue": venue,
+                "symbol": symbol,
+                "direction": direction,
+            })
+            continue
 
         params = _get_rec_params(conn, rec_id)
         cur_rec = conn.execute(

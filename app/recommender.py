@@ -439,13 +439,21 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 def _direction(bot_type: str, agg: dict[str, Any]) -> str:
-    if bot_type in ("spot_grid","futures_grid"):
-        return str(agg.get("direction","neutral"))
+    raw_direction = str(agg.get("direction", "neutral"))
+
+    if bot_type == "spot_grid":
+        # Spot Grid on Bybit cannot express a naked short view.
+        # Keep bearish context in direction_bias/reasons, but never publish an
+        # impossible executable direction for the spot venue.
+        return raw_direction if raw_direction in ("long", "neutral") else "neutral"
+
+    if bot_type == "futures_grid":
+        return raw_direction
+
     if bot_type == "futures_martingale":
-        d = str(agg.get("direction","neutral"))
-        if d == "neutral":
-            return str(agg.get("bias","neutral"))
-        return d
+        if raw_direction == "neutral":
+            return str(agg.get("bias", "neutral"))
+        return raw_direction
     if bot_type == "dca_bot":
         return "long"
     if bot_type == "futures_combo":
@@ -525,10 +533,15 @@ def _params(
         price_range_lower = p * (1.0 - lower_pct / 100.0) if p else None
         price_range_upper = p * (1.0 + upper_pct / 100.0) if p else None
 
+        grid_notes = "Levels/spacing рассчитываются по ATR% старшего ТФ (если доступно), с учётом cost-floor. Диапазон: price_range_lower/upper."
+        if bot_type == "spot_grid" and direction == "neutral" and direction_bias == "short":
+            grid_notes += " Bearish bias сохранён только как контекст: spot_grid не поддерживает naked short и поэтому публикуется лишь в neutral-режиме."
+
         return {
             "bybit_category": "Spot Grid Bot" if bot_type == "spot_grid" else "Futures Grid Bot",
-            "direction_mode": direction,  # neutral / long / short
-            "direction_bias": direction_bias,  # long / short
+            "direction_mode": direction,  # spot_grid: neutral/long; futures_grid: neutral/long/short
+            "supported_direction_modes": ["neutral", "long"] if bot_type == "spot_grid" else ["neutral", "long", "short"],
+            "direction_bias": direction_bias,  # contextual long / short bias from model
             "direction_bias_strength": float(_clamp(direction_bias_strength, 0.0, 1.0)),
             "atr_pct_used": atr_pct,
             "grid_spacing_pct": grid_spacing_pct,
@@ -542,7 +555,7 @@ def _params(
             "price_range_lower": price_range_lower,
             "price_range_upper": price_range_upper,
             "investment_risk_per_trade": risk_per_trade,
-            "notes": "Levels/spacing рассчитываются по ATR% старшего ТФ (если доступно), с учётом cost-floor. Диапазон: price_range_lower/upper.",
+            "notes": grid_notes,
         }
 
     if bot_type == "dca_bot":
@@ -975,7 +988,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             oi_rows  = db.get_oi_series(conn, sym, limit=48)  if venue == "linear" else []
             fr_sig   = funding_signal(fr_data["funding_rate"] if fr_data else None)
             oi_sig   = oi_trend(oi_rows)
+            raw_direction = str((f.get('_direction_agg', {}) or {}).get('direction') or 'neutral')
             direction = _direction(bot_type, f.get('_direction_agg', {}))
+            spot_short_neutralized = bool(bot_type == "spot_grid" and raw_direction == "short" and direction == "neutral")
             cost_model = _estimate_cost_model(
                 bot_type=bot_type,
                 venue=venue,
@@ -1202,6 +1217,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 conf = float(_clamp(conf * 0.88, 0.0, 1.0))
             if bot_type == "futures_combo":
                 conf = float(min(conf, 0.68))
+            if spot_short_neutralized:
+                # The model had bearish directional intent, but spot execution cannot express
+                # a naked short. Make that loss of executable expressiveness visible.
+                conf = float(_clamp(conf * 0.90, 0.0, 1.0))
 
             expected_rr = _expected_rr(bot_type, f)
             account_mode, margin_mode = _mode(venue, direction)
@@ -1303,6 +1322,15 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             dtmp["direction_confidence_calibrated"] = dir_conf_cal
             dtmp["direction_confidence_model"] = {"type":"platt_scaling","fitted": dir_calibrator.fitted, "a": getattr(dir_calibrator,"a",None), "b": getattr(dir_calibrator,"b",None)}
             reasons2["direction_agg"] = dtmp
+            reasons2["execution_constraints"] = {
+                "spot_short_neutralized": bool(spot_short_neutralized),
+                "raw_direction": raw_direction,
+                "executable_direction": direction,
+                "note": (
+                    "spot_grid не может выразить naked short на spot; bearish bias сохранён только как контекст"
+                    if spot_short_neutralized else None
+                ),
+            }
             # confidence_model reflects the calibrator ACTUALLY used (_cal_source set above).
             # Previously used _bot_cal_info presence to fill fields, which gave wrong
             # fitted/a/b when bot_cal existed-but-unfitted and global was used instead.

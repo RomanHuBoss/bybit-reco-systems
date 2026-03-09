@@ -114,6 +114,8 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
     if rec.get("bot_type") == "futures_combo":
         raise HTTPException(status_code=409, detail="futures_combo is intentionally non-executable until a real two-leg PnL/execution model exists")
+    if rec.get("bot_type") == "spot_grid" and rec.get("direction") == "short":
+        raise HTTPException(status_code=409, detail="spot_grid short is not executable on spot; recommendation must be regenerated with a supported direction")
 
     # Re-check current risk limits at execution time.
     # Recommendation-time gates are only a snapshot; by the moment an operator clicks
