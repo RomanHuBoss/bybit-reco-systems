@@ -3,8 +3,8 @@ from __future__ import annotations
 from . import db
 
 BOT_HORIZONS: dict[str, int] = {
-    "spot_grid": 4 * 3600,
-    "futures_grid": 4 * 3600,
+    "spot_grid": 6 * 3600,
+    "futures_grid": 6 * 3600,
     "dca_bot": 24 * 3600,
     "futures_martingale": 1 * 3600,
     "futures_combo": 2 * 3600,
@@ -46,12 +46,23 @@ def _get_first_tradeable_candle_after(conn, venue: str, symbol: str, ts: int) ->
     return int(r["ts"]), float(r["open"])
 
 
-def _get_price_range_in_window(conn, venue: str, symbol: str, ts_start: int, ts_end: int) -> tuple[float, float] | None:
+def _get_open_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | None:
+    cur = conn.execute(
+        """SELECT open FROM ohlcv
+           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts>=?
+           ORDER BY ts ASC LIMIT 1""",
+        (venue, symbol, ts),
+    )
+    r = cur.fetchone()
+    return float(r["open"]) if r else None
+
+
+def _get_price_range_in_window(conn, venue: str, symbol: str, ts_start: int, ts_end_exclusive: int) -> tuple[float, float] | None:
     cur = conn.execute(
         """SELECT MIN(low) as lo, MAX(high) as hi FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=60
-           AND ts>=? AND ts<=?""",
-        (venue, symbol, ts_start, ts_end),
+           AND ts>=? AND ts<?""",
+        (venue, symbol, ts_start, ts_end_exclusive),
     )
     r = cur.fetchone()
     if not r or r["lo"] is None:
@@ -59,13 +70,13 @@ def _get_price_range_in_window(conn, venue: str, symbol: str, ts_start: int, ts_
     return float(r["lo"]), float(r["hi"])
 
 
-def _iter_1m_candles(conn, venue: str, symbol: str, ts_start: int, ts_end: int):
+def _iter_1m_candles(conn, venue: str, symbol: str, ts_start: int, ts_end_exclusive: int):
     cur = conn.execute(
         """SELECT ts, open, high, low, close FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=60
-           AND ts>=? AND ts<=?
+           AND ts>=? AND ts<?
            ORDER BY ts ASC""",
-        (venue, symbol, ts_start, ts_end),
+        (venue, symbol, ts_start, ts_end_exclusive),
     )
     return cur.fetchall()
 
@@ -448,7 +459,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         exitp: float
 
         if bot_type in GRID_BOTS:
-            ep = _get_close_at_or_after(conn, venue, symbol, ts_exit)
+            ep = _get_open_at_or_after(conn, venue, symbol, ts_exit)
             if ep is None:
                 continue
             exitp = ep
@@ -456,7 +467,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, params)
 
         elif bot_type in DIRECTIONAL_BOTS:
-            ep = _get_close_at_or_after(conn, venue, symbol, ts_exit)
+            ep = _get_open_at_or_after(conn, venue, symbol, ts_exit)
             if ep is None:
                 continue
             exitp = ep

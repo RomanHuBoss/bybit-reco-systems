@@ -1016,6 +1016,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 _sym_weight = 0.0
                 effective_sent = global_sent
 
+            global_sent_has_data = bool((sent_agg.get("data_quality") or {}).get("has_data"))
+            sentiment_has_any_data = bool(global_sent_has_data or sym_sent is not None)
+
             feasibility_blocks = []
 
             # ── Data completeness / liquidity gates ──
@@ -1048,6 +1051,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             if bot_type in ("spot_grid","futures_grid") and spread is not None and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
+            if bot_type == "dca_bot" and not sentiment_has_any_data:
+                feasibility_blocks.append({
+                    "code": "SENTIMENT_UNAVAILABLE",
+                    "msg": "нет ни глобального, ни per-symbol sentiment data — long-only DCA нельзя публиковать на скрытом bullish default",
+                })
             # Use multi-TF trendiness for gate (same source as _score uses)
             _dir_agg_gate = f.get("_direction_agg") or {}
             _multitf_trendiness = float(_dir_agg_gate.get("trendiness") or 0.0)
@@ -1281,6 +1289,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "value": float(sym_sent) if sym_sent is not None else None,
                 "effective": float(effective_sent),
                 "global": float(global_sent),
+                "global_has_data": bool(global_sent_has_data),
+                "any_data": bool(sentiment_has_any_data),
                 "blended": sym_sent is not None,
                 "symbol_weight": float(_sym_weight),
                 "global_weight": float(1.0 - _sym_weight),
