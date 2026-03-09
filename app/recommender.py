@@ -452,7 +452,18 @@ def _direction(bot_type: str, agg: dict[str, Any]) -> str:
 
     if bot_type == "futures_martingale":
         if raw_direction == "neutral":
-            return str(agg.get("bias", "neutral"))
+            # Neutral must not silently turn into an action-ready long/short on a weak hint.
+            # Only promote contextual bias when the underlying directional evidence is already
+            # strong enough on its own; otherwise keep the signal explicitly neutral and let
+            # the feasibility layer block publication.
+            bias = str(agg.get("bias", "neutral"))
+            dir_conf = float(agg.get("direction_confidence") or 0.0)
+            coherence = float(agg.get("coherence") or 0.0)
+            strength = (agg.get("strength") or {}).get("all", 0.0)
+            strength = float(strength if strength is not None else 0.0)
+            if bias in ("long", "short") and dir_conf >= 0.72 and coherence >= 0.55 and strength >= 0.18:
+                return bias
+            return "neutral"
         return raw_direction
     if bot_type == "dca_bot":
         return "long"
@@ -1061,6 +1072,12 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             sentiment_has_any_data = bool(global_sent_has_data or sym_sent is not None)
 
             feasibility_blocks = []
+
+            if bot_type == "futures_martingale" and direction not in ("long", "short"):
+                feasibility_blocks.append({
+                    "code": "MARTINGALE_DIRECTION_UNCLEAR",
+                    "msg": "multi-TF signal remains neutral; martingale cannot be published on a contextual bias fallback alone",
+                })
 
             # ── Data completeness / liquidity gates ──
             if turnover is None:

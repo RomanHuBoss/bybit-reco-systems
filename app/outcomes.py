@@ -168,18 +168,18 @@ def _tp_sl_outcome(
         close = float(row["close"])
         if direction == "long":
             if hi >= tp_price and lo <= sl_price:
-                return 0, _net_return(entry, sl_price, direction, total_cost_bps), close
+                return 0, _net_return(entry, sl_price, direction, total_cost_bps), sl_price
             if hi >= tp_price:
-                return 1, _net_return(entry, tp_price, direction, total_cost_bps), close
+                return 1, _net_return(entry, tp_price, direction, total_cost_bps), tp_price
             if lo <= sl_price:
-                return 0, _net_return(entry, sl_price, direction, total_cost_bps), close
+                return 0, _net_return(entry, sl_price, direction, total_cost_bps), sl_price
         else:
             if lo <= tp_price and hi >= sl_price:
-                return 0, _net_return(entry, sl_price, direction, total_cost_bps), close
+                return 0, _net_return(entry, sl_price, direction, total_cost_bps), sl_price
             if lo <= tp_price:
-                return 1, _net_return(entry, tp_price, direction, total_cost_bps), close
+                return 1, _net_return(entry, tp_price, direction, total_cost_bps), tp_price
             if hi >= sl_price:
-                return 0, _net_return(entry, sl_price, direction, total_cost_bps), close
+                return 0, _net_return(entry, sl_price, direction, total_cost_bps), sl_price
 
     final_close = float(rows[-1]["close"])
     ret_proxy = _net_return(entry, final_close, direction, total_cost_bps)
@@ -285,11 +285,11 @@ def _simulate_martingale_outcome(
             hit_stop = high >= stop_price
 
         if hit_tp and hit_stop:
-            return 0, _net_return(avg_entry, stop_price, direction, total_cost_bps, turns=turns), close
+            return 0, _net_return(avg_entry, stop_price, direction, total_cost_bps, turns=turns), stop_price
         if hit_tp:
-            return 1, _net_return(avg_entry, tp_price, direction, total_cost_bps, turns=turns), close
+            return 1, _net_return(avg_entry, tp_price, direction, total_cost_bps, turns=turns), tp_price
         if hit_stop:
-            return 0, _net_return(avg_entry, stop_price, direction, total_cost_bps, turns=turns), close
+            return 0, _net_return(avg_entry, stop_price, direction, total_cost_bps, turns=turns), stop_price
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)
@@ -418,11 +418,11 @@ def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_s
         # from the averaged entry on the same 1m candle. OHLC data cannot prove that the
         # rebound happened after the lower fill levels were actually reached.
         if (not filled_this_bar) and high >= tp_price:
-            return 1, _net_return(avg_entry, tp_price, "long", _extract_total_cost_bps(params), turns=turns), close
+            return 1, _net_return(avg_entry, tp_price, "long", _extract_total_cost_bps(params), turns=turns), tp_price
 
         if stop_out_price is not None and low <= float(stop_out_price):
             sop = float(stop_out_price)
-            return 0, _net_return(avg_entry, sop, "long", _extract_total_cost_bps(params), turns=turns), close
+            return 0, _net_return(avg_entry, sop, "long", _extract_total_cost_bps(params), turns=turns), sop
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)

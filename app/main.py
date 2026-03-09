@@ -93,6 +93,20 @@ def _require_admin_key(x_api_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
 
 
+def _is_supported_execution_direction(bot_type: str, venue: str, direction: str) -> bool:
+    if bot_type == "spot_grid":
+        return venue == "spot" and direction in ("neutral", "long")
+    if bot_type == "futures_grid":
+        return venue == "linear" and direction in ("neutral", "long", "short")
+    if bot_type == "dca_bot":
+        return venue == "spot" and direction == "long"
+    if bot_type == "futures_martingale":
+        return venue == "linear" and direction in ("long", "short")
+    if bot_type == "futures_combo":
+        return venue == "linear" and direction == "hedge"
+    return True
+
+
 def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) -> tuple[dict[str, Any], bool]:
     rec = db.get_recommendation_by_id(conn, rec_id)
     if not rec:
@@ -114,8 +128,8 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
     if rec.get("bot_type") == "futures_combo":
         raise HTTPException(status_code=409, detail="futures_combo is intentionally non-executable until a real two-leg PnL/execution model exists")
-    if rec.get("bot_type") == "spot_grid" and rec.get("direction") == "short":
-        raise HTTPException(status_code=409, detail="spot_grid short is not executable on spot; recommendation must be regenerated with a supported direction")
+    if not _is_supported_execution_direction(str(rec.get("bot_type") or ""), str(rec.get("venue") or ""), str(rec.get("direction") or "")):
+        raise HTTPException(status_code=409, detail="recommendation direction is not executable for this bot_type/venue")
 
     # Re-check current risk limits at execution time.
     # Recommendation-time gates are only a snapshot; by the moment an operator clicks

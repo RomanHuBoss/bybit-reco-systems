@@ -315,7 +315,7 @@ def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int,
         placeholders = ",".join("?" for _ in statuses)
         q += f" AND status IN ({placeholders})"
         params.extend(statuses)
-    q += " ORDER BY score DESC LIMIT ?"
+    q += " ORDER BY CASE status WHEN 'recommended' THEN 0 WHEN 'executed' THEN 1 WHEN 'ignored' THEN 2 WHEN 'blocked' THEN 3 WHEN 'no_trade' THEN 4 WHEN 'suppressed' THEN 5 ELSE 6 END, confidence DESC, score DESC, ts DESC LIMIT ?"
     params.append(top_n)
     cur = conn.execute(q, params)
     rows = []
