@@ -63,7 +63,7 @@ API поднимется на `127.0.0.1:8000`.
 
 ### Mutating (`X-API-Key`, если задан `ADMIN_API_KEY`)
 - `POST /api/v1/recommendations/{rec_id}/action` with `{"action":"executed|ignored","operator":"..."}`
-- `POST /api/v1/bots/{bot_id}/trades`
+- `POST /api/v1/bots/{bot_id}/trades` (`pnl` = gross realized PnL before fee, `fee` deducted separately to net)
 - `POST /api/v1/bots/{bot_id}/stop`
 - `POST /api/v1/risk/limits`
 - `POST /api/v1/sentiment`

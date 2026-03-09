@@ -76,8 +76,8 @@ class BotStopRequest(BaseModel):
 class BotTradeRequest(BaseModel):
     trade_id: str | None = None
     ts: int | None = None
-    pnl: float
-    fee: float = 0.0
+    pnl: float = Field(..., description="Gross realized PnL before fee; net PnL is computed as pnl - fee")
+    fee: float = Field(0.0, ge=0.0, description="Exchange fees for this trade; deducted from pnl to compute net")
     operator: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
     stop_bot: bool = False
@@ -292,9 +292,14 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
         bot = db.get_bot_instance(conn, bot_id)
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
+        if str(bot.get("status") or "") != "running":
+            raise HTTPException(status_code=409, detail=f"cannot record trade for bot status={bot.get('status')}")
 
         trade_id = req.trade_id or f"T-{int(time.time())}-{secrets.token_hex(4)}"
         ts = req.ts or int(time.time())
+        started_ts = int(bot.get("started_ts") or 0)
+        if started_ts > 0 and ts < started_ts:
+            raise HTTPException(status_code=409, detail="trade timestamp is earlier than bot start")
         trade = {
             "trade_id": trade_id,
             "bot_id": bot_id,

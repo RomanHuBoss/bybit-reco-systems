@@ -258,7 +258,11 @@ def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_
         return 0, -cost_floor
 
     min_p, max_p = price_window
-    step_pct = max(grid_spacing_pct / 100.0, cost_floor * 1.25, 0.002)
+    # Must match recommender-side economics: only ~70% of nominal spacing is usually
+    # monetised per completed grid cycle, so the spacing floor has to exceed costs after
+    # that haircut. Otherwise outcome labels become systematically too optimistic.
+    min_step_pct = max((cost_floor / 0.70) * 1.15, 0.002)
+    step_pct = max(grid_spacing_pct / 100.0, min_step_pct)
     step_abs = entry * step_pct
 
     # Conservative path approximation.
@@ -296,7 +300,10 @@ def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_
                 completed_steps = min(completed_steps, grid_levels)
 
     # Approximate per-leg grid capture using the same ~0.6-0.8 step heuristic as trade_plan.
-    gross_leg_pct = max(step_pct * 0.70, cost_floor * 1.10)
+    # Do not impose an optimistic minimum gross leg above the actual configured spacing:
+    # that would fabricate profitable labels on grids whose advertised step is still below
+    # economic break-even.
+    gross_leg_pct = step_pct * 0.70
     gross_proxy = completed_steps * gross_leg_pct
     net_proxy = gross_proxy - (max(1, completed_steps) * cost_floor)
 

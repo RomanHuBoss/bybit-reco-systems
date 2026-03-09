@@ -58,6 +58,27 @@ def _pct_dist(a: float | None, b: float | None) -> float | None:
 
 
 
+def _drop_open_candle(rows: list[dict[str, Any]] | list[Any], tf_sec: int, ts_now: int) -> list[Any]:
+    """Remove the latest still-open candle from newest-first OHLCV rows.
+
+    Collector runs more often than candle close boundaries, and Bybit kline payloads
+    can include the currently forming candle. Using it in features / direction creates
+    unstable recommendations and train-label mismatch. We therefore only score on the
+    last fully closed candle for every timeframe.
+    """
+    if not rows:
+        return rows
+    try:
+        newest_ts = int(rows[0]["ts"])
+    except Exception:
+        return rows
+    if newest_ts <= 0 or tf_sec <= 0:
+        return rows
+    if ts_now < newest_ts + tf_sec:
+        return rows[1:]
+    return rows
+
+
 def _estimate_cost_model(
     bot_type: str,
     venue: str,
@@ -466,7 +487,11 @@ def _params(
         total_cost_bps = float(cost_model.get("total_cost_bps") or 0.0)
 
         base_step_pct = atr_pct * 100.0 * 0.6
-        min_step_pct = max(0.08, (total_cost_bps * 1.2) / 100.0)
+        # Grid leg capture is only a fraction of the configured spacing (see trade_plan /
+        # outcomes proxy ≈ 70% of step). The floor must therefore clear round-trip costs
+        # after that capture haircut, otherwise the UI can advertise a "valid" grid that
+        # is structurally negative expectancy before any directional edge.
+        min_step_pct = max(0.08, ((total_cost_bps / 100.0) / 0.70) * 1.15)
         grid_spacing_pct = float(_clamp(max(base_step_pct, min_step_pct), 0.08, 2.5))
 
         span_target_pct = float(_clamp(atr_pct * 100.0 * 25.0, 1.0, 12.0))
@@ -807,8 +832,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
     # Load BTC 1h closes once — used for beta/correlation calculation per symbol
     btc_1h_rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", tf_sec=3600, limit=50)
+    btc_1h_rows = _drop_open_candle(btc_1h_rows, tf_sec=3600, ts_now=ts_now)
     if not btc_1h_rows:
         btc_1h_rows = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", tf_sec=3600, limit=50)
+        btc_1h_rows = _drop_open_candle(btc_1h_rows, tf_sec=3600, ts_now=ts_now)
     # Reverse to oldest-first for log-return calculations in btc_beta
     btc_1h_closes = [float(r["close"]) for r in reversed(btc_1h_rows)] if btc_1h_rows else []
 
@@ -816,6 +843,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
         for sym in symbols:
             rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=60, limit=220)
+            rows = _drop_open_candle(rows, tf_sec=60, ts_now=ts_now)
+            if not rows or len(rows) < 80:
+                continue
             trow = db.get_latest_ticker(conn, venue, sym)
             ticker = dict(trow) if trow else None
             # get_latest_ohlcv returns newest-first (ORDER BY ts DESC).
@@ -845,6 +875,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             atr_1d = None
             for tf in tf_secs:
                 rows_tf = db.get_latest_ohlcv(conn, venue, sym, tf_sec=tf, limit=260 if tf<=3600 else 420)
+                rows_tf = _drop_open_candle(rows_tf, tf_sec=tf, ts_now=ts_now)
                 if not rows_tf or len(rows_tf) < 80:
                     continue
                 # Reverse to oldest-first — get_latest_ohlcv returns newest-first.
@@ -877,6 +908,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if sym != "BTCUSDT" and btc_1h_closes:
                 # tf_map stores vote_for_tf dicts, not raw rows — always fetch closes from DB
                 _sym_rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=3600, limit=50)
+                _sym_rows = _drop_open_candle(_sym_rows, tf_sec=3600, ts_now=ts_now)
                 sym_1h_closes = [float(r["close"]) for r in reversed(_sym_rows)] if _sym_rows else []
                 beta_info = btc_beta(sym_1h_closes, btc_1h_closes, window=24)
             else:
