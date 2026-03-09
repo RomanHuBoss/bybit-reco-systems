@@ -167,19 +167,26 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
     struct_sign = _sign(s_structural, thr)
     agree = 0.0
     total = 0.0
+    total_possible = 0.0
     used = []
     for tf in all_tfs:
         info = tf_map.get(tf)
         if not info:
             continue
         w = float(TF_WEIGHTS.get(tf, 1.0))
+        total_possible += w
         tf_sign = _sign(float(info.get("score", 0.0)), thr)
         if tf_sign != 0:
             total += w
             if struct_sign != 0 and tf_sign == struct_sign:
                 agree += w
         used.append(tf)
-    coherence = float(agree / total) if total > 0 and struct_sign != 0 else 0.5
+    if total > 0 and struct_sign != 0:
+        agree_ratio = agree / total
+        active_coverage = _clamp(total / max(total_possible, 1e-9), 0.0, 1.0)
+        coherence = float(0.5 + (agree_ratio - 0.5) * active_coverage)
+    else:
+        coherence = 0.5
 
     # Regime (trend/range/transition): based on trend_strength and coherence
     trendiness = 0.0

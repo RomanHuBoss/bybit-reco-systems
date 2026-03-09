@@ -15,6 +15,30 @@ GRID_BOTS = {"spot_grid", "futures_grid"}
 DIRECTIONAL_BOTS = {"dca_bot", "futures_martingale", "futures_combo"}
 
 
+def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_horizon_sec: int) -> int:
+    params = params or {}
+    trade_plan = params.get("trade_plan") or {}
+    expected_horizon = trade_plan.get("expected_horizon") or {}
+    max_hours_raw = expected_horizon.get("max_hours")
+    if max_hours_raw is None:
+        return int(BOT_HORIZONS.get(bot_type, fallback_horizon_sec))
+
+    try:
+        max_hours = float(max_hours_raw)
+    except Exception:
+        return int(BOT_HORIZONS.get(bot_type, fallback_horizon_sec))
+
+    bounds = {
+        "spot_grid": (6.0, 48.0),
+        "futures_grid": (6.0, 48.0),
+        "dca_bot": (12.0, 72.0),
+        "futures_martingale": (1.0, 8.0),
+        "futures_combo": (2.0, 12.0),
+    }
+    lo, hi = bounds.get(bot_type, (0.5, 72.0))
+    return int(max(lo, min(hi, max_hours)) * 3600)
+
+
 def _is_supported_direction(bot_type: str, venue: str, direction: str) -> bool:
     if bot_type == "spot_grid":
         return direction in ("neutral", "long")
@@ -515,7 +539,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             continue
         entry_ts, entry = tradeable
 
-        effective_horizon = BOT_HORIZONS.get(bot_type, horizon_sec)
+        effective_horizon = _resolve_effective_horizon(bot_type, params, horizon_sec)
         if db.now_ts() < entry_ts + effective_horizon:
             continue
         ts_exit = entry_ts + effective_horizon
@@ -577,9 +601,10 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
 
             elif bot_type == "dca_bot" and direction == "long":
                 dca = _simulate_dca_long_outcome(conn, venue, symbol, entry, entry_ts, ts_exit, params)
-                if dca is not None:
-                    success, ret_proxy, exitp = dca
-                    price_ret = (exitp - entry) / entry
+                if dca is None:
+                    continue
+                success, ret_proxy, exitp = dca
+                price_ret = (exitp - entry) / entry
 
             elif direction in ("long", "short"):
                 cost_floor = total_cost_bps / 10_000

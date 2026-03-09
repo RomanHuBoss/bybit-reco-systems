@@ -42,6 +42,7 @@ class Settings:
     master_key: str | None
     admin_api_key: str | None
     sentiment_interval_sec: int
+    futures_collect_interval_sec: int
     telegram_token: str | None
     telegram_chat_id: str | None
 
@@ -85,6 +86,7 @@ def load_settings() -> Settings:
         master_key=master_key,
         admin_api_key=admin_api_key,
         sentiment_interval_sec=int(_env("SENTIMENT_INTERVAL_SEC", "60")),
+        futures_collect_interval_sec=int(_env("FUTURES_COLLECT_INTERVAL_SEC", "900")),
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
         outcome_horizon_sec=outcome_horizon_sec,

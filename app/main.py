@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import threading
+import socket
 import time
 from contextlib import closing
 from pathlib import Path
@@ -25,6 +27,7 @@ from .security import is_authorized
 from . import db
 
 settings = load_settings()
+RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 
 
 def _get_conn():
@@ -178,7 +181,7 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
 def api_recommendations(
     venue: str | None = None,
     top_n: int = 20,
-    min_conf: float = 0.0,
+    min_conf: float | None = None,
     show_recommended: bool = True,
     show_blocked: bool = False,
     show_no_trade: bool = False,
@@ -200,14 +203,15 @@ def api_recommendations(
         if snapshot == "latest":
             snapshot_ts = db.get_latest_reco_ts(conn, venue=venue)
 
-        items = db.get_recommendations(conn, venue=venue, top_n=top_n, min_conf=min_conf, statuses=statuses, snapshot_ts=snapshot_ts)
+        effective_min_conf = settings.min_conf_to_recommend if min_conf is None else float(min_conf)
+        items = db.get_recommendations(conn, venue=venue, top_n=top_n, min_conf=effective_min_conf, statuses=statuses, snapshot_ts=snapshot_ts)
 
         no_trade = True
         if snapshot_ts is not None:
             cur = conn.execute(
                 """SELECT COUNT(*) AS c FROM recommendations
                    WHERE ts=? AND (? IS NULL OR venue=?) AND status='recommended' AND confidence >= ?""",
-                (snapshot_ts, venue, venue, float(min_conf)),
+                (snapshot_ts, venue, venue, float(effective_min_conf)),
             )
             no_trade = int(cur.fetchone()["c"]) == 0
 
@@ -220,7 +224,7 @@ def api_recommendations(
             "confidence": 0.0,
         }
 
-        return {"ts": int(time.time()), "regime": regime, "items": items, "no_trade": no_trade}
+        return {"ts": int(time.time()), "regime": regime, "items": items, "no_trade": no_trade, "min_conf": float(effective_min_conf)}
 
 
 @app.get("/api/v1/recommendations/{rec_id}")
@@ -313,9 +317,9 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
 
         trade_id = req.trade_id or f"T-{int(time.time())}-{secrets.token_hex(4)}"
         ts = req.ts or int(time.time())
-        now_ts = int(time.time())
+        current_ts = int(time.time())
         max_future_skew_sec = 300
-        if ts > now_ts + max_future_skew_sec:
+        if ts > current_ts + max_future_skew_sec:
             raise HTTPException(status_code=409, detail=f"trade timestamp is too far in the future (> {max_future_skew_sec}s)")
         started_ts = int(bot.get("started_ts") or 0)
         if started_ts > 0 and ts < started_ts:
@@ -439,9 +443,15 @@ def api_sentiment_get(scope: str, key: str, limit: int = 120) -> dict[str, Any]:
 def _collector_thread():
     client = BybitPublicClient(settings.bybit_base_url)
     _last_futures_collect = 0.0
-    FUTURES_COLLECT_INTERVAL = 900
+    lock_key = "runtime:collector"
+    lock_ttl = max(60, settings.collect_interval_sec * 4)
     try:
         while True:
+            with closing(_get_conn()) as conn:
+                has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+            if not has_lock:
+                time.sleep(settings.collect_interval_sec)
+                continue
             with closing(_get_conn()) as conn:
                 for venue in settings.venues:
                     symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
@@ -449,7 +459,7 @@ def _collector_thread():
                         collect_once(conn, client, venue, symbols)
                     except Exception as e:
                         db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
-            if time.time() - _last_futures_collect >= FUTURES_COLLECT_INTERVAL:
+            if time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
                 with closing(_get_conn()) as conn:
                     try:
                         collect_futures_once(conn, client, settings.symbols_linear)
@@ -462,7 +472,14 @@ def _collector_thread():
 
 
 def _sentiment_thread():
+    lock_key = "runtime:sentiment"
+    lock_ttl = max(60, settings.sentiment_interval_sec * 4)
     while True:
+        with closing(_get_conn()) as conn:
+            has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+        if not has_lock:
+            time.sleep(settings.sentiment_interval_sec)
+            continue
         with closing(_get_conn()) as conn:
             try:
                 pts = collect_sentiment_once()
@@ -477,8 +494,16 @@ def _sentiment_thread():
 def _reco_thread():
     _last_prune = 0.0
     PRUNE_INTERVAL = 3600
+    lock_key = "runtime:reco"
+    lock_ttl = max(60, settings.reco_interval_sec * 4)
     while True:
         result = {}
+        with closing(_get_conn()) as conn:
+            has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+        if not has_lock:
+            time.sleep(settings.reco_interval_sec)
+            continue
+
         with closing(_get_conn()) as conn:
             try:
                 result = run_recommender_once(conn, settings)

@@ -310,13 +310,14 @@ def fit_logreg(
         )
 
     # Build feature matrix
-    X, y_used, w_used = [], [], []
+    X, y_used, w_used, ts_used = [], [], [], []
     for r, w in zip(rows, ws):
         fv = extract_features(r)
         if fv is not None:
             X.append(fv)
             y_used.append(int(r["success"]))
             w_used.append(w)
+            ts_used.append(int(r.get("ts") or 0))
 
     if len(X) < logreg_min_samples:
         return LogRegScaler(
@@ -333,6 +334,40 @@ def fit_logreg(
         ynp  = np.array(y_used, dtype=int)
         wnp  = np.array(w_used, dtype=float)
 
+        order = np.argsort(np.array(ts_used, dtype=int)) if len(ts_used) == len(X) else np.arange(len(X))
+        if len(X) == len(order):
+            Xnp = Xnp[order]
+            ynp = ynp[order]
+            wnp = wnp[order]
+
+        oof_logits: list[float] = []
+        oof_y: list[int] = []
+        oof_w: list[float] = []
+
+        from sklearn.model_selection import TimeSeriesSplit
+
+        n_splits = min(5, max(2, len(X) // max(1, min_samples)))
+        if len(X) >= (n_splits + 1) * 2:
+            splitter = TimeSeriesSplit(n_splits=n_splits)
+            for train_idx, val_idx in splitter.split(Xnp):
+                if len(train_idx) < min_samples or len(val_idx) == 0:
+                    continue
+                y_train = ynp[train_idx]
+                if len(set(int(v) for v in y_train.tolist())) < 2:
+                    continue
+                scaler_fold = SkScaler()
+                X_train = scaler_fold.fit_transform(Xnp[train_idx])
+                X_val = scaler_fold.transform(Xnp[val_idx])
+                clf_fold = LogisticRegression(
+                    C=1.0, max_iter=500, solver="lbfgs",
+                    class_weight="balanced",
+                )
+                clf_fold.fit(X_train, y_train, sample_weight=wnp[train_idx])
+                logits_fold = clf_fold.decision_function(X_val)
+                oof_logits.extend(float(x) for x in logits_fold.tolist())
+                oof_y.extend(int(x) for x in ynp[val_idx].tolist())
+                oof_w.extend(float(x) for x in wnp[val_idx].tolist())
+
         scaler = SkScaler()
         Xs = scaler.fit_transform(Xnp)
 
@@ -347,14 +382,7 @@ def fit_logreg(
         coef_raw      = (clf.coef_[0] / std).tolist()
         intercept_raw = float(clf.intercept_[0] - (clf.coef_[0] / std).dot(mean))
 
-        import math as _math
-        def _logit(p: float) -> float:
-            p = max(1e-7, min(1.0 - 1e-7, p))
-            return _math.log(p / (1.0 - p))
-        p_logreg_raw  = clf.predict_proba(Xs)[:, 1].tolist()
-        logits_logreg = [_logit(p) for p in p_logreg_raw]
-
-        platt_top = fit_platt(logits_logreg, y_used, min_samples=min_samples, ws=w_used)
+        platt_top = fit_platt(oof_logits, oof_y, min_samples=min_samples, ws=oof_w) if len(oof_logits) >= min_samples else PlattScaler(fitted=False)
 
         return LogRegScaler(
             coef=coef_raw, intercept=intercept_raw, platt=platt_top,

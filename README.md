@@ -47,13 +47,14 @@ API поднимется на `127.0.0.1:8000`.
 - `DB_PATH` — путь к SQLite;
 - `SYMBOLS_SPOT`, `SYMBOLS_LINEAR` — списки символов;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — пороги публикации;
+- `FUTURES_COLLECT_INTERVAL_SEC` — отдельный интервал обновления funding/open-interest;
 - `CALIB_MIN_SAMPLES=80` — минимум before calibration;
 - `ADMIN_API_KEY` — если задан, обязателен для mutating endpoints;
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.
 
 ## Основные API
 ### Read-only
-- `GET /api/v1/recommendations`
+- `GET /api/v1/recommendations` (`min_conf` по умолчанию равен publish-threshold `MIN_CONF_TO_RECOMMEND`)
 - `GET /api/v1/recommendations/{rec_id}`
 - `GET /api/v1/risk/status`
 - `GET /api/v1/bots`
@@ -88,6 +89,7 @@ API поднимется на `127.0.0.1:8000`.
 
 ## Production notes
 - для продакшена используйте внешний процесс supervisor и backup SQLite;
+- background loops используют SQLite runtime lock, поэтому даже при multi-worker запуске активным сборщиком/рекомендером остаётся только один лидер;
 - на mutating endpoints задайте `ADMIN_API_KEY`;
 - не храните реальные секреты в `.env` внутри репозитория;
 - если нужен реальный execution layer, его следует строить отдельно от recommendation engine.

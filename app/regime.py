@@ -66,7 +66,9 @@ def classify_regime(features_by_symbol: list[dict[str, Any]]) -> dict[str, Any]:
     # ── Dynamic confidence ───────────────────────────────────────────────────
     # Confidence must reflect BOTH agreement and sample size / coverage. With one symbol
     # there is no cross-sectional confirmation, so high confidence would be pseudo-statistical.
-    effective_n = max(1, min(len(atr_pcts) or len(features_by_symbol), len(trend) or len(features_by_symbol), len(features_by_symbol)))
+    atr_n = len(atr_pcts) if atr_pcts else len(features_by_symbol)
+    trend_n = len(trend) if trend else len(features_by_symbol)
+    effective_n = max(1, min(atr_n, trend_n, len(features_by_symbol)))
 
     def _cv(vals: list[float]) -> float:
         """Coefficient of variation (std/mean). 0 = perfect agreement."""

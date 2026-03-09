@@ -25,6 +25,11 @@ def connect(db_path: str) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     sql = MIGRATION_INIT_SQL.read_text(encoding="utf-8")
     conn.executescript(sql)
+    conn.execute("""CREATE TABLE IF NOT EXISTS runtime_locks (
+      lock_key TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      heartbeat_ts INTEGER NOT NULL
+    )""")
     conn.commit()
 
 def now_ts() -> int:
@@ -369,6 +374,50 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str,
         "model_version": r["model_version"],
         "features_ref_ts": r["features_ref_ts"],
     }
+
+
+
+def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, ttl_sec: int = 90) -> bool:
+    """Cross-process best-effort leader lock backed by SQLite."""
+    now = now_ts()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT owner, heartbeat_ts FROM runtime_locks WHERE lock_key=?",
+            (lock_key,),
+        ).fetchone()
+        should_claim = False
+        if row is None:
+            should_claim = True
+        else:
+            row_owner = str(row["owner"] or "")
+            heartbeat_ts = int(row["heartbeat_ts"] or 0)
+            if row_owner == owner or (now - heartbeat_ts) > max(5, int(ttl_sec)):
+                should_claim = True
+
+        if should_claim:
+            conn.execute(
+                "INSERT OR REPLACE INTO runtime_locks(lock_key, owner, heartbeat_ts) VALUES(?,?,?)",
+                (lock_key, owner, now),
+            )
+            conn.commit()
+            return True
+        conn.commit()
+        return False
+    except sqlite3.OperationalError:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def release_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) -> None:
+    conn.execute(
+        "DELETE FROM runtime_locks WHERE lock_key=? AND owner=?",
+        (lock_key, owner),
+    )
+    conn.commit()
 
 def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str, Any], is_active: bool = True) -> None:
     if is_active:
@@ -853,6 +902,10 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     # funding_rate: keep 7 days (only current value used; history not queried)
     cur = conn.execute("DELETE FROM funding_rate WHERE ts < ?", (cutoff,))
     deleted["funding_rate"] = cur.rowcount
+
+    # runtime_locks: drop stale leader locks so dead workers do not block takeover
+    cur = conn.execute("DELETE FROM runtime_locks WHERE heartbeat_ts < ?", (now_ts() - 2 * 86400,))
+    deleted["runtime_locks"] = cur.rowcount
 
     # open_interest: keep 7 days (oi_trend uses last 48 1h candles = 2 days)
     cur = conn.execute("DELETE FROM open_interest WHERE ts < ?", (cutoff,))

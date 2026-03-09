@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import secrets
+import time
 from typing import Any
 
 from . import db
@@ -1299,10 +1300,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             # Persistence gate for directional bots: require 2 consecutive cycles
             # for the SAME signal signature. This avoids confirming a fresh short with a stale long.
-            import time as _rtime
             if status == "recommended" and bot_type in PERSISTENCE_BOTS:
                 _pkey = (venue, sym, bot_type, direction)
-                _now_ts = int(_rtime.time())
+                _now_ts = int(time.time())
                 _fresh_gap = max(45, int(settings.reco_interval_sec * 2.5))
                 _state = _prev_recommended.get(_pkey) or {"ts": 0, "count": 0}
                 if _now_ts - int(_state.get("ts", 0)) <= _fresh_gap:

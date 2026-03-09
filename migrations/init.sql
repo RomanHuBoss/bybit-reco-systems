@@ -123,6 +123,13 @@ CREATE TABLE IF NOT EXISTS app_config (
   updated_ts INTEGER NOT NULL
 );
 
+
+CREATE TABLE IF NOT EXISTS runtime_locks (
+  lock_key TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  heartbeat_ts INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS risk_limits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   version TEXT NOT NULL,

@@ -122,6 +122,16 @@ def _score_text(text: str) -> float:
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
+
+def _keyword_match(text: str, token_set: set[str], keyword: str) -> bool:
+    kw_tokens = re.findall(r"[a-z0-9']+", (keyword or "").lower())
+    if not kw_tokens:
+        return False
+    if len(kw_tokens) == 1:
+        return kw_tokens[0] in token_set
+    normalized = " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
+    return " ".join(kw_tokens) in normalized
+
 # ── 1. Fear & Greed (global) ──────────────────────────────────────────────────
 
 def fetch_fear_greed(client: httpx.Client) -> dict[str, Any] | None:
@@ -173,12 +183,14 @@ def fetch_rss_sentiment(
                 title = (it.findtext("title") or "").strip()
                 desc  = (it.findtext("description") or "").strip()
                 full  = (title + " " + desc).lower()
+                tokens = re.findall(r"[a-z0-9']+", full)
+                token_set = set(tokens)
                 sc    = _score_text(full)
                 global_scores.append(sc)
                 total += 1
                 # per-symbol routing
                 for sym, keywords in SYMBOL_KEYWORDS.items():
-                    if any(kw in full for kw in keywords):
+                    if any(_keyword_match(full, token_set, kw) for kw in keywords):
                         per_symbol.setdefault(sym, []).append(sc)
             used.append(url)
         except Exception:
