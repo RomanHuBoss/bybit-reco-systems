@@ -313,6 +313,10 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
 
         trade_id = req.trade_id or f"T-{int(time.time())}-{secrets.token_hex(4)}"
         ts = req.ts or int(time.time())
+        now_ts = int(time.time())
+        max_future_skew_sec = 300
+        if ts > now_ts + max_future_skew_sec:
+            raise HTTPException(status_code=409, detail=f"trade timestamp is too far in the future (> {max_future_skew_sec}s)")
         started_ts = int(bot.get("started_ts") or 0)
         if started_ts > 0 and ts < started_ts:
             raise HTTPException(status_code=409, detail="trade timestamp is earlier than bot start")
@@ -507,7 +511,7 @@ def _reco_thread():
                         (int(time.time()) - 600,),
                     )
                     err_count = int(err_cur.fetchone()["c"])
-                check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count", 0)))
+                check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
             except Exception:
                 pass
 
@@ -602,10 +606,17 @@ def api_status() -> dict[str, Any]:
         collect_errors_10m = int(cur.fetchone()["c"])
         sent = compute_sentiment_agg(conn, scope="global", key="crypto")
 
+        inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))
+        inference_supported_bot_count = sum(1 for info in bot_status.values() if str(info.get("unfitted_reason") or "") != "unsupported_proxy_outcome_model")
+
         return {
             "calibrator_fitted": calib_fitted,
             "calibrator_logreg": calib_logreg,
             "calibrator_n": calib_n,
+            "global_calibrator_diagnostic_only": True,
+            "inference_calibration_mode": "bot_specific_only",
+            "inference_ready_bot_count": inference_ready_bot_count,
+            "inference_supported_bot_count": inference_supported_bot_count,
             "calibrator_params": {
                 "a": float(global_model.platt.a) if global_model and global_model.fitted else None,
                 "b": float(global_model.platt.b) if global_model and global_model.fitted else None,

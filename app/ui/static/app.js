@@ -116,24 +116,28 @@ function updateCalibrationUi(items) {
 
   const summary = summariseCalibState(items || []);
   if (summary.total === 0) {
-    const globalFitted = !!statusPayload?.calibrator_fitted;
-    const globalLogreg = !!statusPayload?.calibrator_logreg;
-    if (globalFitted && globalLogreg) {
+    const botCalibs = Object.entries(statusPayload?.bot_calibrators || {})
+      .filter(([, info]) => (info?.unfitted_reason || "") !== "unsupported_proxy_outcome_model");
+    const fittedBots = botCalibs.filter(([, info]) => !!info?.fitted);
+    const logregBots = botCalibs.filter(([, info]) => !!info?.logreg_active);
+
+    if (botCalibs.length > 0 && fittedBots.length === botCalibs.length) {
       header.textContent = "Увер ✓";
-      header.title = "Уверенность откалибрована";
-      banner.classList.add("hidden");
-    } else if (globalFitted) {
-      header.textContent = "Увер ~";
-      header.title = "Уверенность частично откалибрована (Platt only)";
+      header.title = `Все поддерживаемые bot_type имеют bot-specific калибровку (${fittedBots.length}/${botCalibs.length}).`;
       banner.classList.add("hidden");
     } else {
-      header.textContent = "Увер ?";
-      header.title = "Уверенность не откалибрована";
+      header.textContent = fittedBots.length > 0 ? "Увер ~" : "Увер ?";
+      header.title = fittedBots.length > 0
+        ? `Калибровка готова только для части bot_type (${fittedBots.length}/${botCalibs.length}); глобальная модель считается диагностической и не используется как fallback.`
+        : "Bot-specific калибровка ещё не готова.";
       banner.classList.remove("hidden");
       const count = Number(statusPayload?.outcome_count || 0);
       const needed = Number(statusPayload?.calib_min_samples || 80);
       const pct = needed > 0 ? Math.min(100, Math.round(count / needed * 100)) : 0;
-      $("calibProgress").textContent = `Всего исходов: ${count} / ${needed}. Калибровка включится автоматически.`;
+      const readiness = botCalibs.length > 0
+        ? `Готово bot_type: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (LogReg: ${logregBots.length})` : ""}. `
+        : "";
+      $("calibProgress").textContent = `${readiness}Всего исходов: ${count}. Глобальная калибровка отображается только как диагностика; inference опирается на bot-specific модели.`;
       $("calibBarFill").style.width = `${pct}%`;
     }
     return;

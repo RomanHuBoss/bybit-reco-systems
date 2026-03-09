@@ -1423,6 +1423,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "features_ref_ts": int(f["ts_last"]),
             })
 
+    status_counts = {"recommended": 0, "blocked": 0, "no_trade": 0, "suppressed": 0}
+
     if recs:
         # Publish only one best recommendation per (venue, symbol).
         # Others are stored as 'suppressed' for audit/debug.
@@ -1451,6 +1453,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 if r["status"] == "recommended":
                     r["status"] = "suppressed"
 
+        for r in recs:
+            st = str(r.get("status") or "")
+            if st in status_counts:
+                status_counts[st] += 1
         db.insert_recommendations(conn, recs)
         db.log_decision(
             conn,
@@ -1460,6 +1466,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             {
                 "count_all": len(recs),
                 "count_best": len(best_map),
+                "count_recommended": status_counts["recommended"],
+                "count_blocked": status_counts["blocked"],
+                "count_no_trade": status_counts["no_trade"],
+                "count_suppressed": status_counts["suppressed"],
                 "model_version": model_version,
                 "regime": regime,
                 "global_sentiment_6h": global_sent,
@@ -1469,6 +1479,15 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             },
         )
 
-    return {"regime": regime, "count": len(recs), "global_sentiment_6h": global_sent,
-            "sentiment_regime": sent_agg.get("regime"),
-            "sentiment_strength": sent_agg.get("strength"), "calibrator_fitted": calibrator.fitted}
+    return {
+        "regime": regime,
+        "count": len(recs),
+        "count_recommended": status_counts["recommended"],
+        "count_blocked": status_counts["blocked"],
+        "count_no_trade": status_counts["no_trade"],
+        "count_suppressed": status_counts["suppressed"],
+        "global_sentiment_6h": global_sent,
+        "sentiment_regime": sent_agg.get("regime"),
+        "sentiment_strength": sent_agg.get("strength"),
+        "calibrator_fitted": calibrator.fitted,
+    }

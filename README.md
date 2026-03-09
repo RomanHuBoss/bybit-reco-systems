@@ -20,15 +20,18 @@
 - `futures_combo` перестал публиковаться как action-ready recommendation без two-leg PnL model;
 - добавлен execution lifecycle: `recommendation -> executed -> bot_instance -> trades -> stopped`;
 - mutating endpoints можно защитить через `ADMIN_API_KEY`;
-- вычищены секреты из поставляемого `.env`.
+- вычищены секреты из поставляемого `.env`;
+- Telegram alert «нет рекомендаций» теперь считает именно `status=recommended`, а не общее число строк публикации;
+- ingestion `POST /api/v1/bots/{bot_id}/trades` теперь отклоняет далеко будущие timestamps, чтобы не ломать drawdown/cooldown;
+- UI/API статуса больше не трактуют глобальный calibrator как production fallback для inference: bot-specific calibration показывается отдельно, глобальная — только как диагностика.
 
 ## Ограничения дизайна
 - проект прошёл forensic-ревизию и содержит post-audit исправления, но это не exchange-grade execution simulator и не формальная гарантия качества статистики;
 - это recommendation/evaluation engine, а не полноценный exchange-grade execution simulator;
 - `futures_combo` остаётся эвристическим режимом и блокируется на публикации;
+- глобальный calibrator хранится для диагностики/статуса, но inference намеренно не использует cross-bot fallback probability;
 - grid/DCA outcomes остаются упрощёнными path approximations;
 - risk limits начинают работать полноценно только если в `trades` реально пишутся realized fills/PnL.
-
 ## Быстрый запуск
 ```bash
 python -m venv .venv
