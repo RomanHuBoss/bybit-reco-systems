@@ -529,11 +529,15 @@ def api_status() -> dict[str, Any]:
         for row in cur.fetchall():
             total = int(row["total"] or 0)
             wins = int(row["wins"] or 0)
+            losses = max(0, total - wins)
+            effective_samples = max(0, 2 * min(wins, losses))
             outcome_count += total
             win_rate = float(wins / total) if total else None
             outcome_stats_by_bot[str(row["bot_type"])] = {
                 "total": total,
                 "wins": wins,
+                "losses": losses,
+                "effective_samples": effective_samples,
                 "win_rate": round(win_rate, 4) if win_rate is not None else None,
             }
 
@@ -565,6 +569,8 @@ def api_status() -> dict[str, Any]:
                 "n_samples": int(m.n_samples) if m and m.fitted else 0,
                 "outcomes_total": int(stats["total"]),
                 "wins": int(stats["wins"]),
+                "losses": int(stats.get("losses", max(0, int(stats["total"]) - int(stats["wins"])))),
+                "effective_samples": int(stats.get("effective_samples", 0)),
                 "win_rate": stats["win_rate"],
                 "eligible_for_fit": bool(eligible),
                 "unfitted_reason": unfitted_reason,

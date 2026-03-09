@@ -85,6 +85,9 @@ function summariseCalibState(items) {
 
 function buildBotCalibText(botType, info, totalOutcomeCount) {
   const total = Number(info?.outcomes_total || 0);
+  const wins = Number(info?.wins || 0);
+  const losses = Number(info?.losses || Math.max(0, total - wins));
+  const effective = Number(info?.effective_samples || (2 * Math.min(wins, losses)) || 0);
   const needed = Number(info?.min_samples || statusPayload?.calib_min_samples || 80);
   const winRate = info?.win_rate;
   const winRateText = (winRate === null || winRate === undefined) ? "—" : Number(winRate).toFixed(2);
@@ -92,18 +95,18 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
 
   if (info?.fitted) {
     if (info?.logreg_active) {
-      return `${botType}: калибратор активен (LogReg + Platt, n=${Number(info.n_samples || 0)}).`;
+      return `${botType}: калибратор активен (LogReg + Platt, n=${Number(info.n_samples || 0)}; побед=${wins}, поражений=${losses}).`;
     }
-    return `${botType}: включён Platt-only (n=${Number(info.n_samples || 0)} / ${Number(info.logreg_min_samples || 300)} для полного LogReg).`;
+    return `${botType}: включён Platt-only (n=${Number(info.n_samples || 0)} / ${Number(info.logreg_min_samples || 300)}; побед=${wins}, поражений=${losses}).`;
   }
 
   if ((info?.unfitted_reason || "") === "degenerate_win_rate") {
-    return `${botType}: пригодных исходов ${total} / ${needed}, но win-rate=${winRateText} вне диапазона 0.15–0.85. Всего исходов в базе: ${allText}.`;
+    return `${botType}: калибровка отключена из-за вырожденных меток (побед=${wins}, поражений=${losses}, effective=${effective} / ${needed}, win-rate=${winRateText}). Всего исходов в базе: ${allText}.`;
   }
   if ((info?.unfitted_reason || "") === "pending_refit") {
-    return `${botType}: исходов уже достаточно (${total} / ${needed}, win-rate=${winRateText}). Модель ещё не обновлена в текущем цикле.`;
+    return `${botType}: исходов уже достаточно (effective=${effective} / ${needed}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}). Модель ещё не обновлена в текущем цикле.`;
   }
-  return `${botType}: пригодных исходов ${total} / ${needed}. Всего исходов в базе: ${allText}.`;
+  return `${botType}: effective для fit ${effective} / ${needed} (всего=${total}, побед=${wins}, поражений=${losses}). Всего исходов в базе: ${allText}.`;
 }
 
 function updateCalibrationUi(items) {
@@ -160,9 +163,9 @@ function updateCalibrationUi(items) {
 
   const primaryBot = botTypes.length === 1 ? botTypes[0] : null;
   const primaryInfo = primaryBot ? botCalibs[primaryBot] : null;
-  const total = Number(primaryInfo?.outcomes_total || 0);
+  const effective = Number(primaryInfo?.effective_samples || 0);
   const needed = Number(primaryInfo?.min_samples || statusPayload?.calib_min_samples || 80);
-  const pct = needed > 0 ? Math.min(100, Math.round(total / needed * 100)) : 0;
+  const pct = needed > 0 ? Math.min(100, Math.round(effective / needed * 100)) : 0;
 
   banner.classList.remove("hidden");
   if (primaryBot) {
@@ -588,8 +591,11 @@ async function loadOutcomes() {
   try { data = await res.json(); } catch(e) { return; }
 
   const s = data.summary || {};
+  const totalWins = Number(s.wins || 0);
+  const totalLosses = Math.max(0, Number(s.total || 0) - totalWins);
   const lines = [];
-  lines.push(`Всего исходов: ${s.total || 0} | Win-rate: ${s.win_rate !== null && s.win_rate !== undefined ? (s.win_rate*100).toFixed(1)+"%" : "нет данных"}`);
+  lines.push(`Всего исходов: ${s.total || 0} | Побед: ${totalWins} | Поражений: ${totalLosses} | Win-rate: ${s.win_rate !== null && s.win_rate !== undefined ? (s.win_rate*100).toFixed(1)+"%" : "нет данных"}`);
+  lines.push("Примечание: это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок.");
   lines.push("");
 
   if ((data.by_bot || []).length > 0) {
