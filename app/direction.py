@@ -29,25 +29,35 @@ def _sma(xs: list[float], period: int) -> float:
     return sum(xs[-period:]) / period
 
 def rsi14(closes: list[float], period: int = 14) -> float:
+    """Wilder RSI(14).
+
+    Using the classic Wilder smoothing keeps the signal closer to what traders
+    see in TradingView / exchange terminals and avoids the sharper Cutler-style
+    swings produced by a plain rolling mean.
+    """
     if len(closes) < period + 2:
         return 50.0
-    gains = 0.0
-    losses = 0.0
-    for i in range(1, period + 1):
-        ch = closes[-i] - closes[-i-1]
-        if ch >= 0:
-            gains += ch
-        else:
-            losses += -ch
-    avg_gain = gains / period
-    avg_loss = losses / period
+
+    deltas = [float(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    gains = [max(d, 0.0) for d in deltas]
+    losses = [max(-d, 0.0) for d in deltas]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for gain, loss in zip(gains[period:], losses[period:]):
+        avg_gain = ((period - 1) * avg_gain + gain) / period
+        avg_loss = ((period - 1) * avg_loss + loss) / period
+
     if avg_loss == 0:
-        return 100.0
+        return 100.0 if avg_gain > 0 else 50.0
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
 def macd_hist(closes: list[float]) -> float:
-    if len(closes) < 60:
+    # 26 EMA + 9 EMA(signal) needs ~35 observations for a non-degenerate value.
+    # Requiring 60 bars only zeroed-out otherwise valid early-history MACD states.
+    if len(closes) < 35:
         return 0.0
     ema12 = _ema(closes, 12)
     ema26 = _ema(closes, 26)

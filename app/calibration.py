@@ -258,10 +258,10 @@ class LogRegScaler:
         # of preserving the existing coefficients on the shared prefix.
         fv = list(features) + [0.0] * max(0, len(self.coef) - len(features))
         z = self.intercept + sum(c * f for c, f in zip(self.coef, fv))
-        p_raw = 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, z))))
         if self.platt.fitted:
             return self.platt.predict(z)
-        return p_raw
+        z = max(-500.0, min(500.0, z))
+        return 1.0 / (1.0 + math.exp(-z))
 
     def predict_score_only(self, score: float) -> float:
         """Fallback: Platt calibration on the legacy scalar score."""

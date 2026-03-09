@@ -119,29 +119,32 @@ def _iter_1m_candles(conn, venue: str, symbol: str, ts_start: int, ts_end_exclus
     return cur.fetchall()
 
 
-def _get_rec_params(conn, rec_id: str) -> dict | None:
-    cur = conn.execute("SELECT params_json FROM recommendations WHERE rec_id=?", (rec_id,))
-    r = cur.fetchone()
-    if not r:
-        return None
-    import json
-    try:
-        return json.loads(r["params_json"])
-    except Exception:
-        return None
+def _extract_cost_components(params: dict | None, fallback_execution_bps: float = 15.0) -> tuple[float, float]:
+    execution_bps = None
+    funding_bps = None
+    if params:
+        for block in (params.get("cost_model") or {}, (params.get("trade_plan") or {}).get("cost_model") or {}):
+            if not isinstance(block, dict):
+                continue
+            if execution_bps is None:
+                for key in ("execution_cost_bps", "total_cost_bps", "net_cost_bps"):
+                    if block.get(key) is not None:
+                        try:
+                            execution_bps = float(block.get(key))
+                            break
+                        except Exception:
+                            pass
+            if funding_bps is None and block.get("expected_funding_bps") is not None:
+                try:
+                    funding_bps = float(block.get("expected_funding_bps"))
+                except Exception:
+                    pass
+    return float(execution_bps if execution_bps is not None else fallback_execution_bps), float(funding_bps or 0.0)
 
 
 def _extract_total_cost_bps(params: dict | None, fallback: float = 15.0) -> float:
-    if not params:
-        return float(fallback)
-    for block in (params.get("cost_model") or {}, (params.get("trade_plan") or {}).get("cost_model") or {}):
-        for key in ("execution_cost_bps", "total_cost_bps", "net_cost_bps"):
-            if block.get(key) is not None:
-                try:
-                    return float(block.get(key))
-                except Exception:
-                    pass
-    return float(fallback)
+    execution_bps, _ = _extract_cost_components(params, fallback_execution_bps=fallback)
+    return float(execution_bps)
 
 
 def _signed_return(entry: float, exitp: float, direction: str) -> float:
@@ -155,10 +158,18 @@ def _signed_return(entry: float, exitp: float, direction: str) -> float:
 # Keep it net-of-cost and aligned with the mechanics of each bot, otherwise
 # the database shows absurd combinations like win_rate=1.0 with strongly
 # negative average return for range/grid bots.
-def _net_return(entry: float, exitp: float, direction: str, total_cost_bps: float, turns: float = 1.0) -> float:
+def _net_return(
+    entry: float,
+    exitp: float,
+    direction: str,
+    execution_cost_bps: float,
+    turns: float = 1.0,
+    fixed_cost_bps: float = 0.0,
+) -> float:
     gross = _signed_return(entry, exitp, direction)
-    cost_pct = max(0.0, float(total_cost_bps)) / 10_000.0 * max(1.0, float(turns))
-    return gross - cost_pct
+    exec_cost_pct = max(0.0, float(execution_cost_bps)) / 10_000.0 * max(1.0, float(turns))
+    fixed_cost_pct = float(fixed_cost_bps) / 10_000.0
+    return gross - exec_cost_pct - fixed_cost_pct
 
 
 def _barrier_fill_price(openp: float, barrier: float, direction: str, kind: str) -> float:
@@ -193,6 +204,7 @@ def _tp_sl_outcome(
     ts_end: int,
     atr_1h: float,
     total_cost_bps: float = 15.0,
+    fixed_cost_bps: float = 0.0,
 ) -> tuple[int, float, float] | None:
     cost_floor = total_cost_bps / 10_000
     tp_pct = max(cost_floor * 1.5, 0.30 * atr_1h)
@@ -217,26 +229,26 @@ def _tp_sl_outcome(
         if direction == "long":
             if hi >= tp_price and lo <= sl_price:
                 fill = _barrier_fill_price(openp, sl_price, direction, "stop")
-                return 0, _net_return(entry, fill, direction, total_cost_bps), fill
+                return 0, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
             if hi >= tp_price:
                 fill = _barrier_fill_price(openp, tp_price, direction, "tp")
-                return 1, _net_return(entry, fill, direction, total_cost_bps), fill
+                return 1, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
             if lo <= sl_price:
                 fill = _barrier_fill_price(openp, sl_price, direction, "stop")
-                return 0, _net_return(entry, fill, direction, total_cost_bps), fill
+                return 0, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
         else:
             if lo <= tp_price and hi >= sl_price:
                 fill = _barrier_fill_price(openp, sl_price, direction, "stop")
-                return 0, _net_return(entry, fill, direction, total_cost_bps), fill
+                return 0, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
             if lo <= tp_price:
                 fill = _barrier_fill_price(openp, tp_price, direction, "tp")
-                return 1, _net_return(entry, fill, direction, total_cost_bps), fill
+                return 1, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
             if hi >= sl_price:
                 fill = _barrier_fill_price(openp, sl_price, direction, "stop")
-                return 0, _net_return(entry, fill, direction, total_cost_bps), fill
+                return 0, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
 
     final_close = float(rows[-1]["close"])
-    ret_proxy = _net_return(entry, final_close, direction, total_cost_bps)
+    ret_proxy = _net_return(entry, final_close, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps)
     return (1 if ret_proxy > 0 else 0), ret_proxy, final_close
 
 
@@ -258,6 +270,7 @@ def _simulate_martingale_outcome(
     params = params or {}
     trade_plan = params.get("trade_plan") or {}
     levels = trade_plan.get("levels") or {}
+    _, funding_cost_bps = _extract_cost_components(params)
     cost_floor = max(0.0, float(total_cost_bps) / 10_000.0)
 
     step_pct = float(params.get("step_pct") or 0.0) / 100.0
@@ -322,7 +335,7 @@ def _simulate_martingale_outcome(
             hinted_stop = float(sl_price_hint)
             # A fixed absolute stop generated from the original entry can end up on the
             # profitable side of the averaged position after several martingale fills.
-            # Treat such a stale level as invalid and rebuild the stop from avg_entry.
+            # Reuse the hinted stop only while it remains on the loss side of the averaged position.
             if avg_entry > 0 and ((direction == "long" and hinted_stop < avg_entry) or (direction == "short" and hinted_stop > avg_entry)):
                 stop_price = hinted_stop
         if stop_price is None and kill_abs is not None and entry > 0:
@@ -345,23 +358,24 @@ def _simulate_martingale_outcome(
 
         if hit_tp and hit_stop:
             fill = _barrier_fill_price(float(row["open"]), stop_price, direction, "stop")
-            return 0, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns), fill
+            return 0, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), fill
         if hit_tp:
             fill = _barrier_fill_price(float(row["open"]), tp_price, direction, "tp")
-            return 1, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns), fill
+            return 1, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), fill
         if hit_stop:
             fill = _barrier_fill_price(float(row["open"]), stop_price, direction, "stop")
-            return 0, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns), fill
+            return 0, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), fill
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)
-    ret_proxy = _net_return(avg_entry, final_close, direction, total_cost_bps, turns=max(1.0, len(fills)))
+    ret_proxy = _net_return(avg_entry, final_close, direction, total_cost_bps, turns=max(1.0, len(fills)), fixed_cost_bps=funding_cost_bps)
     return (1 if ret_proxy > max(cost_floor, 0.001) else 0), ret_proxy, final_close
 
 
 def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_start: int, ts_end: int, params: dict | None) -> tuple[int, float]:
     params = params or {}
-    cost_floor = _extract_total_cost_bps(params) / 10_000
+    execution_cost_bps, _ = _extract_cost_components(params)
+    cost_floor = execution_cost_bps / 10_000
     lo = params.get("price_range_lower")
     hi = params.get("price_range_upper")
     grid_spacing_pct = float(params.get("grid_spacing_pct") or 0.0)
@@ -375,7 +389,7 @@ def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_
     # Must match recommender-side economics: only ~70% of nominal spacing is usually
     # monetised per completed grid cycle, so the spacing floor has to exceed costs after
     # that haircut. Otherwise outcome labels become systematically too optimistic.
-    min_step_pct = max((cost_floor / 0.70) * 1.15, 0.002)
+    min_step_pct = max((cost_floor / 0.70) * 1.15, 0.0008)
     step_pct = max(grid_spacing_pct / 100.0, min_step_pct)
     step_abs = entry * step_pct
 
@@ -444,7 +458,8 @@ def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_s
 
     params = params or {}
     trade_plan = params.get("trade_plan") or {}
-    cost_floor = _extract_total_cost_bps(params) / 10_000
+    execution_cost_bps, funding_cost_bps = _extract_cost_components(params)
+    cost_floor = execution_cost_bps / 10_000
     step_pct = float(params.get("dca_step_pct") or 0.0) / 100.0
     max_orders = int(params.get("max_orders") or 0)
 
@@ -481,15 +496,15 @@ def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_s
         # rebound happened after the lower fill levels were actually reached.
         if (not filled_this_bar) and high >= tp_price:
             fill = _barrier_fill_price(float(row["open"]), tp_price, "long", "tp")
-            return 1, _net_return(avg_entry, fill, "long", _extract_total_cost_bps(params), turns=turns), fill
+            return 1, _net_return(avg_entry, fill, "long", execution_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), fill
 
         if stop_out_price is not None and low <= float(stop_out_price):
             sop = _barrier_fill_price(float(row["open"]), float(stop_out_price), "long", "stop")
-            return 0, _net_return(avg_entry, sop, "long", _extract_total_cost_bps(params), turns=turns), sop
+            return 0, _net_return(avg_entry, sop, "long", execution_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), sop
 
     final_close = float(rows[-1]["close"])
     avg_entry = sum(fills) / len(fills)
-    ret_proxy = _net_return(avg_entry, final_close, "long", _extract_total_cost_bps(params), turns=max(1.0, 0.5 + 0.5 * len(fills)))
+    ret_proxy = _net_return(avg_entry, final_close, "long", execution_cost_bps, turns=max(1.0, 0.5 + 0.5 * len(fills)), fixed_cost_bps=funding_cost_bps)
     success = 1 if ret_proxy > 0 else 0
     return success, ret_proxy, final_close
 
@@ -498,7 +513,8 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
     min_horizon = min(BOT_HORIZONS.values())
 
     cur = conn.execute(
-        """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction
+        """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
+                  r.params_json, r.features_ref_ts
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.ts <= ? AND o.rec_id IS NULL
@@ -526,13 +542,12 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             })
             continue
 
-        params = _get_rec_params(conn, rec_id)
-        cur_rec = conn.execute(
-            "SELECT features_ref_ts FROM recommendations WHERE rec_id=?",
-            (rec_id,),
-        )
-        rec_row = cur_rec.fetchone()
-        signal_ref_ts = int(rec_row["features_ref_ts"]) if rec_row and rec_row["features_ref_ts"] is not None else ts0
+        import json
+        try:
+            params = json.loads(r["params_json"]) if r["params_json"] else None
+        except Exception:
+            params = None
+        signal_ref_ts = int(r["features_ref_ts"]) if r["features_ref_ts"] is not None else ts0
 
         tradeable = _get_first_tradeable_candle_after(conn, venue, symbol, signal_ref_ts)
         if tradeable is None:
@@ -558,6 +573,11 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             exitp = ep
             price_ret = (exitp - entry) / entry
             success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, params)
+            _, funding_cost_bps = _extract_cost_components(params)
+            if venue == "linear" and funding_cost_bps:
+                ret_proxy -= funding_cost_bps / 10_000.0
+                if ret_proxy <= 0:
+                    success = 0
 
         elif bot_type in DIRECTIONAL_BOTS:
             ep = _get_open_at_or_after(conn, venue, symbol, ts_exit)
@@ -565,8 +585,8 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 continue
             exitp = ep
             price_ret = (exitp - entry) / entry
-            total_cost_bps = _extract_total_cost_bps(params)
-            ret_proxy = _net_return(entry, exitp, direction if direction in ("long", "short") else "long", total_cost_bps) if direction in ("long", "short") else price_ret
+            total_cost_bps, funding_cost_bps = _extract_cost_components(params)
+            ret_proxy = _net_return(entry, exitp, direction if direction in ("long", "short") else "long", total_cost_bps, fixed_cost_bps=funding_cost_bps) if direction in ("long", "short") else price_ret
 
             if bot_type == "futures_combo" or direction == "hedge":
                 vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
@@ -589,13 +609,13 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 else:
                     vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
                     atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.02)
-                    tp_sl = _tp_sl_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, atr_1h, total_cost_bps)
+                    tp_sl = _tp_sl_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, atr_1h, total_cost_bps, fixed_cost_bps=funding_cost_bps)
                     if tp_sl is not None:
                         success, ret_proxy, exitp = tp_sl
                         price_ret = (exitp - entry) / entry
                     else:
                         direction_ret = -price_ret if direction == "short" else price_ret
-                        ret_proxy = direction_ret - (total_cost_bps / 10_000)
+                        ret_proxy = direction_ret - (total_cost_bps / 10_000) - (funding_cost_bps / 10_000)
                         cost_floor = total_cost_bps / 10_000
                         success = 1 if ret_proxy > cost_floor * 0.5 else 0
 
@@ -608,7 +628,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
 
             elif direction in ("long", "short"):
                 cost_floor = total_cost_bps / 10_000
-                ret_proxy = (-price_ret if direction == "short" else price_ret) - cost_floor
+                ret_proxy = (-price_ret if direction == "short" else price_ret) - cost_floor - (funding_cost_bps / 10_000)
                 success = 1 if ret_proxy > 0 else 0
             else:
                 continue

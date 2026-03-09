@@ -704,7 +704,7 @@ def _score(
     elif bot_type == "dca_bot":
         # ATR normalizer 0.12: DCA is more tolerant of volatility (spot accumulation),
         # but it still must respect strong multi-TF bearish context.
-        dir_info = f.get("_direction_agg", {}) if hasattr(f, "get") else {}
+        dir_info = f.get("_direction_agg", {})
         dir_state = str(dir_info.get("direction") or "neutral")
         dir_conf = dir_info.get("direction_confidence_calibrated")
         if dir_conf is None:
@@ -721,7 +721,7 @@ def _score(
             add_neg("short_pressure", short_pressure, -0.85, "сильный multi-TF bearish context конфликтует с long-only DCA")
     elif bot_type == "futures_martingale":
         # Add directional coherence bonus: martingale profits only when direction is clear
-        dir_info = f.get("_direction_agg", {}) if hasattr(f, "get") else {}
+        dir_info = f.get("_direction_agg", {})
         dir_coherence = float((dir_info.get("coherence") or 0.5))
         dir_strength = float(((dir_info.get("strength") or {}).get("all", 0.0) if isinstance(dir_info.get("strength"), dict) else dir_info.get("strength", 0.0)))
         # ATR normalizer 0.06: matches grid scale (martingale blocked above 5% 1h ATR anyway)
@@ -748,7 +748,14 @@ def _score(
         "summary": "Рекомендация в терминах Bybit Trading Bot (Scenario B). Направление определяется голосованием индикаторов на 15m/30m/1h/4h/1d. Сентимент — multi-horizon EWMA (1h/6h/1d/7d) с консолидацией risk_on/off/neutral. Уверенность калибруется на фактических outcome-метках только там, где метка отражает механику стратегии; для futures_combo confidence intentionally remains heuristic because the project does not model full two-leg PnL.",
         "top_positive_factors": sorted(pos, key=lambda x: abs(x["weight"]), reverse=True)[:5],
         "top_negative_factors": sorted(neg, key=lambda x: abs(x["weight"]), reverse=True)[:5],
-        "cost_model": {**cost_model, "spread_bps": spread, "taker_fee_bps": taker_fee_bps, "execution_cost_bps": cost_bps, "total_cost_bps": cost_bps},
+        "cost_model": {
+            **cost_model,
+            "spread_bps": spread,
+            "taker_fee_bps": taker_fee_bps,
+            "execution_cost_bps": float(cost_model.get("execution_cost_bps") or cost_bps),
+            "total_cost_bps": float(cost_model.get("total_cost_bps") or cost_bps),
+            "net_cost_bps": float(cost_model.get("net_cost_bps") or cost_bps),
+        },
         "effective_sentiment": sent,
     }
     return score, conf0, reasons
@@ -1219,7 +1226,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if bot_type == "dca_bot":
                 if sent_agg.get("flags", {}).get("panic") or effective_sent < -0.70:
                     feasibility_blocks.append({"code":"DCA_BLOCKED_PANIC", "msg": f"sentiment={effective_sent:.2f} panic => запрет"})
-                _dca_dir = _dir_agg_cal if hasattr(f, "get") else {}
+                _dca_dir = _dir_agg_cal
                 _dca_dir_state = str(_dca_dir.get("direction") or "neutral")
                 _dca_dir_conf = _dca_dir.get("direction_confidence_calibrated")
                 if _dca_dir_conf is None:
