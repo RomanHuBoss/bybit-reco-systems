@@ -98,7 +98,7 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
 
 LIQUIDITY_TIERS = {
     "high":   20_000_000,   # > $20M/day  — all bots OK
-    "medium":  2_000_000,   # > $2M/day   — grid OK, martingale reduced
+    "medium":  2_000_000,   # > $2M/day   — grid OK
     "low":       500_000,   # > $500K/day — spot grid only, small params
     # below $500K → "micro": grid forbidden
 }

@@ -526,8 +526,8 @@ def collect_sentiment_once() -> list[dict[str, Any]]:
 
     # Global combined
     global_pts = [p for p in pts if p.get("scope") == "global"]
-    combo = combine_global_sentiment(global_pts)
-    if combo:
-        pts.append(combo)
+    merged_point = combine_global_sentiment(global_pts)
+    if merged_point:
+        pts.append(merged_point)
 
     return pts

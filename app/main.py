@@ -25,6 +25,7 @@ from .recommender import run_recommender_once
 from .risk import get_risk_limits, compute_risk_status, gate_candidate
 from .security import is_authorized
 from . import db
+from .bot_types import SUPPORTED_BOT_TYPES, is_supported_bot_type, sql_in_clause
 import logging
 
 logger = logging.getLogger(__name__)
@@ -103,13 +104,7 @@ def _is_supported_execution_direction(bot_type: str, venue: str, direction: str)
         return venue == "spot" and direction in ("neutral", "long")
     if bot_type == "futures_grid":
         return venue == "linear" and direction in ("neutral", "long", "short")
-    if bot_type == "dca_bot":
-        return venue == "spot" and direction == "long"
-    if bot_type == "futures_martingale":
-        return venue == "linear" and direction in ("long", "short")
-    if bot_type == "futures_combo":
-        return venue == "linear" and direction == "hedge"
-    return True
+    return False
 
 
 def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) -> tuple[dict[str, Any], bool]:
@@ -131,8 +126,6 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
 
     if rec["status"] in {"blocked", "no_trade", "suppressed", "expired", "ignored"}:
         raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
-    if rec.get("bot_type") == "futures_combo":
-        raise HTTPException(status_code=409, detail="futures_combo is intentionally non-executable until a real two-leg PnL/execution model exists")
     if not _is_supported_execution_direction(str(rec.get("bot_type") or ""), str(rec.get("venue") or ""), str(rec.get("direction") or "")):
         raise HTTPException(status_code=409, detail="recommendation direction is not executable for this bot_type/venue")
 
@@ -210,10 +203,11 @@ def api_recommendations(
 
         no_trade = True
         if snapshot_ts is not None:
+            _supported_sql, _supported_params = sql_in_clause("bot_type")
             cur = conn.execute(
-                """SELECT COUNT(*) AS c FROM recommendations
-                   WHERE ts=? AND (? IS NULL OR venue=?) AND status='recommended' AND confidence >= ?""",
-                (snapshot_ts, venue, venue, float(effective_min_conf)),
+                f"""SELECT COUNT(*) AS c FROM recommendations
+                   WHERE ts=? AND (? IS NULL OR venue=?) AND {_supported_sql} AND status='recommended' AND confidence >= ?""",
+                [snapshot_ts, venue, venue, *_supported_params, float(effective_min_conf)],
             )
             no_trade = int(cur.fetchone()["c"]) == 0
 
@@ -566,10 +560,13 @@ def api_status() -> dict[str, Any]:
         min_samples = int(settings.calib_min_samples)
         logreg_min_samples = 300
 
+        _supported_sql, _supported_params = sql_in_clause("bot_type")
         cur = conn.execute(
-            """SELECT bot_type, COUNT(*) AS total, COALESCE(SUM(success), 0) AS wins
+            f"""SELECT bot_type, COUNT(*) AS total, COALESCE(SUM(success), 0) AS wins
                    FROM reco_outcomes
-                   GROUP BY bot_type"""
+                   WHERE {_supported_sql}
+                   GROUP BY bot_type""",
+            _supported_params,
         )
         outcome_stats_by_bot: dict[str, dict[str, Any]] = {}
         outcome_count = 0
@@ -589,8 +586,6 @@ def api_status() -> dict[str, Any]:
             }
 
         def _bot_gate(bt: str, total: int, win_rate: float | None, fitted: bool) -> tuple[bool, str | None]:
-            if bt == "futures_combo":
-                return False, "unsupported_proxy_outcome_model"
             if fitted:
                 return True, None
             if total < min_samples:
@@ -603,7 +598,7 @@ def api_status() -> dict[str, Any]:
 
         bot_status = {}
         for bt, key in BOT_CALIB_KEYS.items():
-            m = None if bt == "futures_combo" else load_logreg_from_db(conn, key)
+            m = load_logreg_from_db(conn, key)
             fitted = bool(m and m.fitted)
             logreg_active = bool(m and m.fitted and len(m.coef) > 0)
             stats = outcome_stats_by_bot.get(bt, {"total": 0, "wins": 0, "win_rate": None})
@@ -634,7 +629,7 @@ def api_status() -> dict[str, Any]:
         sent = compute_sentiment_agg(conn, scope="global", key="crypto")
 
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))
-        inference_supported_bot_count = sum(1 for info in bot_status.values() if str(info.get("unfitted_reason") or "") != "unsupported_proxy_outcome_model")
+        inference_supported_bot_count = len(bot_status)
 
         return {
             "calibrator_fitted": calib_fitted,

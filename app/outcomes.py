@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from . import db
+from .bot_types import GRID_BOT_TYPES, SUPPORTED_BOT_TYPES
 import logging
 
 logger = logging.getLogger(__name__)
@@ -8,14 +9,10 @@ logger = logging.getLogger(__name__)
 BOT_HORIZONS: dict[str, int] = {
     "spot_grid": 6 * 3600,
     "futures_grid": 6 * 3600,
-    "dca_bot": 24 * 3600,
-    "futures_martingale": 1 * 3600,
-    "futures_combo": 2 * 3600,
 }
 HORIZON_SEC_DEFAULT = 30 * 60
 
-GRID_BOTS = {"spot_grid", "futures_grid"}
-DIRECTIONAL_BOTS = {"dca_bot", "futures_martingale", "futures_combo"}
+GRID_BOTS = set(GRID_BOT_TYPES)
 
 
 def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_horizon_sec: int) -> tuple[int, bool]:
@@ -39,9 +36,6 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
     bounds = {
         "spot_grid": (6.0, 48.0),
         "futures_grid": (6.0, 48.0),
-        "dca_bot": (12.0, 72.0),
-        "futures_martingale": (1.0, 8.0),
-        "futures_combo": (2.0, 12.0),
     }
     lo, hi = bounds.get(bot_type, (0.5, 72.0))
     return int(max(lo, min(hi, max_hours)) * 3600), False
@@ -52,13 +46,7 @@ def _is_supported_direction(bot_type: str, venue: str, direction: str) -> bool:
         return direction in ("neutral", "long")
     if bot_type == "futures_grid":
         return direction in ("neutral", "long", "short")
-    if bot_type == "dca_bot":
-        return direction == "long"
-    if bot_type == "futures_martingale":
-        return direction in ("long", "short")
-    if bot_type == "futures_combo":
-        return direction == "hedge"
-    return True
+    return False
 
 
 def _get_close_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | None:
@@ -181,217 +169,6 @@ def _net_return(
     return gross - exec_cost_pct - fixed_cost_pct
 
 
-def _turns_from_entry_fills(n_fills: int) -> float:
-    """Approximate round-trip equivalents for N entry fills + one exit.
-
-    N staggered entries plus one final exit represent N + 1 one-way executions, i.e.
-    (N + 1) / 2 round trips in the same bps model used elsewhere in outcomes.
-    """
-    return max(1.0, 0.5 + 0.5 * int(max(1, n_fills)))
-
-
-def _barrier_fill_price(openp: float, barrier: float, direction: str, kind: str) -> float:
-    """Conservative fill proxy for TP/SL barriers on 1m OHLC data.
-
-    Using the raw barrier price for stop-outs is optimistic when the market gaps
-    through the level. We therefore degrade stop fills to the candle open whenever
-    the open is already beyond the stop. For take-profit barriers we allow the
-    better of open/barrier, which is path-consistent for resting limit exits.
-    """
-    openp = float(openp)
-    barrier = float(barrier)
-    kind = str(kind)
-    if direction == "long":
-        if kind == "stop":
-            return min(openp, barrier)
-        return max(openp, barrier)
-    if direction == "short":
-        if kind == "stop":
-            return max(openp, barrier)
-        return min(openp, barrier)
-    return barrier
-
-
-def _tp_sl_outcome(
-    conn,
-    venue: str,
-    symbol: str,
-    entry: float,
-    direction: str,
-    ts_start: int,
-    ts_end: int,
-    atr_1h: float,
-    total_cost_bps: float = 15.0,
-    fixed_cost_bps: float = 0.0,
-) -> tuple[int, float, float] | None:
-    cost_floor = total_cost_bps / 10_000
-    # Legacy fallback only: keep RR close to the published martingale trade plan
-    # (roughly 1 ATR stop vs ~0.9 ATR first TP), not the previously inverted 1:2 RR.
-    tp_pct = max(cost_floor * 1.5, 0.90 * atr_1h)
-    sl_pct = max(cost_floor * 1.5, 1.00 * atr_1h)
-
-    if direction == "long":
-        tp_price = entry * (1.0 + tp_pct)
-        sl_price = entry * (1.0 - sl_pct)
-    else:
-        tp_price = entry * (1.0 - tp_pct)
-        sl_price = entry * (1.0 + sl_pct)
-
-    rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
-    if not rows:
-        return None
-
-    for row in rows:
-        openp = float(row["open"])
-        hi = float(row["high"])
-        lo = float(row["low"])
-        close = float(row["close"])
-        if direction == "long":
-            if hi >= tp_price and lo <= sl_price:
-                fill = _barrier_fill_price(openp, sl_price, direction, "stop")
-                return 0, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
-            if hi >= tp_price:
-                fill = _barrier_fill_price(openp, tp_price, direction, "tp")
-                return 1, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
-            if lo <= sl_price:
-                fill = _barrier_fill_price(openp, sl_price, direction, "stop")
-                return 0, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
-        else:
-            if lo <= tp_price and hi >= sl_price:
-                fill = _barrier_fill_price(openp, sl_price, direction, "stop")
-                return 0, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
-            if lo <= tp_price:
-                fill = _barrier_fill_price(openp, tp_price, direction, "tp")
-                return 1, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
-            if hi >= sl_price:
-                fill = _barrier_fill_price(openp, sl_price, direction, "stop")
-                return 0, _net_return(entry, fill, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps), fill
-
-    final_close = float(rows[-1]["close"])
-    ret_proxy = _net_return(entry, final_close, direction, total_cost_bps, fixed_cost_bps=fixed_cost_bps)
-    return (1 if ret_proxy > 0 else 0), ret_proxy, final_close
-
-
-def _simulate_martingale_outcome(
-    conn,
-    venue: str,
-    symbol: str,
-    entry: float,
-    direction: str,
-    ts_start: int,
-    ts_end: int,
-    params: dict | None,
-    total_cost_bps: float,
-) -> tuple[int, float, float] | None:
-    rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
-    if not rows:
-        return None
-
-    params = params or {}
-    trade_plan = params.get("trade_plan") or {}
-    levels = trade_plan.get("levels") or {}
-    _, funding_cost_bps = _extract_cost_components(params)
-    cost_floor = max(0.0, float(total_cost_bps) / 10_000.0)
-
-    step_pct = float(params.get("step_pct") or 0.0) / 100.0
-    max_steps = int(params.get("max_steps") or 0)
-    if step_pct <= 0:
-        step_pct = max(0.003, cost_floor * 1.25)
-
-    tp_list = levels.get("take_profit") or []
-    tp_price_hint = None
-    if isinstance(tp_list, list) and tp_list:
-        try:
-            tp_price_hint = float((tp_list[0] or {}).get("price"))
-        except Exception:
-            tp_price_hint = None
-    try:
-        sl_price_hint = float((levels.get("stop_loss") or {}).get("price"))
-    except Exception:
-        sl_price_hint = None
-    try:
-        kill_abs = float((levels.get("risk_kill_switch") or {}).get("max_adverse_move"))
-    except Exception:
-        kill_abs = None
-
-    fills = [float(entry)]
-    next_step_idx = 1
-
-    for row in rows:
-        high = float(row["high"])
-        low = float(row["low"])
-        close = float(row["close"])
-        filled_this_bar = False
-
-        while next_step_idx <= max_steps:
-            if direction == "long":
-                ladder_px = entry * (1.0 - step_pct * next_step_idx)
-                triggered = low <= ladder_px
-            else:
-                ladder_px = entry * (1.0 + step_pct * next_step_idx)
-                triggered = high >= ladder_px
-            if triggered:
-                fills.append(ladder_px)
-                next_step_idx += 1
-                filled_this_bar = True
-            else:
-                break
-
-        avg_entry = sum(fills) / len(fills)
-
-        # If trade_plan published explicit absolute TP/SL levels, outcome labelling must
-        # respect those same absolute levels. Re-expressing them as percentages from the
-        # original entry and then rebuilding prices from avg_entry silently moves the stop
-        # farther away after averaging, which overstates martingale survivability.
-        if tp_price_hint is not None:
-            tp_price = float(tp_price_hint)
-            tp_pct = abs(tp_price - avg_entry) / avg_entry if avg_entry > 0 else max(cost_floor * 1.5, 0.0035)
-        else:
-            tp_pct = max(cost_floor * 1.5, 0.0035)
-            tp_price = avg_entry * (1.0 + tp_pct) if direction == "long" else avg_entry * (1.0 - tp_pct)
-
-        stop_price = None
-        if sl_price_hint is not None:
-            hinted_stop = float(sl_price_hint)
-            # A fixed absolute stop generated from the original entry can end up on the
-            # profitable side of the averaged position after several martingale fills.
-            # Reuse the hinted stop only while it remains on the loss side of the averaged position.
-            if avg_entry > 0 and ((direction == "long" and hinted_stop < avg_entry) or (direction == "short" and hinted_stop > avg_entry)):
-                stop_price = hinted_stop
-        if stop_price is None and kill_abs is not None and entry > 0:
-            kill_abs = abs(float(kill_abs))
-            stop_price = entry - kill_abs if direction == "long" else entry + kill_abs
-        if stop_price is None:
-            sl_pct = max(tp_pct * 1.10, cost_floor * 2.0, 0.007)
-            stop_price = avg_entry * (1.0 - sl_pct) if direction == "long" else avg_entry * (1.0 + sl_pct)
-
-        turns = _turns_from_entry_fills(len(fills))
-        if direction == "long":
-            # Conservative intrabar rule: a fresh martingale fill and TP exit from the
-            # averaged entry cannot be proven from OHLC alone. Allow stop/kill-switch on
-            # the same bar, but require TP to happen on a later candle.
-            hit_tp = (not filled_this_bar) and high >= tp_price
-            hit_stop = low <= stop_price
-        else:
-            hit_tp = (not filled_this_bar) and low <= tp_price
-            hit_stop = high >= stop_price
-
-        if hit_tp and hit_stop:
-            fill = _barrier_fill_price(float(row["open"]), stop_price, direction, "stop")
-            return 0, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), fill
-        if hit_tp:
-            fill = _barrier_fill_price(float(row["open"]), tp_price, direction, "tp")
-            return 1, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), fill
-        if hit_stop:
-            fill = _barrier_fill_price(float(row["open"]), stop_price, direction, "stop")
-            return 0, _net_return(avg_entry, fill, direction, total_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), fill
-
-    final_close = float(rows[-1]["close"])
-    avg_entry = sum(fills) / len(fills)
-    ret_proxy = _net_return(avg_entry, final_close, direction, total_cost_bps, turns=_turns_from_entry_fills(len(fills)), fixed_cost_bps=funding_cost_bps)
-    return (1 if ret_proxy > max(cost_floor, 0.001) else 0), ret_proxy, final_close
-
-
 def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_start: int, ts_end: int, params: dict | None) -> tuple[int, float]:
     params = params or {}
     execution_cost_bps, _ = _extract_cost_components(params)
@@ -471,64 +248,6 @@ def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_
     return success, net_proxy
 
 
-def _simulate_dca_long_outcome(conn, venue: str, symbol: str, entry: float, ts_start: int, ts_end: int, params: dict | None) -> tuple[int, float, float] | None:
-    rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
-    if not rows:
-        return None
-
-    params = params or {}
-    trade_plan = params.get("trade_plan") or {}
-    execution_cost_bps, funding_cost_bps = _extract_cost_components(params)
-    cost_floor = execution_cost_bps / 10_000
-    step_pct = float(params.get("dca_step_pct") or 0.0) / 100.0
-    max_orders = int(params.get("max_orders") or 0)
-
-    tp_abs = (((trade_plan.get("levels") or {}).get("take_profit_from_avg") or {}).get("abs"))
-    stop_out_price = (((trade_plan.get("levels") or {}).get("stop_out") or {}).get("price"))
-
-    if step_pct <= 0:
-        step_pct = max(0.003, cost_floor * 1.5)
-
-    fills = [entry]
-    next_order_idx = 1
-
-    for row in rows:
-        low = float(row["low"])
-        high = float(row["high"])
-        close = float(row["close"])
-        filled_this_bar = False
-
-        while next_order_idx <= max_orders:
-            ladder_px = entry * (1.0 - step_pct * next_order_idx)
-            if low <= ladder_px:
-                fills.append(ladder_px)
-                next_order_idx += 1
-                filled_this_bar = True
-            else:
-                break
-
-        avg_entry = sum(fills) / len(fills)
-        turns = _turns_from_entry_fills(len(fills))
-        tp_pct = max(cost_floor * 1.25, (float(tp_abs) / avg_entry) if tp_abs else 0.003)
-        tp_price = avg_entry * (1.0 + tp_pct)
-        # Conservative intrabar sequencing: do not allow a fresh DCA fill and TP exit
-        # from the averaged entry on the same 1m candle. OHLC data cannot prove that the
-        # rebound happened after the lower fill levels were actually reached.
-        if (not filled_this_bar) and high >= tp_price:
-            fill = _barrier_fill_price(float(row["open"]), tp_price, "long", "tp")
-            return 1, _net_return(avg_entry, fill, "long", execution_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), fill
-
-        if stop_out_price is not None and low <= float(stop_out_price):
-            sop = _barrier_fill_price(float(row["open"]), float(stop_out_price), "long", "stop")
-            return 0, _net_return(avg_entry, sop, "long", execution_cost_bps, turns=turns, fixed_cost_bps=funding_cost_bps), sop
-
-    final_close = float(rows[-1]["close"])
-    avg_entry = sum(fills) / len(fills)
-    ret_proxy = _net_return(avg_entry, final_close, "long", execution_cost_bps, turns=_turns_from_entry_fills(len(fills)), fixed_cost_bps=funding_cost_bps)
-    success = 1 if ret_proxy > 0 else 0
-    return success, ret_proxy, final_close
-
-
 def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
     min_horizon = min(BOT_HORIZONS.values())
 
@@ -548,6 +267,9 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
     for r in rows:
         rec_id = r["rec_id"]
         bot_type = r["bot_type"]
+        if bot_type not in SUPPORTED_BOT_TYPES:
+            db.log_decision(conn, "OUTCOME_SKIP_UNSUPPORTED_BOT_TYPE", rec_id, None, {"bot_type": bot_type})
+            continue
         venue = r["venue"]
         symbol = r["symbol"]
         direction = r["direction"]
@@ -603,57 +325,6 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 ret_proxy -= funding_cost_bps / 10_000.0
                 if ret_proxy <= 0:
                     success = 0
-
-        elif bot_type in DIRECTIONAL_BOTS:
-            ep = _get_open_at_or_after(conn, venue, symbol, ts_exit)
-            if ep is None:
-                continue
-            exitp = ep
-            price_ret = (exitp - entry) / entry
-            total_cost_bps, funding_cost_bps = _extract_cost_components(params)
-            ret_proxy = _net_return(entry, exitp, direction if direction in ("long", "short") else "long", total_cost_bps, fixed_cost_bps=funding_cost_bps) if direction in ("long", "short") else price_ret
-
-            if bot_type == "futures_combo" or direction == "hedge":
-                vol = ((params or {}).get("trade_plan") or {}).get("volatility") or {}
-                atr_1h = float(vol.get("atr_pct_1h") or vol.get("atr_pct_used") or 0.0)
-                cost_floor = total_cost_bps / 10_000
-                window = _get_price_range_in_window(conn, venue, symbol, entry_ts, ts_exit)
-                if window is None:
-                    continue
-                min_p, max_p = window
-                realized_move = max(abs(max_p - entry), abs(min_p - entry)) / entry
-                atr_thresh = max(cost_floor * 2.0, 0.020, atr_1h * 0.8 if atr_1h > 0 else 0.0)
-                ret_proxy = realized_move - atr_thresh
-                success = 1 if realized_move > atr_thresh else 0
-
-            elif bot_type == "futures_martingale" and direction in ("long", "short"):
-                sim = _simulate_martingale_outcome(conn, venue, symbol, entry, direction, entry_ts, ts_exit, params, total_cost_bps)
-                if sim is None:
-                    db.log_decision(conn, "OUTCOME_SKIP_NO_1M_PATH", rec_id, None, {
-                        "bot_type": bot_type,
-                        "venue": venue,
-                        "symbol": symbol,
-                        "direction": direction,
-                        "entry_ts": entry_ts,
-                        "ts_exit": ts_exit,
-                    })
-                    continue
-                success, ret_proxy, exitp = sim
-                price_ret = (exitp - entry) / entry
-
-            elif bot_type == "dca_bot" and direction == "long":
-                dca = _simulate_dca_long_outcome(conn, venue, symbol, entry, entry_ts, ts_exit, params)
-                if dca is None:
-                    continue
-                success, ret_proxy, exitp = dca
-                price_ret = (exitp - entry) / entry
-
-            elif direction in ("long", "short"):
-                cost_floor = total_cost_bps / 10_000
-                ret_proxy = (-price_ret if direction == "short" else price_ret) - cost_floor - (funding_cost_bps / 10_000)
-                success = 1 if ret_proxy > 0 else 0
-            else:
-                continue
 
         else:
             continue

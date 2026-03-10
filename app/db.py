@@ -6,6 +6,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Iterable
+from .bot_types import is_supported_bot_type, sql_in_clause
 import logging
 
 logger = logging.getLogger(__name__)
@@ -198,7 +199,10 @@ def _decode_bot_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def get_bot_instance(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any] | None:
     cur = conn.execute("SELECT * FROM bot_instances WHERE bot_id=?", (bot_id,))
-    return _decode_bot_row(cur.fetchone())
+    bot = _decode_bot_row(cur.fetchone())
+    if bot and not is_supported_bot_type(bot.get("bot_type")):
+        return None
+    return bot
 
 
 def get_bot_by_origin_rec(conn: sqlite3.Connection, origin_rec_id: str) -> dict[str, Any] | None:
@@ -211,7 +215,7 @@ def list_bot_instances(conn: sqlite3.Connection, status: str | None = None, limi
         cur = conn.execute("SELECT * FROM bot_instances WHERE status=? ORDER BY started_ts DESC LIMIT ?", (status, limit))
     else:
         cur = conn.execute("SELECT * FROM bot_instances ORDER BY started_ts DESC LIMIT ?", (limit,))
-    return [_decode_bot_row(r) for r in cur.fetchall()]
+    return [bot for r in cur.fetchall() if (bot := _decode_bot_row(r)) and is_supported_bot_type(bot.get("bot_type"))]
 
 
 def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any], merge: bool = True) -> bool:
@@ -322,13 +326,14 @@ def get_bot_trade_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, An
 
 
 def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int, min_conf: float, statuses: list[str] | None = None, snapshot_ts: int | None = None) -> list[dict[str, Any]]:
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
     if snapshot_ts is not None:
-        q = """SELECT * FROM recommendations WHERE ts = ?"""
-        params: list[Any] = [snapshot_ts]
+        q = f"""SELECT * FROM recommendations WHERE ts = ? AND {_supported_sql}"""
+        params: list[Any] = [snapshot_ts, *_supported_params]
     else:
         # Use 24h window so executed/ignored/expired recs remain visible for audit
-        q = """SELECT * FROM recommendations WHERE ts > ?"""
-        params: list[Any] = [now_ts() - 86400]
+        q = f"""SELECT * FROM recommendations WHERE ts > ? AND {_supported_sql}"""
+        params: list[Any] = [now_ts() - 86400, *_supported_params]
     if venue:
         q += " AND venue=?"
         params.append(venue)
@@ -373,7 +378,7 @@ def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int,
 def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str, Any] | None:
     cur = conn.execute("""SELECT * FROM recommendations WHERE rec_id=?""", (rec_id,))
     r = cur.fetchone()
-    if not r:
+    if not r or not is_supported_bot_type(r["bot_type"]):
         return None
     return {
         "rec_id": r["rec_id"],
@@ -581,10 +586,11 @@ def get_outcomes_recent(conn: sqlite3.Connection, limit: int = 2000) -> list[dic
 
 
 def get_latest_reco_ts(conn: sqlite3.Connection, venue: str | None = None) -> int | None:
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
     if venue:
-        cur = conn.execute("""SELECT MAX(ts) AS m FROM recommendations WHERE venue=?""", (venue,))
+        cur = conn.execute(f"""SELECT MAX(ts) AS m FROM recommendations WHERE venue=? AND {_supported_sql}""", [venue, *_supported_params])
     else:
-        cur = conn.execute("""SELECT MAX(ts) AS m FROM recommendations""")
+        cur = conn.execute(f"""SELECT MAX(ts) AS m FROM recommendations WHERE {_supported_sql}""", _supported_params)
     r = cur.fetchone()
     return int(r["m"]) if r and r["m"] is not None else None
 
@@ -698,15 +704,18 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
     This function does not join market regime slices; it reports only overall/by-bot/by-symbol stats.
     """
     # Overall
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
     cur = conn.execute(
-        """SELECT bot_type, direction,
+        f"""SELECT bot_type, direction,
                   COUNT(*) as total,
                   SUM(success) as wins,
                   AVG(ret) as avg_ret,
                   AVG(ABS(ret)) as avg_abs_ret
            FROM reco_outcomes
+           WHERE {_supported_sql}
            GROUP BY bot_type, direction
-           ORDER BY bot_type, direction"""
+           ORDER BY bot_type, direction""",
+        _supported_params,
     )
     by_bot: list[dict] = []
     for r in cur.fetchall():
@@ -724,13 +733,15 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
 
     # By symbol
     cur = conn.execute(
-        """SELECT symbol, bot_type,
+        f"""SELECT symbol, bot_type,
                   COUNT(*) as total,
                   SUM(success) as wins,
                   AVG(ret) as avg_ret
            FROM reco_outcomes
+           WHERE {_supported_sql}
            GROUP BY symbol, bot_type
-           ORDER BY total DESC"""
+           ORDER BY total DESC""",
+        _supported_params,
     )
     by_symbol: list[dict] = []
     for r in cur.fetchall():
@@ -747,7 +758,8 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
 
     # Summary
     cur = conn.execute(
-        """SELECT COUNT(*) as total, SUM(success) as wins FROM reco_outcomes"""
+        f"""SELECT COUNT(*) as total, SUM(success) as wins FROM reco_outcomes WHERE {_supported_sql}""",
+        _supported_params,
     )
     r = cur.fetchone()
     total = int(r["total"] or 0)

@@ -117,7 +117,7 @@ function updateCalibrationUi(items) {
   const summary = summariseCalibState(items || []);
   if (summary.total === 0) {
     const botCalibs = Object.entries(statusPayload?.bot_calibrators || {})
-      .filter(([, info]) => (info?.unfitted_reason || "") !== "unsupported_proxy_outcome_model");
+      ;
     const fittedBots = botCalibs.filter(([, info]) => !!info?.fitted);
     const logregBots = botCalibs.filter(([, info]) => !!info?.logreg_active);
 
@@ -385,7 +385,6 @@ function directionBadge(dir) {
   if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">neutral</span>`;
   if (dir === "long")  return `<span class="dir-badge dir-long">▲ long</span>`;
   if (dir === "short") return `<span class="dir-badge dir-short">▼ short</span>`;
-  if (dir === "hedge") return `<span class="dir-badge dir-neu">⇅ hedge</span>`;
   return `<span class="dir-badge dir-neu">${dir}</span>`;
 }
 
