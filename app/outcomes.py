@@ -17,28 +17,47 @@ GRID_BOTS = set(GRID_BOT_TYPES)
 
 def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_horizon_sec: int) -> tuple[int, bool]:
     params = params or {}
+
+    def _hours_to_sec(value: object) -> int | None:
+        try:
+            hours = float(value)
+        except Exception:
+            return None
+        if hours <= 0:
+            return None
+        return int(hours * 3600)
+
     trade_plan = params.get("trade_plan") or {}
     expected_horizon = trade_plan.get("expected_horizon") or {}
-    max_hours_raw = expected_horizon.get("max_hours")
+
+    # Outcome labeling is bot-mechanics-specific and should mature on the dedicated
+    # label horizon, not on the operator-facing max holding window. Otherwise grid
+    # recommendations can sit 28h/48h without labels even though the intended
+    # evaluation horizon is 6h.
+    explicit_hours = (
+        params.get("label_horizon_hours")
+        or trade_plan.get("label_horizon_hours")
+        or expected_horizon.get("label_horizon_hours")
+    )
+    explicit_sec = _hours_to_sec(explicit_hours)
+    if explicit_sec is not None:
+        return explicit_sec, False
+
     builtin_horizon = BOT_HORIZONS.get(bot_type)
-    if max_hours_raw is None:
-        if builtin_horizon is not None:
-            return int(builtin_horizon), False
-        return int(fallback_horizon_sec), True
+    if builtin_horizon is not None:
+        return int(builtin_horizon), False
 
-    try:
-        max_hours = float(max_hours_raw)
-    except Exception:
-        if builtin_horizon is not None:
-            return int(builtin_horizon), False
-        return int(fallback_horizon_sec), True
+    max_hours_raw = expected_horizon.get("max_hours")
+    max_sec = _hours_to_sec(max_hours_raw)
+    if max_sec is not None:
+        bounds = {
+            "spot_grid": (6.0, 48.0),
+            "futures_grid": (6.0, 48.0),
+        }
+        lo, hi = bounds.get(bot_type, (0.5, 72.0))
+        return int(max(lo, min(hi, max_sec / 3600.0)) * 3600), False
 
-    bounds = {
-        "spot_grid": (6.0, 48.0),
-        "futures_grid": (6.0, 48.0),
-    }
-    lo, hi = bounds.get(bot_type, (0.5, 72.0))
-    return int(max(lo, min(hi, max_hours)) * 3600), False
+    return int(fallback_horizon_sec), True
 
 
 def _is_supported_direction(bot_type: str, venue: str, direction: str) -> bool:
