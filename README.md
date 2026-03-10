@@ -23,6 +23,14 @@
 - убраны лишние ветки scoring/trade-plan/outcome logic для неподдерживаемых стратегий;
 - execution lifecycle, funding/cost model и калибровка оставлены только для активных grid-ботов.
 
+## Что исправлено в этой версии
+- восстановлен `app/recommender.py`: возвращены рабочие `_score`, `_params`, `_expected_rr`, `_mode`;
+- заново собрана логика executable direction после перехода на grid-only (`spot_grid` = `neutral/long`, `futures_grid` = `neutral/long/short`);
+- убраны падения из-за удалённых констант и несуществующих переменных в confidence/scoring pipeline;
+- согласованы score → feature_snapshot → calibration → params → outcome labeling;
+- исправлены остаточные legacy-сообщения про удалённые bot_type;
+- README обновлён под фактическую рабочую grid-only логику.
+
 ## Ограничения дизайна
 - это recommendation/evaluation engine, а не exchange-grade execution simulator;
 - глобальный calibrator хранится для диагностики/статуса, но inference намеренно не использует cross-bot fallback probability;
@@ -39,6 +47,13 @@ python main.py
 ```
 
 API поднимется на `127.0.0.1:8000`.
+
+После старта сервис сам создаст SQLite schema, начнёт фоновые циклы collect/reco/outcomes и будет публиковать рекомендации в `/api/v1/recommendations`.
+
+Для локальной проверки после запуска удобно открыть:
+- `GET /api/v1/status`
+- `GET /api/v1/recommendations`
+- `GET /api/v1/outcomes/stats`
 
 ## Ключевые env
 - `DB_PATH` — путь к SQLite;
@@ -84,6 +99,12 @@ API поднимется на `127.0.0.1:8000`.
 - в inference остались только стратегии с исполнимым outcome model;
 - пустой sentiment теперь создаёт неопределённость, а не сильный `neutral`/`risk_on`;
 - funding penalty/bonus учитывает direction и реальный funding event horizon.
+
+## Техническая заметка по grid-only логике
+- `global_logreg` остаётся в статусе и диагностике, но inference не использует cross-bot probability fallback;
+- если bot-specific calibrator ещё не обучен, confidence остаётся эвристической и дополнительно ограничивается сверху;
+- `params.cost_model` и `trade_plan.cost_model` хранят один и тот же execution baseline, чтобы scoring и outcome labeling смотрели на одинаковую стоимость исполнения;
+- шаг сетки рассчитывается не ниже cost-aware floor, совместимого с `outcomes._grid_outcome()`.
 
 ## Production notes
 - для продакшена используйте внешний process supervisor и backup SQLite;

@@ -23,6 +23,7 @@ from .calibration import (
 BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
+UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: set[str] = set()
 
 def _fmt_tf(tf_sec: int) -> str:
     if tf_sec % 86400 == 0:
@@ -350,44 +351,295 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 def _direction(bot_type: str, agg: dict[str, Any]) -> str:
-    raw_direction = str(agg.get("direction", "neutral"))
+    raw_direction = str((agg or {}).get("direction") or "neutral")
+    if bot_type == "spot_grid":
+        return "long" if raw_direction == "long" else "neutral"
+    if bot_type == "futures_grid":
+        return raw_direction if raw_direction in ("long", "short") else "neutral"
+    return "neutral"
+
+
+def _mode(venue: str, direction: str) -> tuple[str, str]:
+    if venue == "spot":
+        return "spot", "cash"
+    if venue == "linear":
+        # Grid recommendations assume the safer default for derivatives execution.
+        return "futures", "isolated"
+    return "unknown", "unknown"
+
+
+def _score(
+    bot_type: str,
+    venue: str,
+    f: dict[str, Any],
+    taker_fee_bps: float,
+    global_sent: float,
+    cost_model: dict[str, Any] | None = None,
+) -> tuple[float, float, dict[str, Any]]:
+    agg = dict(f.get("_direction_agg") or {})
+    direction = _direction(bot_type, agg)
+    trendiness = float(agg.get("trendiness") or f.get("trend_strength") or 0.0)
+    range_score = float(_clamp(agg.get("range_score") if agg.get("range_score") is not None else (1.0 - trendiness), 0.0, 1.0))
+    coherence = float(_clamp(agg.get("coherence") or 0.5, 0.0, 1.0))
+    dir_conf = agg.get("direction_confidence_calibrated")
+    if dir_conf is None:
+        dir_conf = agg.get("direction_confidence")
+    dir_conf = float(_clamp(dir_conf if dir_conf is not None else 0.5, 0.0, 1.0))
+    regime_conf = float(_clamp(agg.get("regime_confidence") or 0.0, 0.0, 1.0))
+    direction_strength_raw = (agg.get("strength") or {}).get("all") if isinstance(agg.get("strength"), dict) else agg.get("strength")
+    direction_strength = float(_clamp(abs(float(direction_strength_raw or 0.0)), 0.0, 1.0))
+
+    atr_pct_1m = float(f.get("atr_pct") or 0.0)
+    atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
+    atr_pct = float(atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m)
+    sent = float(_clamp(float(global_sent or 0.0), -1.0, 1.0))
+
+    if cost_model is None:
+        cost_model = _estimate_cost_model(bot_type, venue, f, taker_fee_bps, direction)
+    spread = cost_model.get("spread_bps")
+    spread = float(spread) if spread is not None else None
+    execution_cost_bps = float(cost_model.get("execution_cost_bps") or cost_model.get("total_cost_bps") or 0.0)
+    net_cost_bps = float(cost_model.get("net_cost_bps") or execution_cost_bps)
+
+    pos: list[dict[str, Any]] = []
+    neg: list[dict[str, Any]] = []
+
+    def add_pos(feature: str, value: float, weight: float, msg: str) -> None:
+        impact = float(value) * float(weight)
+        if impact <= 0:
+            return
+        pos.append({"feature": feature, "value": float(value), "weight": float(weight), "impact": impact, "msg": msg})
+
+    def add_neg(feature: str, value: float, weight: float, msg: str) -> None:
+        impact = float(value) * float(weight)
+        if impact >= 0:
+            return
+        neg.append({"feature": feature, "value": float(value), "weight": float(weight), "impact": impact, "msg": msg})
+
+    atr_penalty = float(_clamp(atr_pct / 0.06, 0.0, 2.0))
+    spread_penalty = float(_clamp((spread if spread is not None else execution_cost_bps) / 12.0, 0.0, 2.0))
+    cost_penalty = float(_clamp(net_cost_bps / 20.0, 0.0, 2.0))
+    coherence_edge = (coherence - 0.5) * 2.0
 
     if bot_type == "spot_grid":
-        # ATR normalizer 0.06 = 1h ATR at which penalty reaches 1.0 (~6% hourly = high for grid)
-        rule = 1.4*rng - 1.0*trend - 0.6*_clamp(atr_pct/0.06, 0.0, 2.0) + 0.2*max(-0.5, min(0.5, sent))
-        add_pos("range_score", rng, 1.4, "флет/диапазон подходит для Spot Grid")
-        add_neg("trend_strength", trend, -1.0, "сильный тренд опасен для grid")
-        add_neg("atr_pct", atr_pct, -0.6, "высокая волатильность ухудшает grid")
-        add_pos("effective_sentiment", sent, 0.2, "сентимент влияет на риск-режим")
+        raw = (
+            1.35 * range_score
+            - 0.95 * trendiness
+            - 0.60 * atr_penalty
+            - 0.35 * spread_penalty
+            - 0.25 * cost_penalty
+            + 0.16 * coherence_edge
+            + 0.08 * regime_conf
+        )
+        add_pos("range_score", range_score, 1.35, "выраженный диапазон подходит для spot grid")
+        add_neg("trend_strength", trendiness, -0.95, "сильный тренд ухудшает grid")
+        add_neg("atr_pct", atr_penalty, -0.60, "повышенная волатильность снижает качество диапазона")
+        add_neg("spread_bps", spread_penalty, -0.35, "широкий spread съедает grid capture")
+        add_neg("execution_cost_bps", cost_penalty, -0.25, "издержки исполнения снижают ожидаемую доходность")
+        add_pos("coherence", max(0.0, coherence_edge), 0.16, "таймфреймы согласованы")
+        add_pos("regime_confidence", regime_conf, 0.08, "режим рынка определён достаточно уверенно")
+        if direction == "long":
+            long_sent = max(0.0, sent)
+            raw += 0.14 * direction_strength + 0.10 * long_sent
+            add_pos("direction_strength", direction_strength, 0.14, "мягкий bullish bias помогает spot grid")
+            add_pos("effective_sentiment", long_sent, 0.10, "позитивный сентимент поддерживает long-smear grid")
+            if sent < 0:
+                raw += 0.08 * sent
+                add_neg("effective_sentiment", abs(sent), -0.08, "негативный сентимент ухудшает long spot grid")
+        else:
+            raw += 0.03 * max(0.0, range_score - trendiness)
     elif bot_type == "futures_grid":
-        # ATR normalizer 0.06: same scale as spot_grid (both receive 1h ATR)
-        rule = 1.2*rng - 0.9*trend - 0.7*_clamp(atr_pct/0.06, 0.0, 2.0) + 0.2*sent
-        add_pos("range_score", rng, 1.2, "флет подходит для Futures Grid")
-        add_neg("trend_strength", trend, -0.9, "тренд ломает сетку")
-        add_neg("atr_pct", atr_pct, -0.7, "волатильность повышает риск ликвидации")
-        add_pos("effective_sentiment", sent, 0.2, "сентимент учитывается")
+        raw = (
+            1.25 * range_score
+            - 0.90 * trendiness
+            - 0.68 * atr_penalty
+            - 0.35 * spread_penalty
+            - 0.28 * cost_penalty
+            + 0.18 * coherence_edge
+            + 0.08 * regime_conf
+        )
+        add_pos("range_score", range_score, 1.25, "выраженный диапазон подходит для futures grid")
+        add_neg("trend_strength", trendiness, -0.90, "сильный тренд ломает сеточную механику")
+        add_neg("atr_pct", atr_penalty, -0.68, "высокая волатильность повышает риск stop/liquidation")
+        add_neg("spread_bps", spread_penalty, -0.35, "широкий spread снижает net grid capture")
+        add_neg("execution_cost_bps", cost_penalty, -0.28, "издержки исполнения и funding давят на доходность")
+        add_pos("coherence", max(0.0, coherence_edge), 0.18, "таймфреймы согласованы")
+        add_pos("regime_confidence", regime_conf, 0.08, "режим рынка определён достаточно уверенно")
+        if direction in ("long", "short"):
+            signed_sent = sent if direction == "long" else -sent
+            raw += 0.16 * direction_strength + 0.10 * signed_sent
+            add_pos("direction_strength", direction_strength, 0.16, "есть направленный bias внутри диапазона")
+            if signed_sent >= 0:
+                add_pos("effective_sentiment", signed_sent, 0.10, "сентимент поддерживает выбранное направление")
+            else:
+                add_neg("effective_sentiment", abs(signed_sent), -0.10, "сентимент против выбранного направления")
+        else:
+            raw += 0.06 * range_score
     else:
-        rule = 0.0
-    raw = rule - 0.35 * cost_penalty  # was 0.70 — much softer penalty
-    # Divide by 1.5 (was 2.2) for more polarized [-1, +1] scores
-    score = float(_clamp(raw / 1.5, -1.0, 1.0))
-    # Scale raw by 2.5 before sigmoid so conf spans [0.1, 0.9] instead of [0.45, 0.55]
-    conf0 = float(_clamp(_sigmoid(raw * 2.5), 0.0, 1.0))
+        raw = 0.0
+
+    score = float(_clamp(raw / 1.35, -1.0, 1.0))
+    conf_signal = 0.55 * abs(score) + 0.35 * dir_conf + 0.10 * max(0.0, coherence_edge)
+    conf0 = float(_clamp(0.25 + 0.65 * _clamp(conf_signal, 0.0, 1.0), 0.0, 1.0))
+
     reasons = {
-        "summary": "Рекомендация в терминах Bybit Trading Bot (Scenario B). Направление определяется голосованием индикаторов на 15m/30m/1h/4h/1d. Сентимент — multi-horizon EWMA (1h/6h/1d/7d) с консолидацией risk_on/off/neutral. Уверенность калибруется на фактических outcome-метках там, где outcome отражает механику стратегии и исполнимый путь позиции.",
-        "top_positive_factors": sorted(pos, key=lambda x: abs(x["weight"]), reverse=True)[:5],
-        "top_negative_factors": sorted(neg, key=lambda x: abs(x["weight"]), reverse=True)[:5],
+        "summary": "Grid-only scorer: range quality is primary, while trend, volatility and execution costs penalise confidence. Direction is executable-only (spot_grid: neutral/long, futures_grid: neutral/long/short).",
+        "top_positive_factors": sorted(pos, key=lambda x: abs(x["impact"]), reverse=True)[:5],
+        "top_negative_factors": sorted(neg, key=lambda x: abs(x["impact"]), reverse=True)[:5],
         "cost_model": {
-            **cost_model,
+            **dict(cost_model or {}),
             "spread_bps": spread,
-            "taker_fee_bps": taker_fee_bps,
-            "execution_cost_bps": float(cost_model.get("execution_cost_bps") or cost_bps),
-            "total_cost_bps": float(cost_model.get("total_cost_bps") or cost_bps),
-            "net_cost_bps": float(cost_model.get("net_cost_bps") or cost_bps),
+            "taker_fee_bps": float(taker_fee_bps),
+            "execution_cost_bps": execution_cost_bps,
+            "total_cost_bps": float(cost_model.get("total_cost_bps") or execution_cost_bps),
+            "net_cost_bps": net_cost_bps,
         },
-        "effective_sentiment": sent,
+        "effective_sentiment": float(sent),
     }
     return score, conf0, reasons
+
+
+def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | None = None) -> float:
+    if cost_model is None:
+        direction = _direction(bot_type, f.get("_direction_agg") or {})
+        venue = "spot" if bot_type == "spot_grid" else "linear"
+        cost_model = _estimate_cost_model(bot_type, venue, f, 0.0, direction)
+
+    atr_pct_1m = float(f.get("atr_pct") or 0.0)
+    atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
+    atr_pct = float(atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m)
+    trendiness = float((f.get("_direction_agg") or {}).get("trendiness") or f.get("trend_strength") or 0.0)
+    execution_cost_pct = float(cost_model.get("total_cost_bps") or cost_model.get("execution_cost_bps") or 0.0) / 10_000.0
+
+    min_step_pct = max((execution_cost_pct / 0.70) * 1.15, 0.0008)
+    step_pct = max(min_step_pct, atr_pct * (0.55 if bot_type == "spot_grid" else 0.60), 0.0020 if bot_type == "spot_grid" else 0.0025)
+    gross_leg_pct = step_pct * 0.70
+    reward_pct = max(0.0, gross_leg_pct - execution_cost_pct)
+    regime_risk_pct = max(step_pct * (2.6 if bot_type == "futures_grid" else 2.2), atr_pct * (1.35 + trendiness))
+    if regime_risk_pct <= 0:
+        return 0.0
+    return float(_clamp(reward_pct / regime_risk_pct, 0.0, 3.0))
+
+
+def _params(
+    bot_type: str,
+    venue: str,
+    f: dict[str, Any],
+    global_sent: float,
+    direction: str,
+    taker_fee_bps: float,
+    direction_bias: str,
+    direction_bias_strength: float,
+    atr_pct_for_grid: float | None = None,
+    cost_model: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    price = float(f.get("price") or 0.0)
+    if price <= 0:
+        return {"cost_model": dict(cost_model or {})}
+
+    agg = dict(f.get("_direction_agg") or {})
+    trendiness = float(agg.get("trendiness") or f.get("trend_strength") or 0.0)
+    coherence = float(_clamp(agg.get("coherence") or 0.5, 0.0, 1.0))
+    regime = str(agg.get("regime") or "unknown")
+    atr_pct = float(atr_pct_for_grid or f.get("_atr_pct_1h") or f.get("atr_pct") or 0.0)
+    atr_pct = max(atr_pct, 0.0015)
+
+    if cost_model is None:
+        cost_model = _estimate_cost_model(bot_type, venue, f, taker_fee_bps, direction)
+    execution_cost_pct = float(cost_model.get("total_cost_bps") or cost_model.get("execution_cost_bps") or 0.0) / 10_000.0
+    min_step_pct = max((execution_cost_pct / 0.70) * 1.15, 0.0008)
+
+    sentiment_edge = float(_clamp(global_sent, -1.0, 1.0))
+    bias_strength = float(_clamp(abs(direction_bias_strength), 0.0, 1.0))
+
+    if bot_type == "spot_grid":
+        step_pct = max(min_step_pct, atr_pct * (0.52 if direction == "neutral" else 0.48), 0.0020)
+        range_mult = 3.2 if direction == "neutral" else 2.8
+        if regime == "trend":
+            range_mult = max(2.2, range_mult - 0.4)
+        elif regime == "range":
+            range_mult += 0.3
+        span_pct_total = max(step_pct * 6.0, atr_pct * range_mult, 0.012)
+        if direction == "long":
+            lower_mult = 0.42 - 0.08 * max(0.0, sentiment_edge)
+            upper_mult = 0.58 + 0.08 * max(0.0, sentiment_edge)
+        else:
+            lower_mult = 0.50
+            upper_mult = 0.50
+        leverage = 1
+    elif bot_type == "futures_grid":
+        step_pct = max(min_step_pct, atr_pct * (0.55 if direction == "neutral" else 0.50), 0.0022)
+        range_mult = 3.0 if direction == "neutral" else 2.6
+        if regime == "trend":
+            range_mult = max(2.0, range_mult - 0.4)
+        elif regime == "range":
+            range_mult += 0.25
+        span_pct_total = max(step_pct * 6.0, atr_pct * range_mult, 0.014)
+        if direction == "long":
+            lower_mult = 0.40 - 0.06 * max(0.0, sentiment_edge)
+            upper_mult = 0.60 + 0.06 * max(0.0, sentiment_edge)
+        elif direction == "short":
+            lower_mult = 0.60 + 0.06 * min(0.0, sentiment_edge)
+            upper_mult = 0.40 - 0.06 * min(0.0, sentiment_edge)
+        else:
+            lower_mult = 0.50
+            upper_mult = 0.50
+        if atr_pct <= 0.018 and trendiness <= 0.28 and coherence >= 0.55:
+            leverage = 4
+        elif atr_pct <= 0.032 and trendiness <= 0.42:
+            leverage = 3
+        else:
+            leverage = 2
+    else:
+        step_pct = max(min_step_pct, atr_pct * 0.50, 0.0020)
+        span_pct_total = max(step_pct * 6.0, atr_pct * 3.0, 0.012)
+        lower_mult = 0.50
+        upper_mult = 0.50
+        leverage = 1
+
+    lower_mult = float(_clamp(lower_mult, 0.25, 0.75))
+    upper_mult = float(_clamp(upper_mult, 0.25, 0.75))
+    # Preserve full span even after directional skew.
+    mult_sum = max(lower_mult + upper_mult, 1e-9)
+    lower_mult /= mult_sum
+    upper_mult /= mult_sum
+
+    half_span_abs = price * span_pct_total
+    price_range_lower = max(0.0, price - half_span_abs * lower_mult)
+    price_range_upper = price + half_span_abs * upper_mult
+
+    n_steps = max(4, int(round((price_range_upper - price_range_lower) / max(price * step_pct, 1e-12))))
+    grid_levels = int(max(5, min(21, n_steps + 1)))
+
+    if bot_type == "futures_grid" and leverage > 1:
+        # Wider span with leverage increases liquidation risk; keep the advertised range bounded.
+        max_span_pct_total = 0.10 if leverage >= 4 else (0.12 if leverage == 3 else 0.15)
+        if span_pct_total > max_span_pct_total:
+            span_pct_total = max_span_pct_total
+            half_span_abs = price * span_pct_total
+            price_range_lower = max(0.0, price - half_span_abs * lower_mult)
+            price_range_upper = price + half_span_abs * upper_mult
+            n_steps = max(4, int(round((price_range_upper - price_range_lower) / max(price * step_pct, 1e-12))))
+            grid_levels = int(max(5, min(21, n_steps + 1)))
+
+    return {
+        "entry_reference_price": float(price),
+        "price_range_lower": float(price_range_lower),
+        "price_range_upper": float(price_range_upper),
+        "range_span_pct_total": float(span_pct_total * 100.0),
+        "grid_spacing_pct": float(step_pct * 100.0),
+        "grid_levels": int(grid_levels),
+        "leverage": int(leverage),
+        "venue": venue,
+        "direction_bias": str(direction_bias or "neutral"),
+        "direction_bias_strength": bias_strength,
+        "direction": direction,
+        "regime": regime,
+        "coherence": coherence,
+        "atr_pct_used": float(atr_pct),
+        "cost_model": dict(cost_model or {}),
+    }
+
 
 # ── Persistence gate state ───────────────────────────────────────────────────
 # Tracks consecutive recommended cycles for the SAME logical signal.
@@ -582,8 +834,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
     # Use 6h EWMA as the primary numeric sentiment input for scoring
     global_sent = float(sent_agg.get("ewma", {}).get("6h", 0.0))
+    global_sent_has_data = bool((sent_agg.get("data_quality") or {}).get("has_data")) or int(sent_agg.get("n_points_7d") or 0) > 0
     # Per-symbol sentiment map: {SYMBOL: float} blended from RSS/Reddit/CoinGecko
     symbol_sent_map: dict[str, tuple[float, int]] = compute_symbol_sentiment_map(conn)
+    sentiment_has_any_data = bool(global_sent_has_data or any(int(v[1]) > 0 for v in symbol_sent_map.values()))
 
     # LogReg+Platt calibrators (new) — replace legacy Platt-on-score
     global_calibrator  = _load_or_fit_global_logreg(conn, min_samples=settings.calib_min_samples)
@@ -798,8 +1052,6 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             elif liq_tier == "micro":
                 feasibility_blocks.append({"code": "LIQUIDITY_TOO_LOW",
                     "msg": f"turnover24h={turnover} USD < $500K — торговля на неликвидном символе искажает fills/статистику"})
-                feasibility_blocks.append({"code": "LIQUIDITY_LOW_FUTURES",
-                    "msg": f"turnover24h={turnover} USD < $2M — мартингейл/комбо запрещён на низколиквидных"})
             if spread is None:
                 feasibility_blocks.append({"code": "SPREAD_UNKNOWN",
                     "msg": "bid/ask отсутствуют — нельзя надёжно оценить execution cost"})
@@ -823,7 +1075,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # If symbol is highly correlated to BTC, direction is less independent
             beta_info = f.get("_btc_beta", {})
             if beta_info.get("is_btc_driven") and sym != "BTCUSDT":
-                dir_conf = float(_clamp(dir_conf * 0.88, 0.0, 0.99))
+                _dir_agg_cal["direction_confidence_calibrated"] = float(_clamp(float(_dir_agg_cal.get("direction_confidence_calibrated") or _dir_conf_pre) * 0.88, 0.0, 0.99))
             # Block threshold 0.05 = 5% 1h ATR. Old value 0.018 was calibrated for 1m ATR
             # and blocked ALL symbols since typical 1h ATR for small caps is 3–8%.
             # ── Risk gate — uses cached risk_status (computed once per cycle) ──
