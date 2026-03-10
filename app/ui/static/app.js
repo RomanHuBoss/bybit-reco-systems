@@ -488,10 +488,10 @@ async function loadDetails(recId) {
   lines.push("── Факторы ──");
   lines.push("Факторы +:");
   (reasons.top_positive_factors || []).forEach(f =>
-    lines.push(`  + ${f.text} (${f.feature}=${fmt(f.value, 4)})`));
+    lines.push(`  + ${f.msg} (${f.feature}=${fmt(f.value, 4)})`));
   lines.push("Факторы -:");
   (reasons.top_negative_factors || []).forEach(f =>
-    lines.push(`  - ${f.text} (${f.feature}=${fmt(f.value, 4)})`));
+    lines.push(`  - ${f.msg} (${f.feature}=${fmt(f.value, 4)})`));
 
   // Liquidity + futures meta
   const liq = reasons.liquidity || {};
