@@ -60,12 +60,14 @@ function confCell(item) {
   let marker = "";
   if (!fitted) {
     const src = confModel.source || "raw";
-    marker = ` <span class='conf-warn-icon' title='Не откалибровано: используется ${src}'>⚠</span>`;
+    const cap = confModel.heuristic_cap;
+    const capText = (cap === null || cap === undefined) ? "" : `; cap≤${Number(cap).toFixed(2)}`;
+    marker = ` <span class='conf-mode-tag conf-mode-raw' title='Не откалибровано: ${src}${capText}'>raw</span>`;
   } else if (logregActive) {
-    marker = " <span class='conf-ok-icon' title='Откалибровано: LogReg + Platt'>✓</span>";
+    marker = " <span class='conf-mode-tag conf-mode-cal' title='Откалибровано: LogReg + Platt'>cal</span>";
   } else {
     const nSamples = Number(confModel.n_samples || 0);
-    marker = ` <span class='conf-soft-icon' title='Частично откалибровано: Platt only (n=${nSamples})'>~</span>`;
+    marker = ` <span class='conf-mode-tag conf-mode-platt' title='Частично откалибровано: Platt only (n=${nSamples})'>platt</span>`;
   }
 
   return `<span class="${cls}">${v.toFixed(2)}${marker}</span>`;
@@ -101,7 +103,11 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
   }
 
   if ((info?.unfitted_reason || "") === "degenerate_win_rate") {
-    return `${botType}: калибровка отключена из-за вырожденных меток (побед=${wins}, поражений=${losses}, effective=${effective} / ${needed}, win-rate=${winRateText}). Всего исходов в базе: ${allText}.`;
+    const minority = Number(info?.minority_class_count || Math.min(wins, losses) || 0);
+    const recent7d = Number(info?.outcomes_7d || 0) > 0
+      ? ` За 7д: побед=${Number(info?.wins_7d || 0)}, поражений=${Number(info?.losses_7d || 0)}.`
+      : "";
+    return `${botType}: raw-only, калибровка отключена из-за вырожденных меток (minority=${minority}, effective=${effective} / ${needed}, win-rate=${winRateText}, entropy=${fmt(info?.class_entropy_bits, 3)}). Всего исходов в базе: ${allText}.${recent7d}`;
   }
   if ((info?.unfitted_reason || "") === "pending_refit") {
     return `${botType}: исходов уже достаточно (effective=${effective} / ${needed}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}). Модель ещё не обновлена в текущем цикле.`;
@@ -438,7 +444,12 @@ async function loadDetails(recId) {
   lines.push(`score=${fmt(it.score)} conf=${fmt(it.confidence)} expRR=${fmt(it.expected_rr)} riskScore=${fmt(it.risk_score)}`);
   lines.push(`status=${it.status}`);
   if (!confModel.fitted) {
-    lines.push(`⚠ conf НЕ откалибрована (нет данных)`);
+    const src = confModel.source || "raw";
+    const cap = confModel.heuristic_cap;
+    const capText = (cap === null || cap === undefined) ? "" : `; cap≤${fmt(cap)}`;
+    const gateText = confModel.confidence_gate_applied ? "gate=on" : "gate=off";
+    lines.push(`⚠ RAW heuristic confidence (${src}; ${gateText}${capText})`);
+    if (confModel.note) lines.push(`  ${confModel.note}`);
   } else if (confModel.logreg_active) {
     lines.push(`✓ LogReg + Platt (n=${confModel.n_samples}) a=${fmt(confModel.a,3)} b=${fmt(confModel.b,3)}`);
   } else {

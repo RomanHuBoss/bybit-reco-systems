@@ -188,82 +188,160 @@ def _net_return(
     return gross - exec_cost_pct - fixed_cost_pct
 
 
-def _grid_outcome(conn, venue: str, symbol: str, entry: float, exitp: float, ts_start: int, ts_end: int, params: dict | None) -> tuple[int, float]:
+def _grid_outcome(
+    conn,
+    venue: str,
+    symbol: str,
+    entry: float,
+    exitp: float,
+    ts_start: int,
+    ts_end: int,
+    direction: str,
+    params: dict | None,
+) -> tuple[int, float]:
     params = params or {}
     execution_cost_bps, _ = _extract_cost_components(params)
-    cost_floor = execution_cost_bps / 10_000
-    lo = params.get("price_range_lower")
-    hi = params.get("price_range_upper")
+    cost_floor = execution_cost_bps / 10_000.0
     grid_spacing_pct = float(params.get("grid_spacing_pct") or 0.0)
     grid_levels = int(params.get("grid_levels") or 0)
 
-    price_window = _get_price_range_in_window(conn, venue, symbol, ts_start, ts_end)
-    if price_window is None or not entry:
+    trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}
+    range_block = levels.get("range") if isinstance(levels.get("range"), dict) else {}
+    kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
+
+    def _num(value: object) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    lo = _num(params.get("price_range_lower"))
+    hi = _num(params.get("price_range_upper"))
+    if lo is None:
+        lo = _num(range_block.get("lower"))
+    if hi is None:
+        hi = _num(range_block.get("upper"))
+    ks_lo = _num(kill_switch.get("lower")) if kill_switch else None
+    ks_hi = _num(kill_switch.get("upper")) if kill_switch else None
+    if ks_lo is None:
+        ks_lo = lo
+    if ks_hi is None:
+        ks_hi = hi
+
+    rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
+    if not rows or not entry:
         return 0, -cost_floor
 
-    min_p, max_p = price_window
-    # Must match recommender-side economics: only ~70% of nominal spacing is usually
-    # monetised per completed grid cycle, so the spacing floor has to exceed costs after
-    # that haircut. Otherwise outcome labels become systematically too optimistic.
+    closes = [float(r["close"]) for r in rows]
+    min_p = min(float(r["low"]) for r in rows)
+    max_p = max(float(r["high"]) for r in rows)
+
+    # Must match recommender-side economics: only a fraction of nominal spacing is
+    # usually monetised after inventory skew, partial fills and queue priority.
+    # Keep the same break-even floor as the recommender and then add an extra
+    # execution haircut so labels do not become unrealistically optimistic.
     min_step_pct = max((cost_floor / 0.70) * 1.15, 0.0008)
     step_pct = max(grid_spacing_pct / 100.0, min_step_pct)
     step_abs = entry * step_pct
 
-    # Conservative path approximation.
-    # A grid should earn on back-and-forth traversals between levels, not on a single
-    # monotonic drift that merely spans many levels. The previous implementation used
-    # only (max - min) inside the window and therefore could mark a one-way move inside
-    # the range as successful despite zero round-trips.
     completed_steps = 0
-    if step_abs > 0 and lo is not None and hi is not None and float(hi) > float(lo):
-        rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
-        closes = [float(r["close"]) for r in rows] if rows else []
-        if closes:
-            lower = float(lo)
-            upper = float(hi)
-            n_levels = max(1, int(round((upper - lower) / step_abs)))
+    in_range_ratio = 0.0
+    range_span_pct = 0.0
+    if step_abs > 0.0 and lo is not None and hi is not None and hi > lo:
+        lower = float(lo)
+        upper = float(hi)
+        n_levels = max(1, int(round((upper - lower) / max(step_abs, 1e-12))))
 
-            def _level_idx(px: float) -> int:
-                rel = (px - lower) / max(step_abs, 1e-12)
-                return max(0, min(n_levels, int(rel)))
+        def _level_idx(px: float) -> int:
+            rel = (px - lower) / max(step_abs, 1e-12)
+            return max(0, min(n_levels, int(rel)))
 
-            idx_prev = _level_idx(closes[0])
-            up_moves = 0
-            down_moves = 0
-            for px in closes[1:]:
-                idx_now = _level_idx(px)
-                delta = idx_now - idx_prev
-                if delta > 0:
-                    up_moves += delta
-                elif delta < 0:
-                    down_moves += -delta
-                idx_prev = idx_now
+        idx_prev = _level_idx(closes[0])
+        up_moves = 0
+        down_moves = 0
+        for px in closes[1:]:
+            idx_now = _level_idx(px)
+            delta = idx_now - idx_prev
+            if delta > 0:
+                up_moves += delta
+            elif delta < 0:
+                down_moves += -delta
+            idx_prev = idx_now
 
-            completed_steps = min(up_moves, down_moves)
-            if grid_levels > 0:
-                completed_steps = min(completed_steps, grid_levels)
+        completed_steps = min(up_moves, down_moves)
+        if grid_levels > 0:
+            completed_steps = min(completed_steps, grid_levels)
 
-    # Approximate per-leg grid capture using the same ~0.6-0.8 step heuristic as trade_plan.
-    # Do not impose an optimistic minimum gross leg above the actual configured spacing:
-    # that would fabricate profitable labels on grids whose advertised step is still below
-    # economic break-even.
-    gross_leg_pct = step_pct * 0.70
+        in_range_ratio = sum(1 for px in closes if lower <= px <= upper) / max(1, len(closes))
+        range_span_pct = max(0.0, (upper - lower) / entry)
+
+    fill_efficiency = 0.58 if direction == "neutral" else 0.62
+    gross_leg_pct = step_pct * fill_efficiency
     gross_proxy = completed_steps * gross_leg_pct
     net_proxy = gross_proxy - (max(1, completed_steps) * cost_floor)
 
-    if lo and hi and lo > 0 and hi > lo:
-        range_breach = (min_p < lo * 0.995) or (max_p > hi * 1.005)
-        in_range_at_exit = lo <= exitp <= hi
-        if range_breach:
-            net_proxy -= max(cost_floor, abs(min(lo - min_p, 0.0)) / entry, abs(max(max_p - hi, 0.0)) / entry)
-        if not in_range_at_exit:
-            net_proxy -= abs((exitp - entry) / entry)
-        success = 1 if (completed_steps >= 1 and net_proxy > 0) else 0
-        return success, net_proxy
+    # A grid is meant to harvest oscillation, not trend-following drift. Penalise any
+    # unresolved displacement that remains at the end of the label horizon.
+    raw_end_drift = abs((exitp - entry) / entry) if entry else 0.0
+    signed_drift = _signed_return(entry, exitp, direction)
+    if direction == "neutral":
+        net_proxy -= raw_end_drift
+    else:
+        aligned_drift = max(0.0, signed_drift)
+        adverse_drift = max(0.0, -signed_drift)
+        net_proxy -= adverse_drift * 1.15
+        net_proxy -= aligned_drift * 0.25
 
-    end_drift = abs((exitp - entry) / entry) if entry else 0.0
-    net_proxy -= end_drift
-    success = 1 if (end_drift < 0.015 and completed_steps >= 1 and net_proxy > 0) else 0
+    main_breach_pct = 0.0
+    kill_switch_breach_pct = 0.0
+    exit_outside_pct = 0.0
+    if lo is not None and hi is not None and hi > lo:
+        lower = float(lo)
+        upper = float(hi)
+        below_main = max(0.0, lower - min_p) / entry
+        above_main = max(0.0, max_p - upper) / entry
+        main_breach_pct = below_main + above_main
+        if main_breach_pct > 0.0:
+            net_proxy -= 0.60 * main_breach_pct
+
+        if ks_lo is not None and ks_hi is not None and ks_hi > ks_lo:
+            below_ks = max(0.0, float(ks_lo) - min_p) / entry
+            above_ks = max(0.0, max_p - float(ks_hi)) / entry
+            kill_switch_breach_pct = below_ks + above_ks
+            if kill_switch_breach_pct > 0.0:
+                net_proxy -= (1.25 * kill_switch_breach_pct) + cost_floor
+
+        if exitp < lower:
+            exit_outside_pct = (lower - exitp) / entry
+        elif exitp > upper:
+            exit_outside_pct = (exitp - upper) / entry
+        if exit_outside_pct > 0.0:
+            net_proxy -= max(cost_floor * 0.75, exit_outside_pct * 0.75)
+
+    min_range_ratio = 0.58 if direction == "neutral" else 0.45
+    if in_range_ratio > 0.0 and in_range_ratio < min_range_ratio:
+        occupancy_penalty_base = max(range_span_pct * 0.85, step_pct * 2.0)
+        net_proxy -= (min_range_ratio - in_range_ratio) * occupancy_penalty_base
+
+    # A single profitable leg is too easy to obtain on noisy data and was one of the
+    # reasons why historical win-rate inflated toward ~100%. Require at least two
+    # matched oscillation legs plus a buffer above explicit trading costs.
+    min_steps_required = 2
+    required_profit = max(
+        cost_floor * (1.60 if direction == "neutral" else 1.35),
+        gross_leg_pct * (1.20 if direction == "neutral" else 0.95),
+        0.0005,
+    )
+
+    success = int(
+        completed_steps >= min_steps_required
+        and (in_range_ratio == 0.0 or in_range_ratio >= min_range_ratio)
+        and kill_switch_breach_pct <= 1e-12
+        and net_proxy > required_profit
+    )
     return success, net_proxy
 
 
@@ -338,7 +416,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 continue
             exitp = ep
             price_ret = (exitp - entry) / entry
-            success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, params)
+            success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, direction, params)
             _, funding_cost_bps = _extract_cost_components(params)
             if venue == "linear" and funding_cost_bps:
                 ret_proxy -= funding_cost_bps / 10_000.0

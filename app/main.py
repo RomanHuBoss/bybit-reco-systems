@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import threading
@@ -31,6 +32,7 @@ import logging
 logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
+OUTCOME_LABEL_VERSION = "grid_label_v2"
 
 
 def _get_conn():
@@ -43,6 +45,33 @@ def _bootstrap_db() -> None:
         active = db.get_active_risk_limits(conn)
         if not active:
             db.upsert_risk_limits(conn, version="bootstrap", limits=settings.risk_limits, is_active=True)
+
+        current_label_version = db.get_app_config_json(conn, "outcome_label_version")
+        if current_label_version != OUTCOME_LABEL_VERSION:
+            from .calibration import BOT_CALIB_KEYS, GLOBAL_LOGREG_KEY
+
+            deleted_outcomes = conn.execute("DELETE FROM reco_outcomes").rowcount
+            keys_to_delete = [GLOBAL_LOGREG_KEY, *BOT_CALIB_KEYS.values(), "platt_direction_v3"]
+            qmarks = ",".join("?" for _ in keys_to_delete)
+            deleted_calibrators = 0
+            if qmarks:
+                deleted_calibrators = conn.execute(
+                    f"DELETE FROM app_config WHERE key IN ({qmarks})",
+                    keys_to_delete,
+                ).rowcount
+            db.set_app_config_json(conn, "outcome_label_version", OUTCOME_LABEL_VERSION)
+            db.log_decision(
+                conn,
+                "OUTCOME_LABEL_VERSION_RESET",
+                None,
+                None,
+                {
+                    "version": OUTCOME_LABEL_VERSION,
+                    "previous_version": current_label_version,
+                    "deleted_outcomes": int(deleted_outcomes or 0),
+                    "deleted_calibrators": int(deleted_calibrators or 0),
+                },
+            )
 
 
 _bootstrap_db()
@@ -574,15 +603,22 @@ def api_status() -> dict[str, Any]:
             total = int(row["total"] or 0)
             wins = int(row["wins"] or 0)
             losses = max(0, total - wins)
-            effective_samples = max(0, 2 * min(wins, losses))
+            minority_class_count = min(wins, losses)
+            effective_samples = max(0, 2 * minority_class_count)
             outcome_count += total
             win_rate = float(wins / total) if total else None
+            if win_rate is None or win_rate <= 0.0 or win_rate >= 1.0:
+                class_entropy_bits = 0.0
+            else:
+                class_entropy_bits = float(-(win_rate * math.log2(win_rate) + (1.0 - win_rate) * math.log2(1.0 - win_rate)))
             outcome_stats_by_bot[str(row["bot_type"])] = {
                 "total": total,
                 "wins": wins,
                 "losses": losses,
+                "minority_class_count": minority_class_count,
                 "effective_samples": effective_samples,
                 "win_rate": round(win_rate, 4) if win_rate is not None else None,
+                "class_entropy_bits": round(class_entropy_bits, 4),
             }
 
         def _bot_gate(bt: str, total: int, win_rate: float | None, fitted: bool) -> tuple[bool, str | None]:
@@ -596,6 +632,23 @@ def api_status() -> dict[str, Any]:
                 return False, "degenerate_win_rate"
             return True, "pending_refit"
 
+        cur = conn.execute(
+            f"""SELECT bot_type, COUNT(*) AS total, COALESCE(SUM(success), 0) AS wins
+                   FROM reco_outcomes
+                   WHERE ts >= ? AND {_supported_sql}
+                   GROUP BY bot_type""",
+            [db.now_ts() - 7 * 86400, *_supported_params],
+        )
+        outcome_stats_7d_by_bot: dict[str, dict[str, int]] = {}
+        for row in cur.fetchall():
+            total = int(row["total"] or 0)
+            wins = int(row["wins"] or 0)
+            outcome_stats_7d_by_bot[str(row["bot_type"])] = {
+                "total": total,
+                "wins": wins,
+                "losses": max(0, total - wins),
+            }
+
         bot_status = {}
         for bt, key in BOT_CALIB_KEYS.items():
             m = load_logreg_from_db(conn, key)
@@ -608,15 +661,28 @@ def api_status() -> dict[str, Any]:
                 float(stats["win_rate"]) if stats["win_rate"] is not None else None,
                 fitted,
             )
+            recent7d = outcome_stats_7d_by_bot.get(bt, {"total": 0, "wins": 0, "losses": 0})
+            confidence_mode = "raw_only"
+            if fitted and logreg_active:
+                confidence_mode = "bot_logreg"
+            elif fitted:
+                confidence_mode = "bot_platt"
             bot_status[bt] = {
                 "fitted": fitted,
                 "logreg_active": logreg_active,
                 "n_samples": int(m.n_samples) if m and m.fitted else 0,
+                "last_fit_ts": int(m.saved_ts) if m and m.fitted else 0,
+                "confidence_mode": confidence_mode,
                 "outcomes_total": int(stats["total"]),
                 "wins": int(stats["wins"]),
                 "losses": int(stats.get("losses", max(0, int(stats["total"]) - int(stats["wins"])))),
+                "minority_class_count": int(stats.get("minority_class_count", 0)),
                 "effective_samples": int(stats.get("effective_samples", 0)),
                 "win_rate": stats["win_rate"],
+                "class_entropy_bits": float(stats.get("class_entropy_bits", 0.0)),
+                "wins_7d": int(recent7d.get("wins", 0)),
+                "losses_7d": int(recent7d.get("losses", 0)),
+                "outcomes_7d": int(recent7d.get("total", 0)),
                 "eligible_for_fit": bool(eligible),
                 "unfitted_reason": unfitted_reason,
                 "min_samples": min_samples,
@@ -630,6 +696,12 @@ def api_status() -> dict[str, Any]:
 
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))
         inference_supported_bot_count = len(bot_status)
+        if inference_ready_bot_count == 0:
+            confidence_mode_in_use = "raw_only"
+        elif inference_ready_bot_count == inference_supported_bot_count:
+            confidence_mode_in_use = "bot_specific_only"
+        else:
+            confidence_mode_in_use = "mixed_bot_and_raw"
 
         return {
             "calibrator_fitted": calib_fitted,
@@ -637,6 +709,8 @@ def api_status() -> dict[str, Any]:
             "calibrator_n": calib_n,
             "global_calibrator_diagnostic_only": True,
             "inference_calibration_mode": "bot_specific_only",
+            "confidence_mode_in_use": confidence_mode_in_use,
+            "outcome_label_version": OUTCOME_LABEL_VERSION,
             "inference_ready_bot_count": inference_ready_bot_count,
             "inference_supported_bot_count": inference_supported_bot_count,
             "calibrator_params": {

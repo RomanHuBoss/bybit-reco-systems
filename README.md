@@ -13,6 +13,7 @@
 - multi-timeframe direction/regime inference;
 - scoring + risk gating + calibration;
 - outcome labeling для проверки качества рекомендаций;
+- операторский UI с явной маркировкой raw/platt/cal confidence;
 - REST API для рекомендаций, risk status, sentiment, bot lifecycle и trade ingestion;
 - SQLite persistence с decision log и outcome history.
 
@@ -26,8 +27,9 @@
 ## Ограничения дизайна
 - это recommendation/evaluation engine, а не exchange-grade execution simulator;
 - глобальный calibrator хранится для диагностики/статуса, но inference намеренно не использует cross-bot fallback probability;
-- grid outcomes остаются упрощёнными path approximations, но maturity horizon для label/calibration фиксирован по bot_type (сейчас 6h), а не по operator-facing max holding window;
-- risk limits начинают работать полноценно только если в `trades` реально пишутся realized fills/PnL.
+- grid outcomes остаются упрощёнными path approximations, но теперь label success требует не только net>0, а подтверждённых oscillation legs, приемлемого time-in-range и отсутствия kill-switch breach; maturity horizon для label/calibration фиксирован по bot_type (сейчас 6h), а не по operator-facing max holding window;
+- risk limits начинают работать полноценно только если в `trades` реально пишутся realized fills/PnL;
+- при смене версии outcome-labeling сервис автоматически очищает `reco_outcomes` и сохранённые calibrator state, чтобы не смешивать старые мягкие метки с новой логикой.
 
 ## Быстрый запуск
 ```bash
@@ -84,7 +86,9 @@ API поднимется на `127.0.0.1:8000`.
 - в inference остались только стратегии с исполнимым outcome model;
 - пустой sentiment теперь создаёт неопределённость, а не сильный `neutral`/`risk_on`;
 - funding penalty/bonus учитывает direction и реальный funding event horizon;
-- outcome labeling для grid считается на выделенном label horizon, поэтому калибровка не ждёт operator max_hours.
+- raw confidence теперь явно маркируется в UI и режется консервативным cap, чтобы оператор не путал heuristic signal с calibrated probability;
+- confidence gate применяется только когда для bot_type реально есть fitted calibrator;
+- outcome labeling для grid считается на выделенном label horizon, penalizes unresolved drift / range breach и не ждёт operator max_hours.
 
 ## Production notes
 - для продакшена используйте внешний process supervisor и backup SQLite;
@@ -92,3 +96,8 @@ API поднимется на `127.0.0.1:8000`.
 - на mutating endpoints задайте `ADMIN_API_KEY`;
 - не храните реальные секреты в `.env` внутри репозитория;
 - если нужен реальный execution layer, его следует строить отдельно от recommendation engine.
+
+## Что важно после обновления
+- при первом запуске этой версии сервис сам сбросит старые `reco_outcomes` и сохранённые calibrator state (`OUTCOME_LABEL_VERSION_RESET` в `decision_log`), потому что логика меток стала строже и старые outcome rows больше нельзя смешивать с новыми;
+- после сброса win-rate/калибровка временно будут строиться заново по мере накопления свежих исходов;
+- если UI показывает `raw`, это operator-grade heuristic confidence с cap, а не откалиброванная вероятность успеха.

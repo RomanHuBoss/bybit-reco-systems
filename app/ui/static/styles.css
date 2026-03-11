@@ -339,9 +339,32 @@ body {
 .conf-mid  { color: var(--warn); }
 .conf-low  { color: var(--bad); }
 .conf-uncal { color: var(--muted); font-style: italic; }
-.conf-warn-icon { color: var(--warn); font-size: 11px; margin-left: 2px; cursor: help; }
-.conf-ok-icon { color: var(--good); font-size: 11px; margin-left: 2px; cursor: help; }
-.conf-soft-icon { color: var(--text-dim); font-size: 11px; margin-left: 2px; cursor: help; }
+.conf-mode-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  line-height: 1.2;
+  vertical-align: middle;
+  cursor: help;
+  text-transform: lowercase;
+}
+.conf-mode-raw {
+  color: var(--warn);
+  background: rgba(255,176,32,0.08);
+  border-color: rgba(255,176,32,0.28);
+}
+.conf-mode-cal {
+  color: var(--good);
+  background: rgba(51,209,122,0.08);
+  border-color: rgba(51,209,122,0.28);
+}
+.conf-mode-platt {
+  color: var(--muted);
+  background: rgba(255,255,255,0.04);
+}
 
 /* ── details ── */
 .details { white-space: pre-wrap; font-size: 12.5px; line-height: 1.45; }

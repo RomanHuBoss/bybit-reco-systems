@@ -1146,21 +1146,24 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 _cal_source = "raw"
                 _active_cal = None
             # Adaptive blend: calibration weight grows with n_samples.
-            # At n=0 (unfitted): 10% calibrated / 90% raw — mostly raw sigmoid.
-            # At n=80 (min_samples): ~22% calibrated.
-            # At n≥300: 50% calibrated — full trust in the model.
-            # This prevents the cold-start problem where an undertrained calibrator
-            # with degenerate WR drags all confidence toward an extreme value.
-            _n_cal = (_active_cal.n_samples if _active_cal is not None and _active_cal.fitted else 0)
-            _cal_weight = float(_clamp(_n_cal / 300.0, 0.0, 1.0)) * 0.40 + 0.10
+            # Raw-only mode keeps weight=0. Once a bot-specific calibrator exists,
+            # the blend ramps up gradually so a freshly-fitted model does not fully
+            # override the heuristic score on a still-small sample.
+            _heur_cap = None
+            if _active_cal is not None and _active_cal.fitted:
+                _n_cal = int(_active_cal.n_samples)
+                _cal_weight = float(_clamp(_n_cal / 300.0, 0.0, 1.0)) * 0.40 + 0.10
+            else:
+                _n_cal = 0
+                _cal_weight = 0.0
             conf = float(_clamp((1.0 - _cal_weight) * conf_raw + _cal_weight * conf_cal, 0.0, 1.0))
 
             # Heuristic-only confidence must stay visibly conservative.
             if _active_cal is None:
                 _heur_cap = {
-                    "spot_grid": 0.74,
-                    "futures_grid": 0.72,
-                }.get(bot_type, 0.72)
+                    "spot_grid": 0.72,
+                    "futures_grid": 0.70,
+                }.get(bot_type, 0.70)
                 conf = float(min(conf, _heur_cap))
 
             # Context completeness penalty — reduce confidence when key signals are missing.
@@ -1187,12 +1190,14 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
             blocks = list(feasibility_blocks)  # risk_blocks already included via feasibility_blocks.extend()
 
+            confidence_gate_applied = bool(settings.require_conf_gate and _active_cal is not None)
+
             status = "recommended"
             if blocks:
                 status = "blocked"
             elif score < settings.min_score_to_recommend:
                 status = "no_trade"
-            elif settings.require_conf_gate and conf < settings.min_conf_to_recommend:
+            elif confidence_gate_applied and conf < settings.min_conf_to_recommend:
                 status = "no_trade"
 
             risk_score = float(_clamp(atr_pct/0.10, 0.0, 1.0))
@@ -1270,6 +1275,16 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "logreg_active": _cal_source in ("bot_logreg", "global_logreg"),
                 "a": getattr(getattr(_active_cal, "platt", None), "a", None) if _active_cal else None,
                 "b": getattr(getattr(_active_cal, "platt", None), "b", None) if _active_cal else None,
+                "heuristic_cap": float(_heur_cap) if _heur_cap is not None else None,
+                "calibration_weight": float(_cal_weight),
+                "confidence_gate_applied": bool(confidence_gate_applied),
+                "note": (
+                    "Raw heuristic confidence; treat it as an operator signal, not as calibrated probability."
+                    if _active_cal is None else (
+                        "Bot-specific LogReg + Platt calibration is active."
+                        if _cal_source == "bot_logreg" else "Bot-specific Platt-only calibration is active."
+                    )
+                ),
             }
 
             recs.append({
