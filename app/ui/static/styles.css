@@ -494,3 +494,194 @@ body {
 .op-executed { color: var(--good); border-color: rgba(51,209,122,0.35); }
 .op-ignored  { color: var(--muted); }
 .op-expired  { color: #4a5568; border-color: #2d3748; }
+
+/* ── operator / manual UI additions ── */
+.shock-badge,
+.mode-badge {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.mode-badge {
+  color: var(--muted);
+  background: rgba(255,255,255,0.04);
+}
+.shock-normal { color: var(--muted); background: rgba(255,255,255,0.04); }
+.shock-guarded { color: var(--warn); border-color: rgba(255,176,32,0.40); background: rgba(255,176,32,0.10); }
+.shock-lockdown { color: var(--bad); border-color: rgba(255,90,122,0.45); background: rgba(255,90,122,0.10); }
+
+.details {
+  white-space: normal;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.operator-sheet {
+  display: grid;
+  gap: 12px;
+}
+.operator-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+  border-radius: 12px;
+}
+.operator-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+.operator-subtitle {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.operator-hero-metrics {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.metric-chip {
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #0f172a;
+  font-size: 12px;
+  min-width: 88px;
+}
+.metric-chip b {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.operator-card {
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+  border-radius: 12px;
+  padding: 12px;
+}
+.operator-card h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+.operator-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.operator-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.field-box {
+  border: 1px solid var(--border);
+  background: #0f172a;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.field-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.field-value-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.field-value {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.copy-chip,
+.ghost-chip {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.copy-chip:hover,
+.ghost-chip:hover {
+  border-color: #3e6090;
+}
+.alert-card {
+  border-left: 4px solid var(--border);
+}
+.alert-card.guard {
+  border-left-color: var(--warn);
+}
+.alert-card.lock {
+  border-left-color: var(--bad);
+}
+.alert-line {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.alert-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.reason-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+.reason-list li { margin: 3px 0; }
+.helper-text {
+  color: var(--muted);
+  font-size: 12px;
+}
+.section-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.badge-inline {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.badge-good { color: var(--good); border-color: rgba(51,209,122,0.35); }
+.badge-warn { color: var(--warn); border-color: rgba(255,176,32,0.35); }
+.badge-bad { color: var(--bad); border-color: rgba(255,90,122,0.35); }
+.badge-muted { color: var(--muted); }
+.small-blocks {
+  margin-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+.small-block {
+  border: 1px solid var(--border);
+  background: #0f172a;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.small-block code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--warn);
+}
+
+@media (max-width: 1100px) {
+  .grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .operator-grid,
+  .operator-grid.three { grid-template-columns: 1fr; }
+  .operator-hero { flex-direction: column; }
+  .operator-hero-metrics { justify-content: flex-start; }
+}

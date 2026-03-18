@@ -22,7 +22,10 @@
 - генерация, API, GUI, calibration и outcome labeling оставлены только для `spot_grid` и `futures_grid`;
 - legacy-записи с неподдерживаемыми `bot_type` не попадают в read-only выдачу и статусные агрегаты;
 - убраны лишние ветки scoring/trade-plan/outcome logic для неподдерживаемых стратегий;
-- execution lifecycle, funding/cost model и калибровка оставлены только для активных grid-ботов.
+- execution lifecycle, funding/cost model и калибровка оставлены только для активных grid-ботов;
+- добавлен двусторонний `market shock guard` (`amber_down`, `red_down`, `amber_up`, `red_up`, `chaos`) с ручным operator lock/guard режимом;
+- добавлен fast-veto на уровне символа по 1m/3m/5m импульсу против направления;
+- панель деталей переписана под ручной запуск: JSON убран из основной операторской зоны, вместо него выводятся копируемые поля для Bybit (`range`, `grid_levels`, `leverage`, `kill switch`, `TP/SL`).
 
 ## Ограничения дизайна
 - это recommendation/evaluation engine, а не exchange-grade execution simulator;

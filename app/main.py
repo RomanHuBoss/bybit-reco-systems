@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .settings import load_settings
+from .shock_guard import APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .bybit_client import BybitPublicClient
 from .collector import collect_once, collect_futures_once
 from .alerts import check_and_alert
@@ -693,6 +694,7 @@ def api_status() -> dict[str, Any]:
         cur = conn.execute("SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?", (db.now_ts() - 600,))
         collect_errors_10m = int(cur.fetchone()["c"])
         sent = compute_sentiment_agg(conn, scope="global", key="crypto")
+        market_shock = db.get_app_config_json(conn, MARKET_SHOCK_APP_KEY, default={"state": "normal", "title": "Нормальный режим", "severity": "normal", "entry_mode": "normal", "operator_note": "Новые входы разрешены в обычном режиме.", "reasons": [], "metrics": {}})
 
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))
         inference_supported_bot_count = len(bot_status)
@@ -731,6 +733,7 @@ def api_status() -> dict[str, Any]:
                 "flags": sent.get("flags"),
                 "data_quality": sent.get("data_quality"),
             },
+            "market_shock": market_shock,
         }
 
 

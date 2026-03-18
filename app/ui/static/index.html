@@ -12,7 +12,9 @@
     <div class="title">Bybit Recommender — Панель оператора</div>
     <div class="meta">
       <div id="regime" class="regime-badge"></div>
+      <div id="shock-badge" class="shock-badge"></div>
       <div id="sentiment-badge" class="sentiment-badge"></div>
+      <div class="mode-badge">manual</div>
       <div id="lastUpdated" class="muted" style="font-size:12px"></div>
       <div id="refreshCountdown" class="countdown"></div>
       <button id="refreshBtn" class="btn">Обновить</button>
@@ -64,12 +66,7 @@
         </div>
       </div>
     </div>
-    <div class="controls-right">
-      <div class="control control-admin">
-        <label>Admin API key</label>
-        <input id="adminApiKey" type="password" placeholder="X-API-Key для execute/ignore/stop/trades" autocomplete="off"/>
-      </div>
-    </div>
+
   </section>
 
   <div class="filter-bar">
@@ -100,7 +97,7 @@
                 <th id="confHeader" data-sort="confidence" title="Уверенность модели">Увер</th>
                 <th data-sort="expected_rr">Ож.RR</th>
                 <th data-sort="status">Статус</th>
-                <th>Действия</th>
+                <th>Карточка</th>
               </tr>
             </thead>
             <tbody id="recoBody"></tbody>
@@ -112,7 +109,7 @@
         <div class="panel-title panel-title-fixed details-header">Детали
           <span style="float:right;display:inline-flex;gap:6px;margin-top:-4px">
             <button id="refreshDetailsBtn" class="btn tiny secondary hidden">Обновить</button>
-            <button id="copyParamsBtn" class="btn tiny secondary hidden">Скопировать параметры</button>
+            <button id="copyParamsBtn" class="btn tiny secondary hidden">Скопировать лист</button>
           </span>
         </div>
         <div id="details" class="details details-scroll muted">Выберите рекомендацию.</div>

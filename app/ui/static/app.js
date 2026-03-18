@@ -31,6 +31,235 @@ function timeAgo(ts) {
   return `${Math.floor(sec/3600)}ч назад`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function fmtPrice(x) {
+  if (x === null || x === undefined || x === "") return "—";
+  const v = Number(x);
+  if (Number.isNaN(v)) return String(x);
+  const av = Math.abs(v);
+  const frac = av >= 1000 ? 2 : av >= 1 ? 4 : 6;
+  return v.toLocaleString("ru-RU", { maximumFractionDigits: frac });
+}
+
+function fmtPct(x, n = 2) {
+  if (x === null || x === undefined || x === "") return "—";
+  const v = Number(x);
+  if (Number.isNaN(v)) return String(x);
+  return `${v >= 0 ? "+" : ""}${v.toFixed(n)}%`;
+}
+
+function directionRu(dir) {
+  if (dir === "long") return "Лонг";
+  if (dir === "short") return "Шорт";
+  return "Нейтральный";
+}
+
+function botTypeLabel(botType) {
+  if (botType === "futures_grid") return "Фьючерсный grid";
+  if (botType === "spot_grid") return "Спотовый grid";
+  return botType || "—";
+}
+
+function venueLabel(venue) {
+  if (venue === "linear") return "Фьючерсы";
+  if (venue === "spot") return "Спот";
+  return venue || "—";
+}
+
+function statusBadgeHtml(status) {
+  let cls = "badge-inline badge-muted";
+  if (status === "recommended") cls = "badge-inline badge-good";
+  else if (status === "blocked") cls = "badge-inline badge-bad";
+  else if (status === "no_trade") cls = "badge-inline badge-warn";
+  return `<span class="${cls}">${escapeHtml(status || "—")}</span>`;
+}
+
+function shockBadgeHtml(shock) {
+  const severity = (shock || {}).severity || "normal";
+  const cls = severity === "lockdown" ? "shock-badge shock-lockdown" : severity === "guarded" ? "shock-badge shock-guarded" : "shock-badge shock-normal";
+  const text = (shock || {}).title || "Нормальный режим";
+  return `<span class="${cls}">${escapeHtml(text)}</span>`;
+}
+
+function copyButton(copyValue) {
+  if (!copyValue && copyValue !== 0) return "";
+  return `<button class="copy-chip" data-act="copy-field" data-copy="${escapeHtml(copyValue)}">копия</button>`;
+}
+
+function fieldBox(label, value, copyValue = null) {
+  const effectiveCopy = copyValue === null ? value : copyValue;
+  return `
+    <div class="field-box">
+      <div class="field-label">${escapeHtml(label)}</div>
+      <div class="field-value-row">
+        <div class="field-value">${escapeHtml(value ?? "—")}</div>
+        ${copyButton(effectiveCopy)}
+      </div>
+    </div>
+  `;
+}
+
+function buildLaunchSheetText(it) {
+  const params = (it || {}).params || {};
+  const plan = params.trade_plan || {};
+  const ks = (((plan || {}).levels || {}).kill_switch) || {};
+  const tpPerLeg = (((plan || {}).levels || {}).tp_per_leg) || {};
+  const shock = ((it || {}).reasons || {}).market_shock || {};
+  const lines = [];
+  lines.push(`${it.symbol} | ${botTypeLabel(it.bot_type)} | ${directionRu(it.direction)}`);
+  lines.push(`Площадка: ${venueLabel(it.venue)}`);
+  lines.push(`Режим: ${directionRu(it.direction)}`);
+  lines.push(`Диапазон: ${fmtPrice(params.price_range_lower)} — ${fmtPrice(params.price_range_upper)}`);
+  lines.push(`Кол-во сеток: ${params.grid_levels ?? "—"}`);
+  lines.push(`Шаг сетки: ${fmt(params.grid_spacing_pct, 4)}%`);
+  lines.push(`Референс цены: ${fmtPrice(params.price_ref)}`);
+  if (it.venue === "linear") lines.push(`Плечо: x${params.leverage ?? 1} | Маржа: ${params.margin_mode || "isolated"}`);
+  if (it.direction === "neutral") {
+    lines.push(`Нижняя стоп-цена: ${fmtPrice(ks.lower)}`);
+    lines.push(`Верхняя стоп-цена: ${fmtPrice(ks.upper)}`);
+  } else if (it.direction === "long") {
+    lines.push(`Stop-loss: ${fmtPrice(ks.lower)}`);
+    lines.push(`Take-profit: ${fmtPrice(ks.upper)}`);
+  } else if (it.direction === "short") {
+    lines.push(`Take-profit: ${fmtPrice(ks.lower)}`);
+    lines.push(`Stop-loss: ${fmtPrice(ks.upper)}`);
+  }
+  lines.push(`Kill switch: ${fmtPrice(ks.lower)} — ${fmtPrice(ks.upper)}`);
+  if (tpPerLeg.pct !== undefined && tpPerLeg.pct !== null) lines.push(`TP на одну ногу: ${fmt(tpPerLeg.pct, 4)}%`);
+  lines.push(`Status: ${it.status}`);
+  if (shock.title) lines.push(`Market guard: ${shock.title}`);
+  if (shock.operator_note) lines.push(`Operator note: ${shock.operator_note}`);
+  return lines.join("\n");
+}
+
+function buildTechPayload(it) {
+  const reasons = (it || {}).reasons || {};
+  return {
+    rec_id: it.rec_id,
+    score: it.score,
+    confidence: it.confidence,
+    expected_rr: it.expected_rr,
+    blocks: it.blocks || [],
+    cost_model: reasons.cost_model || {},
+    market_shock: reasons.market_shock || {},
+    fast_veto: reasons.fast_veto || {},
+    direction_agg: reasons.direction_agg || {},
+    sentiment_agg: reasons.sentiment_agg || {},
+    factors: {
+      positive: reasons.top_positive_factors || [],
+      negative: reasons.top_negative_factors || [],
+    },
+    params: it.params || {},
+  };
+}
+
+function buildDetailsHtml(it) {
+  const reasons = it.reasons || {};
+  const params = it.params || {};
+  const plan = params.trade_plan || {};
+  const levels = plan.levels || {};
+  const ks = levels.kill_switch || {};
+  const tpPerLeg = levels.tp_per_leg || {};
+  const shock = reasons.market_shock || {};
+  const fastVeto = reasons.fast_veto || {};
+  const sentAgg = reasons.sentiment_agg || {};
+  const dirAgg = reasons.direction_agg || {};
+  const funding = reasons.funding || {};
+  const oi = reasons.open_interest || {};
+  const volatility = plan.volatility || {};
+  const blocks = it.blocks || [];
+  const alertClass = (shock.severity || "normal") === "lockdown" ? "lock" : (shock.severity || "normal") === "guarded" ? "guard" : "";
+  const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
+  const copyText = buildLaunchSheetText(it);
+  const techPayload = JSON.stringify(buildTechPayload(it), null, 2);
+
+  $("details").dataset.copyText = copyText;
+  $("details").dataset.tech = techPayload;
+  $("details").dataset.recId = it.rec_id;
+  $("copyParamsBtn").classList.remove("hidden");
+
+  const stopLossLabel = it.direction === "short" ? "Stop-loss (верх)" : it.direction === "long" ? "Stop-loss (низ)" : "Нижняя стоп-цена";
+  const takeProfitLabel = it.direction === "short" ? "Take-profit (низ)" : it.direction === "long" ? "Take-profit (верх)" : "Верхняя стоп-цена";
+  const upperField = fieldBox(takeProfitLabel, fmtPrice(ks.upper), fmtPrice(ks.upper));
+  const lowerField = fieldBox(stopLossLabel, fmtPrice(ks.lower), fmtPrice(ks.lower));
+  const reasonList = (shock.reasons || []).length ? `<ul class="reason-list">${(shock.reasons || []).slice(0, 4).map(r => `<li><code>${escapeHtml(r.code || "signal")}</code> — ${escapeHtml(r.msg || "")}</li>`).join("")}</ul>` : "";
+  const blockCards = blocks.length ? `<div class="small-blocks">${blocks.map(b => `<div class="small-block"><code>${escapeHtml(b.code || "BLOCK")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>` : `<div class="helper-text">Активных блоков нет.</div>`;
+  const fastVetoBlock = fastVeto.triggered ? `<div class="small-block"><code>${escapeHtml((fastVeto.blocks || [])[0]?.code || "FAST_VETO")}</code><br>${escapeHtml((fastVeto.blocks || [])[0]?.msg || "")}</div>` : "";
+
+  return `
+    <div class="operator-sheet">
+      <div class="operator-hero">
+        <div>
+          <div class="operator-title">${escapeHtml(it.symbol)} · ${escapeHtml(botTypeLabel(it.bot_type))}</div>
+          <div class="operator-subtitle">${escapeHtml(venueLabel(it.venue))} · ${escapeHtml(directionRu(it.direction))} · ${statusBadgeHtml(it.status)} · rec_id ${escapeHtml(it.rec_id)}</div>
+        </div>
+        <div class="operator-hero-metrics">
+          <div class="metric-chip"><b>Score</b>${fmt(it.score)}</div>
+          <div class="metric-chip"><b>Confidence</b>${fmt(it.confidence)}</div>
+          <div class="metric-chip"><b>Dir conf</b>${fmt(dirConf)}</div>
+          <div class="metric-chip"><b>Exp RR</b>${fmt(it.expected_rr)}</div>
+        </div>
+      </div>
+
+      <div class="operator-card alert-card ${alertClass}">
+        <h3>Market guard</h3>
+        <div class="alert-line">${shockBadgeHtml(shock)}</div>
+        <div>${escapeHtml(shock.operator_note || "Новые входы разрешены в обычном режиме.")}</div>
+        <div class="alert-note">Breadth вниз: ${fmt(((shock.metrics || {}).breadth_down || 0) * 100, 1)}% · вверх: ${fmt(((shock.metrics || {}).breadth_up || 0) * 100, 1)}% · median 5m: ${fmtPct((((shock.metrics || {}).median_r5m || 0) * 100), 2)}</div>
+        ${reasonList}
+      </div>
+
+      <div class="operator-card">
+        <h3>Лист запуска Bybit</h3>
+        <div class="operator-grid three">
+          ${fieldBox("Режим", directionRu(it.direction), directionRu(it.direction))}
+          ${fieldBox("Диапазон от", fmtPrice(params.price_range_lower), fmtPrice(params.price_range_lower))}
+          ${fieldBox("Диапазон до", fmtPrice(params.price_range_upper), fmtPrice(params.price_range_upper))}
+          ${fieldBox("Кол-во сеток", params.grid_levels ?? "—", params.grid_levels ?? "—")}
+          ${fieldBox("Шаг сетки", `${fmt(params.grid_spacing_pct, 4)}%`, `${fmt(params.grid_spacing_pct, 4)}%`)}
+          ${fieldBox("Референс цены", fmtPrice(params.price_ref), fmtPrice(params.price_ref))}
+          ${it.venue === "linear" ? fieldBox("Плечо", `x${params.leverage ?? 1}`, `x${params.leverage ?? 1}`) : ""}
+          ${it.venue === "linear" ? fieldBox("Маржа", params.margin_mode || "isolated", params.margin_mode || "isolated") : ""}
+          ${lowerField}
+          ${upperField}
+          ${fieldBox("Kill switch", `${fmtPrice(ks.lower)} — ${fmtPrice(ks.upper)}`, `${fmtPrice(ks.lower)} — ${fmtPrice(ks.upper)}`)}
+          ${fieldBox("TP на ногу", tpPerLeg.pct !== undefined && tpPerLeg.pct !== null ? `${fmt(tpPerLeg.pct, 4)}%` : "—", tpPerLeg.pct !== undefined && tpPerLeg.pct !== null ? `${fmt(tpPerLeg.pct, 4)}%` : "—")}
+        </div>
+        <div class="section-actions">
+          <button class="ghost-chip" data-act="show-tech">Техподробности</button>
+        </div>
+        <div class="helper-text">Основной сценарий — ручной запуск на Bybit. JSON убран из основной панели; для копирования доступны отдельные поля и цельный лист запуска.</div>
+      </div>
+
+      <div class="operator-card">
+        <h3>Контекст</h3>
+        <div class="operator-grid">
+          ${fieldBox("Сентимент 6h", fmt(sentAgg.ewma?.["6h"] ?? sentAgg.ewma?.["6h"], 2), fmt(sentAgg.ewma?.["6h"] ?? sentAgg.ewma?.["6h"], 2))}
+          ${fieldBox("Regime", dirAgg.regime || "—", dirAgg.regime || "—")}
+          ${fieldBox("Coherence", fmt(dirAgg.coherence), fmt(dirAgg.coherence))}
+          ${fieldBox("ATR 1h", volatility.atr_pct_1h !== undefined && volatility.atr_pct_1h !== null ? fmtPct(volatility.atr_pct_1h * 100, 2) : "—")}
+          ${fieldBox("Funding", funding.value !== undefined && funding.value !== null ? fmtPct(funding.value * 100, 4) : "—")}
+          ${fieldBox("OI 4h", oi.oi_4h_chg_pct !== undefined && oi.oi_4h_chg_pct !== null ? fmtPct(oi.oi_4h_chg_pct, 2) : "—")}
+        </div>
+        ${fastVeto.triggered ? `<div class="small-blocks">${fastVetoBlock}</div>` : `<div class="helper-text">Fast-veto не сработал.</div>`}
+      </div>
+
+      <div class="operator-card">
+        <h3>Блоки и предостережения</h3>
+        ${blockCards}
+      </div>
+    </div>
+  `;
+}
+
 function pillStatus(status) {
   let cls = "pill";
   if (status === "recommended") cls += " good";
@@ -244,6 +473,15 @@ async function loadStatus() {
       errBanner.classList.add("hidden");
     }
 
+    const shock = s.market_shock || {};
+    const shockEl = $("shock-badge");
+    if (shockEl) {
+      const severity = shock.severity || "normal";
+      shockEl.className = severity === "lockdown" ? "shock-badge shock-lockdown" : severity === "guarded" ? "shock-badge shock-guarded" : "shock-badge shock-normal";
+      shockEl.textContent = `Guard: ${shock.title || "Нормальный режим"}`;
+      shockEl.title = shock.operator_note || "";
+    }
+
     // sentiment badge
     const sent = s.sentiment || {};
     const ewma = sent.ewma_6h;
@@ -365,27 +603,29 @@ function renderRecoTable(items) {
       <td>${i + 1}</td>
       <td><span class="venue-pill venue-${it.venue}">${it.venue}</span></td>
       <td><b>${it.symbol}</b></td>
-      <td><span class="bot-pill">${it.bot_type}</span></td>
+      <td><span class="bot-pill">${botTypeLabel(it.bot_type)}</span></td>
       <td>${directionBadge(it.direction)}</td>
       <td>${dirConfCell(dirConf)}</td>
       <td>${fmt(it.score)}</td>
       <td>${confCell(it)}</td>
       <td>${fmt(it.expected_rr)}</td>
       <td>${pillStatus(it.status)}</td>
-      <td>
-        <button class="btn tiny" data-act="details" data-id="${it.rec_id}">Детали</button>
-        <button class="btn tiny secondary" data-act="json" data-id="${it.rec_id}">JSON</button>
-        ${it.status === "recommended" ? `
-        <button class="btn tiny op-exec" data-act="execute" data-id="${it.rec_id}" title="Отметить исполненной">✓</button>
-        <button class="btn tiny op-ignore" data-act="ignore" data-id="${it.rec_id}" title="Проигнорировать">✗</button>
-        ` : `<span class="op-status-label op-${it.status}">${it.status}</span>`}
-      </td>
+      <td><button class="btn tiny" data-act="details" data-id="${it.rec_id}">Карточка</button></td>
     `;
     body.appendChild(tr);
   });
   const banner = $("noTrade");
-  if (!hasRecommended) banner.classList.remove("hidden");
-  else banner.classList.add("hidden");
+  if (!hasRecommended) {
+    const shock = (statusPayload || {}).market_shock || {};
+    if (shock && shock.state && shock.state !== "normal") {
+      banner.innerHTML = `NO-TRADE: <b>${escapeHtml(shock.title || "Guard")}</b>. ${escapeHtml(shock.operator_note || "Новые входы заблокированы.")}`;
+    } else {
+      banner.innerHTML = 'NO-TRADE: нет рекомендаций со статусом <b>recommended</b> по текущим фильтрам/гейтам.';
+    }
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
 }
 function directionBadge(dir) {
   if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">neutral</span>`;
@@ -397,9 +637,7 @@ function directionBadge(dir) {
 // ── details panel ─────────────────────────────────────────────────────────────
 
 async function loadDetails(recId) {
-  // Set currentRecId immediately so the Refresh button works even if fetch is slow
   currentRecId = recId;
-  // currentMeta is set after successful parse so we have venue/symbol/bot_type
   const btn = $("refreshDetailsBtn");
   btn.classList.remove("hidden");
   btn.disabled = true;
@@ -422,140 +660,14 @@ async function loadDetails(recId) {
     return;
   }
 
-  // Store meta so refresh can locate the fresh rec_id in the current table snapshot
   currentMeta = { venue: it.venue, symbol: it.symbol, bot_type: it.bot_type };
-  // Normalise to the actual rec_id returned by the DB (arg may be stale)
   currentRecId = it.rec_id;
-
   btn.disabled = false;
   btn.textContent = "Обновить";
 
-  const reasons = it.reasons || {};
-  const blocks  = it.blocks  || [];
-  const params  = it.params  || {};
-  const dirAgg  = reasons.direction_agg  || {};
-  const sentAgg = reasons.sentiment_agg || {};
-  const confModel = reasons.confidence_model || {};
-
-  const lines = [];
-  lines.push(`rec_id: ${it.rec_id}`);
-  lines.push(`venue/symbol: ${it.venue} ${it.symbol}`);
-  lines.push(`bot: ${it.bot_type} | dir=${it.direction} | mode=${it.account_mode}/${it.margin_mode}`);
-  lines.push(`score=${fmt(it.score)} conf=${fmt(it.confidence)} expRR=${fmt(it.expected_rr)} riskScore=${fmt(it.risk_score)}`);
-  lines.push(`status=${it.status}`);
-  if (!confModel.fitted) {
-    const src = confModel.source || "raw";
-    const cap = confModel.heuristic_cap;
-    const capText = (cap === null || cap === undefined) ? "" : `; cap≤${fmt(cap)}`;
-    const gateText = confModel.confidence_gate_applied ? "gate=on" : "gate=off";
-    lines.push(`⚠ RAW heuristic confidence (${src}; ${gateText}${capText})`);
-    if (confModel.note) lines.push(`  ${confModel.note}`);
-  } else if (confModel.logreg_active) {
-    lines.push(`✓ LogReg + Platt (n=${confModel.n_samples}) a=${fmt(confModel.a,3)} b=${fmt(confModel.b,3)}`);
-  } else {
-    lines.push(`~ Platt only (n=${confModel.n_samples}, LogReg нужно ≥300) a=${fmt(confModel.a,3)} b=${fmt(confModel.b,3)}`);
-  }
-
-  lines.push("");
-  // BTC beta block
-  const beta = reasons.btc_beta || {};
-  if (beta.correlation !== null && beta.correlation !== undefined) {
-    const btcEmoji = beta.is_btc_driven ? "🔗" : beta.independent_signal ? "🆓" : "〰";
-    const btcNote = beta.is_btc_driven
-      ? "сигнал отражает BTC, не сам актив"
-      : beta.independent_signal
-        ? "независимый сигнал"
-        : "частичная корреляция";
-    lines.push(`BTC beta: r=${beta.correlation} β=${beta.beta} ${btcEmoji} ${btcNote}`);
-    lines.push("");
-  }
-
-  lines.push("── Направление ──");
-  lines.push(`direction=${dirAgg.direction || "—"} bias=${dirAgg.bias || "—"}`);
-  lines.push(`dir_conf=${fmt(dirAgg.direction_confidence)} cal=${fmt(dirAgg.direction_confidence_calibrated)}`);
-  lines.push(`regime=${dirAgg.regime || "—"} coherence=${fmt(dirAgg.coherence)}`);
-  lines.push(`scores: tactical=${fmt((dirAgg.scores||{}).tactical)} struct=${fmt((dirAgg.scores||{}).structural)} all=${fmt((dirAgg.scores||{}).all)}`);
-  if (dirAgg.structural_veto_applied) lines.push("⚠ Structural veto applied");
-
-  lines.push("");
-  lines.push("── Сентимент ──");
-  const ewma = (sentAgg.ewma || {});
-  const symSent = reasons.symbol_sentiment || {};
-  lines.push(`Глобальный (EWMA): 1h=${fmt(ewma["1h"])} 6h=${fmt(ewma["6h"])} 1d=${fmt(ewma["1d"])} 7d=${fmt(ewma["7d"])}`);
-  lines.push(`regime=${sentAgg.regime || "—"} strength=${fmt(sentAgg.strength)} flags: panic=${(sentAgg.flags||{}).panic} euphoria=${(sentAgg.flags||{}).euphoria}`);
-  if (symSent.blended) {
-    const gw = symSent.global_weight ?? null;
-    const sw = symSent.symbol_weight ?? null;
-    const mix = (gw !== null && sw !== null)
-      ? ` = ${fmt(gw, 2)}×global + ${fmt(sw, 2)}×symbol`
-      : "";
-    const nPts = symSent.n_points != null ? ` (n=${symSent.n_points})` : "";
-    lines.push(`Per-symbol: ${fmt(symSent.value)}${nPts} | Итого в скоринге (effective): ${fmt(symSent.effective)}${mix}`);
-  } else {
-    lines.push(`Per-symbol: нет данных — используется только глобальный (effective=${fmt(symSent.effective)})`);
-  }
-
-  lines.push("");
-  lines.push("── Факторы ──");
-  lines.push("Факторы +:");
-  (reasons.top_positive_factors || []).forEach(f =>
-    lines.push(`  + ${f.msg || f.text || f.feature || "factor"} (${f.feature}=${fmt(f.value, 4)})`));
-  lines.push("Факторы -:");
-  (reasons.top_negative_factors || []).forEach(f =>
-    lines.push(`  - ${f.msg || f.text || f.feature || "factor"} (${f.feature}=${fmt(f.value, 4)})`));
-
-  // Liquidity + futures meta
-  const liq = reasons.liquidity || {};
-  const fr  = reasons.funding   || {};
-  const oi  = reasons.open_interest || {};
-
-  lines.push("");
-  lines.push("── Ликвидность ──");
-  const tierEmoji = {"high":"🟢","medium":"🟡","low":"🟠","micro":"🔴","unknown":"⚪"}[liq.tier] || "⚪";
-  lines.push(`${tierEmoji} Тир: ${liq.tier || "—"} | Оборот 24h: ${liq.turnover24h_usd ? "$" + Number(liq.turnover24h_usd).toLocaleString("ru") : "—"}`);
-
-  if (fr.value !== undefined && fr.value !== null) {
-    const frEmoji = {"bullish":"🟢","bearish":"🔴","neutral":"⚪","unknown":"⚪"}[fr.signal] || "⚪";
-    lines.push("");
-    lines.push("── Funding Rate ──");
-    lines.push(`${frEmoji} ${(fr.value * 100).toFixed(4)}% / 8ч | ${fr.annualized_pct?.toFixed(0)}% годовых | сигнал: ${fr.signal}`);
-    lines.push(`Carry cost: ${fr.carry_cost_bps_8h} bps / 8ч`);
-  }
-
-  if (oi.oi_now !== undefined && oi.oi_now !== null) {
-    const oiEmoji = {"bullish":"🟢","bearish":"🔴","caution":"🟠","neutral":"⚪","pending":"⚪","unknown":"⚪"}[oi.signal] || "⚪";
-    lines.push("");
-    lines.push("── Open Interest ──");
-    lines.push(`${oiEmoji} OI: ${Number(oi.oi_now).toLocaleString("ru")} | тренд: ${oi.trend} | сигнал: ${oi.signal}`);
-    lines.push(`Δ4h: ${oi.oi_4h_chg_pct !== null ? oi.oi_4h_chg_pct + "%" : "—"} | Δ24h: ${oi.oi_24h_chg_pct !== null ? oi.oi_24h_chg_pct + "%" : "—"}`);
-  }
-
-  lines.push("");
-  lines.push("── Стоимость исполнения (bps) ──");
-  lines.push(JSON.stringify(reasons.cost_model || {}, null, 2));
-
-  lines.push("");
-  lines.push("── Риск-гейты ──");
-  if (!blocks.length) lines.push("  OK");
-  else blocks.forEach(b => lines.push(`  ✗ ${b.code}: ${b.msg}`));
-
-  lines.push("");
-  lines.push("── Параметры для Bybit (копируйте в UI) ──");
-  lines.push("Grid — флет: режим Нейтральный; direction_bias = смещение. Диапазон: price_range_lower/price_range_upper.");
-  lines.push(JSON.stringify(params, null, 2));
-
-  // Store params for copy button (must be done before setting textContent, which doesn't affect dataset)
-  $("details").dataset.params = JSON.stringify(params, null, 2);
-  $("details").dataset.recId  = it.rec_id;
-  $("copyParamsBtn").classList.remove("hidden");
-
-  // Append refresh timestamp so the user can see the panel was actually updated
   const now = new Date();
   const hms = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  lines.push("");
-  lines.push(`── обновлено ${hms} ──`);
-
-  $("details").textContent = lines.join("\n");
+  $("details").innerHTML = `${buildDetailsHtml(it)}<div class="helper-text" style="margin-top:8px">обновлено ${hms}</div>`;
 }
 
 // ── decisions / risk ──────────────────────────────────────────────────────────
@@ -697,6 +809,23 @@ document.addEventListener("click", async (e) => {
 
   if (act === "details") await loadDetails(id);
 
+  if (act === "copy-field") {
+    const txt = t.dataset.copy || "";
+    if (!txt) return;
+    navigator.clipboard.writeText(txt).then(() => {
+      const old = t.textContent;
+      t.textContent = "✓";
+      setTimeout(() => { t.textContent = old; }, 1200);
+    });
+    return;
+  }
+
+  if (act === "show-tech") {
+    const tech = $("details").dataset.tech;
+    if (tech) showModal("Техподробности", tech);
+    return;
+  }
+
   if (act === "json") {
     let data;
     try {
@@ -800,11 +929,11 @@ $("refreshDetailsBtn").addEventListener("click", () => {
 });
 
 $("copyParamsBtn").addEventListener("click", () => {
-  const params = $("details").dataset.params;
-  if (!params) return;
-  navigator.clipboard.writeText(params).then(() => {
+  const copyText = $("details").dataset.copyText;
+  if (!copyText) return;
+  navigator.clipboard.writeText(copyText).then(() => {
     $("copyParamsBtn").textContent = "✓ Скопировано";
-    setTimeout(() => { $("copyParamsBtn").textContent = "Скопировать параметры"; }, 2000);
+    setTimeout(() => { $("copyParamsBtn").textContent = "Скопировать лист"; }, 2000);
   });
 });
 

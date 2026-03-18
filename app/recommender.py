@@ -11,6 +11,7 @@ from .regime import classify_regime
 from .risk import gate_candidate, compute_risk_status as _compute_risk_status
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
+from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .outcomes import BOT_HORIZONS
 from .bot_types import SUPPORTED_BOT_TYPES
 from .calibration import (
@@ -946,6 +947,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     regime = classify_regime(features_all)
     db.insert_regime(conn, db.now_ts(), regime)
 
+    market_shock = compute_market_shock(conn, settings, sent_agg, symbol_feature_map, ts_now)
+    db.set_app_config_json(conn, MARKET_SHOCK_APP_KEY, market_shock)
+
     limits = db.get_active_risk_limits(conn) or settings.risk_limits
     model_version = "bybit-taxonomy-v2"
     # ts_now already set above for stale gate — reuse it
@@ -1083,6 +1087,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # ── Risk gate — uses cached risk_status (computed once per cycle) ──
             risk_blocks = gate_candidate(conn, venue, sym, limits, cached_status=_cached_risk_status)
             feasibility_blocks.extend(risk_blocks)
+            feasibility_blocks.extend(apply_market_shock_gate(market_shock, venue, bot_type, direction))
+            fast_veto = compute_symbol_fast_veto(conn, venue, sym, ts_now, direction, feature_row=f)
+            feasibility_blocks.extend(fast_veto.get("blocks") or [])
 
             f_for_score = dict(f)
             f_for_score["_direction_agg"] = dict(_dir_agg_cal)
@@ -1098,6 +1105,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # ── Funding + OI score adjustments ──
             if venue == "linear":
                 score = _clamp(score + _funding_score_adjustment(direction, fr_sig, cost_model), -1.0, 1.0)
+
+            if str((market_shock or {}).get("severity") or "normal") == "guarded" and not feasibility_blocks:
+                score = float(_clamp(score * 0.92, -1.0, 1.0))
 
             conf_raw = float(conf0)
             # ── Two-stage calibration: LogReg(features) → Platt ──────────────────
@@ -1184,6 +1194,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 # The model had bearish directional intent, but spot execution cannot express
                 # a naked short. Make that loss of executable expressiveness visible.
                 conf = float(_clamp(conf * 0.90, 0.0, 1.0))
+            if str((market_shock or {}).get("severity") or "normal") == "guarded":
+                conf = float(_clamp(conf * 0.93, 0.0, 1.0))
 
             expected_rr = _expected_rr(bot_type, f, cost_model=cost_model)
             account_mode, margin_mode = _mode(venue, direction)
@@ -1216,12 +1228,32 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             )
             # Add execution guide for UI "Details" panel.
             params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params, cost_model=cost_model)
+            params["operator_sheet"] = {
+                "mode": direction,
+                "venue": venue,
+                "bot_type": bot_type,
+                "symbol": sym,
+                "price_ref": params.get("price_ref"),
+                "range_lower": params.get("price_range_lower"),
+                "range_upper": params.get("price_range_upper"),
+                "grid_levels": params.get("grid_levels"),
+                "grid_spacing_pct": params.get("grid_spacing_pct"),
+                "leverage": params.get("leverage"),
+                "margin_mode": params.get("margin_mode"),
+                "kill_switch": (params.get("trade_plan") or {}).get("levels", {}).get("kill_switch", {}),
+                "tp_per_leg": (params.get("trade_plan") or {}).get("levels", {}).get("tp_per_leg", {}),
+                "market_shock_state": (market_shock or {}).get("state"),
+                "market_shock_title": (market_shock or {}).get("title"),
+                "operator_note": (market_shock or {}).get("operator_note"),
+            }
 
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)
             reasons2["regime"] = regime
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
             reasons2["sentiment_agg"] = sent_agg
+            reasons2["market_shock"] = market_shock
+            reasons2["fast_veto"] = fast_veto
             reasons2["btc_beta"] = f.get("_btc_beta", {})
             reasons2["liquidity"] = {
                 "tier": liq_tier,
