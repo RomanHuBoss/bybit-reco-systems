@@ -10,6 +10,7 @@
 - сбор spot/linear тикеров и OHLCV;
 - сбор funding и open interest для linear;
 - sentiment pipeline с global и symbol scopes;
+- операторский UI не пытается выдавать heuristic sentiment за полноценный deep news-анализ: в интерфейсе и README это явно помечено как эвристический фон;
 - multi-timeframe direction/regime inference;
 - scoring + risk gating + calibration;
 - outcome labeling для проверки качества рекомендаций;
@@ -25,9 +26,11 @@
 - execution lifecycle, funding/cost model и калибровка оставлены только для активных grid-ботов;
 - добавлен двусторонний `market shock guard` (`amber_down`, `red_down`, `amber_up`, `red_up`, `chaos`) с ручным operator lock/guard режимом;
 - добавлен fast-veto на уровне символа по 1m/3m/5m импульсу против направления;
-- панель деталей переписана под ручной запуск: JSON убран из основной операторской зоны, вместо него выводятся копируемые поля для Bybit (`range`, `grid_levels`, `leverage`, `kill switch`, `TP/SL`).
+- панель деталей переписана под ручной запуск: JSON убран из основной операторской зоны, вместо него выводятся копируемые поля для Bybit (`range`, `grid_levels`, `leverage`, `kill switch`, `TP/SL`), а также ссылки на график и страницу создания бота;
+- значения уровней в панели деталей форматируются в bybit-friendly виде: десятичная точка, без разделителей тысяч, с попыткой подстроиться под `tickSize` инструмента;
 
 ## Ограничения дизайна
+- текущий sentiment pipeline остаётся эвристическим: RSS/Reddit/market context помогают поймать фон, но это не LLM/NER/newsroom-уровень семантического анализа заголовков и статей;
 - это recommendation/evaluation engine, а не exchange-grade execution simulator;
 - глобальный calibrator хранится для диагностики/статуса, но inference намеренно не использует cross-bot fallback probability;
 - grid outcomes остаются упрощёнными path approximations, но теперь label success требует не только net>0, а подтверждённых oscillation legs, приемлемого time-in-range и отсутствия kill-switch breach; maturity horizon для label/calibration фиксирован по bot_type (сейчас 6h), а не по operator-facing max holding window;

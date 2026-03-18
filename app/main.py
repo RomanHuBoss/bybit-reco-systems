@@ -6,12 +6,13 @@ import os
 import secrets
 import threading
 import socket
+from functools import lru_cache
 import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -77,10 +78,65 @@ def _bootstrap_db() -> None:
 
 _bootstrap_db()
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.0")
+
+
+@lru_cache(maxsize=512)
+def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
+    category = "linear" if str(venue or "").lower() == "linear" else "spot"
+    client = BybitPublicClient(settings.bybit_base_url)
+    try:
+        info = client.get_instrument_info(category, symbol)
+    except Exception as exc:
+        logger.warning("instrument meta fetch failed for %s/%s: %s", venue, symbol, exc)
+        return {}
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    if not info:
+        return {}
+
+    price_filter = info.get("priceFilter") or {}
+    lot_filter = info.get("lotSizeFilter") or {}
+    return {
+        "category": category,
+        "symbol": symbol,
+        "tick_size": price_filter.get("tickSize"),
+        "min_price": price_filter.get("minPrice"),
+        "max_price": price_filter.get("maxPrice"),
+        "qty_step": lot_filter.get("qtyStep"),
+        "min_order_qty": lot_filter.get("minOrderQty"),
+        "price_scale": info.get("priceScale"),
+    }
+
+
+def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
+    out = dict(rec)
+    venue = str(out.get("venue") or "")
+    symbol = str(out.get("symbol") or "")
+    try:
+        out["bybit_meta"] = _fetch_bybit_instrument_meta(venue, symbol) if venue and symbol else {}
+    except Exception:
+        out["bybit_meta"] = {}
+    return out
+
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.1")
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+@app.middleware("http")
+async def add_no_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 
 
 class UpdateRiskLimitsRequest(BaseModel):
@@ -259,7 +315,7 @@ def api_reco_details(rec_id: str) -> dict[str, Any]:
         r = db.get_recommendation_by_id(conn, str(rec_id))
         if not r:
             raise HTTPException(status_code=404, detail="rec_id not found")
-        return r
+        return _augment_reco_for_ui(r)
 
 
 @app.get("/api/v1/risk/status")

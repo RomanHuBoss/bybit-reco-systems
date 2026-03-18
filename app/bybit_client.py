@@ -62,3 +62,9 @@ class BybitPublicClient:
         })
         items = data.get("result", {}).get("list", []) or []
         return [{"ts": int(r["timestamp"]) // 1000, "oi": float(r["openInterest"])} for r in items]
+    def get_instrument_info(self, category: str, symbol: str) -> dict[str, Any] | None:
+        """Metadata for a single instrument (tick size, lot size, etc.)."""
+        data = self._get("/v5/market/instruments-info", {"category": category, "symbol": symbol})
+        items = data.get("result", {}).get("list", []) or []
+        return items[0] if items else None
+

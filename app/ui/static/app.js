@@ -56,6 +56,78 @@ function fmtPct(x, n = 2) {
   return `${v >= 0 ? "+" : ""}${v.toFixed(n)}%`;
 }
 
+function toFiniteNumber(value) {
+  const v = Number(value);
+  return Number.isFinite(v) ? v : null;
+}
+
+function countDecimalsFromStep(step) {
+  if (step === null || step === undefined || step === "") return null;
+  const raw = String(step).trim().toLowerCase();
+  if (!raw) return null;
+  if (raw.includes("e-")) {
+    const exp = Number(raw.split("e-")[1]);
+    return Number.isFinite(exp) ? exp : null;
+  }
+  const normalized = raw.replace(/0+$/, "");
+  const parts = normalized.split(".");
+  return parts.length === 2 ? parts[1].length : 0;
+}
+
+function inferPriceDecimals(value) {
+  const v = Math.abs(Number(value) || 0);
+  if (v >= 10000) return 1;
+  if (v >= 100) return 2;
+  if (v >= 10) return 3;
+  if (v >= 1) return 4;
+  if (v >= 0.1) return 5;
+  return 6;
+}
+
+function formatDotNumber(value, digits = 4, keepZeros = false) {
+  if (value === null || value === undefined || value === "") return "—";
+  const v = Number(value);
+  if (!Number.isFinite(v)) return String(value);
+  let out = v.toFixed(digits);
+  if (!keepZeros) out = out.replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "");
+  return out;
+}
+
+function quantizeByStep(value, step, mode = "nearest") {
+  const v = toFiniteNumber(value);
+  const tick = toFiniteNumber(step);
+  if (v === null || tick === null || tick <= 0) return null;
+  const decimals = countDecimalsFromStep(tick);
+  const factor = 10 ** Math.max(0, Number(decimals || 0));
+  const scaledValue = Math.round(v * factor);
+  const scaledStep = Math.max(1, Math.round(tick * factor));
+  let units;
+  if (mode === "down") units = Math.floor((scaledValue + 1e-9) / scaledStep);
+  else if (mode === "up") units = Math.ceil((scaledValue - 1e-9) / scaledStep);
+  else units = Math.round(scaledValue / scaledStep);
+  const snapped = (units * scaledStep) / factor;
+  return snapped.toFixed(Math.max(0, Number(decimals || 0)));
+}
+
+function formatBybitPrice(value, meta = {}, mode = "nearest") {
+  if (value === null || value === undefined || value === "") return "—";
+  const v = Number(value);
+  if (!Number.isFinite(v)) return String(value);
+  const tick = toFiniteNumber((meta || {}).tick_size);
+  if (tick && tick > 0) {
+    const snapped = quantizeByStep(v, tick, mode);
+    if (snapped) return snapped;
+  }
+  return v.toFixed(inferPriceDecimals(v));
+}
+
+function formatPercentDot(value, digits = 4, withSign = false) {
+  if (value === null || value === undefined || value === "") return "—";
+  const v = Number(value);
+  if (!Number.isFinite(v)) return String(value);
+  return `${withSign && v >= 0 ? "+" : ""}${formatDotNumber(v, digits)}%`;
+}
+
 function directionRu(dir) {
   if (dir === "long") return "Лонг";
   if (dir === "short") return "Шорт";
@@ -74,6 +146,50 @@ function venueLabel(venue) {
   return venue || "—";
 }
 
+function marginModeRu(mode) {
+  if (mode === "isolated") return "Изолированная";
+  if (mode === "cross") return "Кросс";
+  if (mode === "cash") return "Cash";
+  return mode || "—";
+}
+
+function splitSpotSymbol(symbol) {
+  const s = String(symbol || "").toUpperCase();
+  const quotes = ["USDT", "USDC", "BTC", "ETH", "EUR", "BRL", "TRY"];
+  for (const quote of quotes) {
+    if (s.endsWith(quote) && s.length > quote.length) {
+      return { base: s.slice(0, -quote.length), quote };
+    }
+  }
+  return null;
+}
+
+function bybitBotCreateUrl(botType) {
+  return botType === "futures_grid"
+    ? "https://www.bybit.com/ru-RU/tradingbot/fgrid-create/"
+    : "https://www.bybit.com/ru-RU/tradingbot/create/";
+}
+
+function bybitChartUrl(venue, symbol) {
+  if (venue === "spot") {
+    const parts = splitSpotSymbol(symbol);
+    if (parts) return `https://www.bybit.com/ru-RU/trade/spot/${encodeURIComponent(parts.base)}/${encodeURIComponent(parts.quote)}`;
+  }
+  return `https://www.bybit.com/trade/usdt/${encodeURIComponent(symbol || "")}`;
+}
+
+function symbolLinksHtml(it, compact = false) {
+  const chartUrl = bybitChartUrl(it.venue, it.symbol);
+  const botUrl = bybitBotCreateUrl(it.bot_type);
+  const cls = compact ? "symbol-links compact" : "symbol-links";
+  return `
+    <span class="${cls}">
+      <a class="icon-link" href="${escapeHtml(chartUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть график Bybit">📈</a>
+      <a class="icon-link" href="${escapeHtml(botUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания бота">🤖</a>
+    </span>
+  `;
+}
+
 function statusBadgeHtml(status) {
   let cls = "badge-inline badge-muted";
   if (status === "recommended") cls = "badge-inline badge-good";
@@ -90,53 +206,108 @@ function shockBadgeHtml(shock) {
 }
 
 function copyButton(copyValue) {
-  if (!copyValue && copyValue !== 0) return "";
+  if (copyValue === null || copyValue === undefined || copyValue === "" || copyValue === "—") return "";
   return `<button class="copy-chip" data-act="copy-field" data-copy="${escapeHtml(copyValue)}">копия</button>`;
 }
 
-function fieldBox(label, value, copyValue = null) {
-  const effectiveCopy = copyValue === null ? value : copyValue;
+function fieldBox(label, value, copyValue = null, extraClass = "") {
+  const safeValue = value ?? "—";
+  const effectiveCopy = copyValue === null ? safeValue : copyValue;
+  const inputValue = escapeHtml(String(safeValue));
+  const inputClass = extraClass ? `field-input ${extraClass}` : "field-input";
   return `
     <div class="field-box">
       <div class="field-label">${escapeHtml(label)}</div>
-      <div class="field-value-row">
-        <div class="field-value">${escapeHtml(value ?? "—")}</div>
+      <div class="field-value-row field-value-input-row">
+        <input class="${inputClass}" type="text" readonly value="${inputValue}" data-copy-source="${escapeHtml(effectiveCopy)}">
         ${copyButton(effectiveCopy)}
       </div>
     </div>
   `;
 }
 
-function buildLaunchSheetText(it) {
+function updateDetailsHeaderLinks(it) {
+  const chart = $("detailsChartLink");
+  const bot = $("detailsBotLink");
+  if (!chart || !bot) return;
+  chart.href = bybitChartUrl(it.venue, it.symbol);
+  bot.href = bybitBotCreateUrl(it.bot_type);
+  chart.classList.remove("hidden");
+  bot.classList.remove("hidden");
+}
+
+function clearDetailsHeaderLinks() {
+  const chart = $("detailsChartLink");
+  const bot = $("detailsBotLink");
+  if (chart) chart.classList.add("hidden");
+  if (bot) bot.classList.add("hidden");
+}
+
+function buildOperatorValues(it) {
   const params = (it || {}).params || {};
   const plan = params.trade_plan || {};
-  const ks = (((plan || {}).levels || {}).kill_switch) || {};
-  const tpPerLeg = (((plan || {}).levels || {}).tp_per_leg) || {};
+  const levels = plan.levels || {};
+  const ks = levels.kill_switch || {};
+  const tpPerLeg = levels.tp_per_leg || {};
+  const gridStep = levels.grid_step || {};
+  const meta = (it || {}).bybit_meta || {};
+  const rangeLower = formatBybitPrice(params.price_range_lower, meta, "down");
+  const rangeUpper = formatBybitPrice(params.price_range_upper, meta, "up");
+  const entryRef = formatBybitPrice(params.price_ref, meta, "nearest");
+  const killLower = formatBybitPrice(ks.lower, meta, "down");
+  const killUpper = formatBybitPrice(ks.upper, meta, "up");
+  const gridStepAbs = formatBybitPrice(gridStep.step_abs, meta, "nearest");
+  const tpLegAbs = formatBybitPrice(tpPerLeg.abs, meta, "nearest");
+  const stepPct = formatPercentDot(params.grid_spacing_pct, 4, false);
+  const tpLegPct = formatPercentDot(tpPerLeg.pct, 4, false);
+  const leverage = it.venue === "linear" ? String(params.leverage ?? 1) : "—";
+  const marginMode = it.venue === "linear" ? marginModeRu(params.margin_mode || "isolated") : "—";
+  const stopLossLabel = it.direction === "short" ? "Стоп-лосс (верх)" : it.direction === "long" ? "Стоп-лосс (низ)" : "Нижняя стоп-цена";
+  const takeProfitLabel = it.direction === "short" ? "Тейк-профит (низ)" : it.direction === "long" ? "Тейк-профит (верх)" : "Верхняя стоп-цена";
+  const stopLossValue = it.direction === "short" ? killUpper : killLower;
+  const takeProfitValue = it.direction === "short" ? killLower : killUpper;
+  return {
+    rangeLower,
+    rangeUpper,
+    entryRef,
+    killLower,
+    killUpper,
+    gridStepAbs,
+    tpLegAbs,
+    stepPct,
+    tpLegPct,
+    leverage,
+    marginMode,
+    stopLossLabel,
+    stopLossValue,
+    takeProfitLabel,
+    takeProfitValue,
+  };
+}
+
+function buildLaunchSheetText(it) {
+  const params = (it || {}).params || {};
   const shock = ((it || {}).reasons || {}).market_shock || {};
+  const ov = buildOperatorValues(it);
   const lines = [];
   lines.push(`${it.symbol} | ${botTypeLabel(it.bot_type)} | ${directionRu(it.direction)}`);
   lines.push(`Площадка: ${venueLabel(it.venue)}`);
-  lines.push(`Режим: ${directionRu(it.direction)}`);
-  lines.push(`Диапазон: ${fmtPrice(params.price_range_lower)} — ${fmtPrice(params.price_range_upper)}`);
+  lines.push(`Диапазон от: ${ov.rangeLower}`);
+  lines.push(`Диапазон до: ${ov.rangeUpper}`);
   lines.push(`Кол-во сеток: ${params.grid_levels ?? "—"}`);
-  lines.push(`Шаг сетки: ${fmt(params.grid_spacing_pct, 4)}%`);
-  lines.push(`Референс цены: ${fmtPrice(params.price_ref)}`);
-  if (it.venue === "linear") lines.push(`Плечо: x${params.leverage ?? 1} | Маржа: ${params.margin_mode || "isolated"}`);
-  if (it.direction === "neutral") {
-    lines.push(`Нижняя стоп-цена: ${fmtPrice(ks.lower)}`);
-    lines.push(`Верхняя стоп-цена: ${fmtPrice(ks.upper)}`);
-  } else if (it.direction === "long") {
-    lines.push(`Stop-loss: ${fmtPrice(ks.lower)}`);
-    lines.push(`Take-profit: ${fmtPrice(ks.upper)}`);
-  } else if (it.direction === "short") {
-    lines.push(`Take-profit: ${fmtPrice(ks.lower)}`);
-    lines.push(`Stop-loss: ${fmtPrice(ks.upper)}`);
-  }
-  lines.push(`Kill switch: ${fmtPrice(ks.lower)} — ${fmtPrice(ks.upper)}`);
-  if (tpPerLeg.pct !== undefined && tpPerLeg.pct !== null) lines.push(`TP на одну ногу: ${fmt(tpPerLeg.pct, 4)}%`);
-  lines.push(`Status: ${it.status}`);
-  if (shock.title) lines.push(`Market guard: ${shock.title}`);
-  if (shock.operator_note) lines.push(`Operator note: ${shock.operator_note}`);
+  lines.push(`Шаг сетки, %: ${ov.stepPct}`);
+  lines.push(`Шаг сетки, цена: ${ov.gridStepAbs}`);
+  lines.push(`Цена входа / ориентир: ${ov.entryRef}`);
+  if (it.venue === "linear") lines.push(`Плечо: ${ov.leverage}`);
+  if (it.venue === "linear") lines.push(`Режим маржи: ${ov.marginMode}`);
+  lines.push(`${ov.stopLossLabel}: ${ov.stopLossValue}`);
+  lines.push(`${ov.takeProfitLabel}: ${ov.takeProfitValue}`);
+  lines.push(`Kill-switch низ: ${ov.killLower}`);
+  lines.push(`Kill-switch верх: ${ov.killUpper}`);
+  lines.push(`Прибыль/сетка, %: ${ov.tpLegPct}`);
+  if (ov.tpLegAbs !== "—") lines.push(`Прибыль/сетка, цена: ${ov.tpLegAbs}`);
+  if (shock.title) lines.push(`Guard: ${shock.title}`);
+  if (shock.operator_note) lines.push(`Примечание: ${shock.operator_note}`);
   return lines.join("\n");
 }
 
@@ -153,6 +324,7 @@ function buildTechPayload(it) {
     fast_veto: reasons.fast_veto || {},
     direction_agg: reasons.direction_agg || {},
     sentiment_agg: reasons.sentiment_agg || {},
+    bybit_meta: it.bybit_meta || {},
     factors: {
       positive: reasons.top_positive_factors || [],
       negative: reasons.top_negative_factors || [],
@@ -165,9 +337,6 @@ function buildDetailsHtml(it) {
   const reasons = it.reasons || {};
   const params = it.params || {};
   const plan = params.trade_plan || {};
-  const levels = plan.levels || {};
-  const ks = levels.kill_switch || {};
-  const tpPerLeg = levels.tp_per_leg || {};
   const shock = reasons.market_shock || {};
   const fastVeto = reasons.fast_veto || {};
   const sentAgg = reasons.sentiment_agg || {};
@@ -176,6 +345,7 @@ function buildDetailsHtml(it) {
   const oi = reasons.open_interest || {};
   const volatility = plan.volatility || {};
   const blocks = it.blocks || [];
+  const ov = buildOperatorValues(it);
   const alertClass = (shock.severity || "normal") === "lockdown" ? "lock" : (shock.severity || "normal") === "guarded" ? "guard" : "";
   const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
   const copyText = buildLaunchSheetText(it);
@@ -184,72 +354,84 @@ function buildDetailsHtml(it) {
   $("details").dataset.copyText = copyText;
   $("details").dataset.tech = techPayload;
   $("details").dataset.recId = it.rec_id;
-  $("copyParamsBtn").classList.remove("hidden");
+  updateDetailsHeaderLinks(it);
 
-  const stopLossLabel = it.direction === "short" ? "Stop-loss (верх)" : it.direction === "long" ? "Stop-loss (низ)" : "Нижняя стоп-цена";
-  const takeProfitLabel = it.direction === "short" ? "Take-profit (низ)" : it.direction === "long" ? "Take-profit (верх)" : "Верхняя стоп-цена";
-  const upperField = fieldBox(takeProfitLabel, fmtPrice(ks.upper), fmtPrice(ks.upper));
-  const lowerField = fieldBox(stopLossLabel, fmtPrice(ks.lower), fmtPrice(ks.lower));
   const reasonList = (shock.reasons || []).length ? `<ul class="reason-list">${(shock.reasons || []).slice(0, 4).map(r => `<li><code>${escapeHtml(r.code || "signal")}</code> — ${escapeHtml(r.msg || "")}</li>`).join("")}</ul>` : "";
   const blockCards = blocks.length ? `<div class="small-blocks">${blocks.map(b => `<div class="small-block"><code>${escapeHtml(b.code || "BLOCK")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>` : `<div class="helper-text">Активных блоков нет.</div>`;
-  const fastVetoBlock = fastVeto.triggered ? `<div class="small-block"><code>${escapeHtml((fastVeto.blocks || [])[0]?.code || "FAST_VETO")}</code><br>${escapeHtml((fastVeto.blocks || [])[0]?.msg || "")}</div>` : "";
+  const fastVetoBlock = fastVeto.triggered ? `<div class="small-blocks"><div class="small-block"><code>${escapeHtml((fastVeto.blocks || [])[0]?.code || "FAST_VETO")}</code><br>${escapeHtml((fastVeto.blocks || [])[0]?.msg || "")}</div></div>` : `<div class="helper-text">Fast-veto не сработал.</div>`;
 
   return `
     <div class="operator-sheet">
-      <div class="operator-hero">
+      <div class="operator-hero compact-hero">
         <div>
-          <div class="operator-title">${escapeHtml(it.symbol)} · ${escapeHtml(botTypeLabel(it.bot_type))}</div>
-          <div class="operator-subtitle">${escapeHtml(venueLabel(it.venue))} · ${escapeHtml(directionRu(it.direction))} · ${statusBadgeHtml(it.status)} · rec_id ${escapeHtml(it.rec_id)}</div>
+          <div class="operator-title-row">
+            <div class="operator-title">${escapeHtml(it.symbol)}</div>
+            ${symbolLinksHtml(it, true)}
+          </div>
+          <div class="operator-subtitle">${escapeHtml(botTypeLabel(it.bot_type))} · ${escapeHtml(venueLabel(it.venue))} · ${escapeHtml(directionRu(it.direction))} · ${statusBadgeHtml(it.status)}</div>
         </div>
         <div class="operator-hero-metrics">
-          <div class="metric-chip"><b>Score</b>${fmt(it.score)}</div>
-          <div class="metric-chip"><b>Confidence</b>${fmt(it.confidence)}</div>
-          <div class="metric-chip"><b>Dir conf</b>${fmt(dirConf)}</div>
-          <div class="metric-chip"><b>Exp RR</b>${fmt(it.expected_rr)}</div>
+          <div class="metric-chip"><b>Скор</b>${fmt(it.score)}</div>
+          <div class="metric-chip"><b>Увер.</b>${fmt(it.confidence)}</div>
+          <div class="metric-chip"><b>Ож. RR</b>${fmt(it.expected_rr)}</div>
+        </div>
+      </div>
+
+      <div class="operator-card primary-launch-card">
+        <h3>Поля для Bybit</h3>
+        <div class="helper-text" style="margin-bottom:10px">Все уровни подготовлены для вставки в формы Bybit: с точкой и без разделителей тысяч.</div>
+        <div class="operator-grid three">
+          ${fieldBox("Тип бота", botTypeLabel(it.bot_type), botTypeLabel(it.bot_type))}
+          ${fieldBox("Площадка", venueLabel(it.venue), venueLabel(it.venue))}
+          ${fieldBox("Направление", directionRu(it.direction), directionRu(it.direction))}
+          ${fieldBox("Диапазон от", ov.rangeLower, ov.rangeLower, "field-input-mono")}
+          ${fieldBox("Диапазон до", ov.rangeUpper, ov.rangeUpper, "field-input-mono")}
+          ${fieldBox("Кол-во сеток", params.grid_levels ?? "—", params.grid_levels ?? "—")}
+          ${fieldBox("Шаг сетки, %", ov.stepPct, ov.stepPct)}
+          ${fieldBox("Шаг сетки, цена", ov.gridStepAbs, ov.gridStepAbs, "field-input-mono")}
+          ${fieldBox("Цена входа / ориентир", ov.entryRef, ov.entryRef, "field-input-mono")}
+          ${it.venue === "linear" ? fieldBox("Плечо", ov.leverage, ov.leverage) : ""}
+          ${it.venue === "linear" ? fieldBox("Режим маржи", ov.marginMode, ov.marginMode) : ""}
+          ${fieldBox(ov.stopLossLabel, ov.stopLossValue, ov.stopLossValue, "field-input-mono")}
+          ${fieldBox(ov.takeProfitLabel, ov.takeProfitValue, ov.takeProfitValue, "field-input-mono")}
+          ${fieldBox("Kill-switch низ", ov.killLower, ov.killLower, "field-input-mono")}
+          ${fieldBox("Kill-switch верх", ov.killUpper, ov.killUpper, "field-input-mono")}
+          ${fieldBox("Прибыль/сетка, %", ov.tpLegPct, ov.tpLegPct)}
+          ${fieldBox("Прибыль/сетка, цена", ov.tpLegAbs, ov.tpLegAbs, "field-input-mono")}
+        </div>
+        <div class="launch-sheet-wrap">
+          <div class="sheet-topline">
+            <label class="sheet-label">Лист запуска целиком</label>
+            <button class="ghost-chip" data-act="copy-sheet">Скопировать всё</button>
+          </div>
+          <textarea class="launch-sheet" readonly>${escapeHtml(copyText)}</textarea>
         </div>
       </div>
 
       <div class="operator-card alert-card ${alertClass}">
-        <h3>Market guard</h3>
+        <h3>Защита и фон</h3>
         <div class="alert-line">${shockBadgeHtml(shock)}</div>
         <div>${escapeHtml(shock.operator_note || "Новые входы разрешены в обычном режиме.")}</div>
+        <div class="alert-note">Сентимент в этой сборке эвристический: это operator-grade фон, а не полноценный semantic news-анализ статей.</div>
         <div class="alert-note">Breadth вниз: ${fmt(((shock.metrics || {}).breadth_down || 0) * 100, 1)}% · вверх: ${fmt(((shock.metrics || {}).breadth_up || 0) * 100, 1)}% · median 5m: ${fmtPct((((shock.metrics || {}).median_r5m || 0) * 100), 2)}</div>
         ${reasonList}
       </div>
 
       <div class="operator-card">
-        <h3>Лист запуска Bybit</h3>
-        <div class="operator-grid three">
-          ${fieldBox("Режим", directionRu(it.direction), directionRu(it.direction))}
-          ${fieldBox("Диапазон от", fmtPrice(params.price_range_lower), fmtPrice(params.price_range_lower))}
-          ${fieldBox("Диапазон до", fmtPrice(params.price_range_upper), fmtPrice(params.price_range_upper))}
-          ${fieldBox("Кол-во сеток", params.grid_levels ?? "—", params.grid_levels ?? "—")}
-          ${fieldBox("Шаг сетки", `${fmt(params.grid_spacing_pct, 4)}%`, `${fmt(params.grid_spacing_pct, 4)}%`)}
-          ${fieldBox("Референс цены", fmtPrice(params.price_ref), fmtPrice(params.price_ref))}
-          ${it.venue === "linear" ? fieldBox("Плечо", `x${params.leverage ?? 1}`, `x${params.leverage ?? 1}`) : ""}
-          ${it.venue === "linear" ? fieldBox("Маржа", params.margin_mode || "isolated", params.margin_mode || "isolated") : ""}
-          ${lowerField}
-          ${upperField}
-          ${fieldBox("Kill switch", `${fmtPrice(ks.lower)} — ${fmtPrice(ks.upper)}`, `${fmtPrice(ks.lower)} — ${fmtPrice(ks.upper)}`)}
-          ${fieldBox("TP на ногу", tpPerLeg.pct !== undefined && tpPerLeg.pct !== null ? `${fmt(tpPerLeg.pct, 4)}%` : "—", tpPerLeg.pct !== undefined && tpPerLeg.pct !== null ? `${fmt(tpPerLeg.pct, 4)}%` : "—")}
+        <h3>Контекст сигнала</h3>
+        <div class="operator-grid">
+          ${fieldBox("Уверенность направления", formatDotNumber(dirConf, 4), formatDotNumber(dirConf, 4))}
+          ${fieldBox("Режим сигнала", dirAgg.regime || "—", dirAgg.regime || "—")}
+          ${fieldBox("Согласованность", formatDotNumber(dirAgg.coherence, 4), formatDotNumber(dirAgg.coherence, 4))}
+          ${fieldBox("Сентимент 6ч", formatDotNumber(sentAgg.ewma?.["6h"], 4), formatDotNumber(sentAgg.ewma?.["6h"], 4))}
+          ${fieldBox("ATR 1ч", volatility.atr_pct_1h !== undefined && volatility.atr_pct_1h !== null ? formatPercentDot(volatility.atr_pct_1h * 100, 2, false) : "—")}
+          ${fieldBox("Фандинг", funding.value !== undefined && funding.value !== null ? formatPercentDot(funding.value * 100, 4, true) : "—")}
+          ${fieldBox("OI 4ч", oi.oi_4h_chg_pct !== undefined && oi.oi_4h_chg_pct !== null ? formatPercentDot(oi.oi_4h_chg_pct, 2, true) : "—")}
         </div>
+        ${fastVetoBlock}
         <div class="section-actions">
           <button class="ghost-chip" data-act="show-tech">Техподробности</button>
         </div>
-        <div class="helper-text">Основной сценарий — ручной запуск на Bybit. JSON убран из основной панели; для копирования доступны отдельные поля и цельный лист запуска.</div>
-      </div>
-
-      <div class="operator-card">
-        <h3>Контекст</h3>
-        <div class="operator-grid">
-          ${fieldBox("Сентимент 6h", fmt(sentAgg.ewma?.["6h"] ?? sentAgg.ewma?.["6h"], 2), fmt(sentAgg.ewma?.["6h"] ?? sentAgg.ewma?.["6h"], 2))}
-          ${fieldBox("Regime", dirAgg.regime || "—", dirAgg.regime || "—")}
-          ${fieldBox("Coherence", fmt(dirAgg.coherence), fmt(dirAgg.coherence))}
-          ${fieldBox("ATR 1h", volatility.atr_pct_1h !== undefined && volatility.atr_pct_1h !== null ? fmtPct(volatility.atr_pct_1h * 100, 2) : "—")}
-          ${fieldBox("Funding", funding.value !== undefined && funding.value !== null ? fmtPct(funding.value * 100, 4) : "—")}
-          ${fieldBox("OI 4h", oi.oi_4h_chg_pct !== undefined && oi.oi_4h_chg_pct !== null ? fmtPct(oi.oi_4h_chg_pct, 2) : "—")}
-        </div>
-        ${fastVeto.triggered ? `<div class="small-blocks">${fastVetoBlock}</div>` : `<div class="helper-text">Fast-veto не сработал.</div>`}
       </div>
 
       <div class="operator-card">
@@ -496,7 +678,8 @@ async function loadStatus() {
       const flag = flags.panic ? " 🚨" : flags.euphoria ? " 🔥" : "";
       $("sentiment-badge").className = cls;
       $("sentiment-badge").textContent =
-        `Сент: ${v >= 0 ? "+" : ""}${v.toFixed(2)} (${regime})${flag}`;
+        `Сент.* ${v >= 0 ? "+" : ""}${v.toFixed(2)} (${regime})${flag}`;
+      $("sentiment-badge").title = "Эвристический сентимент: RSS/Reddit/market context. Это не полноценный semantic news-анализ статей.";
     }
 
     // last reco timestamp
@@ -602,7 +785,12 @@ function renderRecoTable(items) {
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td><span class="venue-pill venue-${it.venue}">${it.venue}</span></td>
-      <td><b>${it.symbol}</b></td>
+      <td>
+        <div class="symbol-cell">
+          <b>${it.symbol}</b>
+          ${symbolLinksHtml(it)}
+        </div>
+      </td>
       <td><span class="bot-pill">${botTypeLabel(it.bot_type)}</span></td>
       <td>${directionBadge(it.direction)}</td>
       <td>${dirConfCell(dirConf)}</td>
@@ -647,6 +835,7 @@ async function loadDetails(recId) {
   try {
     const res = await fetch(`/api/v1/recommendations/${recId}`);
     if (!res.ok) {
+      clearDetailsHeaderLinks();
       $("details").textContent = `Ошибка загрузки деталей (HTTP ${res.status}).`;
       btn.disabled = false;
       btn.textContent = "Обновить";
@@ -654,6 +843,7 @@ async function loadDetails(recId) {
     }
     it = await res.json();
   } catch (e) {
+    clearDetailsHeaderLinks();
     $("details").textContent = `Ошибка сети при загрузке деталей.`;
     btn.disabled = false;
     btn.textContent = "Обновить";
@@ -820,6 +1010,17 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
+  if (act === "copy-sheet") {
+    const copyText = $("details").dataset.copyText || "";
+    if (!copyText) return;
+    navigator.clipboard.writeText(copyText).then(() => {
+      const old = t.textContent;
+      t.textContent = "✓";
+      setTimeout(() => { t.textContent = old; }, 1200);
+    });
+    return;
+  }
+
   if (act === "show-tech") {
     const tech = $("details").dataset.tech;
     if (tech) showModal("Техподробности", tech);
@@ -926,15 +1127,6 @@ $("refreshDetailsBtn").addEventListener("click", () => {
     }
   }
   loadDetails(freshId || currentRecId);
-});
-
-$("copyParamsBtn").addEventListener("click", () => {
-  const copyText = $("details").dataset.copyText;
-  if (!copyText) return;
-  navigator.clipboard.writeText(copyText).then(() => {
-    $("copyParamsBtn").textContent = "✓ Скопировано";
-    setTimeout(() => { $("copyParamsBtn").textContent = "Скопировать лист"; }, 2000);
-  });
 });
 
 $("modalClose").addEventListener("click", (e) => { e.stopPropagation(); hideModal(); });

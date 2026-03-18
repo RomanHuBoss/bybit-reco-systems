@@ -685,3 +685,120 @@ body {
   .operator-hero { flex-direction: column; }
   .operator-hero-metrics { justify-content: flex-start; }
 }
+
+
+.compact-hero {
+  padding: 10px 12px;
+}
+.field-value-input-row {
+  align-items: center;
+}
+.field-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: #08111f;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.field-input:focus {
+  outline: none;
+  border-color: #3e6090;
+}
+.primary-launch-card {
+  border-color: rgba(255,176,32,0.25);
+  background: rgba(255,176,32,0.04);
+}
+.launch-sheet-wrap {
+  margin-top: 12px;
+}
+.sheet-label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+.launch-sheet {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  background: #08111f;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+
+.details-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.details-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.icon-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 14px;
+}
+.icon-link:hover {
+  border-color: #3e6090;
+  background: rgba(255,255,255,0.06);
+}
+.header-icon-link {
+  width: 30px;
+  height: 30px;
+}
+.symbol-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.symbol-links {
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0.88;
+}
+.symbol-links.compact {
+  gap: 6px;
+}
+.symbol-links .icon-link {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+.operator-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.field-input-mono,
+.launch-sheet {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.sheet-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}

@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Bybit Recommender — Панель оператора</title>
-  <link rel="stylesheet" href="/static/styles.css"/>
+  <link rel="stylesheet" href="/static/styles.css?v=manual-ui-v3"/>
 </head>
 <body>
 
@@ -89,13 +89,13 @@
               <tr>
                 <th>#</th>
                 <th data-sort="venue">Площадка</th>
-                <th data-sort="symbol">Symbol</th>
-                <th data-sort="bot_type">Bybit bot</th>
-                <th data-sort="direction">Напр</th>
-                <th data-sort="dir_conf" title="Уверенность направления (direction_confidence)">Уд.напр</th>
+                <th data-sort="symbol">Символ</th>
+                <th data-sort="bot_type">Тип бота</th>
+                <th data-sort="direction">Направление</th>
+                <th data-sort="dir_conf" title="Уверенность направления">Ув. напр.</th>
                 <th data-sort="score">Скор</th>
-                <th id="confHeader" data-sort="confidence" title="Уверенность модели">Увер</th>
-                <th data-sort="expected_rr">Ож.RR</th>
+                <th id="confHeader" data-sort="confidence" title="Уверенность модели">Увер.</th>
+                <th data-sort="expected_rr">Ож. RR</th>
                 <th data-sort="status">Статус</th>
                 <th>Карточка</th>
               </tr>
@@ -106,10 +106,12 @@
       </div>
 
       <div class="panel panel-flex">
-        <div class="panel-title panel-title-fixed details-header">Детали
-          <span style="float:right;display:inline-flex;gap:6px;margin-top:-4px">
+        <div class="panel-title panel-title-fixed details-header">
+          <span>Детали</span>
+          <span class="details-header-actions">
+            <a id="detailsChartLink" class="icon-link header-icon-link hidden" href="#" target="_blank" rel="noopener noreferrer" title="Открыть график Bybit">📈</a>
+            <a id="detailsBotLink" class="icon-link header-icon-link hidden" href="#" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания бота Bybit">🤖</a>
             <button id="refreshDetailsBtn" class="btn tiny secondary hidden">Обновить</button>
-            <button id="copyParamsBtn" class="btn tiny secondary hidden">Скопировать лист</button>
           </span>
         </div>
         <div id="details" class="details details-scroll muted">Выберите рекомендацию.</div>
@@ -130,6 +132,6 @@
     </div>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=manual-ui-v3"></script>
 </body>
 </html>
