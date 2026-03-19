@@ -122,7 +122,7 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
         out["bybit_meta"] = {}
     return out
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.1")
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.2")
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

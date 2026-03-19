@@ -128,6 +128,25 @@ function formatPercentDot(value, digits = 4, withSign = false) {
   return `${withSign && v >= 0 ? "+" : ""}${formatDotNumber(v, digits)}%`;
 }
 
+
+function formatBps(value, digits = 2, withSign = false) {
+  if (value === null || value === undefined || value === "") return "—";
+  const v = Number(value);
+  if (!Number.isFinite(v)) return String(value);
+  return `${withSign && v >= 0 ? "+" : ""}${formatDotNumber(v, digits)} bps`;
+}
+
+function formatUsdValue(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const v = Number(value);
+  if (!Number.isFinite(v)) return String(value);
+  const av = Math.abs(v);
+  if (av >= 1e9) return `$${formatDotNumber(v / 1e9, 2)}B`;
+  if (av >= 1e6) return `$${formatDotNumber(v / 1e6, 2)}M`;
+  if (av >= 1e3) return `$${formatDotNumber(v / 1e3, 1)}K`;
+  return `$${fmtPrice(v)}`;
+}
+
 function directionRu(dir) {
   if (dir === "long") return "Лонг";
   if (dir === "short") return "Шорт";
@@ -144,6 +163,13 @@ function venueLabel(venue) {
   if (venue === "linear") return "Фьючерсы";
   if (venue === "spot") return "Спот";
   return venue || "—";
+}
+
+function liquidityTierRu(tier) {
+  if (tier === "deep") return "Глубокая";
+  if (tier === "mid") return "Средняя";
+  if (tier === "shallow") return "Тонкая";
+  return tier || "—";
 }
 
 function marginModeRu(mode) {
@@ -207,22 +233,36 @@ function shockBadgeHtml(shock) {
 
 function btcRelationMetric(betaInfo, symbol) {
   const safeSymbol = String(symbol || "").toUpperCase();
-  if (safeSymbol === "BTCUSDT") {
-    return { label: "BTC", value: "база", title: "Базовый BTC-инструмент" };
+  const corrRaw = safeSymbol === "BTCUSDT" ? 1.0 : Number(betaInfo?.correlation);
+  if (!Number.isFinite(corrRaw)) {
+    return {
+      label: "BTC-завис.",
+      value: "—",
+      iconClass: "unknown",
+      title: "Недостаточно данных для расчёта связи с BTC",
+    };
   }
-  const corr = Number(betaInfo?.correlation);
-  if (!Number.isFinite(corr)) {
-    return { label: "BTC", value: "—", title: "Недостаточно данных для расчёта связи с BTC" };
-  }
+  const corr = Math.max(-1, Math.min(1, corrRaw));
   const absCorr = Math.abs(corr);
-  let prefix = "связь";
-  if (betaInfo?.independent_signal) prefix = "незав.";
-  else if (betaInfo?.is_btc_driven) prefix = "BTC-завис.";
+  let iconClass = "independent";
+  let titlePrefix = "Независимый сигнал";
+  if (absCorr >= 0.70) {
+    iconClass = "strong";
+    titlePrefix = safeSymbol === "BTCUSDT" ? "Базовый BTC-инструмент" : "Сильная корреляция с BTC";
+  } else if (absCorr >= 0.35) {
+    iconClass = "partial";
+    titlePrefix = "Частичная корреляция с BTC";
+  }
   return {
-    label: "BTC",
-    value: `${prefix} r=${formatDotNumber(corr, 2, false)}`,
-    title: `Корреляция с BTC за окно ${Number(betaInfo?.window || 0)}h, |r|=${formatDotNumber(absCorr, 2, false)}`,
+    label: "BTC-завис.",
+    value: `r=${formatDotNumber(corr, 2, false)}`,
+    iconClass,
+    title: `${titlePrefix}; окно ${(Number(betaInfo?.window || 24))}h`,
   };
+}
+
+function btcMetricValueHtml(metric) {
+  return `<span class="btc-metric-value"><span class="btc-state-icon ${escapeHtml(metric.iconClass || "unknown")}"></span><span>${escapeHtml(metric.value || "—")}</span></span>`;
 }
 
 function copyButton(copyValue) {
@@ -282,10 +322,12 @@ function buildOperatorValues(it) {
   const tpLegPct = formatPercentDot(tpPerLeg.pct, 4, false);
   const leverage = it.venue === "linear" ? String(params.leverage ?? 1) : "—";
   const marginMode = it.venue === "linear" ? marginModeRu(params.margin_mode || "isolated") : "—";
-  const stopLossLabel = it.direction === "short" ? "Стоп-лосс (верх)" : it.direction === "long" ? "Стоп-лосс (низ)" : "Нижняя стоп-цена";
-  const takeProfitLabel = it.direction === "short" ? "Тейк-профит (низ)" : it.direction === "long" ? "Тейк-профит (верх)" : "Верхняя стоп-цена";
-  const stopLossValue = it.direction === "short" ? killUpper : killLower;
-  const takeProfitValue = it.direction === "short" ? killLower : killUpper;
+  const isSpotBot = it.bot_type === "spot_grid";
+  const isNeutralFutures = it.venue === "linear" && it.direction === "neutral";
+  const stopLossLabel = isSpotBot ? "Стоп-лосс" : it.direction === "short" ? "Стоп-лосс (верх)" : it.direction === "long" ? "Стоп-лосс (низ)" : "Нижняя стоп-цена";
+  const takeProfitLabel = isSpotBot ? "Тейк-профит" : it.direction === "short" ? "Тейк-профит (низ)" : it.direction === "long" ? "Тейк-профит (верх)" : "Верхняя стоп-цена";
+  const stopLossValue = (isSpotBot || isNeutralFutures || it.direction === "long") ? killLower : killUpper;
+  const takeProfitValue = (isSpotBot || isNeutralFutures || it.direction === "long") ? killUpper : killLower;
   return {
     rangeLower,
     rangeUpper,
@@ -305,30 +347,86 @@ function buildOperatorValues(it) {
   };
 }
 
-function buildLaunchSheetText(it) {
+function buildOperatorFieldSpecs(it, ov) {
   const params = (it || {}).params || {};
+  const fields = [
+    { label: "Диапазон от", value: ov.rangeLower, mono: true },
+    { label: "Диапазон до", value: ov.rangeUpper, mono: true },
+    { label: "Кол-во сеток", value: params.grid_levels ?? "—" },
+    { label: "Интервал, цена", value: ov.gridStepAbs, mono: true },
+    { label: "Интервал, %", value: ov.stepPct },
+    { label: "Цена входа", value: ov.entryRef, mono: true },
+  ];
+  if (it.venue === "linear") {
+    fields.push({ label: "Плечо", value: ov.leverage });
+    fields.push({ label: "Режим маржи", value: ov.marginMode });
+  }
+  fields.push({ label: "Прибыль/сетка, %", value: ov.tpLegPct });
+  if (ov.tpLegAbs !== "—") fields.push({ label: "Прибыль/сетка, цена", value: ov.tpLegAbs, mono: true });
+
+  if (it.bot_type === "spot_grid") {
+    fields.push({ label: "Стоп-лосс", value: ov.stopLossValue, mono: true });
+    fields.push({ label: "Тейк-профит", value: ov.takeProfitValue, mono: true });
+  } else if (it.direction === "neutral") {
+    fields.push({ label: "Нижняя стоп-цена", value: ov.killLower, mono: true });
+    fields.push({ label: "Верхняя стоп-цена", value: ov.killUpper, mono: true });
+  } else {
+    fields.push({ label: "Стоп-лосс", value: ov.stopLossValue, mono: true });
+    fields.push({ label: "Тейк-профит", value: ov.takeProfitValue, mono: true });
+  }
+  return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
+}
+
+function buildLaunchSheetText(it) {
   const shock = ((it || {}).reasons || {}).market_shock || {};
   const ov = buildOperatorValues(it);
   const lines = [];
   lines.push(`${it.symbol} | ${botTypeLabel(it.bot_type)} | ${directionRu(it.direction)}`);
   lines.push(`Площадка: ${venueLabel(it.venue)}`);
-  lines.push(`Диапазон от: ${ov.rangeLower}`);
-  lines.push(`Диапазон до: ${ov.rangeUpper}`);
-  lines.push(`Кол-во сеток: ${params.grid_levels ?? "—"}`);
-  lines.push(`Шаг сетки, %: ${ov.stepPct}`);
-  lines.push(`Шаг сетки, цена: ${ov.gridStepAbs}`);
-  lines.push(`Цена входа / ориентир: ${ov.entryRef}`);
-  if (it.venue === "linear") lines.push(`Плечо: ${ov.leverage}`);
-  if (it.venue === "linear") lines.push(`Режим маржи: ${ov.marginMode}`);
-  lines.push(`${ov.stopLossLabel}: ${ov.stopLossValue}`);
-  lines.push(`${ov.takeProfitLabel}: ${ov.takeProfitValue}`);
-  lines.push(`Kill-switch низ: ${ov.killLower}`);
-  lines.push(`Kill-switch верх: ${ov.killUpper}`);
-  lines.push(`Прибыль/сетка, %: ${ov.tpLegPct}`);
-  if (ov.tpLegAbs !== "—") lines.push(`Прибыль/сетка, цена: ${ov.tpLegAbs}`);
+  for (const field of buildOperatorFieldSpecs(it, ov)) {
+    lines.push(`${field.label}: ${field.value}`);
+  }
   if (shock.title) lines.push(`Guard: ${shock.title}`);
   if (shock.operator_note) lines.push(`Примечание: ${shock.operator_note}`);
   return lines.join("\n");
+}
+
+function factorNameRu(name) {
+  const mapping = {
+    range_score: "Диапазонность",
+    coherence: "Согласованность таймфреймов",
+    regime_confidence: "Уверенность режима",
+    effective_sentiment: "Сентимент",
+    direction_strength: "Сила направления",
+    trend_strength: "Трендовость",
+    atr_pct: "Волатильность ATR",
+    execution_cost_bps: "Издержки исполнения",
+    spread_bps: "Спред",
+  };
+  return mapping[name] || name || "factor";
+}
+
+function factorItemHtml(factor, tone = "positive") {
+  if (!factor) return "";
+  const cls = tone === "positive" ? "factor-item positive" : "factor-item negative";
+  const msg = factor.msg || factor.reason || factorNameRu(factor.name);
+  const weight = Number(factor.weight);
+  const weightText = Number.isFinite(weight) ? `${weight >= 0 ? "+" : ""}${formatDotNumber(weight, 2)}` : "—";
+  return `
+    <div class="${cls}">
+      <div class="factor-sign">${tone === "positive" ? "+" : "−"}</div>
+      <div class="factor-body">
+        <div class="factor-msg">${escapeHtml(msg)}</div>
+        <div class="factor-meta">${escapeHtml(factorNameRu(factor.name))} · вес ${escapeHtml(weightText)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function factorGroupHtml(title, factors, tone = "positive") {
+  const list = Array.isArray(factors) ? factors.slice(0, 4) : [];
+  const body = list.length ? list.map(item => factorItemHtml(item, tone)).join("") : `<div class="helper-text">Нет выраженных факторов.</div>`;
+  return `<div class="factor-group"><h4>${escapeHtml(title)}</h4>${body}</div>`;
 }
 
 function buildTechPayload(it) {
@@ -363,11 +461,15 @@ function buildDetailsHtml(it) {
   const dirAgg = reasons.direction_agg || {};
   const funding = reasons.funding || {};
   const oi = reasons.open_interest || {};
+  const liquidity = reasons.liquidity || {};
+  const costModel = reasons.cost_model || {};
+  const symbolSent = reasons.symbol_sentiment || {};
   const volatility = plan.volatility || {};
   const btcBeta = reasons.btc_beta || {};
   const btcMetric = btcRelationMetric(btcBeta, it.symbol);
   const blocks = it.blocks || [];
   const ov = buildOperatorValues(it);
+  const operatorFields = buildOperatorFieldSpecs(it, ov);
   const alertClass = (shock.severity || "normal") === "lockdown" ? "lock" : (shock.severity || "normal") === "guarded" ? "guard" : "";
   const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
   const copyText = buildLaunchSheetText(it);
@@ -395,28 +497,15 @@ function buildDetailsHtml(it) {
           <div class="metric-chip"><b>Скор</b>${fmt(it.score)}</div>
           <div class="metric-chip"><b>Увер.</b>${fmt(it.confidence)}</div>
           <div class="metric-chip"><b>Ож. RR</b>${fmt(it.expected_rr)}</div>
-          <div class="metric-chip" title="${escapeHtml(btcMetric.title || "")}"><b>${escapeHtml(btcMetric.label)}</b>${escapeHtml(btcMetric.value)}</div>
+          <div class="metric-chip metric-chip-wide" title="${escapeHtml(btcMetric.title || "")}"><b>${escapeHtml(btcMetric.label)}</b>${btcMetricValueHtml(btcMetric)}</div>
         </div>
       </div>
 
       <div class="operator-card primary-launch-card">
         <h3>Поля для Bybit</h3>
-        <div class="helper-text" style="margin-bottom:10px">Только значения, которые обычно нужно вставлять в форму Bybit вручную. Все ценовые уровни приведены к виду с точкой и без разделителей тысяч.</div>
+        <div class="helper-text" style="margin-bottom:10px">Только значения, которые реально нужны для ручного заполнения формы Bybit. Все ценовые уровни приведены к виду с точкой и без разделителей тысяч.</div>
         <div class="operator-grid three">
-          ${fieldBox("Диапазон от", ov.rangeLower, ov.rangeLower, "field-input-mono")}
-          ${fieldBox("Диапазон до", ov.rangeUpper, ov.rangeUpper, "field-input-mono")}
-          ${fieldBox("Кол-во сеток", params.grid_levels ?? "—", params.grid_levels ?? "—")}
-          ${fieldBox("Шаг сетки, %", ov.stepPct, ov.stepPct)}
-          ${fieldBox("Шаг сетки, цена", ov.gridStepAbs, ov.gridStepAbs, "field-input-mono")}
-          ${fieldBox("Цена входа / ориентир", ov.entryRef, ov.entryRef, "field-input-mono")}
-          ${it.venue === "linear" ? fieldBox("Плечо", ov.leverage, ov.leverage) : ""}
-          ${it.venue === "linear" ? fieldBox("Режим маржи", ov.marginMode, ov.marginMode) : ""}
-          ${fieldBox(ov.stopLossLabel, ov.stopLossValue, ov.stopLossValue, "field-input-mono")}
-          ${fieldBox(ov.takeProfitLabel, ov.takeProfitValue, ov.takeProfitValue, "field-input-mono")}
-          ${fieldBox("Kill-switch низ", ov.killLower, ov.killLower, "field-input-mono")}
-          ${fieldBox("Kill-switch верх", ov.killUpper, ov.killUpper, "field-input-mono")}
-          ${fieldBox("Прибыль/сетка, %", ov.tpLegPct, ov.tpLegPct)}
-          ${fieldBox("Прибыль/сетка, цена", ov.tpLegAbs, ov.tpLegAbs, "field-input-mono")}
+          ${operatorFields.map(field => fieldBox(field.label, field.value, field.value, field.mono ? "field-input-mono" : "")).join("")}
         </div>
         <div class="launch-sheet-wrap">
           <div class="sheet-topline">
@@ -427,11 +516,19 @@ function buildDetailsHtml(it) {
         </div>
       </div>
 
+      <div class="operator-card">
+        <h3>Факторы решения</h3>
+        <div class="factors-grid">
+          ${factorGroupHtml("Плюсы сигнала", reasons.top_positive_factors || [], "positive")}
+          ${factorGroupHtml("Минусы и риски", reasons.top_negative_factors || [], "negative")}
+        </div>
+      </div>
+
       <div class="operator-card alert-card ${alertClass}">
         <h3>Защита и фон</h3>
         <div class="alert-line">${shockBadgeHtml(shock)}</div>
         <div>${escapeHtml(shock.operator_note || "Новые входы разрешены в обычном режиме.")}</div>
-        <div class="alert-note">Сентимент в этой сборке эвристический: это operator-grade фон, а не полноценный semantic news-анализ статей.</div>
+        <div class="alert-note">Сентимент в этой сборке остаётся эвристическим: это operator-grade фон, а не полноценный semantic news-анализ статей.</div>
         <div class="alert-note">Breadth вниз: ${fmt(((shock.metrics || {}).breadth_down || 0) * 100, 1)}% · вверх: ${fmt(((shock.metrics || {}).breadth_up || 0) * 100, 1)}% · median 5m: ${fmtPct((((shock.metrics || {}).median_r5m || 0) * 100), 2)}</div>
         ${reasonList}
       </div>
@@ -442,12 +539,26 @@ function buildDetailsHtml(it) {
           ${fieldBox("Уверенность направления", formatDotNumber(dirConf, 4), formatDotNumber(dirConf, 4))}
           ${fieldBox("Режим сигнала", dirAgg.regime || "—", dirAgg.regime || "—")}
           ${fieldBox("Согласованность", formatDotNumber(dirAgg.coherence, 4), formatDotNumber(dirAgg.coherence, 4))}
-          ${fieldBox("Сентимент 6ч", formatDotNumber(sentAgg.ewma?.["6h"], 4), formatDotNumber(sentAgg.ewma?.["6h"], 4))}
+          ${fieldBox("Сентимент глобальный", formatDotNumber(symbolSent.global, 4), formatDotNumber(symbolSent.global, 4))}
+          ${fieldBox("Сентимент по символу", formatDotNumber(symbolSent.value, 4), formatDotNumber(symbolSent.value, 4))}
+          ${fieldBox("Сентимент итоговый", formatDotNumber(symbolSent.effective, 4), formatDotNumber(symbolSent.effective, 4))}
           ${fieldBox("ATR 1ч", volatility.atr_pct_1h !== undefined && volatility.atr_pct_1h !== null ? formatPercentDot(volatility.atr_pct_1h * 100, 2, false) : "—")}
           ${fieldBox("Фандинг", funding.value !== undefined && funding.value !== null ? formatPercentDot(funding.value * 100, 4, true) : "—")}
           ${fieldBox("OI 4ч", oi.oi_4h_chg_pct !== undefined && oi.oi_4h_chg_pct !== null ? formatPercentDot(oi.oi_4h_chg_pct, 2, true) : "—")}
         </div>
         ${fastVetoBlock}
+      </div>
+
+      <div class="operator-card">
+        <h3>Исполнение и ликвидность</h3>
+        <div class="operator-grid">
+          ${fieldBox("Ликвидность", liquidityTierRu(liquidity.tier || "—"))}
+          ${fieldBox("Оборот 24ч", formatUsdValue(liquidity.turnover24h_usd))}
+          ${fieldBox("Спред", formatBps(costModel.spread_bps, 2, false))}
+          ${fieldBox("Издержки всего", formatBps(costModel.total_cost_bps, 2, false))}
+          ${fieldBox("Комиссия taker", formatBps(costModel.taker_fee_bps, 2, false))}
+          ${fieldBox("Ожид. funding", formatBps(costModel.expected_funding_bps, 2, true))}
+        </div>
         <div class="section-actions">
           <button class="ghost-chip" data-act="show-tech">Техподробности</button>
         </div>
