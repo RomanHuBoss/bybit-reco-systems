@@ -497,7 +497,7 @@ function buildDetailsHtml(it) {
           <div class="operator-title-row">
             <div class="operator-title">${escapeHtml(it.symbol)}</div>
           </div>
-          <div class="operator-subtitle operator-subtitle-inline">${botTypePillHtml(it.bot_type, true)}<span class="operator-sub-sep">·</span><span>${escapeHtml(directionRu(it.direction))}</span><span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
+          <div class="operator-subtitle operator-subtitle-inline">${botTypePillHtml(it.bot_type, true)}<span class="operator-sub-sep">·</span>${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
         </div>
         <div class="operator-hero-metrics">
           <div class="metric-chip"><b>Скор</b>${fmt(it.score)}</div>
@@ -951,10 +951,10 @@ function renderRecoTable(items) {
   }
 }
 function directionBadge(dir) {
-  if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">neutral</span>`;
+  if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">• neutral</span>`;
   if (dir === "long")  return `<span class="dir-badge dir-long">▲ long</span>`;
   if (dir === "short") return `<span class="dir-badge dir-short">▼ short</span>`;
-  return `<span class="dir-badge dir-neu">${dir}</span>`;
+  return `<span class="dir-badge dir-neu">• ${escapeHtml(String(dir))}</span>`;
 }
 
 // ── details panel ─────────────────────────────────────────────────────────────
