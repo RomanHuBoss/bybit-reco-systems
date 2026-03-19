@@ -154,9 +154,15 @@ function directionRu(dir) {
 }
 
 function botTypeLabel(botType) {
-  if (botType === "futures_grid") return "Фьючерсный grid";
-  if (botType === "spot_grid") return "Спотовый grid";
+  if (botType === "futures_grid") return "futures grid";
+  if (botType === "spot_grid") return "spot grid";
   return botType || "—";
+}
+
+function botTypePillHtml(botType, compact = false) {
+  const label = botTypeLabel(botType);
+  const cls = compact ? "bot-type-pill compact" : "bot-type-pill";
+  return `<span class="${cls} ${escapeHtml(botType || "other")}">${escapeHtml(label)}</span>`;
 }
 
 function venueLabel(venue) {
@@ -382,7 +388,7 @@ function buildLaunchSheetText(it) {
   const ov = buildOperatorValues(it);
   const lines = [];
   lines.push(`${it.symbol} | ${botTypeLabel(it.bot_type)} | ${directionRu(it.direction)}`);
-  lines.push(`Площадка: ${venueLabel(it.venue)}`);
+  lines.push(`Рынок: ${venueLabel(it.venue)}`);
   for (const field of buildOperatorFieldSpecs(it, ov)) {
     lines.push(`${field.label}: ${field.value}`);
   }
@@ -491,7 +497,7 @@ function buildDetailsHtml(it) {
           <div class="operator-title-row">
             <div class="operator-title">${escapeHtml(it.symbol)}</div>
           </div>
-          <div class="operator-subtitle">${escapeHtml(botTypeLabel(it.bot_type))} · ${escapeHtml(venueLabel(it.venue))} · ${escapeHtml(directionRu(it.direction))} · ${statusBadgeHtml(it.status)}</div>
+          <div class="operator-subtitle operator-subtitle-inline">${botTypePillHtml(it.bot_type, true)}<span class="operator-sub-sep">·</span><span>${escapeHtml(directionRu(it.direction))}</span><span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
         </div>
         <div class="operator-hero-metrics">
           <div class="metric-chip"><b>Скор</b>${fmt(it.score)}</div>
@@ -914,14 +920,13 @@ function renderRecoTable(items) {
     if (it.status === "recommended") tr.classList.add("row-recommended");
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td><span class="venue-pill venue-${it.venue}">${it.venue}</span></td>
+      <td>${botTypePillHtml(it.bot_type)}</td>
       <td>
         <div class="symbol-cell">
           <b>${it.symbol}</b>
           ${symbolLinksHtml(it)}
         </div>
       </td>
-      <td><span class="bot-pill">${botTypeLabel(it.bot_type)}</span></td>
       <td>${directionBadge(it.direction)}</td>
       <td>${dirConfCell(dirConf)}</td>
       <td>${fmt(it.score)}</td>
