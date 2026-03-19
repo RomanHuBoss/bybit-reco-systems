@@ -205,6 +205,26 @@ function shockBadgeHtml(shock) {
   return `<span class="${cls}">${escapeHtml(text)}</span>`;
 }
 
+function btcRelationMetric(betaInfo, symbol) {
+  const safeSymbol = String(symbol || "").toUpperCase();
+  if (safeSymbol === "BTCUSDT") {
+    return { label: "BTC", value: "база", title: "Базовый BTC-инструмент" };
+  }
+  const corr = Number(betaInfo?.correlation);
+  if (!Number.isFinite(corr)) {
+    return { label: "BTC", value: "—", title: "Недостаточно данных для расчёта связи с BTC" };
+  }
+  const absCorr = Math.abs(corr);
+  let prefix = "связь";
+  if (betaInfo?.independent_signal) prefix = "незав.";
+  else if (betaInfo?.is_btc_driven) prefix = "BTC-завис.";
+  return {
+    label: "BTC",
+    value: `${prefix} r=${formatDotNumber(corr, 2, false)}`,
+    title: `Корреляция с BTC за окно ${Number(betaInfo?.window || 0)}h, |r|=${formatDotNumber(absCorr, 2, false)}`,
+  };
+}
+
 function copyButton(copyValue) {
   if (copyValue === null || copyValue === undefined || copyValue === "" || copyValue === "—") return "";
   return `<button class="copy-chip" data-act="copy-field" data-copy="${escapeHtml(copyValue)}">копия</button>`;
@@ -344,6 +364,8 @@ function buildDetailsHtml(it) {
   const funding = reasons.funding || {};
   const oi = reasons.open_interest || {};
   const volatility = plan.volatility || {};
+  const btcBeta = reasons.btc_beta || {};
+  const btcMetric = btcRelationMetric(btcBeta, it.symbol);
   const blocks = it.blocks || [];
   const ov = buildOperatorValues(it);
   const alertClass = (shock.severity || "normal") === "lockdown" ? "lock" : (shock.severity || "normal") === "guarded" ? "guard" : "";
@@ -366,7 +388,6 @@ function buildDetailsHtml(it) {
         <div>
           <div class="operator-title-row">
             <div class="operator-title">${escapeHtml(it.symbol)}</div>
-            ${symbolLinksHtml(it, true)}
           </div>
           <div class="operator-subtitle">${escapeHtml(botTypeLabel(it.bot_type))} · ${escapeHtml(venueLabel(it.venue))} · ${escapeHtml(directionRu(it.direction))} · ${statusBadgeHtml(it.status)}</div>
         </div>
@@ -374,16 +395,14 @@ function buildDetailsHtml(it) {
           <div class="metric-chip"><b>Скор</b>${fmt(it.score)}</div>
           <div class="metric-chip"><b>Увер.</b>${fmt(it.confidence)}</div>
           <div class="metric-chip"><b>Ож. RR</b>${fmt(it.expected_rr)}</div>
+          <div class="metric-chip" title="${escapeHtml(btcMetric.title || "")}"><b>${escapeHtml(btcMetric.label)}</b>${escapeHtml(btcMetric.value)}</div>
         </div>
       </div>
 
       <div class="operator-card primary-launch-card">
         <h3>Поля для Bybit</h3>
-        <div class="helper-text" style="margin-bottom:10px">Все уровни подготовлены для вставки в формы Bybit: с точкой и без разделителей тысяч.</div>
+        <div class="helper-text" style="margin-bottom:10px">Только значения, которые обычно нужно вставлять в форму Bybit вручную. Все ценовые уровни приведены к виду с точкой и без разделителей тысяч.</div>
         <div class="operator-grid three">
-          ${fieldBox("Тип бота", botTypeLabel(it.bot_type), botTypeLabel(it.bot_type))}
-          ${fieldBox("Площадка", venueLabel(it.venue), venueLabel(it.venue))}
-          ${fieldBox("Направление", directionRu(it.direction), directionRu(it.direction))}
           ${fieldBox("Диапазон от", ov.rangeLower, ov.rangeLower, "field-input-mono")}
           ${fieldBox("Диапазон до", ov.rangeUpper, ov.rangeUpper, "field-input-mono")}
           ${fieldBox("Кол-во сеток", params.grid_levels ?? "—", params.grid_levels ?? "—")}
