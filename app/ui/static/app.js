@@ -210,14 +210,37 @@ function bybitChartUrl(venue, symbol) {
   return `https://www.bybit.com/trade/usdt/${encodeURIComponent(symbol || "")}`;
 }
 
+function iconSvg(kind) {
+  if (kind === "chart") {
+    return `
+      <svg viewBox="0 0 20 20" aria-hidden="true" class="icon-svg icon-svg-chart">
+        <path d="M3.5 16.5h13" />
+        <path d="M5 13.2l3-3 2.5 2 4-5.2" />
+        <path d="M12.8 7h3.1v3.1" />
+      </svg>
+    `;
+  }
+  return `
+    <svg viewBox="0 0 20 20" aria-hidden="true" class="icon-svg icon-svg-bot">
+      <rect x="5" y="6" width="10" height="8" rx="2" />
+      <path d="M10 3.5v2" />
+      <path d="M7 9.5h0.01" />
+      <path d="M13 9.5h0.01" />
+      <path d="M8 12h4" />
+      <path d="M6 15.5l-1.2 1.5" />
+      <path d="M14 15.5l1.2 1.5" />
+    </svg>
+  `;
+}
+
 function symbolLinksHtml(it, compact = false) {
   const chartUrl = bybitChartUrl(it.venue, it.symbol);
   const botUrl = bybitBotCreateUrl(it.bot_type);
   const cls = compact ? "symbol-links compact" : "symbol-links";
   return `
     <span class="${cls}">
-      <a class="icon-link" href="${escapeHtml(chartUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть график Bybit">📈</a>
-      <a class="icon-link" href="${escapeHtml(botUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания бота">🤖</a>
+      <a class="icon-link" href="${escapeHtml(chartUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть график Bybit">${iconSvg("chart")}</a>
+      <a class="icon-link" href="${escapeHtml(botUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания бота">${iconSvg("bot")}</a>
     </span>
   `;
 }
@@ -298,6 +321,8 @@ function updateDetailsHeaderLinks(it) {
   if (!chart || !bot) return;
   chart.href = bybitChartUrl(it.venue, it.symbol);
   bot.href = bybitBotCreateUrl(it.bot_type);
+  chart.innerHTML = iconSvg("chart");
+  bot.innerHTML = iconSvg("bot");
   chart.classList.remove("hidden");
   bot.classList.remove("hidden");
 }
@@ -383,20 +408,6 @@ function buildOperatorFieldSpecs(it, ov) {
   return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
 }
 
-function buildLaunchSheetText(it) {
-  const shock = ((it || {}).reasons || {}).market_shock || {};
-  const ov = buildOperatorValues(it);
-  const lines = [];
-  lines.push(`${it.symbol} | ${botTypeLabel(it.bot_type)} | ${directionRu(it.direction)}`);
-  lines.push(`Рынок: ${venueLabel(it.venue)}`);
-  for (const field of buildOperatorFieldSpecs(it, ov)) {
-    lines.push(`${field.label}: ${field.value}`);
-  }
-  if (shock.title) lines.push(`Guard: ${shock.title}`);
-  if (shock.operator_note) lines.push(`Примечание: ${shock.operator_note}`);
-  return lines.join("\n");
-}
-
 function factorNameRu(name) {
   const mapping = {
     range_score: "Диапазонность",
@@ -478,10 +489,8 @@ function buildDetailsHtml(it) {
   const operatorFields = buildOperatorFieldSpecs(it, ov);
   const alertClass = (shock.severity || "normal") === "lockdown" ? "lock" : (shock.severity || "normal") === "guarded" ? "guard" : "";
   const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
-  const copyText = buildLaunchSheetText(it);
   const techPayload = JSON.stringify(buildTechPayload(it), null, 2);
 
-  $("details").dataset.copyText = copyText;
   $("details").dataset.tech = techPayload;
   $("details").dataset.recId = it.rec_id;
   updateDetailsHeaderLinks(it);
@@ -512,13 +521,6 @@ function buildDetailsHtml(it) {
         <div class="helper-text" style="margin-bottom:10px">Только значения, которые реально нужны для ручного заполнения формы Bybit. Все ценовые уровни приведены к виду с точкой и без разделителей тысяч.</div>
         <div class="operator-grid three">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.value, field.mono ? "field-input-mono" : "")).join("")}
-        </div>
-        <div class="launch-sheet-wrap">
-          <div class="sheet-topline">
-            <label class="sheet-label">Лист запуска целиком</label>
-            <button class="ghost-chip" data-act="copy-sheet">Скопировать всё</button>
-          </div>
-          <textarea class="launch-sheet" readonly>${escapeHtml(copyText)}</textarea>
         </div>
       </div>
 
@@ -1138,17 +1140,6 @@ document.addEventListener("click", async (e) => {
     const txt = t.dataset.copy || "";
     if (!txt) return;
     navigator.clipboard.writeText(txt).then(() => {
-      const old = t.textContent;
-      t.textContent = "✓";
-      setTimeout(() => { t.textContent = old; }, 1200);
-    });
-    return;
-  }
-
-  if (act === "copy-sheet") {
-    const copyText = $("details").dataset.copyText || "";
-    if (!copyText) return;
-    navigator.clipboard.writeText(copyText).then(() => {
       const old = t.textContent;
       t.textContent = "✓";
       setTimeout(() => { t.textContent = old; }, 1200);
