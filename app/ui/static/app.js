@@ -713,9 +713,12 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
 
   if (info?.fitted) {
     if (info?.logreg_active) {
-      return `${botType}: калибратор активен (LogReg + Platt, n=${Number(info.n_samples || 0)}; побед=${wins}, поражений=${losses}).`;
+      const fitRows = Number(info?.n_samples || 0);
+      const dropped = Number(info?.rows_dropped_for_fit || Math.max(0, total - fitRows) || 0);
+      const droppedText = dropped > 0 ? `; не вошло в feature-fit=${dropped}` : "";
+      return `${botType}: калибратор активен (LogReg + Platt, fit_rows=${fitRows}/${total}; побед=${wins}, поражений=${losses}${droppedText}).`;
     }
-    return `${botType}: включён Platt-only (n=${Number(info.n_samples || 0)} / ${Number(info.logreg_min_samples || 300)}; побед=${wins}, поражений=${losses}).`;
+    return `${botType}: включён Platt-only (fit_rows=${Number(info.n_samples || 0)} / ${total}; побед=${wins}, поражений=${losses}).`;
   }
 
   if ((info?.unfitted_reason || "") === "degenerate_win_rate") {

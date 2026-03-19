@@ -635,7 +635,7 @@ async def startup_event():
 @app.get("/api/v1/status")
 def api_status() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
-        from .calibration import load_logreg_from_db, GLOBAL_LOGREG_KEY, BOT_CALIB_KEYS
+        from .calibration import load_logreg_from_db, GLOBAL_LOGREG_KEY, BOT_CALIB_KEYS, label_balance_stats
         from .sentiment_features import compute_sentiment_agg
 
         global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
@@ -678,13 +678,16 @@ def api_status() -> dict[str, Any]:
                 "class_entropy_bits": round(class_entropy_bits, 4),
             }
 
-        def _bot_gate(bt: str, total: int, win_rate: float | None, fitted: bool) -> tuple[bool, str | None]:
+        def _bot_gate(total: int, wins: int, losses: int, fitted: bool) -> tuple[bool, str | None]:
             if fitted:
                 return True, None
-            if total < min_samples:
-                return False, "not_enough_samples"
+            balance = label_balance_stats(([1] * int(wins)) + ([0] * int(losses)))
+            effective = int(balance["effective_samples"])
+            win_rate = balance["win_rate"]
+            if effective < min_samples:
+                return False, "not_enough_effective_samples"
             if win_rate is None:
-                return False, "not_enough_samples"
+                return False, "not_enough_effective_samples"
             if win_rate < 0.15 or win_rate > 0.85:
                 return False, "degenerate_win_rate"
             return True, "pending_refit"
@@ -713,9 +716,9 @@ def api_status() -> dict[str, Any]:
             logreg_active = bool(m and m.fitted and len(m.coef) > 0)
             stats = outcome_stats_by_bot.get(bt, {"total": 0, "wins": 0, "win_rate": None})
             eligible, unfitted_reason = _bot_gate(
-                bt,
                 int(stats["total"]),
-                float(stats["win_rate"]) if stats["win_rate"] is not None else None,
+                int(stats["wins"]),
+                int(stats.get("losses", max(0, int(stats["total"]) - int(stats["wins"])))),
                 fitted,
             )
             recent7d = outcome_stats_7d_by_bot.get(bt, {"total": 0, "wins": 0, "losses": 0})
@@ -728,6 +731,7 @@ def api_status() -> dict[str, Any]:
                 "fitted": fitted,
                 "logreg_active": logreg_active,
                 "n_samples": int(m.n_samples) if m and m.fitted else 0,
+                "rows_dropped_for_fit": max(0, int(stats["total"]) - int(m.n_samples)) if m and m.fitted and logreg_active else 0,
                 "last_fit_ts": int(m.saved_ts) if m and m.fitted else 0,
                 "confidence_mode": confidence_mode,
                 "outcomes_total": int(stats["total"]),

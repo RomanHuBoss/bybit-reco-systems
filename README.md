@@ -120,3 +120,10 @@ API поднимется на `127.0.0.1:8000`.
 - при первом запуске этой версии сервис сам сбросит старые `reco_outcomes` и сохранённые calibrator state (`OUTCOME_LABEL_VERSION_RESET` в `decision_log`), потому что логика меток стала строже и старые outcome rows больше нельзя смешивать с новыми;
 - после сброса win-rate/калибровка временно будут строиться заново по мере накопления свежих исходов;
 - если UI показывает `raw`, это operator-grade heuristic confidence с cap, а не откалиброванная вероятность успеха.
+
+
+## Calibration notes
+
+- Bot-specific calibrators now gate fitting on **effective samples** (`2 × minority_class_count`), not on raw outcome count.
+- UI status text distinguishes **labeled outcomes** from **rows actually used in LogReg fit** (`fit_rows`), so `wins + losses` may exceed `fit_rows` when some historical rows lack a complete feature snapshot for feature-based fitting.
+- A fitted `spot_grid`/`futures_grid` calibrator can therefore report, for example, `fit_rows=3672/3679`, which is expected and no longer shown as an arithmetic inconsistency.

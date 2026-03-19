@@ -55,6 +55,30 @@ def _recency_weights(tss: list[int], half_life_days: float = 21.0) -> list[float
     return [w * n / total for w in ws] if total > 0 else [1.0] * n
 
 
+def label_balance_stats(ys: list[int]) -> dict[str, float]:
+    """Shared diagnostics for calibration eligibility.
+
+    We keep both the classic totals and the minority-based "effective" sample count
+    because the UI and the fit gate should speak the same language. A dataset with
+    80 rows but only 20 minority examples is not as informative as a balanced 80-row
+    sample, so calibration should be gated on effective_samples rather than raw n.
+    """
+    total = int(len(ys))
+    wins = int(sum(int(y) for y in ys))
+    losses = max(0, total - wins)
+    minority = min(wins, losses)
+    effective = max(0, 2 * minority)
+    win_rate = (wins / total) if total else None
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "minority_class_count": minority,
+        "effective_samples": effective,
+        "win_rate": win_rate,
+    }
+
+
 def fit_platt(
     xs: list[float],
     ys: list[int],
@@ -63,10 +87,11 @@ def fit_platt(
     min_samples: int = 80,
     ws: list[float] | None = None,   # per-sample recency weights (same length as xs)
 ) -> PlattScaler:
-    if len(xs) < min_samples:
+    if not ys:
         return PlattScaler(fitted=False)
 
-    if not ys:
+    balance = label_balance_stats(ys)
+    if int(balance["effective_samples"]) < int(min_samples):
         return PlattScaler(fitted=False)
 
     # Guard: near-homogeneous labels make Platt scaling numerically valid but
@@ -74,7 +99,7 @@ def fit_platt(
     # collapsing calibrated probabilities toward 0 or 1 regardless of x.
     # We use a stricter band than 5/95 because crypto recommendation labels can
     # look deceptively "accurate" on small, regime-specific samples.
-    win_rate = sum(int(y) for y in ys) / len(ys)
+    win_rate = float(balance["win_rate"] or 0.0)
     if win_rate < 0.15 or win_rate > 0.85:
         return PlattScaler(fitted=False)
 
@@ -291,13 +316,14 @@ def fit_logreg(
     ys       = [int(r["success"]) for r in rows]
     tss      = [int(r.get("ts") or 0) for r in rows]
     n        = len(rows)
+    balance  = label_balance_stats(ys)
 
-    if n < min_samples:
+    if int(balance["effective_samples"]) < int(min_samples):
         return LogRegScaler(fitted=False)
 
     # Guard: degenerate class balance. A 90%+ hit-rate on proxy labels is not a
     # trustworthy basis for probability calibration; keep confidence heuristic.
-    win_rate = sum(ys) / n
+    win_rate = float(balance["win_rate"] or 0.0)
     if win_rate < 0.15 or win_rate > 0.85:
         return LogRegScaler(fitted=False)
 
