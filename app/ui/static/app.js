@@ -12,6 +12,7 @@ let currentMeta  = null;   // {venue, symbol, bot_type} — used to find fresh r
 let sortCol = "confidence";  // default: sort by confidence descending
 let sortDir = "desc";        // "asc" | "desc"
 let lastItems = [];          // last fetched items — re-sorted on header click without refetch
+let uiScoreMetaById = new Map();
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -294,6 +295,69 @@ function btcMetricValueHtml(metric) {
   return `<span class="btc-metric-value"><span class="btc-state-icon ${escapeHtml(metric.iconClass || "unknown")}"></span><span>${escapeHtml(metric.value || "—")}</span></span>`;
 }
 
+function scoreUiZone(percentile) {
+  const p = Math.max(0, Math.min(100, Number(percentile) || 0));
+  if (p >= 80) return { grade: "A", label: "сильный" };
+  if (p >= 60) return { grade: "B", label: "хороший" };
+  if (p >= 40) return { grade: "C", label: "рабочий" };
+  if (p >= 20) return { grade: "D", label: "осторожный" };
+  return { grade: "E", label: "слабый" };
+}
+
+function computeUiScoreMetaMap(items) {
+  const rows = (Array.isArray(items) ? items : [])
+    .map((it) => ({ id: it?.rec_id, score: Number(it?.score) }))
+    .filter((row) => row.id && Number.isFinite(row.score));
+  const out = new Map();
+  if (!rows.length) return out;
+
+  rows.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return String(a.id).localeCompare(String(b.id));
+  });
+
+  let rank = 0;
+  const n = rows.length;
+  for (let i = 0; i < rows.length; i += 1) {
+    if (i > 0 && Math.abs(rows[i].score - rows[i - 1].score) > 1e-12) rank = i;
+    const percentile = n === 1 ? 100 : Math.round((1 - rank / (n - 1)) * 100);
+    const zone = scoreUiZone(percentile);
+    out.set(rows[i].id, {
+      percentile,
+      grade: zone.grade,
+      zoneLabel: zone.label,
+      raw: rows[i].score,
+      title: `Скор UI: ${percentile}/100 — ${zone.label}; raw=${formatDotNumber(rows[i].score, 4)}`,
+    });
+  }
+  return out;
+}
+
+function ensureUiScoreMeta(item, poolItems = lastItems) {
+  if (!item) return { percentile: 0, grade: "E", zoneLabel: "слабый", raw: null, title: "Скор UI недоступен" };
+  const existing = uiScoreMetaById.get(item.rec_id);
+  if (existing) return existing;
+  const basis = Array.isArray(poolItems) && poolItems.length ? poolItems : [item];
+  const localMap = computeUiScoreMetaMap(basis.some((row) => row?.rec_id === item.rec_id) ? basis : [...basis, item]);
+  return localMap.get(item.rec_id) || {
+    percentile: 0,
+    grade: "E",
+    zoneLabel: "слабый",
+    raw: Number.isFinite(Number(item.score)) ? Number(item.score) : null,
+    title: `Скор UI недоступен; raw=${formatDotNumber(item.score, 4)}`,
+  };
+}
+
+function scoreUiCellHtml(meta) {
+  const scoreMeta = meta || { percentile: 0, grade: "E", zoneLabel: "слабый", title: "Скор UI недоступен" };
+  return `<span class="score-ui-cell" title="${escapeHtml(scoreMeta.title || "")}"><span class="score-ui-num zone-${escapeHtml(String(scoreMeta.grade || "E").toLowerCase())}">${escapeHtml(String(scoreMeta.percentile ?? 0))}</span><span class="score-ui-grade grade-${escapeHtml(String(scoreMeta.grade || "E").toLowerCase())}">${escapeHtml(scoreMeta.grade || "E")}</span></span>`;
+}
+
+function scoreUiMetricHtml(meta) {
+  const scoreMeta = meta || { percentile: 0, grade: "E", zoneLabel: "слабый", title: "Скор UI недоступен" };
+  return `<span class="score-ui-metric" title="${escapeHtml(scoreMeta.title || "")}"><span class="score-ui-metric-main">${escapeHtml(String(scoreMeta.percentile ?? 0))}/100</span><span class="score-ui-metric-sub grade-${escapeHtml(String(scoreMeta.grade || "E").toLowerCase())}">${escapeHtml(scoreMeta.grade || "E")} · ${escapeHtml(scoreMeta.zoneLabel || "")}</span></span>`;
+}
+
 function copyButton(copyValue) {
   if (copyValue === null || copyValue === undefined || copyValue === "" || copyValue === "—") return "";
   return `<button class="copy-chip" data-act="copy-field" data-copy="${escapeHtml(copyValue)}">копия</button>`;
@@ -450,7 +514,8 @@ function buildTechPayload(it) {
   const reasons = (it || {}).reasons || {};
   return {
     rec_id: it.rec_id,
-    score: it.score,
+    score_raw: it.score,
+    score_ui: ensureUiScoreMeta(it),
     confidence: it.confidence,
     expected_rr: it.expected_rr,
     blocks: it.blocks || [],
@@ -484,6 +549,7 @@ function buildDetailsHtml(it) {
   const volatility = plan.volatility || {};
   const btcBeta = reasons.btc_beta || {};
   const btcMetric = btcRelationMetric(btcBeta, it.symbol);
+  const scoreUi = it.ui_score_meta || ensureUiScoreMeta(it);
   const blocks = it.blocks || [];
   const ov = buildOperatorValues(it);
   const operatorFields = buildOperatorFieldSpecs(it, ov);
@@ -509,7 +575,7 @@ function buildDetailsHtml(it) {
           <div class="operator-subtitle operator-subtitle-inline">${botTypePillHtml(it.bot_type, true)}<span class="operator-sub-sep">·</span>${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
         </div>
         <div class="operator-hero-metrics">
-          <div class="metric-chip"><b>Скор</b>${fmt(it.score)}</div>
+          <div class="metric-chip"><b>Скор UI</b>${scoreUiMetricHtml(scoreUi)}</div>
           <div class="metric-chip"><b>Увер.</b>${fmt(it.confidence)}</div>
           <div class="metric-chip"><b>Ож. RR</b>${fmt(it.expected_rr)}</div>
           <div class="metric-chip metric-chip-wide" title="${escapeHtml(btcMetric.title || "")}"><b>${escapeHtml(btcMetric.label)}</b>${btcMetricValueHtml(btcMetric)}</div>
@@ -545,6 +611,7 @@ function buildDetailsHtml(it) {
         <h3>Контекст сигнала</h3>
         <div class="operator-grid">
           ${fieldBox("Уверенность направления", formatDotNumber(dirConf, 4), formatDotNumber(dirConf, 4))}
+          ${fieldBox("Raw score", formatDotNumber(it.score, 4), formatDotNumber(it.score, 4))}
           ${fieldBox("Режим сигнала", dirAgg.regime || "—", dirAgg.regime || "—")}
           ${fieldBox("Согласованность", formatDotNumber(dirAgg.coherence, 4), formatDotNumber(dirAgg.coherence, 4))}
           ${fieldBox("Сентимент глобальный", formatDotNumber(symbolSent.global, 4), formatDotNumber(symbolSent.global, 4))}
@@ -869,6 +936,7 @@ async function loadRecommendations() {
 
   const items = data.items || [];
   lastItems = items;
+  uiScoreMetaById = computeUiScoreMetaMap(items);
   renderRecoTable(items);
   updateCalibrationUi(items);
 
@@ -918,6 +986,7 @@ function renderRecoTable(items) {
     if (it.status === "recommended") hasRecommended = true;
     const dirAgg = (it.reasons || {}).direction_agg || {};
     const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
+    const scoreUi = ensureUiScoreMeta(it, items);
     const tr = document.createElement("tr");
     if (it.status === "recommended") tr.classList.add("row-recommended");
     tr.innerHTML = `
@@ -931,7 +1000,7 @@ function renderRecoTable(items) {
       </td>
       <td>${directionBadge(it.direction)}</td>
       <td>${dirConfCell(dirConf)}</td>
-      <td>${fmt(it.score)}</td>
+      <td>${scoreUiCellHtml(scoreUi)}</td>
       <td>${confCell(it)}</td>
       <td>${fmt(it.expected_rr)}</td>
       <td>${pillStatus(it.status)}</td>
@@ -988,6 +1057,7 @@ async function loadDetails(recId) {
   }
 
   currentMeta = { venue: it.venue, symbol: it.symbol, bot_type: it.bot_type };
+  it.ui_score_meta = ensureUiScoreMeta(it, lastItems);
   currentRecId = it.rec_id;
   btn.disabled = false;
   btn.textContent = "Обновить";
