@@ -541,20 +541,25 @@ body {
   margin-top: 4px;
 }
 .operator-hero-metrics {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(132px, 1fr));
   gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  width: min(100%, 320px);
+  justify-content: end;
 }
 .metric-chip {
-  padding: 6px 10px;
+  padding: 8px 10px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: #0f172a;
   font-size: 12px;
-  min-width: 88px;
+  min-width: 0;
+  min-height: 62px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
-.metric-chip-wide { min-width: 112px; }
+.metric-chip-wide { min-width: 0; }
 .btc-metric-value { display: inline-flex; align-items: center; gap: 6px; }
 .btc-state-icon { width: 10px; height: 10px; border-radius: 999px; display: inline-block; box-shadow: 0 0 0 1px rgba(255,255,255,0.08) inset; }
 .btc-state-icon.independent { background: rgba(51,209,122,0.95); }
@@ -731,7 +736,7 @@ body {
   .operator-grid.three,
   .factors-grid { grid-template-columns: 1fr; }
   .operator-hero { flex-direction: column; }
-  .operator-hero-metrics { justify-content: flex-start; }
+  .operator-hero-metrics { width: 100%; justify-content: stretch; }
 }
 
 
