@@ -325,7 +325,38 @@ def get_bot_trade_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, An
     }
 
 
-def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int, min_conf: float, statuses: list[str] | None = None, snapshot_ts: int | None = None) -> list[dict[str, Any]]:
+def _recommended_row_passes_conf_filter(row: sqlite3.Row, min_conf: float, strict_min_conf: bool = False) -> bool:
+    if str(row["status"] or "") != "recommended":
+        return True
+    conf = float(row["confidence"] or 0.0)
+    if strict_min_conf:
+        return conf >= float(min_conf)
+    try:
+        reasons = json.loads(row["reasons_json"]) if row["reasons_json"] else {}
+    except Exception:
+        reasons = {}
+    confidence_model = reasons.get("confidence_model") if isinstance(reasons, dict) else {}
+    if not isinstance(confidence_model, dict):
+        confidence_model = {}
+    gate_applied = confidence_model.get("confidence_gate_applied")
+    if gate_applied is None:
+        source = str(confidence_model.get("source") or "")
+        fitted = bool(confidence_model.get("fitted"))
+        gate_applied = bool(fitted and source not in ("", "raw", "raw_proxy"))
+    if not bool(gate_applied):
+        return True
+    return conf >= float(min_conf)
+
+
+def get_recommendations(
+    conn: sqlite3.Connection,
+    venue: str | None,
+    top_n: int,
+    min_conf: float,
+    statuses: list[str] | None = None,
+    snapshot_ts: int | None = None,
+    strict_min_conf: bool = False,
+) -> list[dict[str, Any]]:
     _supported_sql, _supported_params = sql_in_clause("bot_type")
     if snapshot_ts is not None:
         q = f"""SELECT * FROM recommendations WHERE ts = ? AND {_supported_sql}"""
@@ -337,9 +368,6 @@ def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int,
     if venue:
         q += " AND venue=?"
         params.append(venue)
-    # Apply min_conf only to status=recommended so blocked/no_trade/suppressed are still visible.
-    q += " AND (status != ? OR confidence >= ?)"
-    params.extend(["recommended", min_conf])
     if statuses is not None:
         if not statuses:
             # Empty list → caller wants no statuses → return nothing
@@ -347,11 +375,12 @@ def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int,
         placeholders = ",".join("?" for _ in statuses)
         q += f" AND status IN ({placeholders})"
         params.extend(statuses)
-    q += " ORDER BY CASE status WHEN 'recommended' THEN 0 WHEN 'executed' THEN 1 WHEN 'ignored' THEN 2 WHEN 'blocked' THEN 3 WHEN 'no_trade' THEN 4 WHEN 'suppressed' THEN 5 ELSE 6 END, confidence DESC, score DESC, ts DESC LIMIT ?"
-    params.append(top_n)
+    q += " ORDER BY CASE status WHEN 'recommended' THEN 0 WHEN 'executed' THEN 1 WHEN 'ignored' THEN 2 WHEN 'blocked' THEN 3 WHEN 'no_trade' THEN 4 WHEN 'suppressed' THEN 5 ELSE 6 END, confidence DESC, score DESC, ts DESC"
     cur = conn.execute(q, params)
     rows = []
     for r in cur.fetchall():
+        if not _recommended_row_passes_conf_filter(r, min_conf=min_conf, strict_min_conf=strict_min_conf):
+            continue
         rows.append({
             "rec_id": r["rec_id"],
             "ts": r["ts"],
@@ -373,6 +402,8 @@ def get_recommendations(conn: sqlite3.Connection, venue: str | None, top_n: int,
             "model_version": r["model_version"],
             "features_ref_ts": r["features_ref_ts"],
         })
+        if len(rows) >= int(top_n):
+            break
     return rows
 
 def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str, Any] | None:
@@ -948,3 +979,28 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     conn.commit()
     return deleted
 
+
+
+def count_visible_recommendations(
+    conn: sqlite3.Connection,
+    venue: str | None,
+    min_conf: float,
+    snapshot_ts: int | None = None,
+    strict_min_conf: bool = False,
+) -> int:
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
+    if snapshot_ts is not None:
+        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts = ? AND {_supported_sql} AND status='recommended'"""
+        params: list[Any] = [snapshot_ts, *_supported_params]
+    else:
+        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts > ? AND {_supported_sql} AND status='recommended'"""
+        params = [now_ts() - 86400, *_supported_params]
+    if venue:
+        q += " AND venue=?"
+        params.append(venue)
+    cur = conn.execute(q, params)
+    count = 0
+    for r in cur.fetchall():
+        if _recommended_row_passes_conf_filter(r, min_conf=min_conf, strict_min_conf=strict_min_conf):
+            count += 1
+    return count

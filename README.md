@@ -34,7 +34,7 @@
 - видимый `Скор UI` в таблице и в панели деталей теперь показывается как percentile `0–100` среди текущих кандидатов с буквенной зоной `A–E`; это операторская шкала представления, она не меняет ядро отбора и не заменяет raw score в математике;
 
 ## Ограничения дизайна
-- текущий sentiment pipeline остаётся эвристическим: RSS/Reddit/market context помогают поймать фон, но это не LLM/NER/newsroom-уровень семантического анализа заголовков и статей;
+- текущий sentiment pipeline остаётся эвристическим: RSS/Reddit/market context помогают поймать фон, но это не LLM/NER/newsroom-уровень семантического анализа заголовков и статей; отсутствие sentiment-данных трактуется как неопределённость, а не как «истинный neutral»;
 - это recommendation/evaluation engine, а не exchange-grade execution simulator;
 - глобальный calibrator хранится для диагностики/статуса, но inference намеренно не использует cross-bot fallback probability;
 - grid outcomes остаются упрощёнными path approximations, но теперь label success требует не только net>0, а подтверждённых oscillation legs, приемлемого time-in-range и отсутствия kill-switch breach; maturity horizon для label/calibration фиксирован по bot_type (сейчас 6h), а не по operator-facing max holding window;
@@ -46,7 +46,7 @@
 - `Статус` — допуск к рассмотрению. Если не `recommended`, идею обычно пропускают.
 - `Ув. напр.` — confidence выбранного режима `long / short / neutral`. Для `neutral` высокое значение — это хорошо: система уверенно видит диапазон.
 - `Скор UI` — percentile 0–100 среди текущих кандидатов; это шкала удобства для оператора, а не вероятность. Ориентир: `80–100 = A`, `60–79 = B`, `40–59 = C`, `20–39 = D`, `<20 = E`.
-- `Ож. RR` — экономический смысл идеи. Чем выше, тем лучше, но он читается только после статуса/режима.
+- `Ож. RR` — экономический смысл идеи. Для futures учитывает не только execution friction, но и ожидаемый funding carry по горизонту метки. Чем выше, тем лучше, но он читается только после статуса/режима.
 - `Увер.` — общий confidence рекомендации; используйте как усилитель/ослабитель доверия, а не как единственный критерий.
 - `BTC-завис.` — происхождение сигнала: независимый он или в основном повторяет BTC. Это фильтр диверсификации, а не прямой запрет.
 
@@ -73,7 +73,7 @@ API поднимется на `127.0.0.1:8000`.
 
 ## Основные API
 ### Read-only
-- `GET /api/v1/recommendations` (`min_conf` по умолчанию равен publish-threshold `MIN_CONF_TO_RECOMMEND`)
+- `GET /api/v1/recommendations` (`min_conf` по умолчанию равен publish-threshold `MIN_CONF_TO_RECOMMEND`, но raw-only рекомендации не скрываются автоматически, если confidence gate для них не применялся; явно переданный `min_conf` фильтрует строго)
 - `GET /api/v1/recommendations/{rec_id}`
 - `GET /api/v1/risk/status`
 - `GET /api/v1/bots`

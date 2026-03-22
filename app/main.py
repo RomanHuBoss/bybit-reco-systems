@@ -285,17 +285,26 @@ def api_recommendations(
             snapshot_ts = db.get_latest_reco_ts(conn, venue=venue)
 
         effective_min_conf = settings.min_conf_to_recommend if min_conf is None else float(min_conf)
-        items = db.get_recommendations(conn, venue=venue, top_n=top_n, min_conf=effective_min_conf, statuses=statuses, snapshot_ts=snapshot_ts)
+        strict_min_conf = min_conf is not None
+        items = db.get_recommendations(
+            conn,
+            venue=venue,
+            top_n=top_n,
+            min_conf=effective_min_conf,
+            statuses=statuses,
+            snapshot_ts=snapshot_ts,
+            strict_min_conf=strict_min_conf,
+        )
 
         no_trade = True
         if snapshot_ts is not None:
-            _supported_sql, _supported_params = sql_in_clause("bot_type")
-            cur = conn.execute(
-                f"""SELECT COUNT(*) AS c FROM recommendations
-                   WHERE ts=? AND (? IS NULL OR venue=?) AND {_supported_sql} AND status='recommended' AND confidence >= ?""",
-                [snapshot_ts, venue, venue, *_supported_params, float(effective_min_conf)],
-            )
-            no_trade = int(cur.fetchone()["c"]) == 0
+            no_trade = db.count_visible_recommendations(
+                conn,
+                venue=venue,
+                min_conf=effective_min_conf,
+                snapshot_ts=snapshot_ts,
+                strict_min_conf=strict_min_conf,
+            ) == 0
 
         cur = conn.execute("SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1")
         row = cur.fetchone()

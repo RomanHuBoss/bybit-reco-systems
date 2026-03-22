@@ -381,6 +381,7 @@ def _score(
     taker_fee_bps: float,
     global_sent: float,
     cost_model: dict[str, Any] | None = None,
+    sentiment_has_data: bool = True,
 ) -> tuple[float, float, dict[str, Any]]:
     cost_model = dict(cost_model or {})
     agg = dict(f.get("_direction_agg") or {})
@@ -438,8 +439,10 @@ def _score(
         if direction == "long":
             raw += 0.10 * effective_sent
             raw += 0.08 * direction_strength
-        else:
+        elif sentiment_has_data:
             raw += 0.04 * (1.0 - min(1.0, abs(effective_sent)))
+        else:
+            raw -= 0.04
 
         if range_score > 0.0:
             add_pos("range_score", range_score, 1.55 * range_score, "выраженный диапазон подходит для spot grid")
@@ -451,8 +454,10 @@ def _score(
             add_pos("effective_sentiment", effective_sent, 0.10 * effective_sent, "сентимент поддерживает long bias")
         elif direction == "long" and effective_sent < 0.0:
             add_neg("effective_sentiment", abs(effective_sent), 0.10 * effective_sent, "сентимент против long bias")
-        elif direction == "neutral":
+        elif direction == "neutral" and sentiment_has_data:
             add_pos("effective_sentiment", 1.0 - min(1.0, abs(effective_sent)), 0.04 * (1.0 - min(1.0, abs(effective_sent))), "сентимент не мешает нейтральной сетке")
+        elif direction == "neutral":
+            add_neg("sentiment_data_availability", 0, -0.04, "нет сентимент-данных — нейтральный bias менее надёжен")
         if direction == "long" and direction_strength > 0.0:
             add_pos("direction_strength", direction_strength, 0.08 * direction_strength, "есть умеренный directional bias без потери grid-логики")
 
@@ -479,8 +484,10 @@ def _score(
         elif direction == "short":
             raw -= 0.12 * effective_sent
             raw += 0.10 * direction_strength
-        else:
+        elif sentiment_has_data:
             raw += 0.05 * (1.0 - min(1.0, abs(effective_sent) * 1.5))
+        else:
+            raw -= 0.05
 
         if range_score > 0.0:
             add_pos("range_score", range_score, 1.35 * range_score, "диапазон подходит для futures grid")
@@ -498,8 +505,10 @@ def _score(
             add_pos("effective_sentiment", abs(effective_sent), 0.12 * abs(effective_sent), "сентимент поддерживает short bias")
         elif direction == "short" and effective_sent > 0.0:
             add_neg("effective_sentiment", effective_sent, -0.12 * effective_sent, "сентимент против short bias")
-        elif direction == "neutral":
+        elif direction == "neutral" and sentiment_has_data:
             add_pos("effective_sentiment", 1.0 - min(1.0, abs(effective_sent) * 1.5), 0.05 * (1.0 - min(1.0, abs(effective_sent) * 1.5)), "сентимент не мешает нейтральной сетке")
+        elif direction == "neutral":
+            add_neg("sentiment_data_availability", 0, -0.05, "нет сентимент-данных — нейтральный futures bias менее надёжен")
 
         if trend_strength > 0.0:
             add_neg("trend_strength", trend_strength, -1.00 * trend_strength, "сильный тренд ломает grid")
@@ -538,11 +547,24 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
     trend_strength = _clamp(float(agg.get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
     coherence = _clamp(float(agg.get("coherence") or 0.5), 0.0, 1.0)
     atr_pct = max(0.0, float(f.get("_atr_pct_1h") or f.get("atr_pct") or 0.0))
-    cost_pct = max(0.0, float(cost_model.get("total_cost_bps") or cost_model.get("execution_cost_bps") or 0.0) / 10000.0)
+    # RR must reflect the same economics as scoring/labels: execution costs are always
+    # paid, while futures funding carry can materially hurt or help the setup over the
+    # label horizon. Keep execution friction in the risk proxy, but use net_cost_bps in
+    # the numerator so expensive long carry lowers RR and received funding can improve it.
+    net_cost_pct = float(
+        cost_model.get("net_cost_bps")
+        or cost_model.get("total_cost_bps")
+        or cost_model.get("execution_cost_bps")
+        or 0.0
+    ) / 10000.0
+    execution_cost_pct = max(
+        0.0,
+        float(cost_model.get("execution_cost_bps") or cost_model.get("total_cost_bps") or 0.0) / 10000.0,
+    )
 
     gross_capture = max(0.0, (0.55 * range_score + 0.15 * coherence - 0.20 * trend_strength) * max(atr_pct, 0.0025))
-    net_capture = gross_capture - cost_pct
-    risk_proxy = max(max(atr_pct, 0.0025) * 1.5, cost_pct * 2.0, 1e-6)
+    net_capture = gross_capture - net_cost_pct
+    risk_proxy = max(max(atr_pct, 0.0025) * 1.5, execution_cost_pct * 2.0, 1e-6)
     return float(_clamp(net_capture / risk_proxy, 0.0, 3.0))
 
 
@@ -1041,6 +1063,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # Few points (< 5) → 90% global / 10% symbol — don't amplify noisy signal.
             # Many points (≥ 20) → 50% global / 50% symbol — full trust.
             # MUST be computed before feasibility checks that reference effective_sent
+            _global_sent_has_data = bool((sent_agg.get("data_quality") or {}).get("has_data"))
             _sym_entry = symbol_sent_map.get(sym)
             if _sym_entry is not None:
                 sym_sent, _sym_n = _sym_entry
@@ -1051,6 +1074,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 _sym_n = 0
                 _sym_weight = 0.0
                 effective_sent = global_sent
+            sentiment_has_data = bool(_global_sent_has_data or _sym_n > 0)
 
 
             feasibility_blocks = []
@@ -1111,6 +1135,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 taker_fee_bps=taker_fee_bps,
                 global_sent=effective_sent,
                 cost_model=cost_model,
+                sentiment_has_data=sentiment_has_data,
             )
 
             # ── Funding + OI score adjustments ──
@@ -1191,6 +1216,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             # The system already falls back gracefully; this makes the uncertainty explicit.
             _ctx_mult = 1.0
             if not f.get("_atr_pct_1h"):          _ctx_mult *= 0.92  # no 1h ATR
+            if not sentiment_has_data:            _ctx_mult *= 0.94  # missing sentiment is uncertainty, not true neutral
             if venue == "linear" and oi_sig.get("oi_now") is None: _ctx_mult *= 0.96  # no OI data
             if venue == "linear" and fr_sig.get("value") is None:  _ctx_mult *= 0.98  # no funding data
             _dir_tf_count = len((f.get("_direction_agg") or {}).get("tf_used") or [])
@@ -1285,8 +1311,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "value": float(sym_sent) if sym_sent is not None else None,
                 "effective": float(effective_sent),
                 "global": float(global_sent),
-                "global_has_data": bool((sent_agg.get("data_quality") or {}).get("has_data")),
-                "any_data": bool((sent_agg.get("data_quality") or {}).get("has_data") or _sym_n > 0),
+                "global_has_data": bool(_global_sent_has_data),
+                "any_data": bool(sentiment_has_data),
                 "blended": sym_sent is not None,
                 "symbol_weight": float(_sym_weight),
                 "global_weight": float(1.0 - _sym_weight),
