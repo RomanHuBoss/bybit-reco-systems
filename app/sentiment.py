@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -375,6 +376,45 @@ def fetch_coingecko_momentum(client: httpx.Client) -> dict[str, dict[str, Any]]:
             continue
     return result
 
+
+def global_market_momentum_point(momentum_map: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Fast global market pulse derived from per-symbol CoinGecko momentum.
+
+    Uses capped sqrt(volume) weights so BTC/ETH matter more, but do not drown out
+    the rest of the market. This gives the global sentiment a timely market-based
+    component and reduces dependence on slower FnG/RSS updates.
+    """
+    if not momentum_map:
+        return None
+
+    weighted_sum = 0.0
+    total_weight = 0.0
+    used = 0
+    for sym, point in momentum_map.items():
+        try:
+            sent = float(point.get("sentiment") or 0.0)
+            vol = max(1.0, float(point.get("volume") or 1.0))
+        except Exception:
+            continue
+        weight = _clamp(math.sqrt(min(vol, 5_000_000_000.0)) / 5000.0, 0.8, 6.0)
+        weighted_sum += sent * weight
+        total_weight += weight
+        used += 1
+
+    if total_weight <= 0 or used <= 0:
+        return None
+
+    return {
+        "scope": "global",
+        "key": "crypto_market_momentum",
+        "ts": _now_ts(),
+        "sentiment": _clamp(weighted_sum / total_weight, -1.0, 1.0),
+        "velocity": 0.0,
+        "volume": used,
+        "sources": {"symbols_used": used},
+        "tags": ["market_momentum"],
+    }
+
 # ── 6. Blend per-symbol sources ───────────────────────────────────────────────
 
 # Weights for blending per-symbol sources
@@ -463,7 +503,7 @@ def blend_per_symbol(
 # Without this, FnG (volume=1) contributes ~1-2% of the combined signal while
 # RSS (volume=40-80 items) dominates 98-99% — despite FnG being more reliable.
 # Each source receives at least this weight regardless of its raw volume.
-_GLOBAL_MIN_SOURCE_WEIGHT = 15.0
+_GLOBAL_MIN_SOURCE_WEIGHT = 6.0
 
 def combine_global_sentiment(points: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not points:
@@ -517,6 +557,9 @@ def collect_sentiment_once() -> list[dict[str, Any]]:
         trending_raw = fetch_coingecko_trending(client)
         trending_map = trending_to_symbol_points(trending_raw)
         momentum_map = fetch_coingecko_momentum(client)
+        global_momentum = global_market_momentum_point(momentum_map)
+        if global_momentum:
+            pts.append(global_momentum)
 
     # Blended per-symbol points
     per_sym_blended = blend_per_symbol(

@@ -436,7 +436,7 @@ def _score(
         raw -= 0.35 * cost_penalty
 
         if direction == "long":
-            raw += 0.10 * max(0.0, effective_sent)
+            raw += 0.10 * effective_sent
             raw += 0.08 * direction_strength
         else:
             raw += 0.04 * (1.0 - min(1.0, abs(effective_sent)))
@@ -449,6 +449,8 @@ def _score(
             add_pos("regime_confidence", regime_conf, 0.18 * regime_conf, "режим оценён с приемлемой уверенностью")
         if direction == "long" and effective_sent > 0.0:
             add_pos("effective_sentiment", effective_sent, 0.10 * effective_sent, "сентимент поддерживает long bias")
+        elif direction == "long" and effective_sent < 0.0:
+            add_neg("effective_sentiment", abs(effective_sent), 0.10 * effective_sent, "сентимент против long bias")
         elif direction == "neutral":
             add_pos("effective_sentiment", 1.0 - min(1.0, abs(effective_sent)), 0.04 * (1.0 - min(1.0, abs(effective_sent))), "сентимент не мешает нейтральной сетке")
         if direction == "long" and direction_strength > 0.0:
@@ -475,7 +477,7 @@ def _score(
             raw += 0.12 * effective_sent
             raw += 0.10 * direction_strength
         elif direction == "short":
-            raw += 0.12 * max(0.0, -effective_sent)
+            raw -= 0.12 * effective_sent
             raw += 0.10 * direction_strength
         else:
             raw += 0.05 * (1.0 - min(1.0, abs(effective_sent) * 1.5))
@@ -490,8 +492,12 @@ def _score(
             add_pos("direction_strength", direction_strength, 0.10 * direction_strength, "есть исполнимый directional bias для futures grid")
         if direction == "long" and effective_sent > 0.0:
             add_pos("effective_sentiment", effective_sent, 0.12 * effective_sent, "сентимент поддерживает long bias")
+        elif direction == "long" and effective_sent < 0.0:
+            add_neg("effective_sentiment", abs(effective_sent), 0.12 * effective_sent, "сентимент против long bias")
         elif direction == "short" and effective_sent < 0.0:
             add_pos("effective_sentiment", abs(effective_sent), 0.12 * abs(effective_sent), "сентимент поддерживает short bias")
+        elif direction == "short" and effective_sent > 0.0:
+            add_neg("effective_sentiment", effective_sent, -0.12 * effective_sent, "сентимент против short bias")
         elif direction == "neutral":
             add_pos("effective_sentiment", 1.0 - min(1.0, abs(effective_sent) * 1.5), 0.05 * (1.0 - min(1.0, abs(effective_sent) * 1.5)), "сентимент не мешает нейтральной сетке")
 
@@ -834,8 +840,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     _fresh_gap = max(45, int(settings.reco_interval_sec * 2.5))
     _prev_recommended = _load_prev_recommended(conn)
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
-    # Use 6h EWMA as the primary numeric sentiment input for scoring
-    global_sent = float(sent_agg.get("ewma", {}).get("6h", 0.0))
+    # Primary sentiment for scoring: adaptive blend from compute_sentiment_agg.
+    # Falls back to 6h EWMA for backward compatibility with older snapshots.
+    global_sent = float(sent_agg.get("effective_score", sent_agg.get("ewma", {}).get("6h", 0.0)))
     # Per-symbol sentiment map: {SYMBOL: float} blended from RSS/Reddit/CoinGecko
     symbol_sent_map: dict[str, tuple[float, int]] = compute_symbol_sentiment_map(conn)
 
@@ -1055,6 +1062,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             elif liq_tier == "micro":
                 feasibility_blocks.append({"code": "LIQUIDITY_TOO_LOW",
                     "msg": f"turnover24h={turnover} USD < $500K — торговля на неликвидном символе искажает fills/статистику"})
+                if venue == "linear":
+                    feasibility_blocks.append({"code": "LIQUIDITY_LOW_FUTURES",
+                        "msg": f"turnover24h={turnover} USD < $2M — для futures grid нужна повышенная осторожность по ликвидности"})
+            elif venue == "linear" and liq_tier == "low":
                 feasibility_blocks.append({"code": "LIQUIDITY_LOW_FUTURES",
                     "msg": f"turnover24h={turnover} USD < $2M — для futures grid нужна повышенная осторожность по ликвидности"})
             if spread is None:
