@@ -7,6 +7,7 @@ from typing import Any
 from . import db
 
 APP_CONFIG_KEY = "market_shock_state_v1"
+_FAST_VETO_STATE: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -46,6 +47,135 @@ def _safe_num(x: Any, default: float = 0.0) -> float:
         return float(x)
     except Exception:
         return default
+
+
+def _severity_rank(severity: str) -> int:
+    return {"normal": 0, "guarded": 1, "lockdown": 2}.get(str(severity or "normal"), 0)
+
+
+def _state_meta(state: str) -> tuple[str, str, str]:
+    state = str(state or "normal")
+    mapping = {
+        "normal": ("normal", "neutral", "NORMAL"),
+        "amber_down": ("guarded", "down", "GUARDED"),
+        "red_down": ("lockdown", "down", "LOCKDOWN"),
+        "amber_up": ("guarded", "up", "GUARDED"),
+        "red_up": ("lockdown", "up", "LOCKDOWN"),
+        "chaos": ("lockdown", "two_sided", "LOCKDOWN"),
+    }
+    return mapping.get(state, ("normal", "neutral", "NORMAL"))
+
+
+def _title_map(state: str) -> str:
+    return {
+        "normal": "Нормальный режим",
+        "amber_down": "Осторожно: рынок давит вниз",
+        "red_down": "Локдаун: медвежий удар",
+        "amber_up": "Осторожно: рынок выстреливает вверх",
+        "red_up": "Локдаун: бычий squeeze",
+        "chaos": "Локдаун: хаотичный рынок",
+    }.get(str(state or "normal"), "Нормальный режим")
+
+
+def _operator_note_map(state: str) -> str:
+    return {
+        "normal": "Новые входы разрешены в обычном режиме.",
+        "amber_down": "Не открывать neutral/long grid без очень веского ручного подтверждения. Short — только при явном тренде и дисциплине стопов.",
+        "red_down": "Не открывать новые grid-боты. Действующие long/neutral пересмотреть вручную; держать только reduce-only логику на стороне биржи.",
+        "amber_up": "Не открывать neutral/short grid без очень веского ручного подтверждения. Long — только при явном тренде и дисциплине стопов.",
+        "red_up": "Не открывать новые grid-боты. Действующие short/neutral пересмотреть вручную; держать только reduce-only логику на стороне биржи.",
+        "chaos": "Никаких новых входов: высокая вероятность пилы и переворотов.",
+    }.get(str(state or "normal"), "Новые входы разрешены в обычном режиме.")
+
+
+def _stabilize_market_shock(raw: dict[str, Any], prev: dict[str, Any] | None, now_ts: int, hold_sec: int) -> dict[str, Any]:
+    out = dict(raw or {})
+    prev = dict(prev or {})
+    raw_state = str(out.get("state") or "normal")
+    raw_severity = str(out.get("severity") or _state_meta(raw_state)[0])
+    prev_state = str(prev.get("state") or "normal")
+    prev_severity = str(prev.get("severity") or _state_meta(prev_state)[0])
+    prev_ts = int(prev.get("ts", 0) or 0)
+    prev_fresh = prev_ts > 0 and now_ts - prev_ts <= max(int(hold_sec), 60)
+
+    applied = False
+    mode = "pass_through"
+    note = None
+    stable_state = raw_state
+
+    if prev_fresh and _severity_rank(prev_severity) > _severity_rank(raw_severity):
+        if prev_severity == "lockdown":
+            stable_state = prev_state
+            applied = True
+            mode = "release_cooldown"
+            note = "Lockdown is released only after the market stays calmer for several cycles."
+        elif prev_severity == "guarded" and raw_severity == "normal" and now_ts - prev_ts <= max(int(hold_sec // 2), 60):
+            stable_state = prev_state
+            applied = True
+            mode = "guarded_release_cooldown"
+            note = "Guarded mode is released with a short cooldown to avoid oscillation around the threshold."
+
+    if stable_state != raw_state:
+        severity, bias, action = _state_meta(stable_state)
+        out["state"] = stable_state
+        out["severity"] = severity
+        out["bias"] = bias
+        out["entry_mode"] = action.lower()
+        out["title"] = _title_map(stable_state)
+        out["operator_note"] = _operator_note_map(stable_state)
+        out["lockdown"] = bool(stable_state in {"red_down", "red_up", "chaos"})
+        reasons = list(out.get("reasons") or [])
+        reasons.insert(0, {
+            "code": "STATE_HOLD",
+            "msg": note or "Previous market-shock state is temporarily held for stability.",
+            "weight": 1,
+        })
+        out["reasons"] = reasons
+
+    out["raw_state"] = raw_state
+    out["stabilization"] = {
+        "applied": bool(applied),
+        "mode": mode,
+        "note": note,
+        "hold_sec": int(max(int(hold_sec), 60)),
+        "previous_state": prev_state if prev_fresh else None,
+    }
+    out["ts"] = int(now_ts)
+    return out
+
+
+def _stabilize_fast_veto(raw: dict[str, Any], prev: dict[str, Any] | None, now_ts: int, release_sec: int) -> dict[str, Any]:
+    out = dict(raw or {})
+    prev = dict(prev or {})
+    prev_ts = int(prev.get("ts", 0) or 0)
+    prev_triggered = bool(prev.get("triggered"))
+    prev_state = str(prev.get("state") or "normal")
+    prev_fresh = prev_ts > 0 and now_ts - prev_ts <= max(int(release_sec), 60)
+
+    if not bool(out.get("triggered")) and prev_triggered and prev_fresh:
+        out["triggered"] = True
+        out["state"] = prev_state if prev_state != "normal" else "cooldown"
+        blocks = list(out.get("blocks") or [])
+        blocks.insert(0, {
+            "code": "FAST_VETO_RELEASE_COOLDOWN",
+            "msg": "Быстрый veto удерживается ещё несколько циклов, чтобы не отпускать вход сразу после импульса.",
+        })
+        out["blocks"] = blocks
+        out["stabilization"] = {
+            "applied": True,
+            "mode": "release_cooldown",
+            "release_sec": int(max(int(release_sec), 60)),
+            "previous_state": prev_state,
+        }
+    else:
+        out["stabilization"] = {
+            "applied": False,
+            "mode": "pass_through",
+            "release_sec": int(max(int(release_sec), 60)),
+            "previous_state": prev_state if prev_fresh else None,
+        }
+    out["ts"] = int(now_ts)
+    return out
 
 
 def _symbol_snapshot(conn, venue: str, symbol: str, ts_now: int) -> dict[str, Any] | None:
@@ -220,31 +350,14 @@ def compute_market_shock(
         action = "NORMAL"
         reasons = []
 
-    title_map = {
-        "normal": "Нормальный режим",
-        "amber_down": "Осторожно: рынок давит вниз",
-        "red_down": "Локдаун: медвежий удар",
-        "amber_up": "Осторожно: рынок выстреливает вверх",
-        "red_up": "Локдаун: бычий squeeze",
-        "chaos": "Локдаун: хаотичный рынок",
-    }
-    operator_note_map = {
-        "normal": "Новые входы разрешены в обычном режиме.",
-        "amber_down": "Не открывать neutral/long grid без очень веского ручного подтверждения. Short — только при явном тренде и дисциплине стопов.",
-        "red_down": "Не открывать новые grid-боты. Действующие long/neutral пересмотреть вручную; держать только reduce-only логику на стороне биржи.",
-        "amber_up": "Не открывать neutral/short grid без очень веского ручного подтверждения. Long — только при явном тренде и дисциплине стопов.",
-        "red_up": "Не открывать новые grid-боты. Действующие short/neutral пересмотреть вручную; держать только reduce-only логику на стороне биржи.",
-        "chaos": "Никаких новых входов: высокая вероятность пилы и переворотов.",
-    }
-
-    return {
+    raw = {
         "ts": int(ts_now),
         "state": state,
         "severity": severity,
         "bias": bias,
         "entry_mode": action.lower(),
-        "title": title_map[state],
-        "operator_note": operator_note_map[state],
+        "title": _title_map(state),
+        "operator_note": _operator_note_map(state),
         "lockdown": bool(state in {"red_down", "red_up", "chaos"}),
         "metrics": {
             "active_symbols": active,
@@ -267,9 +380,13 @@ def compute_market_shock(
             "flags": sent_flags,
         },
     }
+    prev_state = db.get_app_config_json(conn, APP_CONFIG_KEY, default={}) or {}
+    hold_sec = max(int(getattr(settings, "reco_interval_sec", 20)) * 4, 180)
+    return _stabilize_market_shock(raw, prev_state, int(ts_now), hold_sec)
 
 
 def compute_symbol_fast_veto(conn, venue: str, symbol: str, ts_now: int, direction: str, feature_row: dict[str, Any] | None = None) -> dict[str, Any]:
+    global _FAST_VETO_STATE
     snap = _symbol_snapshot(conn, venue, symbol, ts_now)
     if not snap:
         return {
@@ -277,6 +394,8 @@ def compute_symbol_fast_veto(conn, venue: str, symbol: str, ts_now: int, directi
             "triggered": False,
             "blocks": [],
             "metrics": {"r1m": None, "r3m": None, "r5m": None, "volume_z": None},
+            "stabilization": {"applied": False, "mode": "no_data", "release_sec": 120, "previous_state": None},
+            "ts": int(ts_now),
         }
     volume_z = _safe_num((feature_row or {}).get("volume_z"), 0.0)
     r1m = float(snap.get("r1m") or 0.0)
@@ -304,7 +423,7 @@ def compute_symbol_fast_veto(conn, venue: str, symbol: str, ts_now: int, directi
             "msg": f"{symbol}: abs(5m)={abs(r5m)*100:.2f}% при volume_z={volume_z:.2f} — neutral/grid вход запрещён",
         })
 
-    return {
+    raw = {
         "state": state,
         "triggered": bool(blocks),
         "blocks": blocks,
@@ -315,6 +434,14 @@ def compute_symbol_fast_veto(conn, venue: str, symbol: str, ts_now: int, directi
             "volume_z": round(volume_z, 4),
         },
     }
+    key = (str(venue), str(symbol), str(direction or "neutral"))
+    stabilized = _stabilize_fast_veto(raw, _FAST_VETO_STATE.get(key), int(ts_now), release_sec=120)
+    _FAST_VETO_STATE[key] = {
+        "ts": int(ts_now),
+        "state": str(stabilized.get("state") or "normal"),
+        "triggered": bool(stabilized.get("triggered")),
+    }
+    return stabilized
 
 
 def apply_market_shock_gate(market_shock: dict[str, Any], venue: str, bot_type: str, direction: str) -> list[dict[str, Any]]:

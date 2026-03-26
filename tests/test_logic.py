@@ -9,8 +9,15 @@ import pytest
 
 from app import db
 from app.outcomes import _get_first_tradeable_candle_after
-from app.recommender import _estimate_cost_model
+from app.recommender import (
+    _estimate_cost_model,
+    _score,
+    _stable_range_score,
+    _stabilize_direction_agg,
+    PERSISTENCE_BOTS,
+)
 from app.risk import compute_risk_status, gate_candidate
+from app.shock_guard import _stabilize_market_shock, _stabilize_fast_veto
 
 
 @pytest.fixture()
@@ -167,3 +174,89 @@ def test_get_first_tradeable_candle_after_uses_next_candle_open(conn):
 
     tradeable = _get_first_tradeable_candle_after(conn, "linear", "BTCUSDT", base_ts)
     assert tradeable == (base_ts + 60, 101.5)
+
+
+
+def test_persistence_gate_enabled_for_grid_bots():
+    assert {"spot_grid", "futures_grid"}.issubset(PERSISTENCE_BOTS)
+
+
+def test_stable_range_score_prefers_multi_tf_context_over_noisy_1m_proxy():
+    f = {"range_score": 0.18, "trend_strength": 0.70}
+    agg = {"trendiness": 0.12, "coherence": 0.72, "regime": "range"}
+
+    stable, meta = _stable_range_score(f, agg)
+
+    assert meta["raw_range_score_1m"] == pytest.approx(0.18)
+    assert meta["multi_tf_range_score"] > 0.85
+    assert stable > 0.70
+
+
+def test_score_uses_stable_range_score_to_avoid_false_no_trade_near_threshold():
+    f = {
+        "range_score": 0.18,
+        "trend_strength": 0.70,
+        "atr_pct": 0.008,
+        "_atr_pct_1h": 0.008,
+        "spread_bps": 1.2,
+        "_direction_agg": {
+            "direction": "neutral",
+            "trendiness": 0.12,
+            "coherence": 0.72,
+            "regime": "range",
+            "regime_confidence": 0.74,
+            "strength": {"all": 0.08},
+        },
+    }
+    cost_model = {"spread_bps": 1.2, "execution_cost_bps": 3.0, "total_cost_bps": 3.0, "net_cost_bps": 3.0}
+
+    score, _, reasons = _score("futures_grid", "linear", f, taker_fee_bps=6.0, global_sent=0.0, cost_model=cost_model)
+
+    assert score > 0.08
+    assert reasons["score_components"]["range_score_meta"]["multi_tf_range_score"] > reasons["score_components"]["range_score_meta"]["raw_range_score_1m"]
+
+
+def test_direction_hysteresis_holds_previous_direction_on_weak_flip():
+    prev = {"ts": 1_700_000_000, "direction": "long", "bias": "long", "score_all": 0.19, "trendiness": 0.44, "coherence": 0.66}
+    agg = {
+        "direction": "short",
+        "bias": "short",
+        "scores": {"all": -0.13, "tactical": -0.14, "structural": -0.11},
+        "strength": {"all": 0.13, "tactical": 0.14, "structural": 0.11},
+        "trendiness": 0.36,
+        "coherence": 0.54,
+        "regime": "transition",
+        "regime_confidence": 0.55,
+    }
+
+    stable, state = _stabilize_direction_agg(agg, prev_state=prev, now_ts=1_700_000_040, fresh_gap=120)
+
+    assert stable["raw_direction"] == "short"
+    assert stable["direction"] == "long"
+    assert stable["direction_stability"]["applied"] is True
+    assert stable["direction_stability"]["mode"] == "hysteresis_hold"
+    assert state["direction"] == "long"
+
+
+def test_market_shock_release_uses_cooldown():
+    prev = {"ts": 1_700_000_000, "state": "red_down", "severity": "lockdown", "bias": "down"}
+    raw = {"ts": 1_700_000_060, "state": "normal", "severity": "normal", "bias": "neutral", "reasons": []}
+
+    stable = _stabilize_market_shock(raw, prev, now_ts=1_700_000_060, hold_sec=180)
+
+    assert stable["raw_state"] == "normal"
+    assert stable["state"] == "red_down"
+    assert stable["stabilization"]["applied"] is True
+    assert stable["stabilization"]["mode"] == "release_cooldown"
+
+
+def test_fast_veto_release_uses_cooldown():
+    prev = {"ts": 1_700_000_000, "state": "down_break", "triggered": True}
+    raw = {"state": "normal", "triggered": False, "blocks": [], "metrics": {}}
+
+    stable = _stabilize_fast_veto(raw, prev, now_ts=1_700_000_050, release_sec=120)
+
+    assert stable["triggered"] is True
+    assert stable["state"] == "down_break"
+    assert stable["stabilization"]["applied"] is True
+    assert stable["blocks"][0]["code"] == "FAST_VETO_RELEASE_COOLDOWN"

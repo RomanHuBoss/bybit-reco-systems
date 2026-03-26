@@ -374,6 +374,28 @@ def _direction(bot_type: str, agg: dict[str, Any]) -> str:
     return "neutral"
 
 
+def _stable_range_score(f: dict[str, Any], agg: dict[str, Any]) -> tuple[float, dict[str, float | str]]:
+    raw_range = _clamp(float(f.get("range_score") or 0.0), 0.0, 1.0)
+    trendiness = _clamp(float((agg or {}).get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
+    coherence = _clamp(float((agg or {}).get("coherence") or 0.5), 0.0, 1.0)
+    regime = str((agg or {}).get("regime") or "unknown")
+
+    multi_tf_range = _clamp(1.0 - trendiness, 0.0, 1.0)
+    if regime == "range":
+        multi_tf_range = _clamp(multi_tf_range + 0.06 * coherence, 0.0, 1.0)
+    elif regime == "trend":
+        multi_tf_range = _clamp(multi_tf_range - 0.04 * max(0.0, coherence - 0.5), 0.0, 1.0)
+
+    stable = _clamp(0.20 * raw_range + 0.80 * multi_tf_range, 0.0, 1.0)
+    return stable, {
+        "raw_range_score_1m": float(raw_range),
+        "multi_tf_range_score": float(multi_tf_range),
+        "trendiness": float(trendiness),
+        "coherence": float(coherence),
+        "regime": regime,
+    }
+
+
 def _score(
     bot_type: str,
     venue: str,
@@ -401,7 +423,7 @@ def _score(
     else:
         direction_strength = abs(_num(strengths, 0.0))
 
-    range_score = _clamp(_num(f.get("range_score"), 1.0 - abs(_num(agg.get("trendiness"), 0.0))), 0.0, 1.0)
+    range_score, range_meta = _stable_range_score(f, agg)
     trend_strength = _clamp(_num(agg.get("trendiness"), _num(f.get("trend_strength"), 0.0)), 0.0, 1.0)
     coherence = _clamp(_num(agg.get("coherence"), 0.5), 0.0, 1.0)
     regime_conf = _clamp(_num(agg.get("regime_confidence"), 0.0), 0.0, 1.0)
@@ -535,6 +557,15 @@ def _score(
             "total_cost_bps": float(cost_model.get("total_cost_bps") or execution_cost_bps),
             "net_cost_bps": float(cost_model.get("net_cost_bps") or execution_cost_bps),
         },
+        "score_components": {
+            "range_score": float(range_score),
+            "range_score_meta": dict(range_meta),
+            "trend_strength": float(trend_strength),
+            "coherence": float(coherence),
+            "regime_confidence": float(regime_conf),
+            "atr_penalty": float(atr_penalty),
+            "cost_penalty": float(cost_penalty),
+        },
         "effective_sentiment": effective_sent,
     }
     return score, conf0, reasons
@@ -543,7 +574,7 @@ def _score(
 def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | None = None) -> float:
     cost_model = dict(cost_model or {})
     agg = dict(f.get("_direction_agg") or {})
-    range_score = _clamp(float(f.get("range_score") or max(0.0, 1.0 - abs(float(agg.get("trendiness") or 0.0)))), 0.0, 1.0)
+    range_score, _ = _stable_range_score(f, agg)
     trend_strength = _clamp(float(agg.get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
     coherence = _clamp(float(agg.get("coherence") or 0.5), 0.0, 1.0)
     atr_pct = max(0.0, float(f.get("_atr_pct_1h") or f.get("atr_pct") or 0.0))
@@ -595,7 +626,7 @@ def _params(
 
     atr_pct = float(atr_pct_for_grid or f.get("atr_pct") or 0.0)
     atr_pct = max(atr_pct, 0.0015)
-    range_score = _clamp(float(f.get("range_score") or 0.5), 0.0, 1.0)
+    range_score, _ = _stable_range_score(f, agg)
     dir_strength = _clamp(abs(float(direction_bias_strength or 0.0)), 0.0, 1.0)
 
     execution_cost_bps = max(
@@ -678,8 +709,9 @@ def _params(
 # We include direction in the signature and require a consecutive-cycle hit within
 # an interval-derived freshness window.
 _prev_recommended: dict[tuple, dict[str, int]] = {}
-PERSISTENCE_BOTS: set[str] = set()
+PERSISTENCE_BOTS: set[str] = {"spot_grid", "futures_grid"}
 PERSISTENCE_STATE_APP_KEY = "reco_persistence_gate_v1"
+DIRECTION_STATE_APP_KEY = "reco_direction_stability_v1"
 
 
 def _load_prev_recommended(conn) -> dict[tuple, dict[str, int]]:
@@ -736,6 +768,141 @@ def _reset_persistence_gate(venue: str, sym: str, bot_type: str) -> None:
     global _prev_recommended
     for other_dir in ("long", "short", "neutral"):
         _prev_recommended.pop((venue, sym, bot_type, other_dir), None)
+
+
+_direction_state_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _load_direction_state(conn) -> dict[tuple[str, str], dict[str, Any]]:
+    raw = db.get_app_config_json(conn, DIRECTION_STATE_APP_KEY, default={}) or {}
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, state in raw.items():
+        if not isinstance(key, str) or not isinstance(state, dict):
+            continue
+        parts = key.split("|", 1)
+        if len(parts) != 2:
+            continue
+        venue, sym = parts
+        out[(venue, sym)] = {
+            "ts": int(state.get("ts", 0) or 0),
+            "direction": str(state.get("direction") or "neutral"),
+            "bias": str(state.get("bias") or "neutral"),
+            "score_all": float(state.get("score_all", 0.0) or 0.0),
+            "trendiness": float(state.get("trendiness", 0.0) or 0.0),
+            "coherence": float(state.get("coherence", 0.0) or 0.0),
+        }
+    return out
+
+
+def _save_direction_state(conn, state: dict[tuple[str, str], dict[str, Any]], fresh_gap: int) -> None:
+    now = int(time.time())
+    ttl = max(int(fresh_gap) * 8, 1800)
+    payload: dict[str, dict[str, Any]] = {}
+    for key, meta in (state or {}).items():
+        if not isinstance(key, tuple) or len(key) != 2 or not isinstance(meta, dict):
+            continue
+        ts = int(meta.get("ts", 0) or 0)
+        if ts <= 0 or now - ts > ttl:
+            continue
+        payload[f"{key[0]}|{key[1]}"] = {
+            "ts": ts,
+            "direction": str(meta.get("direction") or "neutral"),
+            "bias": str(meta.get("bias") or "neutral"),
+            "score_all": float(meta.get("score_all", 0.0) or 0.0),
+            "trendiness": float(meta.get("trendiness", 0.0) or 0.0),
+            "coherence": float(meta.get("coherence", 0.0) or 0.0),
+        }
+    db.set_app_config_json(conn, DIRECTION_STATE_APP_KEY, payload)
+
+
+def _stabilize_direction_agg(
+    agg: dict[str, Any],
+    prev_state: dict[str, Any] | None,
+    now_ts: int,
+    fresh_gap: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    stable = dict(agg or {})
+    scores = dict(stable.get("scores") or {})
+    strengths = dict(stable.get("strength") or {})
+    raw_direction = str(stable.get("direction") or "neutral")
+    raw_bias = str(stable.get("bias") or "neutral")
+    score_all = float(scores.get("all") or 0.0)
+    strength_all = float(strengths.get("all") or 0.0)
+    trendiness = float(stable.get("trendiness") or 0.0)
+    coherence = float(stable.get("coherence") or 0.0)
+    regime = str(stable.get("regime") or "unknown")
+
+    enter_thr = 0.14
+    exit_thr = 0.09
+    flip_thr = 0.18
+    trend_enter_thr = 0.28
+
+    stable["raw_direction"] = raw_direction
+    stable["raw_bias"] = raw_bias
+
+    prev = dict(prev_state or {})
+    prev_ts = int(prev.get("ts", 0) or 0)
+    prev_fresh = prev_ts > 0 and now_ts - prev_ts <= max(int(fresh_gap), 60)
+    prev_direction = str(prev.get("direction") or "neutral") if prev_fresh else "neutral"
+
+    applied = False
+    mode = "pass_through"
+    note = None
+
+    if raw_direction in ("long", "short") and (abs(score_all) < enter_thr or trendiness < trend_enter_thr):
+        stable["direction"] = "neutral"
+        applied = True
+        mode = "enter_deadband"
+        note = "Directional thesis is not strong enough to leave neutral state yet."
+
+    if regime == "range" and abs(score_all) < flip_thr:
+        stable["direction"] = "neutral"
+        if raw_direction != "neutral":
+            applied = True
+            mode = "range_neutrality_hold"
+            note = "Range regime keeps the longer-horizon thesis neutral until the break becomes clearer."
+
+    if prev_direction in ("long", "short"):
+        current_direction = str(stable.get("direction") or "neutral")
+        same_sign_but_weaker = current_direction == "neutral" and abs(score_all) >= exit_thr and regime != "range"
+        weak_opposite_flip = current_direction in ("long", "short") and current_direction != prev_direction and (
+            abs(score_all) < flip_thr or strength_all < 0.18 or coherence < 0.58
+        )
+        if same_sign_but_weaker or weak_opposite_flip:
+            stable["direction"] = prev_direction
+            stable["bias"] = prev_direction
+            applied = True
+            mode = "hysteresis_hold"
+            note = "Previous directional thesis is held until the opposite move proves itself across cycles."
+
+    final_direction = str(stable.get("direction") or "neutral")
+    if final_direction == "neutral" and raw_bias in ("long", "short") and abs(score_all) >= exit_thr:
+        stable["bias"] = raw_bias
+    elif final_direction in ("long", "short"):
+        stable["bias"] = final_direction
+
+    stable["direction_stability"] = {
+        "applied": bool(applied),
+        "mode": mode,
+        "note": note,
+        "previous_direction": prev_direction,
+        "fresh_gap_sec": int(max(int(fresh_gap), 60)),
+        "enter_threshold": float(enter_thr),
+        "exit_threshold": float(exit_thr),
+        "flip_threshold": float(flip_thr),
+    }
+
+    state_out = {
+        "ts": int(now_ts),
+        "direction": str(stable.get("direction") or "neutral"),
+        "bias": str(stable.get("bias") or "neutral"),
+        "score_all": float(score_all),
+        "trendiness": float(trendiness),
+        "coherence": float(coherence),
+    }
+    return stable, state_out
 
 
 def _fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
@@ -858,9 +1025,10 @@ def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
 
 
 def run_recommender_once(conn, settings) -> dict[str, Any]:
-    global _prev_recommended
+    global _prev_recommended, _direction_state_cache
     _fresh_gap = max(45, int(settings.reco_interval_sec * 2.5))
     _prev_recommended = _load_prev_recommended(conn)
+    _direction_state_cache = _load_direction_state(conn)
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
     # Primary sentiment for scoring: adaptive blend from compute_sentiment_agg.
     # Falls back to 6h EWMA for backward compatibility with older snapshots.
@@ -948,6 +1116,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     atr_1d = float(info.get("atr_pct") or 0.0)
 
             agg = aggregate_direction(tf_map) if tf_map else {"direction":"neutral","bias":"neutral","direction_confidence":0.5,"scores":{"tactical":0,"structural":0,"all":0},"strength":{"tactical":0,"structural":0,"all":0},"coherence":0.5,"regime":"unknown","regime_confidence":0.0,"structural_veto_applied":False,"tf_used":[]}
+            agg, _dir_state = _stabilize_direction_agg(agg, _direction_state_cache.get((venue, sym)), ts_now, _fresh_gap)
+            _direction_state_cache[(venue, sym)] = _dir_state
             f["_direction_agg"] = agg
             f["_atr_pct_1h"] = atr_1h
             f["_atr_pct_15m"] = atr_15m
@@ -1283,11 +1453,26 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "market_shock_title": (market_shock or {}).get("title"),
                 "operator_note": (market_shock or {}).get("operator_note"),
             }
+            params["decision_context"] = {
+                "thesis_direction": raw_direction,
+                "execution_direction": direction,
+                "market_shock_state": (market_shock or {}).get("state"),
+                "fast_veto_state": (fast_veto or {}).get("state"),
+            }
 
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)
             reasons2["regime"] = regime
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
+            thesis_ok = bool(score >= settings.min_score_to_recommend and (not confidence_gate_applied or conf >= settings.min_conf_to_recommend))
+            reasons2["decision_layers"] = {
+                "thesis_status": "favored" if thesis_ok else "unfavorable",
+                "execution_status": "blocked" if blocks else "allowed",
+                "final_status": status,
+                "score_threshold": float(settings.min_score_to_recommend),
+                "confidence_threshold": float(settings.min_conf_to_recommend),
+                "confidence_gate_applied": bool(confidence_gate_applied),
+            }
             reasons2["sentiment_agg"] = sent_agg
             reasons2["market_shock"] = market_shock
             reasons2["fast_veto"] = fast_veto
@@ -1433,6 +1618,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 )
 
         _save_prev_recommended(conn, _prev_recommended, _fresh_gap)
+        _save_direction_state(conn, _direction_state_cache, _fresh_gap)
 
         for r in recs:
             st = str(r.get("status") or "")
