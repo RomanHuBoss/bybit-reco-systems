@@ -173,8 +173,8 @@ def _funding_score_adjustment(direction: str, fr_sig: dict[str, Any], cost_model
     Funding should only affect the score if the trade horizon is actually expected to
     cross one or more funding events. Otherwise we create an economic signal that the
     execution model never realises. The adjustment is also direction-aware: expensive
-    long carry should penalise longs, while the same regime can be mildly supportive
-    for shorts that are expected to receive funding.
+    carry should penalise the side that is expected to *pay* funding, while received
+    funding can be mildly supportive.
     """
     if direction not in ("long", "short"):
         return 0.0
@@ -201,6 +201,36 @@ def _funding_score_adjustment(direction: str, fr_sig: dict[str, Any], cost_model
     if direction == "short" and sig == "bearish":
         return 0.01
     return 0.0
+
+
+def _extreme_funding_block(direction: str, fr_sig: dict[str, Any], cost_model: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a feasibility block when expected funding carry is too expensive.
+
+    `expected_funding_bps` is already direction-aware:
+      * positive  -> this side is expected to PAY funding over the label horizon;
+      * negative  -> this side is expected to RECEIVE funding.
+
+    The previous implementation hard-blocked only expensive longs, which created a
+    directional asymmetry: positive funding could suppress many long ideas, while an
+    equally expensive short under negative funding was still allowed through. The gate
+    must be keyed off *who pays*, not off the semantic label long/short.
+    """
+    if direction not in ("long", "short"):
+        return None
+    if fr_sig.get("value") is None:
+        return None
+    if int(cost_model.get("expected_funding_events") or 0) <= 0:
+        return None
+
+    expected_bps = float(cost_model.get("expected_funding_bps") or 0.0)
+    if expected_bps < 6.0:
+        return None
+
+    side = "long" if direction == "long" else "short"
+    return {
+        "code": "FUNDING_EXTREME",
+        "msg": f"expected_funding_bps={expected_bps:.2f} over horizon — {side} pays too much funding carry",
+    }
 
 
 def _build_feature_snapshot(
@@ -1268,18 +1298,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     "msg": "bid/ask отсутствуют — нельзя надёжно оценить execution cost"})
 
             # ── Funding rate gate (futures only) ──
-            # Gate must be direction-aware. Extreme positive funding is a real carry-cost
-            # problem for longs, but the same regime can be supportive for shorts that are
-            # expected to receive funding.
-            if (
-                venue == "linear"
-                and direction == "long"
-                and fr_sig["value"] is not None
-                and int(cost_model.get("expected_funding_events") or 0) > 0
-                and float(cost_model.get("expected_funding_bps") or 0.0) >= 6.0
-            ):
-                feasibility_blocks.append({"code": "FUNDING_EXTREME",
-                    "msg": f"expected_funding_bps={float(cost_model.get('expected_funding_bps') or 0.0):.2f} over horizon — crowded long, высокий carry-cost"})
+            # Gate must be keyed off the *payer* side, not only off semantic longs.
+            # `expected_funding_bps` is direction-aware already, so positive values mean
+            # this exact setup is expected to pay funding over the label horizon.
+            if venue == "linear":
+                funding_block = _extreme_funding_block(direction, fr_sig, cost_model)
+                if funding_block is not None:
+                    feasibility_blocks.append(funding_block)
 
             if bot_type in ("spot_grid","futures_grid") and spread is not None and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})

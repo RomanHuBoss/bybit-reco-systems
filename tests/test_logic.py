@@ -11,6 +11,7 @@ from app import db
 from app.outcomes import _get_first_tradeable_candle_after
 from app.recommender import (
     _estimate_cost_model,
+    _extreme_funding_block,
     _params,
     _score,
     _stable_range_score,
@@ -387,3 +388,31 @@ def test_run_recommender_once_smoke_generates_recommendations_without_runtime_na
     params = json.loads(rows[0]["params_json"])
     assert params["price_range_upper"] > params["price_range_lower"]
     assert params["grid_levels"] >= 4
+
+
+def test_extreme_funding_block_is_symmetric_for_the_paying_side():
+    fr_sig = {"value": 0.0005, "signal": "bearish"}
+
+    long_cost = {
+        "expected_funding_events": 1,
+        "expected_funding_bps": 6.5,
+    }
+    short_receiving_cost = {
+        "expected_funding_events": 1,
+        "expected_funding_bps": -6.5,
+    }
+    short_paying_cost = {
+        "expected_funding_events": 1,
+        "expected_funding_bps": 6.5,
+    }
+
+    long_block = _extreme_funding_block("long", fr_sig, long_cost)
+    assert long_block is not None
+    assert long_block["code"] == "FUNDING_EXTREME"
+
+    short_receiving_block = _extreme_funding_block("short", fr_sig, short_receiving_cost)
+    assert short_receiving_block is None
+
+    short_paying_block = _extreme_funding_block("short", fr_sig, short_paying_cost)
+    assert short_paying_block is not None
+    assert short_paying_block["code"] == "FUNDING_EXTREME"
