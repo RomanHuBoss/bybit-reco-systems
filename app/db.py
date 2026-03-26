@@ -147,29 +147,93 @@ def get_latest_features(conn: sqlite3.Connection, venue: str, symbol: str) -> di
     return json.loads(row["features_json"]) if row else None
 
 def get_active_bots(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    cur = conn.execute("""SELECT * FROM bot_instances WHERE status='running'""")
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
+    cur = conn.execute(
+        f"""SELECT * FROM bot_instances
+               WHERE status='running' AND {_supported_sql}""",
+        _supported_params,
+    )
     return list(cur.fetchall())
 
+
 def count_active_bots_for_symbol(conn: sqlite3.Connection, venue: str, symbol: str) -> int:
-    cur = conn.execute("""SELECT COUNT(1) AS c FROM bot_instances WHERE status='running' AND venue=? AND symbol=?""", (venue, symbol))
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
+    cur = conn.execute(
+        f"""SELECT COUNT(1) AS c FROM bot_instances
+               WHERE status='running' AND venue=? AND symbol=? AND {_supported_sql}""",
+        (venue, symbol, *_supported_params),
+    )
     return int(cur.fetchone()["c"])
 
-def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any]) -> None:
-    conn.execute(
-        """INSERT OR REPLACE INTO bot_instances(
-            bot_id, started_ts, stopped_ts, venue, symbol, bot_type,
-            mode_json, params_json, state_json, status, origin_rec_id
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            bot["bot_id"], bot["started_ts"], bot.get("stopped_ts"),
-            bot["venue"], bot["symbol"], bot["bot_type"],
-            json.dumps(bot["mode"], ensure_ascii=False),
-            json.dumps(bot["params"], ensure_ascii=False),
-            json.dumps(bot["state"], ensure_ascii=False),
-            bot["status"], bot.get("origin_rec_id")
-        ),
+
+def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any]) -> str:
+    """Insert a bot instance without replacing an existing logical bot.
+
+    Returns:
+      - ``inserted`` when a new row is written
+      - ``duplicate_origin`` when another row with the same origin_rec_id already exists
+      - ``duplicate_bot_id`` when the exact bot_id already exists with identical payload
+
+    Raises:
+      ValueError when the same bot_id already exists with different payload.
+      sqlite3.IntegrityError for other unexpected uniqueness conflicts.
+    """
+    payload = (
+        bot["bot_id"],
+        int(bot["started_ts"]),
+        bot.get("stopped_ts"),
+        bot["venue"],
+        bot["symbol"],
+        bot["bot_type"],
+        json.dumps(bot["mode"], ensure_ascii=False),
+        json.dumps(bot["params"], ensure_ascii=False),
+        json.dumps(bot["state"], ensure_ascii=False),
+        bot["status"],
+        bot.get("origin_rec_id"),
     )
-    conn.commit()
+
+    cur = conn.execute(
+        """SELECT started_ts, stopped_ts, venue, symbol, bot_type,
+                  mode_json, params_json, state_json, status, origin_rec_id
+           FROM bot_instances WHERE bot_id=?""",
+        (bot["bot_id"],),
+    )
+    row = cur.fetchone()
+    if row:
+        existing = (
+            int(row["started_ts"]),
+            row["stopped_ts"],
+            row["venue"],
+            row["symbol"],
+            row["bot_type"],
+            row["mode_json"],
+            row["params_json"],
+            row["state_json"],
+            row["status"],
+            row["origin_rec_id"],
+        )
+        incoming = payload[1:]
+        if existing == incoming:
+            return "duplicate_bot_id"
+        raise ValueError(f"bot_id={bot['bot_id']} already exists with different payload")
+
+    try:
+        conn.execute(
+            """INSERT INTO bot_instances(
+                bot_id, started_ts, stopped_ts, venue, symbol, bot_type,
+                mode_json, params_json, state_json, status, origin_rec_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            payload,
+        )
+        conn.commit()
+        return "inserted"
+    except sqlite3.IntegrityError:
+        origin_rec_id = bot.get("origin_rec_id")
+        if origin_rec_id:
+            existing = get_bot_by_origin_rec(conn, str(origin_rec_id))
+            if existing is not None:
+                return "duplicate_origin"
+        raise
 
 def stop_bot(conn: sqlite3.Connection, bot_id: str) -> bool:
     cur = conn.execute("""SELECT bot_id FROM bot_instances WHERE bot_id=? AND status='running'""", (bot_id,))

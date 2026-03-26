@@ -251,9 +251,28 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         "status": "running",
         "origin_rec_id": rec_id,
     }
-    db.insert_bot_instance(conn, bot)
+    insert_result = db.insert_bot_instance(conn, bot)
+    if insert_result == "duplicate_origin":
+        existing = db.get_bot_by_origin_rec(conn, rec_id)
+        if existing:
+            if rec.get("status") != "executed":
+                db.update_recommendation_status(conn, rec_id, "executed", operator)
+            return existing, True
+        raise HTTPException(status_code=409, detail="bot creation conflicted with an existing origin_rec_id")
+
     db.update_recommendation_status(conn, rec_id, "executed", operator)
-    db.log_decision(conn, "BOT_STARTED", rec_id, operator, {"bot_id": bot["bot_id"], "symbol": bot["symbol"], "bot_type": bot["bot_type"]})
+    db.log_decision(
+        conn,
+        "BOT_STARTED",
+        rec_id,
+        operator,
+        {
+            "bot_id": bot["bot_id"],
+            "symbol": bot["symbol"],
+            "bot_type": bot["bot_type"],
+            "insert_result": insert_result,
+        },
+    )
     created = db.get_bot_instance(conn, bot["bot_id"])
     return created or bot, False
 
