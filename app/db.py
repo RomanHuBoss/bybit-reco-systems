@@ -793,79 +793,230 @@ def expire_stale_recommendations(conn: sqlite3.Connection) -> int:
 
 # ── Outcomes stats ────────────────────────────────────────────────────────────
 
-def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
-    """Aggregate win-rate and return proxies from reco_outcomes.
+def _normalize_direction(direction: Any, fallback: str = "neutral") -> str:
+    value = str(direction or fallback).strip().lower()
+    return value if value in ("long", "short", "neutral") else fallback
 
-    This function does not join market regime slices; it reports only overall/by-bot/by-symbol stats.
-    """
-    # Overall
-    _supported_sql, _supported_params = sql_in_clause("bot_type")
-    cur = conn.execute(
-        f"""SELECT bot_type, direction,
-                  COUNT(*) as total,
-                  SUM(success) as wins,
-                  AVG(ret) as avg_ret,
-                  AVG(ABS(ret)) as avg_abs_ret
-           FROM reco_outcomes
-           WHERE {_supported_sql}
-           GROUP BY bot_type, direction
-           ORDER BY bot_type, direction""",
-        _supported_params,
-    )
-    by_bot: list[dict] = []
-    for r in cur.fetchall():
-        total = int(r["total"])
-        wins  = int(r["wins"])
-        by_bot.append({
-            "bot_type":  r["bot_type"],
-            "direction": r["direction"],
-            "total":     total,
-            "wins":      wins,
-            "win_rate":  round(wins / total, 3) if total else 0,
-            "avg_ret":   round(float(r["avg_ret"] or 0) * 100, 3),
-            "avg_abs_ret": round(float(r["avg_abs_ret"] or 0) * 100, 3),
-        })
 
-    # By symbol
-    cur = conn.execute(
-        f"""SELECT symbol, bot_type,
-                  COUNT(*) as total,
-                  SUM(success) as wins,
-                  AVG(ret) as avg_ret
-           FROM reco_outcomes
-           WHERE {_supported_sql}
-           GROUP BY symbol, bot_type
-           ORDER BY total DESC""",
-        _supported_params,
-    )
-    by_symbol: list[dict] = []
-    for r in cur.fetchall():
-        total = int(r["total"])
-        wins  = int(r["wins"])
-        by_symbol.append({
-            "symbol":   r["symbol"],
-            "bot_type": r["bot_type"],
-            "total":    total,
-            "wins":     wins,
-            "win_rate": round(wins / total, 3) if total else 0,
-            "avg_ret":  round(float(r["avg_ret"] or 0) * 100, 3),
-        })
+def _extract_outcome_directions(outcome_direction: Any, reco_direction: Any, reasons_json: str | None) -> dict[str, Any]:
+    raw_direction = None
+    execution_direction = None
 
-    # Summary
-    cur = conn.execute(
-        f"""SELECT COUNT(*) as total, SUM(success) as wins FROM reco_outcomes WHERE {_supported_sql}""",
-        _supported_params,
+    try:
+        reasons = json.loads(reasons_json) if reasons_json else {}
+    except Exception:
+        reasons = {}
+
+    if not isinstance(reasons, dict):
+        reasons = {}
+
+    execution_constraints = reasons.get("execution_constraints") if isinstance(reasons.get("execution_constraints"), dict) else {}
+    direction_agg = reasons.get("direction_agg") if isinstance(reasons.get("direction_agg"), dict) else {}
+
+    raw_direction = (
+        execution_constraints.get("raw_direction")
+        or direction_agg.get("raw_direction")
+        or direction_agg.get("direction_before_execution")
+        or reco_direction
+        or outcome_direction
     )
-    r = cur.fetchone()
-    total = int(r["total"] or 0)
-    wins  = int(r["wins"]  or 0)
-    summary = {
-        "total":    total,
-        "wins":     wins,
-        "win_rate": round(wins / total, 3) if total else None,
+    execution_direction = (
+        execution_constraints.get("executable_direction")
+        or execution_constraints.get("execution_direction")
+        or reco_direction
+        or outcome_direction
+    )
+
+    raw_direction = _normalize_direction(raw_direction, fallback=_normalize_direction(outcome_direction))
+    execution_direction = _normalize_direction(execution_direction, fallback=_normalize_direction(outcome_direction))
+
+    if execution_direction == "neutral" and raw_direction == "short":
+        neutral_source = "spot_short_neutralized"
+    elif execution_direction == "neutral" and raw_direction == "neutral":
+        neutral_source = "true_neutral"
+    elif execution_direction == "neutral":
+        neutral_source = "other_neutralized"
+    else:
+        neutral_source = None
+
+    return {
+        "raw_direction": raw_direction,
+        "execution_direction": execution_direction,
+        "neutral_source": neutral_source,
     }
 
-    return {"summary": summary, "by_bot": by_bot, "by_symbol": by_symbol}
+
+def _accumulate_stat(bucket: dict[str, Any], success: Any, ret: Any) -> None:
+    bucket["total"] += 1
+    bucket["wins"] += int(success or 0)
+    bucket["ret_sum"] += float(ret or 0.0)
+    bucket["abs_ret_sum"] += abs(float(ret or 0.0))
+
+
+
+def _materialize_stat_rows(grouped: dict[tuple[Any, ...], dict[str, Any]], key_names: list[str], *, sort_key) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key, stat in grouped.items():
+        total = int(stat["total"])
+        wins = int(stat["wins"])
+        row = {name: key[idx] for idx, name in enumerate(key_names)}
+        row.update({
+            "total": total,
+            "wins": wins,
+            "losses": max(0, total - wins),
+            "win_rate": round(wins / total, 3) if total else 0.0,
+            "avg_ret": round((float(stat["ret_sum"]) / total) * 100.0, 3) if total else 0.0,
+            "avg_abs_ret": round((float(stat["abs_ret_sum"]) / total) * 100.0, 3) if total else 0.0,
+        })
+        rows.append(row)
+    return sorted(rows, key=sort_key)
+
+
+
+def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]]:
+    _supported_sql, _supported_params = sql_in_clause("o.bot_type")
+    cur = conn.execute(
+        f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
+                     o.horizon_sec, o.entry_close, o.exit_close, o.ret, o.success,
+                     r.direction AS reco_direction, r.status AS reco_status,
+                     r.score, r.confidence, r.expected_rr, r.reasons_json
+              FROM reco_outcomes o
+              LEFT JOIN recommendations r ON r.rec_id = o.rec_id
+              WHERE {_supported_sql}
+              ORDER BY o.ts DESC
+              LIMIT ?""",
+        [*_supported_params, int(limit)],
+    )
+    out: list[dict[str, Any]] = []
+    for row in cur.fetchall():
+        dirs = _extract_outcome_directions(row["direction"], row["reco_direction"], row["reasons_json"])
+        out.append({
+            "rec_id": row["rec_id"],
+            "ts": int(row["ts"]),
+            "venue": row["venue"],
+            "symbol": row["symbol"],
+            "bot_type": row["bot_type"],
+            "direction": _normalize_direction(row["direction"]),
+            "raw_direction": dirs["raw_direction"],
+            "execution_direction": dirs["execution_direction"],
+            "neutral_source": dirs["neutral_source"],
+            "horizon_sec": int(row["horizon_sec"]),
+            "entry_close": float(row["entry_close"]),
+            "exit_close": float(row["exit_close"]),
+            "ret": float(row["ret"]),
+            "success": int(row["success"]),
+            "reco_status": row["reco_status"],
+            "score": float(row["score"]) if row["score"] is not None else None,
+            "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+            "expected_rr": float(row["expected_rr"]) if row["expected_rr"] is not None else None,
+        })
+    return out
+
+
+
+def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
+    """Aggregate win-rate / return proxies and expose raw vs execution direction splits.
+
+    Neutral execution can hide two very different realities:
+    true neutral thesis and spot short neutralisation (raw short -> execution neutral).
+    The UI needs both axes to avoid mixing them together.
+    """
+    _supported_sql, _supported_params = sql_in_clause("o.bot_type")
+    cur = conn.execute(
+        f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
+                     o.ret, o.success,
+                     r.direction AS reco_direction, r.reasons_json
+              FROM reco_outcomes o
+              LEFT JOIN recommendations r ON r.rec_id = o.rec_id
+              WHERE {_supported_sql}
+              ORDER BY o.ts DESC""",
+        _supported_params,
+    )
+
+    summary_bucket = {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0}
+    by_bot_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_symbol_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_raw_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_execution_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_pair_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    true_neutral_total = 0
+    spot_short_neutralized_total = 0
+
+    rows = cur.fetchall()
+    for row in rows:
+        dirs = _extract_outcome_directions(row["direction"], row["reco_direction"], row["reasons_json"])
+        raw_direction = dirs["raw_direction"]
+        execution_direction = dirs["execution_direction"]
+        neutral_source = dirs["neutral_source"]
+        success = int(row["success"] or 0)
+        ret = float(row["ret"] or 0.0)
+
+        if neutral_source == "true_neutral":
+            true_neutral_total += 1
+        elif neutral_source == "spot_short_neutralized":
+            spot_short_neutralized_total += 1
+
+        _accumulate_stat(summary_bucket, success, ret)
+
+        for bucket, key in (
+            (by_bot_bucket, (row["bot_type"], raw_direction, execution_direction)),
+            (by_symbol_bucket, (row["symbol"], row["bot_type"], raw_direction, execution_direction)),
+            (by_raw_bucket, (raw_direction,)),
+            (by_execution_bucket, (execution_direction,)),
+            (by_pair_bucket, (raw_direction, execution_direction, neutral_source or "")),
+        ):
+            stat = bucket.setdefault(key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
+            _accumulate_stat(stat, success, ret)
+
+    total = int(summary_bucket["total"])
+    wins = int(summary_bucket["wins"])
+    summary = {
+        "total": total,
+        "wins": wins,
+        "losses": max(0, total - wins),
+        "win_rate": round(wins / total, 3) if total else None,
+        "avg_ret": round((float(summary_bucket["ret_sum"]) / total) * 100.0, 3) if total else 0.0,
+        "avg_abs_ret": round((float(summary_bucket["abs_ret_sum"]) / total) * 100.0, 3) if total else 0.0,
+        "true_neutral_total": int(true_neutral_total),
+        "spot_short_neutralized_total": int(spot_short_neutralized_total),
+    }
+
+    by_bot = _materialize_stat_rows(
+        by_bot_bucket,
+        ["bot_type", "raw_direction", "execution_direction"],
+        sort_key=lambda row: (-row["total"], row["bot_type"], row["raw_direction"], row["execution_direction"]),
+    )
+    by_symbol = _materialize_stat_rows(
+        by_symbol_bucket,
+        ["symbol", "bot_type", "raw_direction", "execution_direction"],
+        sort_key=lambda row: (-row["total"], row["symbol"], row["bot_type"], row["raw_direction"], row["execution_direction"]),
+    )
+    by_raw_direction = _materialize_stat_rows(
+        by_raw_bucket,
+        ["raw_direction"],
+        sort_key=lambda row: (-row["total"], row["raw_direction"]),
+    )
+    by_execution_direction = _materialize_stat_rows(
+        by_execution_bucket,
+        ["execution_direction"],
+        sort_key=lambda row: (-row["total"], row["execution_direction"]),
+    )
+    direction_pairs = _materialize_stat_rows(
+        by_pair_bucket,
+        ["raw_direction", "execution_direction", "neutral_source"],
+        sort_key=lambda row: (-row["total"], row["raw_direction"], row["execution_direction"], row.get("neutral_source") or ""),
+    )
+
+    return {
+        "summary": summary,
+        "by_bot": by_bot,
+        "by_symbol": by_symbol,
+        "by_raw_direction": by_raw_direction,
+        "by_execution_direction": by_execution_direction,
+        "direction_pairs": direction_pairs,
+        "recent": get_outcomes_recent_enriched(conn, limit=120),
+    }
 
 
 # ── Symbol health ─────────────────────────────────────────────────────────────

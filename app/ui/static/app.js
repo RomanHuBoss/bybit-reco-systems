@@ -821,9 +821,107 @@ function dirConfCell(dirConf) {
   return `<span class="${cls}">${v.toFixed(2)}</span>`;
 }
 
+function formatTs(ts) {
+  if (!ts) return "—";
+  const d = new Date(Number(ts) * 1000);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatAgeHuman(sec) {
+  if (sec === null || sec === undefined || sec === "") return "—";
+  const s = Math.max(0, Number(sec));
+  if (!Number.isFinite(s)) return "—";
+  if (s < 60) return `${Math.round(s)}с`;
+  if (s < 3600) return `${Math.round(s / 60)}м`;
+  if (s < 86400) return `${(s / 3600).toFixed(1)}ч`;
+  return `${(s / 86400).toFixed(1)}д`;
+}
+
+function renderDirectionBadge(dir) {
+  const value = String(dir || "neutral").toLowerCase();
+  const cls = value === "long" ? "dir-long" : value === "short" ? "dir-short" : "dir-neu";
+  return `<span class="dir-badge ${cls}">${escapeHtml(directionRu(value))}</span>`;
+}
+
+function renderOutcomeResult(success) {
+  const ok = Number(success) === 1;
+  return `<span class="outcome-result ${ok ? "outcome-result-win" : "outcome-result-loss"}">${ok ? "Win" : "Loss"}</span>`;
+}
+
+function renderNeutralSourceTag(source) {
+  if (!source) return "—";
+  if (source === "spot_short_neutralized") {
+    return `<span class="neutral-note neutral-note-neutralized">spot-short-neutralized</span>`;
+  }
+  if (source === "true_neutral") {
+    return `<span class="neutral-note neutral-note-true">true neutral</span>`;
+  }
+  return `<span class="neutral-note">${escapeHtml(source)}</span>`;
+}
+
+function renderHealthStatus(status) {
+  const value = String(status || "missing").toLowerCase();
+  const cls = value === "ok" ? "health-status-ok" : value === "stale" ? "health-status-stale" : "health-status-missing";
+  return `<span class="health-status ${cls}">${escapeHtml(value)}</span>`;
+}
+
+function renderModalSummaryCards(items = []) {
+  if (!items.length) return "";
+  return `<div class="modal-summary-grid">${items.map(item => `
+    <div class="modal-summary-card">
+      <div class="modal-summary-label">${escapeHtml(item.label || "")}</div>
+      <div class="modal-summary-value">${item.html !== undefined ? item.html : escapeHtml(item.value ?? "—")}</div>
+    </div>
+  `).join("")}</div>`;
+}
+
+function buildModalTable(columns, rows, { emptyText = "Нет данных", rowClass } = {}) {
+  const head = columns.map(col => `<th>${escapeHtml(col.label || "")}</th>`).join("");
+  const body = (rows && rows.length)
+    ? rows.map((row, idx) => {
+        const cls = rowClass ? rowClass(row, idx) : "";
+        const cells = columns.map(col => {
+          const content = col.render ? col.render(row, idx) : escapeHtml(row?.[col.key] ?? "—");
+          const tdCls = col.className ? ` class="${escapeHtml(col.className)}"` : "";
+          return `<td${tdCls}>${content}</td>`;
+        }).join("");
+        return `<tr${cls ? ` class="${escapeHtml(cls)}"` : ""}>${cells}</tr>`;
+      }).join("")
+    : `<tr><td colspan="${columns.length}" class="modal-table-empty">${escapeHtml(emptyText)}</td></tr>`;
+
+  return `
+    <div class="modal-table-wrap">
+      <table class="table modal-table">
+        <thead><tr>${head}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function showModal(title, obj) {
+  const body = $("modalBody");
   $("modalTitle").textContent = title;
-  $("modalBody").textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+  body.classList.remove("modal-html");
+  body.classList.add("pre");
+  body.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+  $("modal").classList.remove("hidden");
+}
+
+function showModalHtml(title, html) {
+  const body = $("modalBody");
+  $("modalTitle").textContent = title;
+  body.classList.remove("pre");
+  body.classList.add("modal-html");
+  body.innerHTML = html;
   $("modal").classList.remove("hidden");
 }
 
@@ -1075,90 +1173,124 @@ async function loadDetails(recId) {
 async function loadHealth() {
   const res = await fetch("/api/v1/health/symbols");
   let data;
-  try { data = await res.json(); } catch(e) { return; }
+  try { data = await res.json(); } catch (e) { return; }
 
   const sum = data.summary || {};
-  const lines = [];
-  const total = (sum.ok || 0) + (sum.stale || 0) + (sum.missing || 0);
-  // 🟢 only when every symbol is ok AND there is at least one symbol
-  const okEmoji = total > 0 && sum.ok === total ? "🟢" : (sum.missing || 0) > 0 ? "🔴" : "🟠";
-  lines.push(`${okEmoji} Символы: ${sum.ok} ok | ${sum.stale} stale | ${sum.missing} missing | ${sum.errors_10m} ошибок за 10 мин`);
-  lines.push("");
-
-  const symbols = data.symbols || [];
-  const bad  = symbols.filter(sym => sym.status !== "ok");
-  const good = symbols.filter(sym => sym.status === "ok");
-
-  if (bad.length > 0) {
-    lines.push("── Проблемные ──");
-    bad.forEach(sym => {
-      const emoji = sym.status === "missing" ? "🔴" : "🟠";
-      const age  = sym.age_sec !== null ? `${Math.round(sym.age_sec / 60)}m ago` : "нет данных";
-      const errs = sym.error_count_10m > 0 ? ` | ⚡${sym.error_count_10m} err/10m` : "";
-      const dis  = sym.disabled ? " | 🚫DISABLED" : "";
-      const skip = sym.stale_skips_1h > 0 ? ` | skip×${sym.stale_skips_1h}/h` : "";
-      lines.push(`${emoji} ${sym.venue.padEnd(6)} ${sym.symbol.padEnd(14)} ${sym.status.padEnd(8)} ${age}${errs}${dis}${skip}`);
-    });
-    lines.push("");
-  }
-
-  lines.push("── Здоровые ──");
-  good.forEach(sym => {
-    const age = sym.age_sec !== null ? `${sym.age_sec}s ago` : "—";
-    lines.push(`🟢 ${sym.venue.padEnd(6)} ${sym.symbol.padEnd(14)} ok      ${age}`);
+  const symbols = [...(data.symbols || [])].sort((a, b) => {
+    const rank = { missing: 0, stale: 1, ok: 2 };
+    const ra = rank[a.status] ?? 9;
+    const rb = rank[b.status] ?? 9;
+    if (ra !== rb) return ra - rb;
+    if (Boolean(b.disabled) !== Boolean(a.disabled)) return Number(b.disabled) - Number(a.disabled);
+    if (Number(b.error_count_10m || 0) !== Number(a.error_count_10m || 0)) return Number(b.error_count_10m || 0) - Number(a.error_count_10m || 0);
+    return String(a.symbol || "").localeCompare(String(b.symbol || ""), "ru");
   });
 
-  showModal("Здоровье символов", lines.join("\n"));
+  const html = `
+    ${renderModalSummaryCards([
+      { label: "OK", value: Number(sum.ok || 0) },
+      { label: "Stale", value: Number(sum.stale || 0) },
+      { label: "Missing", value: Number(sum.missing || 0) },
+      { label: "Ошибки / 10 мин", value: Number(sum.errors_10m || 0) },
+    ])}
+    <p class="modal-note">Возраст считается по последней 1m-свече. Таблица отсортирована так, чтобы проблемные символы были сверху.</p>
+    <div class="modal-section">
+      <div class="modal-section-title">Журнал здоровья символов</div>
+      ${buildModalTable([
+        { label: "Площадка", render: row => escapeHtml(venueLabel(row.venue)) },
+        { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
+        { label: "Статус", render: row => renderHealthStatus(row.status) },
+        { label: "Возраст свечи", render: row => escapeHtml(formatAgeHuman(row.age_sec)) },
+        { label: "Последняя свеча", render: row => escapeHtml(formatTs(row.last_candle_ts)) },
+        { label: "Последний тикер", render: row => escapeHtml(formatTs(row.last_ticker_ts)) },
+        { label: "Ошибки/10м", render: row => escapeHtml(String(Number(row.error_count_10m || 0))) },
+        { label: "Stale skip/1ч", render: row => escapeHtml(String(Number(row.stale_skips_1h || 0))) },
+        { label: "Disabled", render: row => row.disabled ? '<span class="neutral-note neutral-note-neutralized">yes</span>' : '—' },
+      ], symbols, { emptyText: "Нет данных по символам." })}
+    </div>
+  `;
+
+  showModalHtml("Здоровье символов", html);
 }
 
 async function loadOutcomes() {
   const res = await fetch("/api/v1/outcomes/stats");
   let data;
-  try { data = await res.json(); } catch(e) { return; }
+  try { data = await res.json(); } catch (e) { return; }
 
   const s = data.summary || {};
-  const totalWins = Number(s.wins || 0);
-  const totalLosses = Math.max(0, Number(s.total || 0) - totalWins);
-  const lines = [];
-  lines.push(`Всего исходов: ${s.total || 0} | Побед: ${totalWins} | Поражений: ${totalLosses} | Win-rate: ${s.win_rate !== null && s.win_rate !== undefined ? (s.win_rate*100).toFixed(1)+"%" : "нет данных"}`);
-  lines.push("Примечание: это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок.");
-  lines.push("");
+  const directionPairs = data.direction_pairs || [];
+  const byBot = data.by_bot || [];
+  const bySymbol = (data.by_symbol || []).slice(0, 30);
+  const recent = (data.recent || []).slice(0, 80);
 
-  if ((data.by_bot || []).length > 0) {
-    lines.push("── По типу бота ──");
-    lines.push(["Бот", "Напр", "Всего", "Побед", "WR%", "Avg ret%"].join(" | "));
-    (data.by_bot || []).forEach(r => {
-      lines.push([
-        r.bot_type.padEnd(20),
-        (r.direction||"—").padEnd(7),
-        String(r.total).padStart(5),
-        String(r.wins).padStart(5),
-        (r.win_rate*100).toFixed(1).padStart(5)+"%",
-        (r.avg_ret >= 0 ? "+" : "") + r.avg_ret.toFixed(2)+"%",
-      ].join(" | "));
-    });
-    lines.push("");
-  }
+  const html = `
+    ${renderModalSummaryCards([
+      { label: "Всего исходов", value: Number(s.total || 0) },
+      { label: "Побед", value: Number(s.wins || 0) },
+      { label: "Поражений", value: Number(s.losses || 0) },
+      { label: "Win-rate", value: s.win_rate !== null && s.win_rate !== undefined ? `${(Number(s.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Avg ret", value: `${Number(s.avg_ret || 0).toFixed(2)}%` },
+      { label: "Истинный neutral", value: Number(s.true_neutral_total || 0) },
+      { label: "spot-short-neutralized", value: Number(s.spot_short_neutralized_total || 0) },
+    ])}
+    <p class="modal-note">Это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок. Ниже отдельно показаны raw_direction и execution_direction, чтобы neutral не смешивал истинный neutral с bearish-thesis на споте.</p>
+    <div class="modal-section">
+      <div class="modal-section-title">Сводка по raw / execution direction</div>
+      ${buildModalTable([
+        { label: "Raw direction", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Execution direction", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "Побед", render: row => escapeHtml(String(row.wins)) },
+        { label: "Поражений", render: row => escapeHtml(String(row.losses)) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+      ], directionPairs, { emptyText: "Исходов пока нет." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">По типу бота</div>
+      ${buildModalTable([
+        { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
+        { label: "Raw direction", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Execution direction", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "Побед", render: row => escapeHtml(String(row.wins)) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+      ], byBot, { emptyText: "Нет агрегированных данных по bot_type." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">По символу (топ 30)</div>
+      ${buildModalTable([
+        { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
+        { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
+        { label: "Raw direction", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Execution direction", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+      ], bySymbol, { emptyText: "Нет данных по символам." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Журнал исходов (последние 80)</div>
+      ${buildModalTable([
+        { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
+        { label: "Площадка", render: row => escapeHtml(venueLabel(row.venue)) },
+        { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
+        { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
+        { label: "Raw", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Exec", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Исход", render: row => renderOutcomeResult(row.success) },
+        { label: "Ret", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
+        { label: "Горизонт", render: row => escapeHtml(formatAgeHuman(row.horizon_sec)) },
+        { label: "rec_id", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
+      ], recent, { emptyText: "Исходов пока нет. Данные появятся после созревания label horizon." })}
+    </div>
+  `;
 
-  if ((data.by_symbol || []).length > 0) {
-    lines.push("── По символу (топ 30) ──");
-    lines.push(["Символ", "Бот", "Всего", "WR%", "Avg ret%"].join(" | "));
-    (data.by_symbol || []).slice(0, 30).forEach(r => {
-      lines.push([
-        r.symbol.padEnd(12),
-        r.bot_type.padEnd(20),
-        String(r.total).padStart(5),
-        (r.win_rate*100).toFixed(1).padStart(5)+"%",
-        (r.avg_ret >= 0 ? "+" : "") + r.avg_ret.toFixed(2)+"%",
-      ].join(" | "));
-    });
-  }
-
-  if (s.total === 0) {
-    lines.push("Исходов пока нет. Данные появятся через ~15 мин после первых рекомендаций.");
-  }
-
-  showModal("Экран исходов (win-rate)", lines.join("\n"));
+  showModalHtml("Экран исходов / Журнал исходов", html);
 }
 
 async function loadDecisions() {

@@ -416,3 +416,167 @@ def test_extreme_funding_block_is_symmetric_for_the_paying_side():
     short_paying_block = _extreme_funding_block("short", fr_sig, short_paying_cost)
     assert short_paying_block is not None
     assert short_paying_block["code"] == "FUNDING_EXTREME"
+
+
+def _reco_row(*, rec_id: str, ts: int, venue: str, symbol: str, bot_type: str, direction: str, reasons: dict | None = None):
+    return {
+        "rec_id": rec_id,
+        "ts": ts,
+        "venue": venue,
+        "symbol": symbol,
+        "bot_type": bot_type,
+        "direction": direction,
+        "account_mode": "demo",
+        "margin_mode": "cash" if venue == "spot" else "isolated",
+        "score": 0.42,
+        "confidence": 0.61,
+        "expected_rr": 1.4,
+        "risk_score": 0.2,
+        "params": {"grid_levels": 8, "grid_spacing_pct": 0.9, "price_range_lower": 95.0, "price_range_upper": 105.0},
+        "reasons": reasons or {},
+        "blocks": [],
+        "status": "recommended",
+        "ttl_sec": 900,
+        "model_version": "test",
+        "features_ref_ts": ts,
+    }
+
+
+def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
+    now = int(time.time())
+    db.insert_recommendations(conn, [
+        _reco_row(
+            rec_id="R-neutralized",
+            ts=now - 200,
+            venue="spot",
+            symbol="ETHUSDT",
+            bot_type="spot_grid",
+            direction="neutral",
+            reasons={
+                "execution_constraints": {
+                    "raw_direction": "short",
+                    "executable_direction": "neutral",
+                }
+            },
+        ),
+        _reco_row(
+            rec_id="R-true-neutral",
+            ts=now - 180,
+            venue="spot",
+            symbol="BTCUSDT",
+            bot_type="spot_grid",
+            direction="neutral",
+            reasons={
+                "execution_constraints": {
+                    "raw_direction": "neutral",
+                    "executable_direction": "neutral",
+                }
+            },
+        ),
+        _reco_row(
+            rec_id="R-futures-long",
+            ts=now - 160,
+            venue="linear",
+            symbol="SOLUSDT",
+            bot_type="futures_grid",
+            direction="long",
+            reasons={
+                "execution_constraints": {
+                    "raw_direction": "long",
+                    "executable_direction": "long",
+                }
+            },
+        ),
+    ])
+
+    db.insert_outcome(conn, {
+        "rec_id": "R-neutralized",
+        "ts": now - 200,
+        "venue": "spot",
+        "symbol": "ETHUSDT",
+        "bot_type": "spot_grid",
+        "direction": "neutral",
+        "horizon_sec": 3600,
+        "entry_close": 100.0,
+        "exit_close": 99.5,
+        "ret": -0.012,
+        "success": 0,
+    })
+    db.insert_outcome(conn, {
+        "rec_id": "R-true-neutral",
+        "ts": now - 180,
+        "venue": "spot",
+        "symbol": "BTCUSDT",
+        "bot_type": "spot_grid",
+        "direction": "neutral",
+        "horizon_sec": 3600,
+        "entry_close": 100.0,
+        "exit_close": 100.6,
+        "ret": 0.008,
+        "success": 1,
+    })
+    db.insert_outcome(conn, {
+        "rec_id": "R-futures-long",
+        "ts": now - 160,
+        "venue": "linear",
+        "symbol": "SOLUSDT",
+        "bot_type": "futures_grid",
+        "direction": "long",
+        "horizon_sec": 3600,
+        "entry_close": 100.0,
+        "exit_close": 101.0,
+        "ret": 0.015,
+        "success": 1,
+    })
+
+    stats = db.get_outcomes_stats(conn)
+
+    assert stats["summary"]["total"] == 3
+    assert stats["summary"]["true_neutral_total"] == 1
+    assert stats["summary"]["spot_short_neutralized_total"] == 1
+
+    pair_map = {
+        (row["raw_direction"], row["execution_direction"], row["neutral_source"]): row
+        for row in stats["direction_pairs"]
+    }
+    assert pair_map[("short", "neutral", "spot_short_neutralized")]["total"] == 1
+    assert pair_map[("neutral", "neutral", "true_neutral")]["total"] == 1
+    assert pair_map[("long", "long", "")]["total"] == 1
+
+    by_bot_map = {
+        (row["bot_type"], row["raw_direction"], row["execution_direction"]): row
+        for row in stats["by_bot"]
+    }
+    assert by_bot_map[("spot_grid", "short", "neutral")]["total"] == 1
+    assert by_bot_map[("spot_grid", "neutral", "neutral")]["wins"] == 1
+    assert by_bot_map[("futures_grid", "long", "long")]["wins"] == 1
+
+    recent_map = {row["rec_id"]: row for row in stats["recent"]}
+    assert recent_map["R-neutralized"]["raw_direction"] == "short"
+    assert recent_map["R-neutralized"]["execution_direction"] == "neutral"
+    assert recent_map["R-neutralized"]["neutral_source"] == "spot_short_neutralized"
+
+
+def test_outcomes_stats_fallback_to_outcome_direction_when_recommendation_missing(conn):
+    now = int(time.time())
+    db.insert_outcome(conn, {
+        "rec_id": "R-missing-rec",
+        "ts": now - 100,
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "bot_type": "futures_grid",
+        "direction": "short",
+        "horizon_sec": 1800,
+        "entry_close": 100.0,
+        "exit_close": 99.0,
+        "ret": 0.01,
+        "success": 1,
+    })
+
+    stats = db.get_outcomes_stats(conn)
+    assert stats["summary"]["total"] == 1
+    assert stats["summary"]["wins"] == 1
+    assert stats["direction_pairs"][0]["raw_direction"] == "short"
+    assert stats["direction_pairs"][0]["execution_direction"] == "short"
+    assert stats["recent"][0]["raw_direction"] == "short"
+    assert stats["recent"][0]["execution_direction"] == "short"
