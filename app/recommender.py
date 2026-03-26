@@ -626,6 +626,7 @@ def _params(
 
     atr_pct = float(atr_pct_for_grid or f.get("atr_pct") or 0.0)
     atr_pct = max(atr_pct, 0.0015)
+    agg = dict(f.get("_direction_agg") or {})
     range_score, _ = _stable_range_score(f, agg)
     dir_strength = _clamp(abs(float(direction_bias_strength or 0.0)), 0.0, 1.0)
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
+import math
 import time
 from pathlib import Path
 
@@ -11,11 +11,14 @@ from app import db
 from app.outcomes import _get_first_tradeable_candle_after
 from app.recommender import (
     _estimate_cost_model,
+    _params,
     _score,
     _stable_range_score,
     _stabilize_direction_agg,
     PERSISTENCE_BOTS,
+    run_recommender_once,
 )
+from app.settings import Settings
 from app.risk import compute_risk_status, gate_candidate
 from app.shock_guard import _stabilize_market_shock, _stabilize_fast_veto
 
@@ -260,3 +263,127 @@ def test_fast_veto_release_uses_cooldown():
     assert stable["state"] == "down_break"
     assert stable["stabilization"]["applied"] is True
     assert stable["blocks"][0]["code"] == "FAST_VETO_RELEASE_COOLDOWN"
+
+
+
+def _seed_ohlcv_wave(conn, *, venue: str, symbol: str, now_ts: int, tf_sec: int, n: int, base_price: float) -> None:
+    rows = []
+    start_ts = now_ts - tf_sec * (n + 2)
+    for i in range(n):
+        ts = start_ts + i * tf_sec
+        mid = base_price * (1.0 + 0.0020 * math.sin(i / 8.0) + 0.0005 * math.sin(i / 3.0))
+        open_px = mid * (1.0 + 0.0002 * math.sin(i))
+        close_px = mid * (1.0 + 0.0002 * math.cos(i))
+        high_px = max(open_px, close_px) * 1.0015
+        low_px = min(open_px, close_px) * 0.9985
+        rows.append({
+            "venue": venue,
+            "symbol": symbol,
+            "tf_sec": tf_sec,
+            "ts": ts,
+            "open": open_px,
+            "high": high_px,
+            "low": low_px,
+            "close": close_px,
+            "volume": 1000.0 + i,
+        })
+    db.upsert_ohlcv(conn, rows)
+
+
+
+def test_params_uses_direction_aggregate_range_score_without_name_error():
+    f = {
+        "price": 50_000.0,
+        "atr_pct": 0.008,
+        "range_score": 0.18,
+        "trend_strength": 0.70,
+        "_direction_agg": {
+            "direction": "neutral",
+            "trendiness": 0.12,
+            "coherence": 0.72,
+            "regime": "range",
+            "regime_confidence": 0.74,
+            "strength": {"all": 0.08},
+        },
+    }
+
+    params = _params(
+        "futures_grid",
+        "linear",
+        f,
+        global_sent=0.0,
+        direction="neutral",
+        taker_fee_bps=6.0,
+        direction_bias="neutral",
+        direction_bias_strength=0.08,
+        atr_pct_for_grid=0.008,
+        cost_model={"execution_cost_bps": 6.0, "total_cost_bps": 6.0, "net_cost_bps": 6.0},
+    )
+
+    assert params["grid_levels"] >= 10
+    assert params["price_range_upper"] > params["price_range_lower"]
+    assert params["grid_spacing_pct"] > 0.0
+
+
+
+def test_run_recommender_once_smoke_generates_recommendations_without_runtime_name_error(conn):
+    now = int(time.time())
+    symbol = "BTCUSDT"
+    venue = "linear"
+    base_price = 50_000.0
+
+    for tf_sec, n in ((60, 220), (900, 120), (1800, 120), (3600, 120), (14_400, 100), (86_400, 100)):
+        _seed_ohlcv_wave(conn, venue=venue, symbol=symbol, now_ts=now, tf_sec=tf_sec, n=n, base_price=base_price)
+
+    db.insert_tickers(conn, [{
+        "venue": venue,
+        "symbol": symbol,
+        "ts": now,
+        "last": base_price,
+        "bid": base_price - 5.0,
+        "ask": base_price + 5.0,
+        "vol24h": 12_345.0,
+        "turnover24h": 5_000_000.0,
+    }])
+    db.upsert_funding_rate(conn, [{
+        "symbol": symbol,
+        "ts": now,
+        "funding_rate": 0.0001,
+        "next_funding_ts": now + 4 * 3600,
+    }])
+
+    settings = Settings(
+        outcome_horizon_fallback_sec=6 * 3600,
+        calib_min_samples=80,
+        db_path=":memory:",
+        bybit_base_url="https://api.bybit.com",
+        collect_interval_sec=20,
+        stale_data_max_sec=3600,
+        reco_interval_sec=20,
+        top_n=20,
+        venues=[venue],
+        symbols_spot=[],
+        symbols_linear=[symbol],
+        risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
+        min_score_to_recommend=0.08,
+        min_conf_to_recommend=0.52,
+        taker_fee_bps_spot=10.0,
+        taker_fee_bps_linear=6.0,
+        master_key=None,
+        admin_api_key=None,
+        sentiment_interval_sec=60,
+        futures_collect_interval_sec=900,
+        telegram_token=None,
+        telegram_chat_id=None,
+        require_conf_gate=True,
+    )
+
+    result = run_recommender_once(conn, settings)
+
+    assert result["count"] >= 1
+    assert result["count_recommended"] + result["count_blocked"] + result["count_no_trade"] + result["count_suppressed"] == result["count"]
+    rows = conn.execute("SELECT rec_id, status, params_json FROM recommendations ORDER BY ts DESC").fetchall()
+    assert rows
+    params = json.loads(rows[0]["params_json"])
+    assert params["price_range_upper"] > params["price_range_lower"]
+    assert params["grid_levels"] >= 4
