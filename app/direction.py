@@ -237,9 +237,25 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
     else:
         bias = "neutral"
 
-    # Default neutral if weak signal or range regime
-    if strength_all < 0.12 or regime == "range":
+    # Direction policy:
+    # - weak aggregate stays neutral;
+    # - clear trend regime can publish a directional thesis immediately;
+    # - coherent range regime may also publish a *range-biased* directional thesis
+    #   when both tactical and structural TFs point the same way strongly enough.
+    range_biased = False
+    range_bias_direction = "neutral"
+    if regime == "range" and all_sign != 0 and struct_sign == all_sign:
+        # Requirements are intentionally stricter than for ordinary trend-following
+        # direction: directional range is only allowed when the bias is visible on
+        # both tactical and structural TFs and the multi-TF stack is coherent.
+        if strength_all >= 0.15 and strength_struct >= 0.10 and coherence >= 0.62:
+            range_biased = True
+            range_bias_direction = "long" if all_sign > 0 else "short"
+
+    if strength_all < 0.12:
         direction = "neutral"
+    elif regime == "range":
+        direction = range_bias_direction if range_biased else "neutral"
     else:
         direction = "long" if s_all > 0 else "short"
 
@@ -287,6 +303,11 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
     return {
         "direction": direction,                    # long/short/neutral
         "bias": bias,                              # long/short
+        "direction_mode": (
+            "range_biased" if range_biased and direction in ("long", "short") else (
+                "trend_following" if direction in ("long", "short") else "neutral"
+            )
+        ),
         "direction_confidence": direction_confidence,
         "scores": {"tactical": s_tactical, "structural": s_structural, "all": s_all},
         "strength": {"tactical": strength_tact, "structural": strength_struct, "all": strength_all},

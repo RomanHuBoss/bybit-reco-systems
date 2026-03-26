@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app import db
+from app.direction import aggregate_direction
 from app.outcomes import _get_first_tradeable_candle_after
 from app.recommender import (
     _estimate_cost_model,
@@ -242,6 +243,61 @@ def test_direction_hysteresis_holds_previous_direction_on_weak_flip():
     assert state["direction"] == "long"
 
 
+def test_aggregate_direction_allows_coherent_range_biased_long_signal():
+    tf_map = {
+        15 * 60: {"score": 0.18, "trend_strength": 0.12},
+        30 * 60: {"score": 0.16, "trend_strength": 0.14},
+        60 * 60: {"score": 0.19, "trend_strength": 0.16},
+        4 * 60 * 60: {"score": 0.17, "trend_strength": 0.15},
+        24 * 60 * 60: {"score": 0.15, "trend_strength": 0.14},
+    }
+
+    agg = aggregate_direction(tf_map)
+
+    assert agg["regime"] == "range"
+    assert agg["bias"] == "long"
+    assert agg["direction"] == "long"
+    assert agg["direction_mode"] == "range_biased"
+
+
+def test_aggregate_direction_allows_coherent_range_biased_short_signal():
+    tf_map = {
+        15 * 60: {"score": -0.18, "trend_strength": 0.12},
+        30 * 60: {"score": -0.16, "trend_strength": 0.14},
+        60 * 60: {"score": -0.19, "trend_strength": 0.16},
+        4 * 60 * 60: {"score": -0.17, "trend_strength": 0.15},
+        24 * 60 * 60: {"score": -0.15, "trend_strength": 0.14},
+    }
+
+    agg = aggregate_direction(tf_map)
+
+    assert agg["regime"] == "range"
+    assert agg["bias"] == "short"
+    assert agg["direction"] == "short"
+    assert agg["direction_mode"] == "range_biased"
+
+
+def test_stabilize_direction_preserves_strong_range_biased_short_signal():
+    agg = {
+        "direction": "short",
+        "bias": "short",
+        "scores": {"all": -0.17, "tactical": -0.18, "structural": -0.15},
+        "strength": {"all": 0.17, "tactical": 0.18, "structural": 0.15},
+        "trendiness": 0.14,
+        "coherence": 0.86,
+        "regime": "range",
+        "regime_confidence": 0.68,
+        "direction_mode": "range_biased",
+    }
+
+    stable, state = _stabilize_direction_agg(agg, prev_state=None, now_ts=1_700_000_000, fresh_gap=120)
+
+    assert stable["raw_direction"] == "short"
+    assert stable["direction"] == "short"
+    assert stable["direction_stability"]["directional_range_allowed"] is True
+    assert state["direction"] == "short"
+
+
 def test_market_shock_release_uses_cooldown():
     prev = {"ts": 1_700_000_000, "state": "red_down", "severity": "lockdown", "bias": "down"}
     raw = {"ts": 1_700_000_060, "state": "normal", "severity": "normal", "bias": "neutral", "reasons": []}
@@ -277,6 +333,33 @@ def _seed_ohlcv_wave(conn, *, venue: str, symbol: str, now_ts: int, tf_sec: int,
         close_px = mid * (1.0 + 0.0002 * math.cos(i))
         high_px = max(open_px, close_px) * 1.0015
         low_px = min(open_px, close_px) * 0.9985
+        rows.append({
+            "venue": venue,
+            "symbol": symbol,
+            "tf_sec": tf_sec,
+            "ts": ts,
+            "open": open_px,
+            "high": high_px,
+            "low": low_px,
+            "close": close_px,
+            "volume": 1000.0 + i,
+        })
+    db.upsert_ohlcv(conn, rows)
+
+
+def _seed_ohlcv_bullish_range(conn, *, venue: str, symbol: str, now_ts: int, tf_sec: int, n: int, base_price: float) -> None:
+    rows = []
+    start_ts = now_ts - tf_sec * (n + 2)
+    for i in range(n):
+        ts = start_ts + i * tf_sec
+        drift = 0.00002 * i
+        cyc = 0.0020 * math.sin(i / 8.0)
+        cyc2 = 0.0007 * math.sin(i / 2.7)
+        mid = base_price * (1.0 + drift + cyc + cyc2)
+        open_px = mid * (1.0 + 0.00025 * math.sin(i / 3.0))
+        close_px = mid * (1.0 + 0.00025 * math.cos(i / 4.0))
+        high_px = max(open_px, close_px) * 1.0013
+        low_px = min(open_px, close_px) * 0.9987
         rows.append({
             "venue": venue,
             "symbol": symbol,
@@ -388,6 +471,81 @@ def test_run_recommender_once_smoke_generates_recommendations_without_runtime_na
     params = json.loads(rows[0]["params_json"])
     assert params["price_range_upper"] > params["price_range_lower"]
     assert params["grid_levels"] >= 4
+
+
+def test_run_recommender_once_emits_long_for_bullish_range_market(conn):
+    now = int(time.time())
+    symbol = "BTCUSDT"
+    base_price = 50_000.0
+
+    for venue in ("spot", "linear"):
+        for tf_sec, n in ((60, 220), (900, 120), (1800, 120), (3600, 120), (14_400, 100), (86_400, 100)):
+            _seed_ohlcv_bullish_range(conn, venue=venue, symbol=symbol, now_ts=now, tf_sec=tf_sec, n=n, base_price=base_price)
+        db.insert_tickers(conn, [{
+            "venue": venue,
+            "symbol": symbol,
+            "ts": now,
+            "last": base_price,
+            "bid": base_price - 5.0,
+            "ask": base_price + 5.0,
+            "vol24h": 12_345.0,
+            "turnover24h": 5_000_000.0,
+        }])
+
+    db.upsert_funding_rate(conn, [{
+        "symbol": symbol,
+        "ts": now,
+        "funding_rate": 0.0001,
+        "next_funding_ts": now + 4 * 3600,
+    }])
+
+    settings = Settings(
+        outcome_horizon_fallback_sec=6 * 3600,
+        calib_min_samples=80,
+        db_path=":memory:",
+        bybit_base_url="https://api.bybit.com",
+        collect_interval_sec=20,
+        stale_data_max_sec=3600,
+        reco_interval_sec=20,
+        top_n=20,
+        venues=["spot", "linear"],
+        symbols_spot=[symbol],
+        symbols_linear=[symbol],
+        risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
+        min_score_to_recommend=0.08,
+        min_conf_to_recommend=0.52,
+        taker_fee_bps_spot=10.0,
+        taker_fee_bps_linear=6.0,
+        master_key=None,
+        admin_api_key=None,
+        sentiment_interval_sec=60,
+        futures_collect_interval_sec=900,
+        telegram_token=None,
+        telegram_chat_id=None,
+        require_conf_gate=False,
+    )
+
+    result = run_recommender_once(conn, settings)
+
+    assert result["count"] >= 2
+    rows = conn.execute(
+        "SELECT venue, bot_type, direction, reasons_json FROM recommendations ORDER BY venue, bot_type"
+    ).fetchall()
+    assert rows
+    by_key = {(row["venue"], row["bot_type"]): row for row in rows}
+
+    spot_row = by_key[("spot", "spot_grid")]
+    spot_reasons = json.loads(spot_row["reasons_json"])
+    assert spot_row["direction"] == "long"
+    assert spot_reasons["direction_agg"]["direction"] == "long"
+    assert spot_reasons["direction_agg"]["regime"] == "range"
+    assert spot_reasons["direction_agg"]["direction_mode"] == "range_biased"
+
+    fut_row = by_key[("linear", "futures_grid")]
+    fut_reasons = json.loads(fut_row["reasons_json"])
+    assert fut_row["direction"] == "long"
+    assert fut_reasons["direction_agg"]["direction"] == "long"
+    assert fut_reasons["direction_agg"]["direction_mode"] == "range_biased"
 
 
 def test_extreme_funding_block_is_symmetric_for_the_paying_side():

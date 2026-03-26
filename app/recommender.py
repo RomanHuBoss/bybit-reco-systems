@@ -869,6 +869,9 @@ def _stabilize_direction_agg(
     exit_thr = 0.09
     flip_thr = 0.18
     trend_enter_thr = 0.28
+    range_dir_score_thr = 0.15
+    range_dir_strength_thr = 0.14
+    range_dir_coh_thr = 0.62
 
     stable["raw_direction"] = raw_direction
     stable["raw_bias"] = raw_bias
@@ -882,13 +885,22 @@ def _stabilize_direction_agg(
     mode = "pass_through"
     note = None
 
-    if raw_direction in ("long", "short") and (abs(score_all) < enter_thr or trendiness < trend_enter_thr):
+    directional_range_ok = (
+        regime == "range"
+        and raw_direction in ("long", "short")
+        and raw_bias == raw_direction
+        and abs(score_all) >= range_dir_score_thr
+        and strength_all >= range_dir_strength_thr
+        and coherence >= range_dir_coh_thr
+    )
+
+    if raw_direction in ("long", "short") and not directional_range_ok and (abs(score_all) < enter_thr or trendiness < trend_enter_thr):
         stable["direction"] = "neutral"
         applied = True
         mode = "enter_deadband"
         note = "Directional thesis is not strong enough to leave neutral state yet."
 
-    if regime == "range" and abs(score_all) < flip_thr:
+    if regime == "range" and not directional_range_ok and abs(score_all) < flip_thr:
         stable["direction"] = "neutral"
         if raw_direction != "neutral":
             applied = True
@@ -923,6 +935,10 @@ def _stabilize_direction_agg(
         "enter_threshold": float(enter_thr),
         "exit_threshold": float(exit_thr),
         "flip_threshold": float(flip_thr),
+        "range_direction_score_threshold": float(range_dir_score_thr),
+        "range_direction_strength_threshold": float(range_dir_strength_thr),
+        "range_direction_coherence_threshold": float(range_dir_coh_thr),
+        "directional_range_allowed": bool(directional_range_ok),
     }
 
     state_out = {
