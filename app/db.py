@@ -798,17 +798,64 @@ def _normalize_direction(direction: Any, fallback: str = "neutral") -> str:
     return value if value in ("long", "short", "neutral") else fallback
 
 
-def _extract_outcome_directions(outcome_direction: Any, reco_direction: Any, reasons_json: str | None) -> dict[str, Any]:
-    raw_direction = None
-    execution_direction = None
-
+def _parse_reasons_json(reasons_json: str | None) -> dict[str, Any]:
     try:
         reasons = json.loads(reasons_json) if reasons_json else {}
     except Exception:
         reasons = {}
+    return reasons if isinstance(reasons, dict) else {}
 
-    if not isinstance(reasons, dict):
-        reasons = {}
+
+
+def _extract_llm_review_snapshot(reasons_json: str | None) -> dict[str, Any] | None:
+    reasons = _parse_reasons_json(reasons_json)
+    llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else None
+    if not isinstance(llm_review, dict):
+        return None
+
+    agree = llm_review.get("agree_with_engine")
+    if isinstance(agree, str):
+        agree = agree.strip().lower() in {"1", "true", "yes", "y"}
+    elif not isinstance(agree, bool):
+        agree = None
+
+    confidence_raw = llm_review.get("confidence")
+    try:
+        confidence = float(confidence_raw) if confidence_raw is not None else None
+    except Exception:
+        confidence = None
+
+    risk_flags_raw = llm_review.get("risk_flags")
+    if isinstance(risk_flags_raw, list):
+        risk_flags = [str(x) for x in risk_flags_raw[:8]]
+    elif isinstance(risk_flags_raw, str) and risk_flags_raw.strip():
+        risk_flags = [risk_flags_raw.strip()]
+    else:
+        risk_flags = []
+
+    return {
+        "status": str(llm_review.get("status") or "unknown"),
+        "provider": llm_review.get("provider"),
+        "model": llm_review.get("model"),
+        "mode": llm_review.get("mode"),
+        "gate_decision": llm_review.get("gate_decision"),
+        "agree_with_engine": agree,
+        "confidence": confidence,
+        "thesis_direction": _normalize_direction(llm_review.get("thesis_direction"), fallback="neutral"),
+        "execution_direction": _normalize_direction(llm_review.get("execution_direction"), fallback="neutral"),
+        "regime_view": str(llm_review.get("regime_view") or "unknown"),
+        "summary": llm_review.get("summary"),
+        "error": llm_review.get("error"),
+        "risk_flags": risk_flags,
+    }
+
+
+
+def _extract_outcome_directions(outcome_direction: Any, reco_direction: Any, reasons_json: str | None) -> dict[str, Any]:
+    raw_direction = None
+    execution_direction = None
+
+    reasons = _parse_reasons_json(reasons_json)
 
     execution_constraints = reasons.get("execution_constraints") if isinstance(reasons.get("execution_constraints"), dict) else {}
     direction_agg = reasons.get("direction_agg") if isinstance(reasons.get("direction_agg"), dict) else {}
@@ -890,6 +937,7 @@ def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200) -> 
     out: list[dict[str, Any]] = []
     for row in cur.fetchall():
         dirs = _extract_outcome_directions(row["direction"], row["reco_direction"], row["reasons_json"])
+        llm_review = _extract_llm_review_snapshot(row["reasons_json"])
         out.append({
             "rec_id": row["rec_id"],
             "ts": int(row["ts"]),
@@ -909,6 +957,7 @@ def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200) -> 
             "score": float(row["score"]) if row["score"] is not None else None,
             "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
             "expected_rr": float(row["expected_rr"]) if row["expected_rr"] is not None else None,
+            "llm_review": llm_review,
         })
     return out
 
@@ -939,9 +988,19 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
     by_raw_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_execution_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_pair_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_llm_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
 
     true_neutral_total = 0
     spot_short_neutralized_total = 0
+    llm_summary = {
+        "present_total": 0,
+        "ok_total": 0,
+        "agree_total": 0,
+        "disagree_total": 0,
+        "error_total": 0,
+        "skipped_total": 0,
+        "veto_total": 0,
+    }
 
     rows = cur.fetchall()
     for row in rows:
@@ -951,11 +1010,39 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
         neutral_source = dirs["neutral_source"]
         success = int(row["success"] or 0)
         ret = float(row["ret"] or 0.0)
+        llm_review = _extract_llm_review_snapshot(row["reasons_json"])
 
         if neutral_source == "true_neutral":
             true_neutral_total += 1
         elif neutral_source == "spot_short_neutralized":
             spot_short_neutralized_total += 1
+
+        if llm_review:
+            llm_summary["present_total"] += 1
+            llm_status = str(llm_review.get("status") or "unknown")
+            llm_agree = llm_review.get("agree_with_engine")
+            llm_gate = str(llm_review.get("gate_decision") or "")
+            if llm_status == "ok":
+                llm_summary["ok_total"] += 1
+                if llm_agree is True:
+                    llm_summary["agree_total"] += 1
+                elif llm_agree is False:
+                    llm_summary["disagree_total"] += 1
+            elif llm_status == "error":
+                llm_summary["error_total"] += 1
+            elif llm_status == "skipped":
+                llm_summary["skipped_total"] += 1
+            if llm_gate == "veto":
+                llm_summary["veto_total"] += 1
+
+            llm_bucket_key = (
+                llm_status,
+                _normalize_direction(llm_review.get("execution_direction"), fallback="neutral"),
+                "agree" if llm_agree is True else "disagree" if llm_agree is False else "unknown",
+                llm_gate or "pass",
+            )
+            stat = by_llm_bucket.setdefault(llm_bucket_key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
+            _accumulate_stat(stat, success, ret)
 
         _accumulate_stat(summary_bucket, success, ret)
 
@@ -1007,14 +1094,21 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
         ["raw_direction", "execution_direction", "neutral_source"],
         sort_key=lambda row: (-row["total"], row["raw_direction"], row["execution_direction"], row.get("neutral_source") or ""),
     )
+    llm_alignment = _materialize_stat_rows(
+        by_llm_bucket,
+        ["llm_status", "llm_execution_direction", "llm_alignment", "llm_gate_decision"],
+        sort_key=lambda row: (-row["total"], row["llm_status"], row["llm_execution_direction"], row["llm_alignment"], row["llm_gate_decision"]),
+    )
 
     return {
         "summary": summary,
+        "llm_summary": llm_summary,
         "by_bot": by_bot,
         "by_symbol": by_symbol,
         "by_raw_direction": by_raw_direction,
         "by_execution_direction": by_execution_direction,
         "direction_pairs": direction_pairs,
+        "llm_alignment": llm_alignment,
         "recent": get_outcomes_recent_enriched(conn, limit=120),
     }
 

@@ -954,7 +954,21 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
                 "execution_constraints": {
                     "raw_direction": "short",
                     "executable_direction": "neutral",
-                }
+                },
+                "llm_review": {
+                    "status": "ok",
+                    "provider": "ollama",
+                    "model": "qwen3:8b",
+                    "mode": "advisory",
+                    "gate_decision": "pass",
+                    "agree_with_engine": True,
+                    "confidence": 0.71,
+                    "thesis_direction": "short",
+                    "execution_direction": "neutral",
+                    "regime_view": "bearish_range",
+                    "risk_flags": ["carry_risk"],
+                    "summary": "spot short neutralized",
+                },
             },
         ),
         _reco_row(
@@ -968,7 +982,22 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
                 "execution_constraints": {
                     "raw_direction": "neutral",
                     "executable_direction": "neutral",
-                }
+                },
+                "llm_review": {
+                    "status": "error",
+                    "provider": "ollama",
+                    "model": "qwen3:8b",
+                    "mode": "advisory",
+                    "gate_decision": "pass",
+                    "agree_with_engine": None,
+                    "confidence": 0.0,
+                    "thesis_direction": "neutral",
+                    "execution_direction": "neutral",
+                    "regime_view": "flat",
+                    "risk_flags": [],
+                    "summary": None,
+                    "error": "timeout",
+                },
             },
         ),
         _reco_row(
@@ -982,7 +1011,21 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
                 "execution_constraints": {
                     "raw_direction": "long",
                     "executable_direction": "long",
-                }
+                },
+                "llm_review": {
+                    "status": "ok",
+                    "provider": "ollama",
+                    "model": "qwen3:8b",
+                    "mode": "gate",
+                    "gate_decision": "veto",
+                    "agree_with_engine": False,
+                    "confidence": 0.82,
+                    "thesis_direction": "short",
+                    "execution_direction": "short",
+                    "regime_view": "bearish_range",
+                    "risk_flags": ["late_breakout_risk"],
+                    "summary": "llm disagrees with engine",
+                },
             },
         ),
     ])
@@ -1032,6 +1075,12 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
     assert stats["summary"]["total"] == 3
     assert stats["summary"]["true_neutral_total"] == 1
     assert stats["summary"]["spot_short_neutralized_total"] == 1
+    assert stats["llm_summary"]["present_total"] == 3
+    assert stats["llm_summary"]["ok_total"] == 2
+    assert stats["llm_summary"]["agree_total"] == 1
+    assert stats["llm_summary"]["disagree_total"] == 1
+    assert stats["llm_summary"]["error_total"] == 1
+    assert stats["llm_summary"]["veto_total"] == 1
 
     pair_map = {
         (row["raw_direction"], row["execution_direction"], row["neutral_source"]): row
@@ -1049,10 +1098,21 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
     assert by_bot_map[("spot_grid", "neutral", "neutral")]["wins"] == 1
     assert by_bot_map[("futures_grid", "long", "long")]["wins"] == 1
 
+    llm_map = {
+        (row["llm_status"], row["llm_execution_direction"], row["llm_alignment"], row["llm_gate_decision"]): row
+        for row in stats["llm_alignment"]
+    }
+    assert llm_map[("ok", "neutral", "agree", "pass")]["total"] == 1
+    assert llm_map[("ok", "short", "disagree", "veto")]["total"] == 1
+    assert llm_map[("error", "neutral", "unknown", "pass")]["total"] == 1
+
     recent_map = {row["rec_id"]: row for row in stats["recent"]}
     assert recent_map["R-neutralized"]["raw_direction"] == "short"
     assert recent_map["R-neutralized"]["execution_direction"] == "neutral"
     assert recent_map["R-neutralized"]["neutral_source"] == "spot_short_neutralized"
+    assert recent_map["R-neutralized"]["llm_review"]["status"] == "ok"
+    assert recent_map["R-neutralized"]["llm_review"]["agree_with_engine"] is True
+    assert recent_map["R-futures-long"]["llm_review"]["gate_decision"] == "veto"
 
 
 def test_outcomes_stats_fallback_to_outcome_direction_when_recommendation_missing(conn):

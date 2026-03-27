@@ -5,3 +5,4 @@ __pycache__
 /data/app.db-wal
 /data/app.db-shm
 /data/app.db
+/tmp_smoke.db

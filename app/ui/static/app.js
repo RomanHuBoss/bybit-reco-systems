@@ -550,6 +550,7 @@ function buildDetailsHtml(it) {
   const btcBeta = reasons.btc_beta || {};
   const btcMetric = btcRelationMetric(btcBeta, it.symbol);
   const scoreUi = it.ui_score_meta || ensureUiScoreMeta(it);
+  const llmReview = reasons.llm_review || null;
   const blocks = it.blocks || [];
   const ov = buildOperatorValues(it);
   const operatorFields = buildOperatorFieldSpecs(it, ov);
@@ -638,6 +639,8 @@ function buildDetailsHtml(it) {
           <button class="ghost-chip" data-act="show-tech">Техподробности</button>
         </div>
       </div>
+
+      ${buildLlmReviewCardHtml(llmReview, it.direction)}
 
       <div class="operator-card">
         <h3>Блоки и предостережения</h3>
@@ -865,6 +868,84 @@ function renderNeutralSourceTag(source) {
     return `<span class="neutral-note neutral-note-true">true neutral</span>`;
   }
   return `<span class="neutral-note">${escapeHtml(source)}</span>`;
+}
+
+function renderLlmStatusBadge(status) {
+  const value = String(status || "unknown").toLowerCase();
+  let cls = "llm-badge llm-badge-neutral";
+  if (value === "ok") cls = "llm-badge llm-badge-ok";
+  else if (value === "error") cls = "llm-badge llm-badge-error";
+  else if (value === "skipped") cls = "llm-badge llm-badge-skipped";
+  return `<span class="${cls}">${escapeHtml(value)}</span>`;
+}
+
+function renderAgreementBadge(agree) {
+  if (agree === true) return '<span class="llm-badge llm-badge-agree">совпадает</span>';
+  if (agree === false) return '<span class="llm-badge llm-badge-disagree">расходится</span>';
+  return '<span class="llm-badge llm-badge-neutral">н/д</span>';
+}
+
+function renderLlmFlagList(flags) {
+  const items = Array.isArray(flags) ? flags.filter(Boolean) : [];
+  if (!items.length) return '<div class="helper-text">Риск-флаги не указаны.</div>';
+  return `<div class="tag-list">${items.map(flag => `<span class="tag-chip">${escapeHtml(flag)}</span>`).join("")}</div>`;
+}
+
+function formatReviewerModel(llm) {
+  if (!llm || typeof llm !== "object") return "—";
+  const provider = String(llm.provider || "").trim();
+  const model = String(llm.model || "").trim();
+  if (provider && model) return `${provider}/${model}`;
+  return provider || model || "—";
+}
+
+function buildLlmReviewCardHtml(llm, engineDirection) {
+  if (!llm || typeof llm !== "object") {
+    return `
+      <div class="operator-card">
+        <h3>LLM reviewer</h3>
+        <div class="helper-text">По этой рекомендации reviewer не запускался или данные ревью недоступны.</div>
+      </div>
+    `;
+  }
+
+  const status = llm.status || "unknown";
+  const confidence = llm.confidence === null || llm.confidence === undefined ? "—" : formatDotNumber(llm.confidence, 2);
+  const mode = llm.mode || "—";
+  const gateDecision = llm.gate_decision || "—";
+  const regimeView = llm.regime_view || "—";
+  const summary = llm.summary || llm.error || "—";
+  const errorLine = llm.error ? `<div class="helper-text llm-error-text">Ошибка reviewer: ${escapeHtml(String(llm.error))}</div>` : "";
+
+  return `
+    <div class="operator-card llm-review-card">
+      <h3>LLM reviewer</h3>
+      <div class="operator-grid">
+        ${fieldBox("Статус", status, null)}
+        ${fieldBox("Провайдер / модель", formatReviewerModel(llm), null)}
+        ${fieldBox("Режим", mode, null)}
+        ${fieldBox("Gate decision", gateDecision, null)}
+        ${fieldBox("Engine direction", directionRu(engineDirection || "neutral"), null)}
+        ${fieldBox("LLM thesis", directionRu(llm.thesis_direction || "neutral"), null)}
+        ${fieldBox("LLM execution", directionRu(llm.execution_direction || "neutral"), null)}
+        ${fieldBox("Совпадение с движком", llm.agree_with_engine === true ? "Да" : llm.agree_with_engine === false ? "Нет" : "Н/Д", null)}
+        ${fieldBox("Уверенность LLM", confidence, null)}
+        ${fieldBox("Regime view", regimeView, null)}
+      </div>
+      <div class="llm-review-row">
+        <div class="llm-review-badges">
+          ${renderLlmStatusBadge(status)}
+          ${renderAgreementBadge(llm.agree_with_engine)}
+          ${renderDirectionBadge(llm.execution_direction || "neutral")}
+        </div>
+        <div class="helper-text">LLM-слой опционален и отображается как second opinion поверх основного движка.</div>
+      </div>
+      <div class="llm-summary-box">${escapeHtml(summary)}</div>
+      ${errorLine}
+      <div class="modal-section-title" style="margin-top:10px">Risk flags</div>
+      ${renderLlmFlagList(llm.risk_flags)}
+    </div>
+  `;
 }
 
 function renderHealthStatus(status) {
@@ -1176,6 +1257,10 @@ async function loadHealth() {
   try { data = await res.json(); } catch (e) { return; }
 
   const sum = data.summary || {};
+  const llm = data.llm_reviewer || {};
+  const llmTfText = Array.isArray(llm.tf_secs) && llm.tf_secs.length
+    ? llm.tf_secs.map(tf => tf >= 3600 ? `${Math.round(tf / 3600)}h` : `${Math.round(tf / 60)}m`).join(", ")
+    : "—";
   const symbols = [...(data.symbols || [])].sort((a, b) => {
     const rank = { missing: 0, stale: 1, ok: 2 };
     const ra = rank[a.status] ?? 9;
@@ -1192,8 +1277,25 @@ async function loadHealth() {
       { label: "Stale", value: Number(sum.stale || 0) },
       { label: "Missing", value: Number(sum.missing || 0) },
       { label: "Ошибки / 10 мин", value: Number(sum.errors_10m || 0) },
+      { label: "LLM reviewer", html: renderLlmStatusBadge(llm.enabled ? (llm.mode || "enabled") : "disabled") },
+      { label: "Модель", value: llm.model || "—" },
     ])}
     <p class="modal-note">Возраст считается по последней 1m-свече. Таблица отсортирована так, чтобы проблемные символы были сверху.</p>
+    <div class="modal-section">
+      <div class="modal-section-title">Конфигурация LLM reviewer</div>
+      ${buildModalTable([
+        { label: "Параметр", render: row => escapeHtml(row.name) },
+        { label: "Значение", render: row => row.html !== undefined ? row.html : `<span class="wrap">${escapeHtml(row.value ?? "—")}</span>` },
+      ], [
+        { name: "Enabled", html: renderLlmStatusBadge(llm.enabled ? "ok" : "disabled") },
+        { name: "Mode", value: llm.mode || "—" },
+        { name: "Provider / model", value: [llm.provider, llm.model].filter(Boolean).join(" / ") || "—" },
+        { name: "Таймфреймы", value: llmTfText },
+        { name: "Свечей на ТФ", value: llm.candles_per_tf ?? "—" },
+        { name: "Max кандидатов", value: llm.max_candidates ?? "—" },
+        { name: "Мин. уверенность", value: llm.min_confidence ?? "—" },
+      ], { emptyText: "Конфигурация reviewer недоступна." })}
+    </div>
     <div class="modal-section">
       <div class="modal-section-title">Журнал здоровья символов</div>
       ${buildModalTable([
@@ -1219,7 +1321,9 @@ async function loadOutcomes() {
   try { data = await res.json(); } catch (e) { return; }
 
   const s = data.summary || {};
+  const llmSummary = data.llm_summary || {};
   const directionPairs = data.direction_pairs || [];
+  const llmAlignment = data.llm_alignment || [];
   const byBot = data.by_bot || [];
   const bySymbol = (data.by_symbol || []).slice(0, 30);
   const recent = (data.recent || []).slice(0, 80);
@@ -1233,8 +1337,24 @@ async function loadOutcomes() {
       { label: "Avg ret", value: `${Number(s.avg_ret || 0).toFixed(2)}%` },
       { label: "Истинный neutral", value: Number(s.true_neutral_total || 0) },
       { label: "spot-short-neutralized", value: Number(s.spot_short_neutralized_total || 0) },
+      { label: "LLM reviewed", value: Number(llmSummary.ok_total || 0) },
+      { label: "LLM agree", value: Number(llmSummary.agree_total || 0) },
+      { label: "LLM disagree", value: Number(llmSummary.disagree_total || 0) },
+      { label: "LLM errors", value: Number(llmSummary.error_total || 0) },
     ])}
-    <p class="modal-note">Это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок. Ниже отдельно показаны raw_direction и execution_direction, чтобы neutral не смешивал истинный neutral с bearish-thesis на споте.</p>
+    <p class="modal-note">Это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок. Ниже отдельно показаны raw_direction и execution_direction, чтобы neutral не смешивал истинный neutral с bearish-thesis на споте. Дополнительно показано, что говорил LLM-reviewer и совпадал ли он с алгоритмическим verdict.</p>
+    <div class="modal-section">
+      <div class="modal-section-title">LLM reviewer поверх алгоритма</div>
+      ${buildModalTable([
+        { label: "Статус", render: row => renderLlmStatusBadge(row.llm_status) },
+        { label: "LLM exec", render: row => renderDirectionBadge(row.llm_execution_direction) },
+        { label: "Совпадение", render: row => renderAgreementBadge(row.llm_alignment === "agree" ? true : row.llm_alignment === "disagree" ? false : null) },
+        { label: "Gate", render: row => `<span class="neutral-note">${escapeHtml(row.llm_gate_decision || "pass")}</span>` },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+      ], llmAlignment, { emptyText: "LLM reviewer ещё не оставил следов в созревших исходах." })}
+    </div>
     <div class="modal-section">
       <div class="modal-section-title">Сводка по raw / execution direction</div>
       ${buildModalTable([
@@ -1279,12 +1399,18 @@ async function loadOutcomes() {
         { label: "Площадка", render: row => escapeHtml(venueLabel(row.venue)) },
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
         { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
-        { label: "Raw", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Exec", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Algo raw", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Algo exec", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "LLM status", render: row => renderLlmStatusBadge(row.llm_review?.status || "none") },
+        { label: "LLM thesis", render: row => renderDirectionBadge(row.llm_review?.thesis_direction || "neutral") },
+        { label: "LLM exec", render: row => renderDirectionBadge(row.llm_review?.execution_direction || "neutral") },
+        { label: "Совпадение", render: row => renderAgreementBadge(row.llm_review?.agree_with_engine) },
+        { label: "LLM conf", render: row => row.llm_review?.confidence === null || row.llm_review?.confidence === undefined ? '—' : escapeHtml(formatDotNumber(row.llm_review.confidence, 2)) },
         { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
         { label: "Исход", render: row => renderOutcomeResult(row.success) },
         { label: "Ret", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
         { label: "Горизонт", render: row => escapeHtml(formatAgeHuman(row.horizon_sec)) },
+        { label: "LLM summary", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.llm_review?.summary || row.llm_review?.error || "—")}</span>` },
         { label: "rec_id", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
       ], recent, { emptyText: "Исходов пока нет. Данные появятся после созревания label horizon." })}
     </div>
