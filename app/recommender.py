@@ -89,7 +89,7 @@ def _make_llm_reviewer(settings) -> OllamaCandleReviewer | None:
     return OllamaCandleReviewer(
         base_url=str(getattr(settings, "llm_reviewer_url", "http://127.0.0.1:11434") or "http://127.0.0.1:11434"),
         model=model,
-        timeout_sec=int(getattr(settings, "llm_reviewer_timeout_sec", 20) or 20),
+        timeout_sec=int(getattr(settings, "llm_reviewer_timeout_sec", 60) or 60),
     )
 
 
@@ -197,6 +197,7 @@ def _apply_llm_reviewer(
                 "model": getattr(reviewer, "model", None),
                 "error": result.error,
                 "latency_ms": result.latency_ms,
+                "diagnostics": result.diagnostics,
             })
             _sync_recommendation_metadata(rec)
             continue
@@ -218,6 +219,7 @@ def _apply_llm_reviewer(
                 "llm_confidence": result.confidence,
                 "model": getattr(reviewer, "model", None),
                 "latency_ms": result.latency_ms,
+                "diagnostics": result.diagnostics,
             })
         else:
             db.log_decision(conn, "LLM_REVIEW_OK", rec.get("rec_id"), None, {
@@ -232,6 +234,7 @@ def _apply_llm_reviewer(
                 "gate_decision": review_dict.get("gate_decision"),
                 "model": getattr(reviewer, "model", None),
                 "latency_ms": result.latency_ms,
+                "diagnostics": result.diagnostics,
             })
         _sync_recommendation_metadata(rec)
 

@@ -85,8 +85,8 @@ API поднимется на `127.0.0.1:8000`.
 - `LLM_REVIEWER_URL=http://127.0.0.1:11434`
 - `LLM_REVIEWER_MODEL=qwen3:8b` или ваш локальный тег вроде `qwen3.5:9b`
 - `LLM_REVIEWER_TFS=15m,1h,4h`
-- `LLM_REVIEWER_CANDLES_PER_TF=48`
-- `LLM_REVIEWER_MAX_CANDIDATES=4`
+- `LLM_REVIEWER_CANDLES_PER_TF=32`
+- `LLM_REVIEWER_MAX_CANDIDATES=2`
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
 
 LLM-reviewer задуман как консервативный reviewer поверх текущего движка, а не как замена scoring/risk/calibration.

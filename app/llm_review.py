@@ -11,6 +11,7 @@ import httpx
 ALLOWED_DIRECTIONS = {"long", "short", "neutral"}
 PROMPT_VERSION = "ohlcv_multitf_v1"
 SUPPORTED_TF_SECS = (60, 15 * 60, 30 * 60, 60 * 60, 4 * 60 * 60, 24 * 60 * 60)
+DEFAULT_KEEP_ALIVE = "15m"
 
 
 SYSTEM_PROMPT = (
@@ -26,6 +27,13 @@ SYSTEM_PROMPT = (
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def _trim_text(value: Any, limit: int = 600) -> str | None:
+    if value is None:
+        return None
+    s = str(value)
+    return s if len(s) <= limit else s[:limit]
 
 
 @dataclass
@@ -44,16 +52,42 @@ class LLMReviewResult:
     latency_ms: int | None = None
     error: str | None = None
     raw_response: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         if out.get("raw_response") and len(str(out["raw_response"])) > 1200:
             out["raw_response"] = str(out["raw_response"])[:1200]
+        diag = out.get("diagnostics") or {}
+        if isinstance(diag, dict):
+            cleaned: dict[str, Any] = {}
+            for key, value in diag.items():
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    cleaned[key] = _trim_text(value, 800) if isinstance(value, str) else value
+                elif isinstance(value, dict):
+                    cleaned[key] = {str(k): _trim_text(v, 400) if isinstance(v, str) else v for k, v in value.items()}
+                else:
+                    cleaned[key] = _trim_text(value, 400)
+            out["diagnostics"] = cleaned
         return out
 
     @classmethod
-    def error_result(cls, provider: str, model: str, error: str, latency_ms: int | None = None) -> "LLMReviewResult":
-        return cls(provider=provider, model=model, status="error", error=str(error), latency_ms=latency_ms)
+    def error_result(
+        cls,
+        provider: str,
+        model: str,
+        error: str,
+        latency_ms: int | None = None,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> "LLMReviewResult":
+        return cls(
+            provider=provider,
+            model=model,
+            status="error",
+            error=str(error),
+            latency_ms=latency_ms,
+            diagnostics=diagnostics or {},
+        )
 
     @classmethod
     def skipped_result(cls, provider: str, model: str, error: str | None = None) -> "LLMReviewResult":
@@ -276,50 +310,89 @@ def build_review_payload(
 class OllamaCandleReviewer:
     provider = "ollama"
 
-    def __init__(self, *, base_url: str, model: str, timeout_sec: int = 20):
+    def __init__(self, *, base_url: str, model: str, timeout_sec: int = 60, keep_alive: str = DEFAULT_KEEP_ALIVE):
         self.base_url = str(base_url or "http://127.0.0.1:11434").rstrip("/")
         self.model = str(model or "").strip()
-        self.timeout_sec = max(3, int(timeout_sec or 20))
+        self.timeout_sec = max(5, int(timeout_sec or 60))
+        self.keep_alive = str(keep_alive or DEFAULT_KEEP_ALIVE).strip() or DEFAULT_KEEP_ALIVE
 
-    def _request_chat(self, payload: dict[str, Any]) -> str:
-        req = {
+    def _http_timeout(self) -> httpx.Timeout:
+        read_timeout = float(self.timeout_sec)
+        connect_timeout = min(10.0, max(3.0, read_timeout / 3.0))
+        return httpx.Timeout(connect=connect_timeout, read=read_timeout, write=15.0, pool=15.0)
+
+    def _base_request_fields(self) -> dict[str, Any]:
+        return {
             "model": self.model,
             "stream": False,
             "format": "json",
+            "think": False,
+            "keep_alive": self.keep_alive,
             "options": {"temperature": 0},
+        }
+
+    def _post_json(self, endpoint: str, req: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        with httpx.Client(timeout=self._http_timeout()) as client:
+            resp = client.post(f"{self.base_url}{endpoint}", json=req)
+            status_code = resp.status_code
+            text = resp.text
+            resp.raise_for_status()
+            data = resp.json()
+        meta = {
+            "endpoint": endpoint,
+            "http_status": status_code,
+            "done": data.get("done") if isinstance(data, dict) else None,
+            "done_reason": data.get("done_reason") if isinstance(data, dict) else None,
+            "eval_count": data.get("eval_count") if isinstance(data, dict) else None,
+            "total_duration_ns": data.get("total_duration") if isinstance(data, dict) else None,
+            "load_duration_ns": data.get("load_duration") if isinstance(data, dict) else None,
+            "response_preview": _trim_text(text, 400),
+        }
+        return data, meta
+
+    def _request_chat(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        req = {
+            **self._base_request_fields(),
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
             ],
         }
-        with httpx.Client(timeout=self.timeout_sec) as client:
-            resp = client.post(f"{self.base_url}/api/chat", json=req)
-            resp.raise_for_status()
-            data = resp.json()
+        data, meta = self._post_json("/api/chat", req)
         message = data.get("message") if isinstance(data, dict) else None
         if isinstance(message, dict):
             content = message.get("content")
             if isinstance(content, str) and content.strip():
-                return content
-        raise ValueError("ollama /api/chat returned no message.content")
+                return content, meta
+        fallback_response = data.get("response") if isinstance(data, dict) else None
+        if isinstance(fallback_response, str) and fallback_response.strip():
+            meta["fallback_field"] = "response"
+            return fallback_response, meta
+        raise ValueError(
+            "ollama /api/chat returned no message.content"
+            f" (done={meta.get('done')}, done_reason={meta.get('done_reason')}, eval_count={meta.get('eval_count')})"
+        )
 
-    def _request_generate(self, payload: dict[str, Any]) -> str:
+    def _request_generate(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         prompt = SYSTEM_PROMPT + "\n\nINPUT:\n" + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         req = {
-            "model": self.model,
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": 0},
+            **self._base_request_fields(),
             "prompt": prompt,
         }
-        with httpx.Client(timeout=self.timeout_sec) as client:
-            resp = client.post(f"{self.base_url}/api/generate", json=req)
-            resp.raise_for_status()
-            data = resp.json()
+        data, meta = self._post_json("/api/generate", req)
         content = data.get("response") if isinstance(data, dict) else None
         if isinstance(content, str) and content.strip():
-            return content
-        raise ValueError("ollama /api/generate returned no response")
+            return content, meta
+        message = data.get("message") if isinstance(data, dict) else None
+        if isinstance(message, dict):
+            msg_content = message.get("content")
+            if isinstance(msg_content, str) and msg_content.strip():
+                meta["fallback_field"] = "message.content"
+                return msg_content, meta
+        raise ValueError(
+            "ollama /api/generate returned no response"
+            f" (done={meta.get('done')}, done_reason={meta.get('done_reason')}, eval_count={meta.get('eval_count')})"
+        )
 
     def review(self, payload: dict[str, Any]) -> LLMReviewResult:
         t0 = time.time()
@@ -328,16 +401,40 @@ class OllamaCandleReviewer:
         candidate = payload.get("candidate") or {}
         bot_type = str(candidate.get("bot_type") or "")
         engine_direction = str(candidate.get("engine_execution_direction") or "neutral")
+        diagnostics: dict[str, Any] = {
+            "base_url": self.base_url,
+            "timeout_sec": self.timeout_sec,
+            "keep_alive": self.keep_alive,
+            "payload_bytes": len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+        }
         try:
+            content: str | None = None
+            content_meta: dict[str, Any] = {}
+            chat_exc: Exception | None = None
             try:
-                content = self._request_chat(payload)
-            except Exception:
-                content = self._request_generate(payload)
-            parsed = parse_review_content(content, bot_type=bot_type, engine_direction=engine_direction)
+                content, content_meta = self._request_chat(payload)
+                diagnostics["path"] = "chat"
+                diagnostics.update({f"chat_{k}": v for k, v in content_meta.items()})
+            except Exception as exc:
+                chat_exc = exc
+                diagnostics["chat_error"] = _trim_text(exc, 500)
+                try:
+                    content, content_meta = self._request_generate(payload)
+                    diagnostics["path"] = "generate"
+                    diagnostics.update({f"generate_{k}": v for k, v in content_meta.items()})
+                except Exception as gen_exc:
+                    diagnostics["generate_error"] = _trim_text(gen_exc, 500)
+                    error_parts = []
+                    if chat_exc is not None:
+                        error_parts.append(f"chat: {chat_exc}")
+                    error_parts.append(f"generate: {gen_exc}")
+                    raise RuntimeError("; ".join(error_parts)) from gen_exc
+            parsed = parse_review_content(str(content or ""), bot_type=bot_type, engine_direction=engine_direction)
             return LLMReviewResult(
                 provider=self.provider,
                 model=self.model,
                 latency_ms=int((time.time() - t0) * 1000),
+                diagnostics=diagnostics,
                 **parsed,
             )
         except Exception as exc:
@@ -346,4 +443,5 @@ class OllamaCandleReviewer:
                 self.model,
                 str(exc),
                 latency_ms=int((time.time() - t0) * 1000),
+                diagnostics=diagnostics,
             )

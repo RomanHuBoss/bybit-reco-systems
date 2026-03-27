@@ -10,7 +10,7 @@ import pytest
 from app import db
 from app.direction import aggregate_direction
 from app.outcomes import _get_first_tradeable_candle_after
-from app.llm_review import LLMReviewResult, parse_review_content
+from app.llm_review import LLMReviewResult, OllamaCandleReviewer, parse_review_content
 from app.recommender import (
     _apply_llm_reviewer,
     _estimate_cost_model,
@@ -82,6 +82,55 @@ def test_parse_review_content_handles_json_fence_and_spot_short_execution_neutra
     assert parsed["confidence"] == pytest.approx(0.81)
     assert parsed["risk_flags"] == ["carry_risk"]
 
+
+
+
+
+def test_ollama_reviewer_falls_back_to_generate_and_keeps_chat_diagnostics():
+    class FakeReviewer(OllamaCandleReviewer):
+        def __init__(self):
+            super().__init__(base_url="http://127.0.0.1:11434", model="fake-llm", timeout_sec=5)
+
+        def _request_chat(self, payload):
+            raise RuntimeError("chat timeout")
+
+        def _request_generate(self, payload):
+            return (
+                '{"thesis_direction":"long","execution_direction":"long","confidence":0.67,"regime_view":"bullish_range","risk_flags":[],"summary":"fallback ok"}',
+                {"endpoint": "/api/generate", "done": True, "done_reason": "stop", "eval_count": 42},
+            )
+
+    reviewer = FakeReviewer()
+    payload = {"candidate": {"bot_type": "futures_grid", "engine_execution_direction": "long"}}
+    result = reviewer.review(payload)
+
+    assert result.status == "ok"
+    assert result.execution_direction == "long"
+    assert result.diagnostics["path"] == "generate"
+    assert result.diagnostics["chat_error"] == "chat timeout"
+    assert result.diagnostics["generate_endpoint"] == "/api/generate"
+
+
+def test_ollama_reviewer_surfaces_chat_and_generate_failures_together():
+    class FakeReviewer(OllamaCandleReviewer):
+        def __init__(self):
+            super().__init__(base_url="http://127.0.0.1:11434", model="fake-llm", timeout_sec=5)
+
+        def _request_chat(self, payload):
+            raise RuntimeError("chat timeout")
+
+        def _request_generate(self, payload):
+            raise ValueError("ollama /api/generate returned no response (done=True, done_reason=stop, eval_count=0)")
+
+    reviewer = FakeReviewer()
+    payload = {"candidate": {"bot_type": "futures_grid", "engine_execution_direction": "neutral"}}
+    result = reviewer.review(payload)
+
+    assert result.status == "error"
+    assert "chat: chat timeout" in str(result.error)
+    assert "generate: ollama /api/generate returned no response" in str(result.error)
+    assert result.diagnostics["chat_error"] == "chat timeout"
+    assert "ollama /api/generate returned no response" in result.diagnostics["generate_error"]
 
 
 def test_apply_llm_reviewer_gate_vetoes_direction_mismatch(conn):

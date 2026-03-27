@@ -54,10 +54,10 @@ class Settings:
     llm_reviewer_provider: str = "ollama"
     llm_reviewer_url: str = "http://127.0.0.1:11434"
     llm_reviewer_model: str = "qwen3:8b"
-    llm_reviewer_timeout_sec: int = 20
+    llm_reviewer_timeout_sec: int = 60
     llm_reviewer_tf_secs: list[int] = field(default_factory=lambda: [15 * 60, 60 * 60, 4 * 60 * 60])
-    llm_reviewer_candles_per_tf: int = 48
-    llm_reviewer_max_candidates: int = 4
+    llm_reviewer_candles_per_tf: int = 32
+    llm_reviewer_max_candidates: int = 2
     llm_reviewer_min_confidence: float = 0.65
 
 
@@ -86,10 +86,10 @@ def load_settings() -> Settings:
     llm_reviewer_provider = _env("LLM_REVIEWER_PROVIDER", "ollama").strip().lower() or "ollama"
     llm_reviewer_url = _env("LLM_REVIEWER_URL", "http://127.0.0.1:11434").strip()
     llm_reviewer_model = _env("LLM_REVIEWER_MODEL", "qwen3:8b").strip()
-    llm_reviewer_timeout_sec = max(3, int(_env("LLM_REVIEWER_TIMEOUT_SEC", "20")))
+    llm_reviewer_timeout_sec = max(5, int(_env("LLM_REVIEWER_TIMEOUT_SEC", "60")))
     llm_reviewer_tf_secs = parse_tf_secs(_env("LLM_REVIEWER_TFS", "15m,1h,4h"))
-    llm_reviewer_candles_per_tf = max(16, min(96, int(_env("LLM_REVIEWER_CANDLES_PER_TF", "48"))))
-    llm_reviewer_max_candidates = max(1, min(20, int(_env("LLM_REVIEWER_MAX_CANDIDATES", "4"))))
+    llm_reviewer_candles_per_tf = max(16, min(96, int(_env("LLM_REVIEWER_CANDLES_PER_TF", "32"))))
+    llm_reviewer_max_candidates = max(1, min(20, int(_env("LLM_REVIEWER_MAX_CANDIDATES", "2"))))
     llm_reviewer_min_confidence = max(0.0, min(1.0, float(_env("LLM_REVIEWER_MIN_CONFIDENCE", "0.65"))))
 
     return Settings(
