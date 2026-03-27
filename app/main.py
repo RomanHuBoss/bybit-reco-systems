@@ -517,6 +517,16 @@ def api_symbol_health() -> dict[str, Any]:
         return {
             "ts": int(time.time()),
             "summary": {"ok": n_ok, "stale": n_stale, "missing": n_missing, "errors_10m": n_errors},
+            "llm_reviewer": {
+                "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
+                "mode": getattr(settings, "llm_reviewer_mode", "advisory"),
+                "provider": getattr(settings, "llm_reviewer_provider", "ollama"),
+                "model": getattr(settings, "llm_reviewer_model", None),
+                "tf_secs": list(getattr(settings, "llm_reviewer_tf_secs", []) or []),
+                "candles_per_tf": int(getattr(settings, "llm_reviewer_candles_per_tf", 48) or 48),
+                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4),
+                "min_confidence": float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65),
+            },
             "symbols": items,
         }
 

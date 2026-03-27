@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
+
+from .llm_review import parse_tf_secs
 
 load_dotenv()
 
@@ -47,6 +49,16 @@ class Settings:
     telegram_chat_id: str | None
 
     require_conf_gate: bool = False
+    llm_reviewer_enabled: bool = False
+    llm_reviewer_mode: str = "advisory"
+    llm_reviewer_provider: str = "ollama"
+    llm_reviewer_url: str = "http://127.0.0.1:11434"
+    llm_reviewer_model: str = "qwen3:8b"
+    llm_reviewer_timeout_sec: int = 20
+    llm_reviewer_tf_secs: list[int] = field(default_factory=lambda: [15 * 60, 60 * 60, 4 * 60 * 60])
+    llm_reviewer_candles_per_tf: int = 48
+    llm_reviewer_max_candidates: int = 4
+    llm_reviewer_min_confidence: float = 0.65
 
 
 def load_settings() -> Settings:
@@ -66,6 +78,19 @@ def load_settings() -> Settings:
     outcome_horizon_fallback_sec = int(os.getenv("OUTCOME_HORIZON_FALLBACK_SEC", os.getenv("OUTCOME_HORIZON_SEC", "900")))
     calib_min_samples = max(80, int(_env("CALIB_MIN_SAMPLES", "80")))
     require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1", "true", "yes", "y")
+
+    llm_reviewer_enabled = _env("LLM_REVIEWER_ENABLED", "0").strip().lower() in ("1", "true", "yes", "y")
+    llm_reviewer_mode = _env("LLM_REVIEWER_MODE", "advisory").strip().lower()
+    if llm_reviewer_mode not in {"advisory", "gate"}:
+        llm_reviewer_mode = "advisory"
+    llm_reviewer_provider = _env("LLM_REVIEWER_PROVIDER", "ollama").strip().lower() or "ollama"
+    llm_reviewer_url = _env("LLM_REVIEWER_URL", "http://127.0.0.1:11434").strip()
+    llm_reviewer_model = _env("LLM_REVIEWER_MODEL", "qwen3:8b").strip()
+    llm_reviewer_timeout_sec = max(3, int(_env("LLM_REVIEWER_TIMEOUT_SEC", "20")))
+    llm_reviewer_tf_secs = parse_tf_secs(_env("LLM_REVIEWER_TFS", "15m,1h,4h"))
+    llm_reviewer_candles_per_tf = max(16, min(96, int(_env("LLM_REVIEWER_CANDLES_PER_TF", "48"))))
+    llm_reviewer_max_candidates = max(1, min(20, int(_env("LLM_REVIEWER_MAX_CANDIDATES", "4"))))
+    llm_reviewer_min_confidence = max(0.0, min(1.0, float(_env("LLM_REVIEWER_MIN_CONFIDENCE", "0.65"))))
 
     return Settings(
         require_conf_gate=require_conf_gate,
@@ -91,4 +116,14 @@ def load_settings() -> Settings:
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
         outcome_horizon_fallback_sec=outcome_horizon_fallback_sec,
         calib_min_samples=calib_min_samples,
+        llm_reviewer_enabled=llm_reviewer_enabled,
+        llm_reviewer_mode=llm_reviewer_mode,
+        llm_reviewer_provider=llm_reviewer_provider,
+        llm_reviewer_url=llm_reviewer_url,
+        llm_reviewer_model=llm_reviewer_model,
+        llm_reviewer_timeout_sec=llm_reviewer_timeout_sec,
+        llm_reviewer_tf_secs=llm_reviewer_tf_secs,
+        llm_reviewer_candles_per_tf=llm_reviewer_candles_per_tf,
+        llm_reviewer_max_candidates=llm_reviewer_max_candidates,
+        llm_reviewer_min_confidence=llm_reviewer_min_confidence,
     )

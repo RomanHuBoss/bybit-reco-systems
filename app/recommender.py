@@ -14,6 +14,7 @@ from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .outcomes import BOT_HORIZONS
 from .bot_types import SUPPORTED_BOT_TYPES
+from .llm_review import OllamaCandleReviewer, build_review_payload
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
@@ -56,6 +57,185 @@ def _pct_dist(a: float | None, b: float | None) -> float | None:
     except Exception:
         return None
 
+
+
+def _serialize_llm_candles(rows_oldest_first: list[dict[str, Any]] | list[Any], limit: int) -> list[list[float | int]]:
+    out: list[list[float | int]] = []
+    take = max(1, int(limit or 1))
+    for row in list(rows_oldest_first)[-take:]:
+        try:
+            out.append([
+                int(row["ts"]),
+                float(row["open"]),
+                float(row["high"]),
+                float(row["low"]),
+                float(row["close"]),
+                float(row.get("volume") or 0.0),
+            ])
+        except Exception:
+            continue
+    return out
+
+
+def _make_llm_reviewer(settings) -> OllamaCandleReviewer | None:
+    if not bool(getattr(settings, "llm_reviewer_enabled", False)):
+        return None
+    provider = str(getattr(settings, "llm_reviewer_provider", "ollama") or "ollama").strip().lower()
+    if provider != "ollama":
+        raise ValueError(f"unsupported llm reviewer provider: {provider}")
+    model = str(getattr(settings, "llm_reviewer_model", "") or "").strip()
+    if not model:
+        return None
+    return OllamaCandleReviewer(
+        base_url=str(getattr(settings, "llm_reviewer_url", "http://127.0.0.1:11434") or "http://127.0.0.1:11434"),
+        model=model,
+        timeout_sec=int(getattr(settings, "llm_reviewer_timeout_sec", 20) or 20),
+    )
+
+
+def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
+    reasons = rec.setdefault("reasons", {})
+    decision_layers = reasons.get("decision_layers")
+    if not isinstance(decision_layers, dict):
+        decision_layers = {}
+        reasons["decision_layers"] = decision_layers
+    decision_layers["final_status"] = rec.get("status")
+    llm_review = reasons.get("llm_review")
+    if isinstance(llm_review, dict):
+        decision_layers["llm_reviewer"] = {
+            "status": llm_review.get("status"),
+            "mode": llm_review.get("mode"),
+            "gate_decision": llm_review.get("gate_decision"),
+            "agree_with_engine": llm_review.get("agree_with_engine"),
+            "confidence": llm_review.get("confidence"),
+            "execution_direction": llm_review.get("execution_direction"),
+        }
+
+
+def _apply_llm_reviewer(
+    conn,
+    recs: list[dict[str, Any]],
+    settings,
+    *,
+    symbol_feature_map: dict[tuple[str, str], dict[str, Any]],
+    symbol_llm_candle_map: dict[tuple[str, str], dict[int, list[list[float | int]]]],
+    sent_agg: dict[str, Any],
+    market_shock: dict[str, Any],
+    reviewer: OllamaCandleReviewer | None = None,
+) -> dict[str, int]:
+    stats = {"reviewed": 0, "vetoed": 0, "errors": 0, "skipped": 0}
+    if not bool(getattr(settings, "llm_reviewer_enabled", False)):
+        return stats
+    mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
+    if mode not in {"advisory", "gate"}:
+        mode = "advisory"
+    try:
+        reviewer = reviewer or _make_llm_reviewer(settings)
+    except Exception as exc:
+        db.log_decision(conn, "LLM_REVIEW_ERROR", None, None, {
+            "error": str(exc),
+            "stage": "reviewer_init",
+            "provider": getattr(settings, "llm_reviewer_provider", None),
+            "model": getattr(settings, "llm_reviewer_model", None),
+        })
+        stats["errors"] += 1
+        return stats
+    if reviewer is None:
+        return stats
+
+    max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4))
+    min_conf = float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65)
+    candidates = [r for r in recs if str(r.get("status") or "") == "recommended"]
+    candidates.sort(key=lambda r: (float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
+
+    for idx, rec in enumerate(candidates):
+        reasons = rec.setdefault("reasons", {})
+        if idx >= max_candidates:
+            reasons["llm_review"] = {
+                "provider": getattr(reviewer, "provider", "ollama"),
+                "model": getattr(reviewer, "model", ""),
+                "status": "skipped",
+                "mode": mode,
+                "error": f"candidate cap reached ({max_candidates})",
+                "gate_decision": "skipped",
+            }
+            stats["skipped"] += 1
+            _sync_recommendation_metadata(rec)
+            continue
+
+        venue = str(rec.get("venue") or "")
+        symbol = str(rec.get("symbol") or "")
+        f = symbol_feature_map.get((venue, symbol)) or {}
+        direction_agg = (reasons.get("direction_agg") if isinstance(reasons, dict) else None) or f.get("_direction_agg") or {}
+        sentiment_summary = (reasons.get("symbol_sentiment") if isinstance(reasons, dict) else None) or {
+            "effective": sent_agg.get("effective_score", sent_agg.get("ewma", {}).get("6h", 0.0)),
+            "global": sent_agg.get("effective_score", sent_agg.get("ewma", {}).get("6h", 0.0)),
+        }
+        payload = build_review_payload(
+            rec=rec,
+            feature_snapshot=(reasons.get("feature_snapshot") if isinstance(reasons, dict) else None) or {},
+            direction_agg=direction_agg,
+            market_shock=market_shock or {},
+            sentiment_summary=sentiment_summary,
+            candles_by_tf=symbol_llm_candle_map.get((venue, symbol), {}),
+        )
+        result = reviewer.review(payload)
+        review_dict = result.to_dict()
+        if review_dict.get("agree_with_engine") is None:
+            review_dict["agree_with_engine"] = str(result.execution_direction or "neutral") == str(rec.get("direction") or "neutral")
+        review_dict["mode"] = mode
+        review_dict["gate_decision"] = "pass"
+        reasons["llm_review"] = review_dict
+        stats["reviewed"] += 1
+
+        if result.status == "error":
+            stats["errors"] += 1
+            db.log_decision(conn, "LLM_REVIEW_ERROR", rec.get("rec_id"), None, {
+                "venue": venue,
+                "symbol": symbol,
+                "bot_type": rec.get("bot_type"),
+                "model": getattr(reviewer, "model", None),
+                "error": result.error,
+                "latency_ms": result.latency_ms,
+            })
+            _sync_recommendation_metadata(rec)
+            continue
+
+        if mode == "gate" and result.confidence >= min_conf and result.execution_direction != str(rec.get("direction") or "neutral"):
+            prev_status = str(rec.get("status") or "")
+            rec["status"] = "no_trade"
+            review_dict["gate_decision"] = "veto"
+            review_dict["gate_reason"] = "execution_direction_mismatch"
+            stats["vetoed"] += 1
+            db.log_decision(conn, "LLM_REVIEW_VETO", rec.get("rec_id"), None, {
+                "venue": venue,
+                "symbol": symbol,
+                "bot_type": rec.get("bot_type"),
+                "prev_status": prev_status,
+                "new_status": rec["status"],
+                "engine_direction": rec.get("direction"),
+                "llm_execution_direction": result.execution_direction,
+                "llm_confidence": result.confidence,
+                "model": getattr(reviewer, "model", None),
+                "latency_ms": result.latency_ms,
+            })
+        else:
+            db.log_decision(conn, "LLM_REVIEW_OK", rec.get("rec_id"), None, {
+                "venue": venue,
+                "symbol": symbol,
+                "bot_type": rec.get("bot_type"),
+                "engine_direction": rec.get("direction"),
+                "llm_execution_direction": result.execution_direction,
+                "llm_thesis_direction": result.thesis_direction,
+                "llm_confidence": result.confidence,
+                "mode": mode,
+                "gate_decision": review_dict.get("gate_decision"),
+                "model": getattr(reviewer, "model", None),
+                "latency_ms": result.latency_ms,
+            })
+        _sync_recommendation_metadata(rec)
+
+    return stats
 
 
 def _drop_open_candle(rows: list[dict[str, Any]] | list[Any], tf_sec: int, ts_now: int) -> list[Any]:
@@ -1093,6 +1273,9 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     features_all: list[dict[str, Any]] = []
     symbol_feature_map: dict[tuple[str,str], dict[str, Any]] = {}
     symbol_ticker_map: dict[tuple[str,str], Any] = {}  # stores trow per (venue,sym)
+    symbol_llm_candle_map: dict[tuple[str, str], dict[int, list[list[float | int]]]] = {}
+    llm_tf_set = set(getattr(settings, "llm_reviewer_tf_secs", []) or []) if bool(getattr(settings, "llm_reviewer_enabled", False)) else set()
+    llm_candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", 48) or 48)
 
     ts_now = db.now_ts()  # set here for stale gate use inside feature loop
 
@@ -1121,6 +1304,10 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             if not f:
                 continue
 
+            llm_candles: dict[int, list[list[float | int]]] = {}
+            if 60 in llm_tf_set:
+                llm_candles[60] = _serialize_llm_candles([dict(r) for r in reversed(rows)], llm_candle_limit)
+
             # ── Stale data gate ──────────────────────────────────────────
             # If newest 1m candle is too old, data is unreliable — skip symbol
             data_age_sec = ts_now - int(f["ts_last"])
@@ -1146,6 +1333,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                     continue
                 # Reverse to oldest-first — get_latest_ohlcv returns newest-first.
                 rows_tf_ord = list(reversed(rows_tf))
+                if tf in llm_tf_set:
+                    llm_candles[tf] = _serialize_llm_candles([dict(r) for r in rows_tf_ord], llm_candle_limit)
                 closes_tf = [float(r["close"]) for r in rows_tf_ord]
                 highs_tf = [float(r["high"]) for r in rows_tf_ord]
                 lows_tf = [float(r["low"]) for r in rows_tf_ord]
@@ -1189,6 +1378,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             features_all.append(f)
             symbol_feature_map[(venue, sym)] = f
             symbol_ticker_map[(venue, sym)] = trow  # save for reco loop
+            if llm_candles:
+                symbol_llm_candle_map[(venue, sym)] = llm_candles
 
     regime = classify_regime(features_all)
     db.insert_regime(conn, db.now_ts(), regime)
@@ -1198,6 +1389,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
 
     limits = db.get_active_risk_limits(conn) or settings.risk_limits
     model_version = "bybit-taxonomy-v2"
+    if bool(getattr(settings, "llm_reviewer_enabled", False)):
+        model_version += "+llm-review-v1"
     # ts_now already set above for stale gate — reuse it
 
     recs: list[dict[str, Any]] = []
@@ -1606,6 +1799,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             })
 
     status_counts = {"recommended": 0, "blocked": 0, "no_trade": 0, "suppressed": 0}
+    llm_review_stats = {"reviewed": 0, "vetoed": 0, "errors": 0, "skipped": 0}
 
     if recs:
         # Publish only one best recommendation per (venue, symbol).
@@ -1635,6 +1829,16 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 if r["status"] == "recommended":
                     r["status"] = "suppressed"
 
+        llm_review_stats = _apply_llm_reviewer(
+            conn,
+            recs,
+            settings,
+            symbol_feature_map=symbol_feature_map,
+            symbol_llm_candle_map=symbol_llm_candle_map,
+            sent_agg=sent_agg,
+            market_shock=market_shock,
+        )
+
         # Apply persistence gate only to FINAL published recommendations.
         # This avoids confirming a bot that was internally recommended but then
         # suppressed by the cross-bot best-per-symbol selector.
@@ -1663,6 +1867,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
         _save_direction_state(conn, _direction_state_cache, _fresh_gap)
 
         for r in recs:
+            _sync_recommendation_metadata(r)
             st = str(r.get("status") or "")
             if st in status_counts:
                 status_counts[st] += 1
@@ -1685,6 +1890,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "sentiment_regime": sent_agg.get("regime"),
                 "sentiment_strength": sent_agg.get("strength"),
                 "calibrator_fitted": calibrator.fitted,
+                "llm_reviewer": {
+                    "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
+                    "mode": getattr(settings, "llm_reviewer_mode", "advisory"),
+                    "provider": getattr(settings, "llm_reviewer_provider", "ollama"),
+                    "model": getattr(settings, "llm_reviewer_model", None),
+                    **llm_review_stats,
+                },
             },
         )
 
@@ -1699,4 +1911,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
         "sentiment_regime": sent_agg.get("regime"),
         "sentiment_strength": sent_agg.get("strength"),
         "calibrator_fitted": calibrator.fitted,
+        "llm_reviewer": {
+            "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
+            "mode": getattr(settings, "llm_reviewer_mode", "advisory"),
+            "provider": getattr(settings, "llm_reviewer_provider", "ollama"),
+            "model": getattr(settings, "llm_reviewer_model", None),
+            **llm_review_stats,
+        },
     }

@@ -10,7 +10,9 @@ import pytest
 from app import db
 from app.direction import aggregate_direction
 from app.outcomes import _get_first_tradeable_candle_after
+from app.llm_review import LLMReviewResult, parse_review_content
 from app.recommender import (
+    _apply_llm_reviewer,
     _estimate_cost_model,
     _extreme_funding_block,
     _params,
@@ -25,6 +27,37 @@ from app.risk import compute_risk_status, gate_candidate
 from app.shock_guard import _stabilize_market_shock, _stabilize_fast_veto, compute_market_shock, apply_market_shock_gate
 
 
+
+
+def _settings_for_tests(**overrides):
+    base = dict(
+        outcome_horizon_fallback_sec=6 * 3600,
+        calib_min_samples=80,
+        db_path=":memory:",
+        bybit_base_url="https://api.bybit.com",
+        collect_interval_sec=20,
+        stale_data_max_sec=3600,
+        reco_interval_sec=20,
+        top_n=20,
+        venues=["linear"],
+        symbols_spot=[],
+        symbols_linear=["BTCUSDT"],
+        risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
+        min_score_to_recommend=0.08,
+        min_conf_to_recommend=0.52,
+        taker_fee_bps_spot=10.0,
+        taker_fee_bps_linear=6.0,
+        master_key=None,
+        admin_api_key=None,
+        sentiment_interval_sec=60,
+        futures_collect_interval_sec=900,
+        telegram_token=None,
+        telegram_chat_id=None,
+        require_conf_gate=False,
+    )
+    base.update(overrides)
+    return Settings(**base)
+
 @pytest.fixture()
 def conn(tmp_path: Path):
     path = tmp_path / "test.db"
@@ -35,6 +68,144 @@ def conn(tmp_path: Path):
     finally:
         conn.close()
 
+
+
+def test_parse_review_content_handles_json_fence_and_spot_short_execution_neutralization():
+    content = """```json
+    {"thesis_direction":"short","execution_direction":"short","confidence":0.81,"regime_view":"bearish_range","risk_flags":["carry_risk"],"summary":"bearish but spot cannot short"}
+    ```"""
+
+    parsed = parse_review_content(content, bot_type="spot_grid", engine_direction="neutral")
+
+    assert parsed["thesis_direction"] == "short"
+    assert parsed["execution_direction"] == "neutral"
+    assert parsed["confidence"] == pytest.approx(0.81)
+    assert parsed["risk_flags"] == ["carry_risk"]
+
+
+
+def test_apply_llm_reviewer_gate_vetoes_direction_mismatch(conn):
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def review(self, payload):
+            return LLMReviewResult(
+                provider=self.provider,
+                model=self.model,
+                execution_direction="short",
+                thesis_direction="short",
+                confidence=0.93,
+                regime_view="bearish_range",
+                risk_flags=["late_breakout_risk"],
+                summary="strong disagreement",
+            )
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="gate",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_min_confidence=0.65,
+    )
+    rec = {
+        "rec_id": "R-llm-1",
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "bot_type": "futures_grid",
+        "direction": "long",
+        "status": "recommended",
+        "score": 0.42,
+        "confidence": 0.71,
+        "expected_rr": 1.6,
+        "risk_score": 0.2,
+        "params": {"grid_levels": 8, "grid_spacing_pct": 0.9, "price_range_lower": 95.0, "price_range_upper": 105.0},
+        "reasons": {
+            "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
+            "direction_agg": {"direction": "long", "raw_direction": "long", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
+            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "spot_short_neutralized": False},
+            "decision_layers": {"final_status": "recommended"},
+            "symbol_sentiment": {"effective": 0.1, "global": 0.1},
+        },
+    }
+
+    stats = _apply_llm_reviewer(
+        conn,
+        [rec],
+        settings,
+        symbol_feature_map={("linear", "BTCUSDT"): {"_direction_agg": {"direction": "long"}}},
+        symbol_llm_candle_map={("linear", "BTCUSDT"): {900: [[1, 1, 1, 1, 1, 1.0]]}},
+        sent_agg={"effective_score": 0.1},
+        market_shock={"state": "normal"},
+        reviewer=FakeReviewer(),
+    )
+
+    assert rec["status"] == "no_trade"
+    assert stats["reviewed"] == 1
+    assert stats["vetoed"] == 1
+    assert rec["reasons"]["llm_review"]["gate_decision"] == "veto"
+    assert rec["reasons"]["decision_layers"]["final_status"] == "no_trade"
+
+
+
+def test_apply_llm_reviewer_advisory_keeps_status_and_records_alignment(conn):
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def review(self, payload):
+            return LLMReviewResult(
+                provider=self.provider,
+                model=self.model,
+                execution_direction="long",
+                thesis_direction="long",
+                confidence=0.74,
+                regime_view="bullish_range",
+                risk_flags=[],
+                summary="aligned",
+            )
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+    )
+    rec = {
+        "rec_id": "R-llm-2",
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "bot_type": "futures_grid",
+        "direction": "long",
+        "status": "recommended",
+        "score": 0.44,
+        "confidence": 0.72,
+        "expected_rr": 1.7,
+        "risk_score": 0.18,
+        "params": {"grid_levels": 8, "grid_spacing_pct": 0.9, "price_range_lower": 95.0, "price_range_upper": 105.0},
+        "reasons": {
+            "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
+            "direction_agg": {"direction": "long", "raw_direction": "long", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
+            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "spot_short_neutralized": False},
+            "decision_layers": {"final_status": "recommended"},
+            "symbol_sentiment": {"effective": 0.1, "global": 0.1},
+        },
+    }
+
+    stats = _apply_llm_reviewer(
+        conn,
+        [rec],
+        settings,
+        symbol_feature_map={("linear", "BTCUSDT"): {"_direction_agg": {"direction": "long"}}},
+        symbol_llm_candle_map={("linear", "BTCUSDT"): {900: [[1, 1, 1, 1, 1, 1.0]]}},
+        sent_agg={"effective_score": 0.1},
+        market_shock={"state": "normal"},
+        reviewer=FakeReviewer(),
+    )
+
+    assert rec["status"] == "recommended"
+    assert stats["reviewed"] == 1
+    assert stats["vetoed"] == 0
+    assert rec["reasons"]["llm_review"]["agree_with_engine"] is True
+    assert rec["reasons"]["decision_layers"]["llm_reviewer"]["status"] == "ok"
 
 
 def _bot(

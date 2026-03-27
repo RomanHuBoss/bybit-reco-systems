@@ -172,3 +172,15 @@ def test_api_execute_and_trade_lifecycle_is_idempotent(client_and_conn):
     assert bot['state']['trade_count'] == 1
     assert bot['state']['realized_pnl_net'] == pytest.approx(11.0)
     assert bot['state']['realized_fee'] == pytest.approx(1.5)
+
+
+
+def test_api_health_exposes_llm_reviewer_config(client_and_conn, monkeypatch):
+    client, _ = client_and_conn
+
+    resp = client.get('/api/v1/health/symbols')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert 'llm_reviewer' in body
+    assert body['llm_reviewer']['enabled'] is False
+    assert body['llm_reviewer']['provider'] == 'ollama'

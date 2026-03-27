@@ -72,6 +72,25 @@ API поднимется на `127.0.0.1:8000`.
 - `ADMIN_API_KEY` — если задан, обязателен для mutating endpoints;
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.
 
+### Опциональный локальный LLM-reviewer по свечам
+Проект теперь умеет дополнительно отправлять в локальную LLM мультитаймфреймный OHLCV-пакет по выбранным символам и сохранять её вердикт в `reasons_json` и `decision_log`.
+
+Режимы работы:
+- `LLM_REVIEWER_ENABLED=0` — модуль полностью выключен;
+- `LLM_REVIEWER_MODE=advisory` — LLM только пишет second opinion, но не меняет статус рекомендации;
+- `LLM_REVIEWER_MODE=gate` — если LLM уверенно расходится с `execution_direction`, рекомендация переводится в `no_trade`.
+
+Рекомендованный старт для локальной Ollama на Windows:
+- `LLM_REVIEWER_PROVIDER=ollama`
+- `LLM_REVIEWER_URL=http://127.0.0.1:11434`
+- `LLM_REVIEWER_MODEL=qwen3:8b` или ваш локальный тег вроде `qwen3.5:9b`
+- `LLM_REVIEWER_TFS=15m,1h,4h`
+- `LLM_REVIEWER_CANDLES_PER_TF=48`
+- `LLM_REVIEWER_MAX_CANDIDATES=4`
+- `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
+
+LLM-reviewer задуман как консервативный reviewer поверх текущего движка, а не как замена scoring/risk/calibration.
+
 ## Основные API
 ### Read-only
 - `GET /api/v1/recommendations` (`min_conf` по умолчанию равен publish-threshold `MIN_CONF_TO_RECOMMEND`, но raw-only рекомендации не скрываются автоматически, если confidence gate для них не применялся; явно переданный `min_conf` фильтрует строго)
