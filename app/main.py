@@ -8,7 +8,7 @@ import threading
 import socket
 from functools import lru_cache
 import time
-from contextlib import closing
+from contextlib import closing, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -122,7 +122,15 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
         out["bybit_meta"] = {}
     return out
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.2")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    threading.Thread(target=_collector_thread, daemon=True).start()
+    threading.Thread(target=_sentiment_thread, daemon=True).start()
+    threading.Thread(target=_reco_thread, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.2", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -544,7 +552,7 @@ def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header
 
 
 @app.get("/api/v1/sentiment")
-def api_sentiment_get(scope: str, key: str, limit: int = 120) -> dict[str, Any]:
+def api_sentiment_get(scope: str = "global", key: str = "crypto", limit: int = 120) -> dict[str, Any]:
     with closing(_get_conn()) as conn:
         series = db.get_sentiment_series(conn, scope, key, limit=limit)
         return {"scope": scope, "key": key, "items": series}
@@ -651,13 +659,6 @@ def _reco_thread():
                 logger.debug("telegram alert error", exc_info=True)
 
         time.sleep(settings.reco_interval_sec)
-
-
-@app.on_event("startup")
-async def startup_event():
-    threading.Thread(target=_collector_thread, daemon=True).start()
-    threading.Thread(target=_sentiment_thread, daemon=True).start()
-    threading.Thread(target=_reco_thread, daemon=True).start()
 
 
 @app.get("/api/v1/status")

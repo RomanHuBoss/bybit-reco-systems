@@ -83,7 +83,7 @@ API поднимется на `127.0.0.1:8000`.
 - `GET /api/v1/outcomes/stats`
 - `GET /api/v1/health/symbols`
 - `GET /api/v1/decisions`
-- `GET /api/v1/sentiment`
+- `GET /api/v1/sentiment` (`scope`/`key` optional; по умолчанию `global` / `crypto`)
 - `GET /api/v1/status`
 
 ### Mutating (`X-API-Key`, если задан `ADMIN_API_KEY`)
