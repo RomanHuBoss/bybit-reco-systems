@@ -215,3 +215,29 @@ def test_api_health_uses_explicit_llm_env_config(tmp_path: Path, monkeypatch: py
         client.close()
         conn.close()
         sys.modules.pop('app.main', None)
+
+
+def test_api_status_reports_actual_inference_mode(client_and_conn):
+    client, _ = client_and_conn
+
+    resp = client.get('/api/v1/status')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['inference_ready_bot_count'] == 0
+    assert body['confidence_mode_in_use'] == 'raw_only'
+    assert body['inference_calibration_mode'] == 'raw_only'
+
+
+def test_env_example_llm_reviewer_defaults_match_runtime_defaults():
+    env_map = {}
+    for line in Path('.env.example').read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        env_map[key.strip()] = value.strip()
+
+    assert env_map['LLM_REVIEWER_ENABLED'] == '0'
+    assert env_map['LLM_REVIEWER_CANDLES_PER_TF'] == '32'
+    assert env_map['LLM_REVIEWER_MAX_CANDIDATES'] == '2'
+    assert env_map['LLM_REVIEWER_CADENCE_SEC'] == '300'

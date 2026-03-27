@@ -810,7 +810,7 @@ def api_status() -> dict[str, Any]:
             "calibrator_logreg": calib_logreg,
             "calibrator_n": calib_n,
             "global_calibrator_diagnostic_only": True,
-            "inference_calibration_mode": "bot_specific_only",
+            "inference_calibration_mode": confidence_mode_in_use,
             "confidence_mode_in_use": confidence_mode_in_use,
             "outcome_label_version": OUTCOME_LABEL_VERSION,
             "inference_ready_bot_count": inference_ready_bot_count,
