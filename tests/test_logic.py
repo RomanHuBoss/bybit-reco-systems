@@ -22,7 +22,7 @@ from app.recommender import (
 )
 from app.settings import Settings
 from app.risk import compute_risk_status, gate_candidate
-from app.shock_guard import _stabilize_market_shock, _stabilize_fast_veto
+from app.shock_guard import _stabilize_market_shock, _stabilize_fast_veto, compute_market_shock, apply_market_shock_gate
 
 
 @pytest.fixture()
@@ -322,6 +322,126 @@ def test_fast_veto_release_uses_cooldown():
     assert stable["blocks"][0]["code"] == "FAST_VETO_RELEASE_COOLDOWN"
 
 
+
+
+
+def _seed_ohlcv_trend(conn, *, venue: str, symbol: str, now_ts: int, tf_sec: int, n: int, base_price: float, drift_per_bar: float) -> None:
+    rows = []
+    start_ts = now_ts - tf_sec * (n + 2)
+    for i in range(n):
+        ts = start_ts + i * tf_sec
+        mid = base_price * ((1.0 + drift_per_bar) ** i)
+        open_px = mid * 0.9992
+        close_px = mid * 1.0008
+        high_px = close_px * 1.0007
+        low_px = open_px * 0.9993
+        rows.append({
+            "venue": venue,
+            "symbol": symbol,
+            "tf_sec": tf_sec,
+            "ts": ts,
+            "open": open_px,
+            "high": high_px,
+            "low": low_px,
+            "close": close_px,
+            "volume": 1000.0 + i,
+        })
+    db.upsert_ohlcv(conn, rows)
+
+
+def test_market_shock_downgrades_weak_guard_when_symbol_coverage_is_too_low(conn):
+    now = int(time.time())
+    _seed_ohlcv_trend(conn, venue="linear", symbol="BTCUSDT", now_ts=now, tf_sec=60, n=40, base_price=50_000.0, drift_per_bar=0.002)
+
+    settings = Settings(
+        outcome_horizon_fallback_sec=6 * 3600,
+        calib_min_samples=80,
+        db_path=":memory:",
+        bybit_base_url="https://api.bybit.com",
+        collect_interval_sec=20,
+        stale_data_max_sec=3600,
+        reco_interval_sec=20,
+        top_n=20,
+        venues=["linear"],
+        symbols_spot=[],
+        symbols_linear=["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"],
+        risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
+        min_score_to_recommend=0.08,
+        min_conf_to_recommend=0.52,
+        taker_fee_bps_spot=10.0,
+        taker_fee_bps_linear=6.0,
+        master_key=None,
+        admin_api_key=None,
+        sentiment_interval_sec=60,
+        futures_collect_interval_sec=900,
+        telegram_token=None,
+        telegram_chat_id=None,
+        require_conf_gate=False,
+    )
+
+    shock = compute_market_shock(
+        conn,
+        settings,
+        sent_agg={"regime": "risk_on", "strength": 0.60, "flags": {}},
+        symbol_feature_map={("linear", "BTCUSDT"): {"volume_z": 0.9, "spread_bps": 1.0}},
+        ts_now=now,
+    )
+
+    assert shock["state"] == "normal"
+    assert shock["metrics"]["active_symbols"] == 1
+    assert any(r["code"] == "LOW_COVERAGE" for r in shock["reasons"])
+
+
+def test_market_shock_resets_to_normal_when_1m_data_is_stale(conn):
+    now = int(time.time())
+    stale_now = now - 3 * 3600
+    _seed_ohlcv_trend(conn, venue="linear", symbol="BTCUSDT", now_ts=stale_now, tf_sec=60, n=40, base_price=50_000.0, drift_per_bar=0.002)
+
+    settings = Settings(
+        outcome_horizon_fallback_sec=6 * 3600,
+        calib_min_samples=80,
+        db_path=":memory:",
+        bybit_base_url="https://api.bybit.com",
+        collect_interval_sec=20,
+        stale_data_max_sec=3600,
+        reco_interval_sec=20,
+        top_n=20,
+        venues=["linear"],
+        symbols_spot=[],
+        symbols_linear=["BTCUSDT"],
+        risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
+        min_score_to_recommend=0.08,
+        min_conf_to_recommend=0.52,
+        taker_fee_bps_spot=10.0,
+        taker_fee_bps_linear=6.0,
+        master_key=None,
+        admin_api_key=None,
+        sentiment_interval_sec=60,
+        futures_collect_interval_sec=900,
+        telegram_token=None,
+        telegram_chat_id=None,
+        require_conf_gate=False,
+    )
+
+    shock = compute_market_shock(conn, settings, sent_agg={}, symbol_feature_map={}, ts_now=now)
+
+    assert shock["state"] == "normal"
+    assert shock["metrics"]["active_symbols"] == 0
+    assert any(r["code"] == "NO_FRESH_1M_DATA" for r in shock["reasons"])
+
+
+def test_apply_market_shock_gate_blocks_neutral_only_in_strong_guard_mode():
+    moderate_guard = {
+        "state": "amber_up",
+        "title": "Осторожно: рынок выстреливает вверх",
+        "reasons": [{"code": "BTC_5M_UP", "msg": "BTC 5m=+1.00%"}],
+        "guard_blocks_neutral": False,
+    }
+    strong_guard = dict(moderate_guard, guard_blocks_neutral=True)
+
+    assert apply_market_shock_gate(moderate_guard, "linear", "futures_grid", "neutral") == []
+    assert apply_market_shock_gate(moderate_guard, "linear", "futures_grid", "short")[0]["code"] == "MARKET_GUARDED_UP"
+    assert apply_market_shock_gate(strong_guard, "linear", "futures_grid", "neutral")[0]["code"] == "MARKET_GUARDED_UP_NEUTRAL"
 
 def _seed_ohlcv_wave(conn, *, venue: str, symbol: str, now_ts: int, tf_sec: int, n: int, base_price: float) -> None:
     rows = []

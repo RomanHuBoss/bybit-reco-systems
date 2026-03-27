@@ -80,9 +80,9 @@ def _title_map(state: str) -> str:
 def _operator_note_map(state: str) -> str:
     return {
         "normal": "Новые входы разрешены в обычном режиме.",
-        "amber_down": "Не открывать neutral/long grid без очень веского ручного подтверждения. Short — только при явном тренде и дисциплине стопов.",
+        "amber_down": "Рынок ускоряется вниз. Long режется жёстко; neutral ограничивается только при действительно широком даун-импульсе. Short — только при явном тренде и дисциплине стопов.",
         "red_down": "Не открывать новые grid-боты. Действующие long/neutral пересмотреть вручную; держать только reduce-only логику на стороне биржи.",
-        "amber_up": "Не открывать neutral/short grid без очень веского ручного подтверждения. Long — только при явном тренде и дисциплине стопов.",
+        "amber_up": "Рынок ускоряется вверх. Short режется жёстко; neutral ограничивается только при действительно широком ап-импульсе. Long — только при явном тренде и дисциплине стопов.",
         "red_up": "Не открывать новые grid-боты. Действующие short/neutral пересмотреть вручную; держать только reduce-only логику на стороне биржи.",
         "chaos": "Никаких новых входов: высокая вероятность пилы и переворотов.",
     }.get(str(state or "normal"), "Новые входы разрешены в обычном режиме.")
@@ -178,20 +178,78 @@ def _stabilize_fast_veto(raw: dict[str, Any], prev: dict[str, Any] | None, now_t
     return out
 
 
-def _symbol_snapshot(conn, venue: str, symbol: str, ts_now: int) -> dict[str, Any] | None:
+def _market_shock_max_age_sec(settings) -> int:
+    collect_sec = max(int(getattr(settings, "collect_interval_sec", 20) or 20), 1)
+    reco_sec = max(int(getattr(settings, "reco_interval_sec", 20) or 20), 1)
+    # Last fully closed 1m candle is naturally 60..119 sec old; leave enough headroom
+    # for collector jitter, but do not keep a frozen state alive for hours.
+    return max(180, collect_sec * 6, reco_sec * 6)
+
+
+def _symbol_snapshot(
+    conn,
+    venue: str,
+    symbol: str,
+    ts_now: int,
+    *,
+    max_age_sec: int | None = None,
+) -> dict[str, Any] | None:
     rows = db.get_latest_ohlcv(conn, venue, symbol, tf_sec=60, limit=40)
     rows = _drop_open_candle(rows, tf_sec=60, ts_now=ts_now)
     if not rows or len(rows) < 16:
         return None
+    newest_ts = int(rows[0]["ts"])
+    age_sec = max(0, int(ts_now) - newest_ts)
+    if max_age_sec is not None and age_sec > int(max_age_sec):
+        return None
     return {
+        "venue": str(venue),
         "symbol": symbol,
         "price": float(rows[0]["close"]),
+        "ts_latest": newest_ts,
+        "age_sec": age_sec,
         "r1m": _pct_change_from_rows(rows, 1),
         "r3m": _pct_change_from_rows(rows, 3),
         "r5m": _pct_change_from_rows(rows, 5),
         "r15m": _pct_change_from_rows(rows, 15),
         "rows_desc": rows,
     }
+
+
+def _pick_best_symbol_snapshot(conn, symbol: str, venues: list[str], ts_now: int, max_age_sec: int) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    for venue in venues:
+        snap = _symbol_snapshot(conn, venue, symbol, ts_now, max_age_sec=max_age_sec)
+        if snap is None:
+            continue
+        if best is None:
+            best = snap
+            continue
+        # Fresher snapshot wins. On age tie prefer spot for benchmark symbols because
+        # spot BTC/ETH usually represent the underlying move more cleanly than perps.
+        age = int(snap.get("age_sec") or 10**9)
+        best_age = int(best.get("age_sec") or 10**9)
+        if age < best_age:
+            best = snap
+            continue
+        if age == best_age:
+            if symbol in {"BTCUSDT", "ETHUSDT"} and snap.get("venue") == "spot" and best.get("venue") != "spot":
+                best = snap
+    return best
+
+
+def _feature_for_symbol(
+    symbol_feature_map: dict[tuple[str, str], dict[str, Any]],
+    venue: str,
+    symbol: str,
+) -> dict[str, Any]:
+    direct = symbol_feature_map.get((venue, symbol))
+    if direct:
+        return dict(direct)
+    for (v, s), feat in symbol_feature_map.items():
+        if s == symbol and feat:
+            return dict(feat)
+    return {}
 
 
 def compute_market_shock(
@@ -206,14 +264,57 @@ def compute_market_shock(
     States:
       normal, amber_down, red_down, amber_up, red_up, chaos
     """
-    venue = "linear" if "linear" in getattr(settings, "venues", []) else "spot"
-    symbols = list(getattr(settings, "symbols_linear", []) or getattr(settings, "symbols_spot", []))
+    max_age_sec = _market_shock_max_age_sec(settings)
+
+    configured_by_symbol: dict[str, list[str]] = {}
+    ordered_symbols: list[str] = []
+    for venue, symbols in (
+        ("spot", list(getattr(settings, "symbols_spot", []) or [])),
+        ("linear", list(getattr(settings, "symbols_linear", []) or [])),
+    ):
+        for sym in symbols:
+            sym2 = str(sym or "").upper()
+            if not sym2:
+                continue
+            if sym2 not in configured_by_symbol:
+                configured_by_symbol[sym2] = []
+                ordered_symbols.append(sym2)
+            if venue not in configured_by_symbol[sym2]:
+                configured_by_symbol[sym2].append(venue)
+
+    if not ordered_symbols:
+        return {
+            "ts": int(ts_now),
+            "state": "normal",
+            "severity": "normal",
+            "bias": "neutral",
+            "entry_mode": "normal",
+            "title": _title_map("normal"),
+            "operator_note": _operator_note_map("normal"),
+            "lockdown": False,
+            "guard_blocks_neutral": False,
+            "metrics": {
+                "active_symbols": 0,
+                "configured_symbols": 0,
+                "coverage_ratio": 0.0,
+                "max_age_sec": int(max_age_sec),
+            },
+            "reasons": [{"code": "NO_SYMBOLS_CONFIGURED", "msg": "Список символов пуст — market shock guard переведён в normal.", "weight": 0}],
+            "sentiment": {
+                "regime": str(sent_agg.get("regime") or "neutral"),
+                "strength": round(_safe_num(sent_agg.get("strength"), 0.0), 4),
+                "flags": dict(sent_agg.get("flags") or {}),
+            },
+            "raw_state": "normal",
+            "stabilization": {"applied": False, "mode": "no_symbols", "note": None, "hold_sec": 0, "previous_state": None},
+        }
+
     snaps: list[dict[str, Any]] = []
-    for sym in symbols:
-        snap = _symbol_snapshot(conn, venue, sym, ts_now)
+    for sym in ordered_symbols:
+        snap = _pick_best_symbol_snapshot(conn, sym, configured_by_symbol.get(sym) or ["linear", "spot"], ts_now, max_age_sec)
         if not snap:
             continue
-        feat = symbol_feature_map.get((venue, sym), {}) or {}
+        feat = _feature_for_symbol(symbol_feature_map, str(snap.get("venue") or ""), sym)
         snap["volume_z"] = _safe_num(feat.get("volume_z"), 0.0)
         snap["spread_bps"] = _safe_num(feat.get("spread_bps"), 0.0)
         snaps.append(snap)
@@ -225,8 +326,14 @@ def compute_market_shock(
     abs_r5_vals = [abs(v) for v in r5_vals]
     vol_z_vals = [float(s.get("volume_z") or 0.0) for s in snaps]
     spread_vals = [float(s.get("spread_bps") or 0.0) for s in snaps if s.get("spread_bps") is not None]
+    age_vals = [float(s.get("age_sec") or 0.0) for s in snaps]
 
     active = len(snaps)
+    configured = len(ordered_symbols)
+    coverage_ratio = (active / configured) if configured else 0.0
+    min_required = max(3, min(configured, int(math.ceil(configured * 0.35)))) if configured else 0
+    low_coverage = active < min_required
+
     breadth_down = (
         sum(1 for s in snaps if (s.get("r5m") or 0.0) <= -0.008 and (s.get("r15m") or 0.0) <= -0.012) / active
         if active else 0.0
@@ -244,6 +351,7 @@ def compute_market_shock(
     median_abs_r5 = _median(abs_r5_vals)
     median_vol_z = _median(vol_z_vals)
     median_spread = _median(spread_vals)
+    median_age_sec = _median(age_vals)
 
     sent_regime = str(sent_agg.get("regime") or "neutral")
     sent_strength = _safe_num(sent_agg.get("strength"), 0.0)
@@ -277,23 +385,23 @@ def compute_market_shock(
 
     if breadth_down >= 0.68:
         add_signal(down_signals, "MARKET_BREADTH_DOWN", f"breadth_down={breadth_down:.0%}", 2)
-    elif breadth_down >= 0.50:
+    elif breadth_down >= 0.55:
         add_signal(down_signals, "MARKET_BREADTH_DOWN_WEAK", f"breadth_down={breadth_down:.0%}", 1)
 
     if breadth_up >= 0.68:
         add_signal(up_signals, "MARKET_BREADTH_UP", f"breadth_up={breadth_up:.0%}", 2)
-    elif breadth_up >= 0.50:
+    elif breadth_up >= 0.55:
         add_signal(up_signals, "MARKET_BREADTH_UP_WEAK", f"breadth_up={breadth_up:.0%}", 1)
 
     if median_r5 <= -0.010 and median_vol_z >= 1.0:
         add_signal(down_signals, "IMPULSE_DOWN", f"median_r5={median_r5*100:.2f}% vol_z={median_vol_z:.2f}", 2)
-    elif median_r5 <= -0.006:
-        add_signal(down_signals, "IMPULSE_DOWN_WEAK", f"median_r5={median_r5*100:.2f}%", 1)
+    elif median_r5 <= -0.008 and median_vol_z >= 0.8:
+        add_signal(down_signals, "IMPULSE_DOWN_WEAK", f"median_r5={median_r5*100:.2f}% vol_z={median_vol_z:.2f}", 1)
 
     if median_r5 >= 0.010 and median_vol_z >= 1.0:
         add_signal(up_signals, "IMPULSE_UP", f"median_r5=+{median_r5*100:.2f}% vol_z={median_vol_z:.2f}", 2)
-    elif median_r5 >= 0.006:
-        add_signal(up_signals, "IMPULSE_UP_WEAK", f"median_r5=+{median_r5*100:.2f}%", 1)
+    elif median_r5 >= 0.008 and median_vol_z >= 0.8:
+        add_signal(up_signals, "IMPULSE_UP_WEAK", f"median_r5=+{median_r5*100:.2f}% vol_z={median_vol_z:.2f}", 1)
 
     if sent_flags.get("panic") or (sent_regime == "risk_off" and sent_strength >= 0.45):
         add_signal(down_signals, "SENTIMENT_RISK_OFF", f"sentiment={sent_regime} strength={sent_strength:.2f}", 1)
@@ -302,15 +410,45 @@ def compute_market_shock(
 
     down_weight = sum(int(s["weight"]) for s in down_signals)
     up_weight = sum(int(s["weight"]) for s in up_signals)
+    down_strong = sum(1 for s in down_signals if int(s.get("weight") or 0) >= 2)
+    up_strong = sum(1 for s in up_signals if int(s.get("weight") or 0) >= 2)
+
+    strong_benchmark_down = bool(
+        btc and eth
+        and (btc.get("r5m") or 0.0) <= -0.016
+        and (eth.get("r5m") or 0.0) <= -0.020
+    )
+    strong_benchmark_up = bool(
+        btc and eth
+        and (btc.get("r5m") or 0.0) >= 0.016
+        and (eth.get("r5m") or 0.0) >= 0.020
+    )
 
     chaos = bool(
-        active >= 6
+        active >= max(6, min_required)
         and median_abs_r5 >= 0.012
         and median_vol_z >= 1.1
         and breadth_mixed >= 0.20
         and abs(median_r5) <= 0.004
     )
 
+    coverage_reason: list[dict[str, Any]] = []
+    if low_coverage:
+        coverage_reason.append({
+            "code": "LOW_COVERAGE",
+            "msg": f"fresh_symbols={active}/{configured} < required={min_required}; слабое покрытие не даёт держать guard только на узком наборе данных",
+            "weight": 0,
+        })
+
+    stale_reason: list[dict[str, Any]] = []
+    if active == 0:
+        stale_reason.append({
+            "code": "NO_FRESH_1M_DATA",
+            "msg": f"Нет свежих 1m OHLCV (age_limit={max_age_sec}s); market shock guard переведён в normal.",
+            "weight": 0,
+        })
+
+    guard_blocks_neutral = False
     if chaos:
         state = "chaos"
         severity = "lockdown"
@@ -319,36 +457,58 @@ def compute_market_shock(
         reasons = [
             {"code": "CHAOS", "msg": f"mixed breadth={breadth_mixed:.0%}, median_abs_r5={median_abs_r5*100:.2f}%", "weight": 3}
         ]
-    elif down_weight >= 4 and down_weight > up_weight:
+        guard_blocks_neutral = True
+    elif down_weight >= 5 and down_strong >= 2 and down_weight > up_weight:
         state = "red_down"
         severity = "lockdown"
         bias = "down"
         action = "LOCKDOWN"
         reasons = down_signals
-    elif up_weight >= 4 and up_weight > down_weight:
+        guard_blocks_neutral = True
+    elif up_weight >= 5 and up_strong >= 2 and up_weight > down_weight:
         state = "red_up"
         severity = "lockdown"
         bias = "up"
         action = "LOCKDOWN"
         reasons = up_signals
-    elif down_weight >= 2 and down_weight > up_weight:
+        guard_blocks_neutral = True
+    elif down_weight >= 3 and (down_strong >= 1 or breadth_down >= 0.68 or strong_benchmark_down) and down_weight > up_weight:
         state = "amber_down"
         severity = "guarded"
         bias = "down"
         action = "GUARDED"
         reasons = down_signals
-    elif up_weight >= 2 and up_weight > down_weight:
+        guard_blocks_neutral = bool(down_weight >= 4 and (down_strong >= 2 or breadth_down >= 0.68 or median_abs_r5 >= 0.010))
+    elif up_weight >= 3 and (up_strong >= 1 or breadth_up >= 0.68 or strong_benchmark_up) and up_weight > down_weight:
         state = "amber_up"
         severity = "guarded"
         bias = "up"
         action = "GUARDED"
         reasons = up_signals
+        guard_blocks_neutral = bool(up_weight >= 4 and (up_strong >= 2 or breadth_up >= 0.68 or median_abs_r5 >= 0.010))
     else:
         state = "normal"
         severity = "normal"
         bias = "neutral"
         action = "NORMAL"
         reasons = []
+
+    if active == 0:
+        state = "normal"
+        severity = "normal"
+        bias = "neutral"
+        action = "NORMAL"
+        reasons = stale_reason
+        guard_blocks_neutral = False
+    elif low_coverage and not strong_benchmark_down and not strong_benchmark_up and state != "chaos":
+        state = "normal"
+        severity = "normal"
+        bias = "neutral"
+        action = "NORMAL"
+        reasons = coverage_reason + reasons
+        guard_blocks_neutral = False
+    elif coverage_reason:
+        reasons = coverage_reason + reasons
 
     raw = {
         "ts": int(ts_now),
@@ -359,8 +519,14 @@ def compute_market_shock(
         "title": _title_map(state),
         "operator_note": _operator_note_map(state),
         "lockdown": bool(state in {"red_down", "red_up", "chaos"}),
+        "guard_blocks_neutral": bool(guard_blocks_neutral),
         "metrics": {
             "active_symbols": active,
+            "configured_symbols": configured,
+            "coverage_ratio": round(coverage_ratio, 4),
+            "min_required_symbols": int(min_required),
+            "max_age_sec": int(max_age_sec),
+            "median_age_sec": round(median_age_sec, 2),
             "breadth_down": round(breadth_down, 4),
             "breadth_up": round(breadth_up, 4),
             "breadth_mixed": round(breadth_mixed, 4),
@@ -368,6 +534,10 @@ def compute_market_shock(
             "median_abs_r5m": round(median_abs_r5, 6),
             "median_volume_z": round(median_vol_z, 4),
             "median_spread_bps": round(median_spread, 4),
+            "up_weight": int(up_weight),
+            "down_weight": int(down_weight),
+            "up_strong_signals": int(up_strong),
+            "down_strong_signals": int(down_strong),
             "btc_r5m": round(float(btc["r5m"]), 6) if btc and btc.get("r5m") is not None else None,
             "btc_r15m": round(float(btc["r15m"]), 6) if btc and btc.get("r15m") is not None else None,
             "eth_r5m": round(float(eth["r5m"]), 6) if eth and eth.get("r5m") is not None else None,
@@ -387,7 +557,7 @@ def compute_market_shock(
 
 def compute_symbol_fast_veto(conn, venue: str, symbol: str, ts_now: int, direction: str, feature_row: dict[str, Any] | None = None) -> dict[str, Any]:
     global _FAST_VETO_STATE
-    snap = _symbol_snapshot(conn, venue, symbol, ts_now)
+    snap = _symbol_snapshot(conn, venue, symbol, ts_now, max_age_sec=240)
     if not snap:
         return {
             "state": "unknown",
@@ -432,6 +602,7 @@ def compute_symbol_fast_veto(conn, venue: str, symbol: str, ts_now: int, directi
             "r3m": round(r3m, 6),
             "r5m": round(r5m, 6),
             "volume_z": round(volume_z, 4),
+            "age_sec": int(snap.get("age_sec") or 0),
         },
     }
     key = (str(venue), str(symbol), str(direction or "neutral"))
@@ -450,6 +621,7 @@ def apply_market_shock_gate(market_shock: dict[str, Any], venue: str, bot_type: 
     reasons = market_shock.get("reasons") or []
     reason_tail = "; ".join(str(r.get("msg") or r.get("code") or "") for r in reasons[:3])
     suffix = f" ({reason_tail})" if reason_tail else ""
+    guard_blocks_neutral = bool((market_shock or {}).get("guard_blocks_neutral"))
 
     if state in {"red_down", "red_up", "chaos"}:
         return [{
@@ -457,16 +629,28 @@ def apply_market_shock_gate(market_shock: dict[str, Any], venue: str, bot_type: 
             "msg": f"{title}: новые входы заблокированы{suffix}",
         }]
 
-    if state == "amber_down" and direction in {"long", "neutral"}:
+    if state == "amber_down" and direction == "long":
         return [{
             "code": "MARKET_GUARDED_DOWN",
             "msg": f"{title}: {direction} вход заблокирован{suffix}",
         }]
 
-    if state == "amber_up" and direction in {"short", "neutral"}:
+    if state == "amber_up" and direction == "short":
         return [{
             "code": "MARKET_GUARDED_UP",
             "msg": f"{title}: {direction} вход заблокирован{suffix}",
+        }]
+
+    if state == "amber_down" and direction == "neutral" and guard_blocks_neutral:
+        return [{
+            "code": "MARKET_GUARDED_DOWN_NEUTRAL",
+            "msg": f"{title}: neutral вход временно заблокирован{suffix}",
+        }]
+
+    if state == "amber_up" and direction == "neutral" and guard_blocks_neutral:
+        return [{
+            "code": "MARKET_GUARDED_UP_NEUTRAL",
+            "msg": f"{title}: neutral вход временно заблокирован{suffix}",
         }]
 
     return []
