@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from pathlib import Path
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 from .llm_review import parse_tf_secs
 
-load_dotenv()
+
+_DOTENV_LOADED = False
+
+
+def _maybe_load_dotenv() -> None:
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    if "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules:
+        return
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+    _DOTENV_LOADED = True
 
 
 def _env(key: str, default: str | None = None) -> str:
@@ -63,6 +78,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    _maybe_load_dotenv()
     venues = [v.strip() for v in _env("VENUES", "spot,linear").split(",") if v.strip()]
     symbols_spot = [s.strip().upper() for s in _env("SYMBOLS_SPOT", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
     symbols_linear = [s.strip().upper() for s in _env("SYMBOLS_LINEAR", "BTCUSDT,ETHUSDT").split(",") if s.strip()]

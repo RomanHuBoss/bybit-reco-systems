@@ -184,3 +184,34 @@ def test_api_health_exposes_llm_reviewer_config(client_and_conn, monkeypatch):
     assert 'llm_reviewer' in body
     assert body['llm_reviewer']['enabled'] is False
     assert body['llm_reviewer']['provider'] == 'ollama'
+
+
+def test_api_health_uses_explicit_llm_env_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / 'api.db'
+    monkeypatch.setenv('DB_PATH', str(db_path))
+    monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
+    monkeypatch.setenv('SYMBOLS_SPOT', 'BTCUSDT')
+    monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
+    monkeypatch.setenv('LLM_REVIEWER_ENABLED', '1')
+    monkeypatch.setenv('LLM_REVIEWER_MAX_CANDIDATES', '60')
+    monkeypatch.setenv('LLM_REVIEWER_CANDLES_PER_TF', '40')
+    monkeypatch.setenv('LLM_REVIEWER_CADENCE_SEC', '420')
+
+    sys.modules.pop('app.main', None)
+    app_main = importlib.import_module('app.main')
+    app_main.app.router.on_startup.clear()
+
+    conn = db.connect(str(db_path))
+    client = TestClient(app_main.app)
+    try:
+        resp = client.get('/api/v1/health/symbols')
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body['llm_reviewer']['enabled'] is True
+        assert body['llm_reviewer']['max_candidates'] == 60
+        assert body['llm_reviewer']['candles_per_tf'] == 40
+        assert body['llm_reviewer']['cadence_sec'] == 420
+    finally:
+        client.close()
+        conn.close()
+        sys.modules.pop('app.main', None)
