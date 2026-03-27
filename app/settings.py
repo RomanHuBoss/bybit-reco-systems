@@ -90,7 +90,7 @@ def load_settings() -> Settings:
     llm_reviewer_timeout_sec = max(5, int(_env("LLM_REVIEWER_TIMEOUT_SEC", "60")))
     llm_reviewer_tf_secs = parse_tf_secs(_env("LLM_REVIEWER_TFS", "15m,1h,4h"))
     llm_reviewer_candles_per_tf = max(16, min(96, int(_env("LLM_REVIEWER_CANDLES_PER_TF", "32"))))
-    llm_reviewer_max_candidates = max(1, min(20, int(_env("LLM_REVIEWER_MAX_CANDIDATES", "2"))))
+    llm_reviewer_max_candidates = max(1, min(100, int(_env("LLM_REVIEWER_MAX_CANDIDATES", "2"))))
     llm_reviewer_min_confidence = max(0.0, min(1.0, float(_env("LLM_REVIEWER_MIN_CONFIDENCE", "0.65"))))
     llm_reviewer_cadence_sec = max(60, int(_env("LLM_REVIEWER_CADENCE_SEC", "300")))
 
