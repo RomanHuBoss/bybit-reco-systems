@@ -15,13 +15,17 @@ DEFAULT_KEEP_ALIVE = "15m"
 
 
 SYSTEM_PROMPT = (
-    "You review crypto market data for grid-bot suitability. "
-    "Use only the supplied data. Return JSON only. Prefer neutral when ambiguous. "
-    "A strong one-way breakout is usually bad for grid bots. "
-    "For spot_grid, execution_direction must be long or neutral; if thesis is short, execution_direction must be neutral. "
+    "Ты проверяешь пригодность крипторынка для grid-ботов. "
+    "Используй только переданные данные. Верни только JSON, без markdown и пояснений. "
+    "Если картина неоднозначна, предпочитай neutral. "
+    "Сильный однонаправленный пробой обычно плох для grid-ботов. "
+    "Для spot_grid поле execution_direction может быть только long или neutral; если thesis_direction=short, то execution_direction обязан быть neutral. "
+    "Значения thesis_direction и execution_direction возвращай только как long, short или neutral. "
+    "Поля regime_view, risk_flags и summary пиши по-русски. "
+    "summary должен быть коротким, понятным и читабельным для оператора. "
     "Response schema: "
     '{"thesis_direction":"long|short|neutral","execution_direction":"long|short|neutral",'
-    '"confidence":0.0,"regime_view":"string","risk_flags":["flag"],"summary":"short text"}'
+    '"confidence":0.0,"regime_view":"русский текст","risk_flags":["русский флаг"],"summary":"краткое русское резюме"}'
 )
 
 
@@ -97,6 +101,25 @@ class LLMReviewResult:
 
 def normalize_direction(value: Any, *, allow_short: bool = True) -> str:
     s = str(value or "").strip().lower()
+    aliases = {
+        "лонг": "long",
+        "длинная": "long",
+        "длинный": "long",
+        "длинная позиция": "long",
+        "long bias": "long",
+        "шорт": "short",
+        "короткая": "short",
+        "короткий": "short",
+        "короткая позиция": "short",
+        "short bias": "short",
+        "нейтрал": "neutral",
+        "нейтрально": "neutral",
+        "нейтральный": "neutral",
+        "нейтральная": "neutral",
+        "без сделки": "neutral",
+        "no_trade": "neutral",
+    }
+    s = aliases.get(s, s)
     if s in ALLOWED_DIRECTIONS:
         if s == "short" and not allow_short:
             return "neutral"
