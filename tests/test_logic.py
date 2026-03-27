@@ -13,9 +13,12 @@ from app.outcomes import _get_first_tradeable_candle_after
 from app.llm_review import LLMReviewResult, OllamaCandleReviewer, parse_review_content
 from app.recommender import (
     _apply_llm_reviewer,
+    _advance_persistence_gate,
     _estimate_cost_model,
     _extreme_funding_block,
     _params,
+    _persistence_fresh_gap,
+    _persistence_gate_requirements,
     _score,
     _stable_range_score,
     _stabilize_direction_agg,
@@ -255,6 +258,131 @@ def test_apply_llm_reviewer_advisory_keeps_status_and_records_alignment(conn):
     assert stats["vetoed"] == 0
     assert rec["reasons"]["llm_review"]["agree_with_engine"] is True
     assert rec["reasons"]["decision_layers"]["llm_reviewer"]["status"] == "ok"
+
+
+def test_apply_llm_reviewer_reuses_recent_symbol_cache_between_bot_types(conn):
+    class CountingReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def __init__(self):
+            self.calls = 0
+
+        def review(self, payload):
+            self.calls += 1
+            return LLMReviewResult(
+                provider=self.provider,
+                model=self.model,
+                execution_direction="short",
+                thesis_direction="short",
+                confidence=0.77,
+                regime_view="bearish_range",
+                risk_flags=["carry_risk"],
+                summary="cached bearish thesis",
+            )
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_cadence_sec=300,
+        llm_reviewer_max_candidates=4,
+    )
+    reviewer = CountingReviewer()
+    recs = [
+        {
+            "rec_id": "R-llm-cache-1",
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "bot_type": "futures_grid",
+            "direction": "short",
+            "status": "recommended",
+            "score": 0.46,
+            "confidence": 0.74,
+            "expected_rr": 1.9,
+            "risk_score": 0.18,
+            "params": {"grid_levels": 8, "grid_spacing_pct": 0.9, "price_range_lower": 95.0, "price_range_upper": 105.0},
+            "reasons": {
+                "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
+                "direction_agg": {"direction": "short", "raw_direction": "short", "regime": "range", "coherence": 0.72, "trendiness": 0.18},
+                "execution_constraints": {"raw_direction": "short", "executable_direction": "short", "spot_short_neutralized": False},
+                "decision_layers": {"final_status": "recommended"},
+                "symbol_sentiment": {"effective": -0.1, "global": -0.1},
+            },
+        },
+        {
+            "rec_id": "R-llm-cache-2",
+            "venue": "spot",
+            "symbol": "BTCUSDT",
+            "bot_type": "spot_grid",
+            "direction": "neutral",
+            "status": "recommended",
+            "score": 0.38,
+            "confidence": 0.69,
+            "expected_rr": 1.2,
+            "risk_score": 0.15,
+            "params": {"grid_levels": 8, "grid_spacing_pct": 0.9, "price_range_lower": 95.0, "price_range_upper": 105.0},
+            "reasons": {
+                "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
+                "direction_agg": {"direction": "neutral", "raw_direction": "short", "regime": "range", "coherence": 0.72, "trendiness": 0.18},
+                "execution_constraints": {"raw_direction": "short", "executable_direction": "neutral", "spot_short_neutralized": True},
+                "decision_layers": {"final_status": "recommended"},
+                "symbol_sentiment": {"effective": -0.1, "global": -0.1},
+            },
+        },
+    ]
+
+    stats = _apply_llm_reviewer(
+        conn,
+        recs,
+        settings,
+        symbol_feature_map={("linear", "BTCUSDT"): {"_direction_agg": {"direction": "short"}}, ("spot", "BTCUSDT"): {"_direction_agg": {"direction": "neutral"}}},
+        symbol_llm_candle_map={("linear", "BTCUSDT"): {900: [[1, 1, 1, 1, 1, 1.0]]}, ("spot", "BTCUSDT"): {900: [[1, 1, 1, 1, 1, 1.0]]}},
+        sent_agg={"effective_score": -0.1},
+        market_shock={"state": "normal"},
+        reviewer=reviewer,
+    )
+
+    assert reviewer.calls == 1
+    assert stats["reviewed"] == 1
+    assert stats["cached"] == 1
+    assert recs[1]["reasons"]["llm_review"]["cached"] is True
+    assert recs[1]["reasons"]["llm_review"]["execution_direction"] == "neutral"
+
+
+def test_persistence_fresh_gap_allows_confirmation_across_brief_collection_gaps():
+    from app import recommender as recommender_module
+
+    recommender_module._prev_recommended = {}
+    settings = _settings_for_tests(reco_interval_sec=20)
+    fresh_gap = _persistence_fresh_gap(settings)
+
+    first = _advance_persistence_gate("linear", "BTCUSDT", "futures_grid", "long", now_ts=1_700_000_000, fresh_gap=fresh_gap)
+    second = _advance_persistence_gate("linear", "BTCUSDT", "futures_grid", "long", now_ts=1_700_000_120, fresh_gap=fresh_gap)
+
+    assert fresh_gap >= 180
+    assert first == 1
+    assert second == 2
+
+
+def test_persistence_gate_allows_immediate_publish_for_high_quality_signal():
+    settings = _settings_for_tests()
+    rec = {
+        "score": 0.19,
+        "confidence": 0.67,
+        "expected_rr": 0.22,
+        "reasons": {
+            "direction_agg": {
+                "coherence": 0.72,
+                "regime_confidence": 0.63,
+            }
+        },
+    }
+
+    required_hits, mode = _persistence_gate_requirements(rec, settings)
+
+    assert required_hits == 1
+    assert mode == "high_quality_signal"
 
 
 def _bot(

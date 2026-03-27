@@ -88,6 +88,7 @@ API поднимется на `127.0.0.1:8000`.
 - `LLM_REVIEWER_CANDLES_PER_TF=32`
 - `LLM_REVIEWER_MAX_CANDIDATES=2`
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
+- `LLM_REVIEWER_CADENCE_SEC=300` — не дёргать LLM чаще одного раза в 5 минут на символ; между вызовами используется последний свежий verdict
 
 LLM-reviewer задуман как консервативный reviewer поверх текущего движка, а не как замена scoring/risk/calibration.
 
@@ -127,6 +128,7 @@ LLM-reviewer задуман как консервативный reviewer пов�
 - funding penalty/bonus учитывает direction и реальный funding event horizon;
 - raw confidence теперь явно маркируется в UI и режется консервативным cap, чтобы оператор не путал heuristic signal с calibrated probability;
 - confidence gate применяется только когда для bot_type реально есть fitted calibrator;
+- publication gate для grid-ботов больше не требует жёстко двух подряд циклов каждые ~40–50 секунд: окно подтверждения расширено, а явно сильные сетапы могут публиковаться сразу;
 - outcome labeling для grid считается на выделенном label horizon, penalizes unresolved drift / range breach и не ждёт operator max_hours.
 
 ## Production notes

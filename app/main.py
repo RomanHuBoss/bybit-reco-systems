@@ -526,6 +526,7 @@ def api_symbol_health() -> dict[str, Any]:
                 "candles_per_tf": int(getattr(settings, "llm_reviewer_candles_per_tf", 48) or 48),
                 "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4),
                 "min_confidence": float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65),
+                "cadence_sec": int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300),
             },
             "symbols": items,
         }

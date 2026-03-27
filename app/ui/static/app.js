@@ -1294,6 +1294,7 @@ async function loadHealth() {
         { name: "Свечей на ТФ", value: llm.candles_per_tf ?? "—" },
         { name: "Max кандидатов", value: llm.max_candidates ?? "—" },
         { name: "Мин. уверенность", value: llm.min_confidence ?? "—" },
+        { name: "Каденс по символу", value: llm.cadence_sec == null ? "—" : `${llm.cadence_sec} сек` },
       ], { emptyText: "Конфигурация reviewer недоступна." })}
     </div>
     <div class="modal-section">

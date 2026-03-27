@@ -14,7 +14,7 @@ from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .outcomes import BOT_HORIZONS
 from .bot_types import SUPPORTED_BOT_TYPES
-from .llm_review import OllamaCandleReviewer, build_review_payload
+from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
@@ -26,6 +26,7 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
+LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 
 def _fmt_tf(tf_sec: int) -> str:
     if tf_sec % 86400 == 0:
@@ -100,6 +101,15 @@ def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
         decision_layers = {}
         reasons["decision_layers"] = decision_layers
     decision_layers["final_status"] = rec.get("status")
+    publication_gate = reasons.get("publication_gate")
+    if isinstance(publication_gate, dict):
+        decision_layers["publication_gate"] = {
+            "required_hits": publication_gate.get("required_hits"),
+            "observed_hits": publication_gate.get("observed_hits"),
+            "mode": publication_gate.get("mode"),
+            "bypassed": publication_gate.get("bypassed"),
+            "passed": publication_gate.get("passed"),
+        }
     llm_review = reasons.get("llm_review")
     if isinstance(llm_review, dict):
         decision_layers["llm_reviewer"] = {
@@ -109,7 +119,175 @@ def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
             "agree_with_engine": llm_review.get("agree_with_engine"),
             "confidence": llm_review.get("confidence"),
             "execution_direction": llm_review.get("execution_direction"),
+            "cached": llm_review.get("cached"),
+            "cache_age_sec": llm_review.get("cache_age_sec"),
         }
+
+
+def _load_llm_review_cache(conn) -> dict[str, dict[str, Any]]:
+    raw = db.get_app_config_json(conn, LLM_REVIEW_CACHE_APP_KEY, default={}) or {}
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, state in raw.items():
+        if not isinstance(key, str) or not isinstance(state, dict):
+            continue
+        try:
+            out[key] = {
+                "ts": int(state.get("ts", 0) or 0),
+                "provider": str(state.get("provider") or "ollama"),
+                "model": str(state.get("model") or ""),
+                "prompt_version": str(state.get("prompt_version") or ""),
+                "thesis_direction": normalize_direction(state.get("thesis_direction"), allow_short=True),
+                "confidence": float(state.get("confidence", 0.0) or 0.0),
+                "regime_view": str(state.get("regime_view") or "unknown"),
+                "summary": state.get("summary"),
+                "risk_flags": [str(x) for x in (state.get("risk_flags") or [])[:8]],
+            }
+        except Exception:
+            continue
+    return out
+
+
+def _save_llm_review_cache(conn, state: dict[str, dict[str, Any]], cadence_sec: int) -> None:
+    now = int(time.time())
+    ttl = max(int(cadence_sec) * 4, 1800)
+    payload: dict[str, dict[str, Any]] = {}
+    for key, meta in (state or {}).items():
+        if not isinstance(key, str) or not isinstance(meta, dict):
+            continue
+        ts = int(meta.get("ts", 0) or 0)
+        if ts <= 0 or now - ts > ttl:
+            continue
+        payload[key] = {
+            "ts": ts,
+            "provider": str(meta.get("provider") or "ollama"),
+            "model": str(meta.get("model") or ""),
+            "prompt_version": str(meta.get("prompt_version") or ""),
+            "thesis_direction": normalize_direction(meta.get("thesis_direction"), allow_short=True),
+            "confidence": float(meta.get("confidence", 0.0) or 0.0),
+            "regime_view": str(meta.get("regime_view") or "unknown"),
+            "summary": meta.get("summary"),
+            "risk_flags": [str(x) for x in (meta.get("risk_flags") or [])[:8]],
+        }
+    db.set_app_config_json(conn, LLM_REVIEW_CACHE_APP_KEY, payload)
+
+
+def _llm_cache_key(rec: dict[str, Any]) -> str:
+    return str(rec.get("symbol") or "").upper()
+
+
+def _cache_meta_from_result(result: Any) -> dict[str, Any] | None:
+    if str(getattr(result, "status", "")) != "ok":
+        return None
+    return {
+        "provider": getattr(result, "provider", "ollama"),
+        "model": getattr(result, "model", ""),
+        "prompt_version": getattr(result, "prompt_version", ""),
+        "thesis_direction": normalize_direction(getattr(result, "thesis_direction", None), allow_short=True),
+        "confidence": float(getattr(result, "confidence", 0.0) or 0.0),
+        "regime_view": str(getattr(result, "regime_view", "unknown") or "unknown"),
+        "summary": getattr(result, "summary", None),
+        "risk_flags": [str(x) for x in (getattr(result, "risk_flags", []) or [])[:8]],
+    }
+
+
+def _build_cached_review_dict(meta: dict[str, Any], rec: dict[str, Any], mode: str, age_sec: int) -> dict[str, Any]:
+    thesis_direction = normalize_direction(meta.get("thesis_direction"), allow_short=True)
+    allow_short_exec = str(rec.get("bot_type") or "") != "spot_grid"
+    execution_direction = normalize_direction(thesis_direction, allow_short=allow_short_exec)
+    if thesis_direction == "neutral":
+        execution_direction = "neutral"
+    if str(rec.get("bot_type") or "") == "spot_grid" and thesis_direction == "short":
+        execution_direction = "neutral"
+    return {
+        "provider": meta.get("provider") or "ollama",
+        "model": meta.get("model") or "",
+        "prompt_version": meta.get("prompt_version") or "",
+        "status": "ok",
+        "mode": mode,
+        "gate_decision": "pass",
+        "thesis_direction": thesis_direction,
+        "execution_direction": execution_direction,
+        "confidence": float(meta.get("confidence", 0.0) or 0.0),
+        "regime_view": str(meta.get("regime_view") or "unknown"),
+        "summary": meta.get("summary"),
+        "risk_flags": [str(x) for x in (meta.get("risk_flags") or [])[:8]],
+        "agree_with_engine": execution_direction == normalize_direction(rec.get("direction"), allow_short=allow_short_exec),
+        "cached": True,
+        "cache_age_sec": int(max(0, age_sec)),
+    }
+
+
+def _apply_llm_review_decision(
+    conn,
+    rec: dict[str, Any],
+    review_dict: dict[str, Any],
+    *,
+    min_conf: float,
+    source: str,
+    latency_ms: int | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> tuple[bool, bool]:
+    mode = str(review_dict.get("mode") or "advisory")
+    venue = str(rec.get("venue") or "")
+    symbol = str(rec.get("symbol") or "")
+    bot_type = str(rec.get("bot_type") or "")
+    status = str(review_dict.get("status") or "unknown")
+
+    if status == "error":
+        db.log_decision(conn, "LLM_REVIEW_ERROR", rec.get("rec_id"), None, {
+            "venue": venue,
+            "symbol": symbol,
+            "bot_type": bot_type,
+            "model": review_dict.get("model"),
+            "source": source,
+            "error": review_dict.get("error"),
+            "latency_ms": latency_ms,
+            "diagnostics": diagnostics or {},
+        })
+        return False, True
+
+    if mode == "gate" and float(review_dict.get("confidence") or 0.0) >= float(min_conf) and str(review_dict.get("execution_direction") or "neutral") != str(rec.get("direction") or "neutral"):
+        prev_status = str(rec.get("status") or "")
+        rec["status"] = "no_trade"
+        review_dict["gate_decision"] = "veto"
+        review_dict["gate_reason"] = "execution_direction_mismatch"
+        db.log_decision(conn, "LLM_REVIEW_VETO", rec.get("rec_id"), None, {
+            "venue": venue,
+            "symbol": symbol,
+            "bot_type": bot_type,
+            "prev_status": prev_status,
+            "new_status": rec["status"],
+            "engine_direction": rec.get("direction"),
+            "llm_execution_direction": review_dict.get("execution_direction"),
+            "llm_thesis_direction": review_dict.get("thesis_direction"),
+            "llm_confidence": review_dict.get("confidence"),
+            "model": review_dict.get("model"),
+            "source": source,
+            "latency_ms": latency_ms,
+            "diagnostics": diagnostics or {},
+        })
+        return True, False
+
+    db.log_decision(conn, "LLM_REVIEW_OK", rec.get("rec_id"), None, {
+        "venue": venue,
+        "symbol": symbol,
+        "bot_type": bot_type,
+        "engine_direction": rec.get("direction"),
+        "llm_execution_direction": review_dict.get("execution_direction"),
+        "llm_thesis_direction": review_dict.get("thesis_direction"),
+        "llm_confidence": review_dict.get("confidence"),
+        "mode": mode,
+        "gate_decision": review_dict.get("gate_decision"),
+        "model": review_dict.get("model"),
+        "source": source,
+        "cached": bool(review_dict.get("cached")),
+        "cache_age_sec": review_dict.get("cache_age_sec"),
+        "latency_ms": latency_ms,
+        "diagnostics": diagnostics or {},
+    })
+    return False, False
 
 
 def _apply_llm_reviewer(
@@ -123,7 +301,7 @@ def _apply_llm_reviewer(
     market_shock: dict[str, Any],
     reviewer: OllamaCandleReviewer | None = None,
 ) -> dict[str, int]:
-    stats = {"reviewed": 0, "vetoed": 0, "errors": 0, "skipped": 0}
+    stats = {"reviewed": 0, "cached": 0, "vetoed": 0, "errors": 0, "skipped": 0}
     if not bool(getattr(settings, "llm_reviewer_enabled", False)):
         return stats
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
@@ -145,12 +323,44 @@ def _apply_llm_reviewer(
 
     max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4))
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65)
+    cadence_sec = max(60, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+    llm_cache = _load_llm_review_cache(conn)
+    cache_dirty = False
+    live_calls = 0
+
     candidates = [r for r in recs if str(r.get("status") or "") == "recommended"]
     candidates.sort(key=lambda r: (float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
 
-    for idx, rec in enumerate(candidates):
+    for rec in candidates:
         reasons = rec.setdefault("reasons", {})
-        if idx >= max_candidates:
+        venue = str(rec.get("venue") or "")
+        symbol = str(rec.get("symbol") or "")
+        cache_key = _llm_cache_key(rec)
+        cache_meta = llm_cache.get(cache_key) or {}
+        cache_age = None
+        if cache_meta:
+            cache_age = max(0, int(time.time()) - int(cache_meta.get("ts", 0) or 0))
+
+        cache_is_fresh = (
+            cache_meta
+            and cache_age is not None
+            and cache_age <= cadence_sec
+            and str(cache_meta.get("model") or "") == str(getattr(reviewer, "model", "") or "")
+            and str(cache_meta.get("provider") or "") == str(getattr(reviewer, "provider", "ollama") or "ollama")
+        )
+        if cache_is_fresh:
+            review_dict = _build_cached_review_dict(cache_meta, rec, mode, int(cache_age or 0))
+            reasons["llm_review"] = review_dict
+            stats["cached"] += 1
+            vetoed, errored = _apply_llm_review_decision(conn, rec, review_dict, min_conf=min_conf, source="cache", diagnostics={"cache_key": cache_key})
+            if vetoed:
+                stats["vetoed"] += 1
+            if errored:
+                stats["errors"] += 1
+            _sync_recommendation_metadata(rec)
+            continue
+
+        if live_calls >= max_candidates:
             reasons["llm_review"] = {
                 "provider": getattr(reviewer, "provider", "ollama"),
                 "model": getattr(reviewer, "model", ""),
@@ -163,8 +373,6 @@ def _apply_llm_reviewer(
             _sync_recommendation_metadata(rec)
             continue
 
-        venue = str(rec.get("venue") or "")
-        symbol = str(rec.get("symbol") or "")
         f = symbol_feature_map.get((venue, symbol)) or {}
         direction_agg = (reasons.get("direction_agg") if isinstance(reasons, dict) else None) or f.get("_direction_agg") or {}
         sentiment_summary = (reasons.get("symbol_sentiment") if isinstance(reasons, dict) else None) or {
@@ -187,56 +395,30 @@ def _apply_llm_reviewer(
         review_dict["gate_decision"] = "pass"
         reasons["llm_review"] = review_dict
         stats["reviewed"] += 1
+        live_calls += 1
 
-        if result.status == "error":
-            stats["errors"] += 1
-            db.log_decision(conn, "LLM_REVIEW_ERROR", rec.get("rec_id"), None, {
-                "venue": venue,
-                "symbol": symbol,
-                "bot_type": rec.get("bot_type"),
-                "model": getattr(reviewer, "model", None),
-                "error": result.error,
-                "latency_ms": result.latency_ms,
-                "diagnostics": result.diagnostics,
-            })
-            _sync_recommendation_metadata(rec)
-            continue
+        cache_meta_new = _cache_meta_from_result(result)
+        if cache_meta_new is not None:
+            llm_cache[cache_key] = {"ts": int(time.time()), **cache_meta_new}
+            cache_dirty = True
 
-        if mode == "gate" and result.confidence >= min_conf and result.execution_direction != str(rec.get("direction") or "neutral"):
-            prev_status = str(rec.get("status") or "")
-            rec["status"] = "no_trade"
-            review_dict["gate_decision"] = "veto"
-            review_dict["gate_reason"] = "execution_direction_mismatch"
+        vetoed, errored = _apply_llm_review_decision(
+            conn,
+            rec,
+            review_dict,
+            min_conf=min_conf,
+            source="live",
+            latency_ms=getattr(result, "latency_ms", None),
+            diagnostics=getattr(result, "diagnostics", {}),
+        )
+        if vetoed:
             stats["vetoed"] += 1
-            db.log_decision(conn, "LLM_REVIEW_VETO", rec.get("rec_id"), None, {
-                "venue": venue,
-                "symbol": symbol,
-                "bot_type": rec.get("bot_type"),
-                "prev_status": prev_status,
-                "new_status": rec["status"],
-                "engine_direction": rec.get("direction"),
-                "llm_execution_direction": result.execution_direction,
-                "llm_confidence": result.confidence,
-                "model": getattr(reviewer, "model", None),
-                "latency_ms": result.latency_ms,
-                "diagnostics": result.diagnostics,
-            })
-        else:
-            db.log_decision(conn, "LLM_REVIEW_OK", rec.get("rec_id"), None, {
-                "venue": venue,
-                "symbol": symbol,
-                "bot_type": rec.get("bot_type"),
-                "engine_direction": rec.get("direction"),
-                "llm_execution_direction": result.execution_direction,
-                "llm_thesis_direction": result.thesis_direction,
-                "llm_confidence": result.confidence,
-                "mode": mode,
-                "gate_decision": review_dict.get("gate_decision"),
-                "model": getattr(reviewer, "model", None),
-                "latency_ms": result.latency_ms,
-                "diagnostics": result.diagnostics,
-            })
+        if errored:
+            stats["errors"] += 1
         _sync_recommendation_metadata(rec)
+
+    if cache_dirty:
+        _save_llm_review_cache(conn, llm_cache, cadence_sec)
 
     return stats
 
@@ -984,6 +1166,36 @@ def _reset_persistence_gate(venue: str, sym: str, bot_type: str) -> None:
         _prev_recommended.pop((venue, sym, bot_type, other_dir), None)
 
 
+def _persistence_fresh_gap(settings) -> int:
+    reco_interval = max(15, int(getattr(settings, "reco_interval_sec", 20) or 20))
+    return max(180, min(600, reco_interval * 15))
+
+
+def _persistence_gate_requirements(rec: dict[str, Any], settings) -> tuple[int, str]:
+    score = float(rec.get("score") or 0.0)
+    confidence = float(rec.get("confidence") or 0.0)
+    expected_rr = float(rec.get("expected_rr") or 0.0)
+    reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
+    direction_agg = reasons.get("direction_agg") if isinstance(reasons.get("direction_agg"), dict) else {}
+    coherence = float(direction_agg.get("coherence") or 0.0)
+    regime_conf = float(direction_agg.get("regime_confidence") or 0.0)
+
+    strong_score_thr = max(float(getattr(settings, "min_score_to_recommend", 0.08) or 0.08) + 0.04, 0.14)
+    strong_conf_thr = max(float(getattr(settings, "min_conf_to_recommend", 0.52) or 0.52) + 0.08, 0.62)
+    strong_rr_thr = 0.14
+
+    is_high_quality = (
+        score >= strong_score_thr
+        and confidence >= strong_conf_thr
+        and expected_rr >= strong_rr_thr
+        and coherence >= 0.60
+        and regime_conf >= 0.55
+    )
+    if is_high_quality:
+        return 1, "high_quality_signal"
+    return 2, "two_cycle_confirmation"
+
+
 _direction_state_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
 
@@ -1256,7 +1468,7 @@ def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
 
 def run_recommender_once(conn, settings) -> dict[str, Any]:
     global _prev_recommended, _direction_state_cache
-    _fresh_gap = max(45, int(settings.reco_interval_sec * 2.5))
+    _fresh_gap = _persistence_fresh_gap(settings)
     _prev_recommended = _load_prev_recommended(conn)
     _direction_state_cache = _load_direction_state(conn)
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
@@ -1832,6 +2044,60 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 if r["status"] == "recommended":
                     r["status"] = "suppressed"
 
+        # Apply persistence gate only to FINAL published recommendations.
+        # This avoids confirming a bot that was internally recommended but then
+        # suppressed by the cross-bot best-per-symbol selector.
+        for r in recs:
+            reasons = r.setdefault("reasons", {})
+            if r.get("bot_type") not in PERSISTENCE_BOTS:
+                reasons["publication_gate"] = {
+                    "mode": "not_applicable",
+                    "required_hits": 1,
+                    "observed_hits": 1 if r.get("status") == "recommended" else 0,
+                    "fresh_gap_sec": int(_fresh_gap),
+                    "bypassed": False,
+                    "passed": bool(r.get("status") == "recommended"),
+                }
+                continue
+            if r.get("status") == "recommended":
+                required_hits, gate_mode = _persistence_gate_requirements(r, settings)
+                count = _advance_persistence_gate(
+                    str(r.get("venue") or ""),
+                    str(r.get("symbol") or ""),
+                    str(r.get("bot_type") or ""),
+                    str(r.get("direction") or "neutral"),
+                    ts_now,
+                    _fresh_gap,
+                )
+                passed = count >= required_hits
+                reasons["publication_gate"] = {
+                    "mode": gate_mode,
+                    "required_hits": int(required_hits),
+                    "observed_hits": int(count),
+                    "fresh_gap_sec": int(_fresh_gap),
+                    "bypassed": bool(required_hits == 1 and gate_mode != "two_cycle_confirmation"),
+                    "passed": bool(passed),
+                }
+                if not passed:
+                    r["status"] = "suppressed"
+            else:
+                reasons["publication_gate"] = {
+                    "mode": "not_recommended",
+                    "required_hits": 2,
+                    "observed_hits": 0,
+                    "fresh_gap_sec": int(_fresh_gap),
+                    "bypassed": False,
+                    "passed": False,
+                }
+                _reset_persistence_gate(
+                    str(r.get("venue") or ""),
+                    str(r.get("symbol") or ""),
+                    str(r.get("bot_type") or ""),
+                )
+
+        _save_prev_recommended(conn, _prev_recommended, _fresh_gap)
+        _save_direction_state(conn, _direction_state_cache, _fresh_gap)
+
         llm_review_stats = _apply_llm_reviewer(
             conn,
             recs,
@@ -1841,33 +2107,6 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             sent_agg=sent_agg,
             market_shock=market_shock,
         )
-
-        # Apply persistence gate only to FINAL published recommendations.
-        # This avoids confirming a bot that was internally recommended but then
-        # suppressed by the cross-bot best-per-symbol selector.
-        for r in recs:
-            if r.get("bot_type") not in PERSISTENCE_BOTS:
-                continue
-            if r.get("status") == "recommended":
-                count = _advance_persistence_gate(
-                    str(r.get("venue") or ""),
-                    str(r.get("symbol") or ""),
-                    str(r.get("bot_type") or ""),
-                    str(r.get("direction") or "neutral"),
-                    ts_now,
-                    _fresh_gap,
-                )
-                if count < 2:
-                    r["status"] = "suppressed"
-            else:
-                _reset_persistence_gate(
-                    str(r.get("venue") or ""),
-                    str(r.get("symbol") or ""),
-                    str(r.get("bot_type") or ""),
-                )
-
-        _save_prev_recommended(conn, _prev_recommended, _fresh_gap)
-        _save_direction_state(conn, _direction_state_cache, _fresh_gap)
 
         for r in recs:
             _sync_recommendation_metadata(r)
