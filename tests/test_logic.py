@@ -19,6 +19,7 @@ from app.recommender import (
     _params,
     _persistence_fresh_gap,
     _persistence_gate_requirements,
+    _recommendation_ttl_sec,
     _score,
     _stable_range_score,
     _stabilize_direction_agg,
@@ -383,6 +384,22 @@ def test_persistence_gate_allows_immediate_publish_for_high_quality_signal():
 
     assert required_hits == 1
     assert mode == "high_quality_signal"
+
+
+def test_recommendation_ttl_defaults_to_reco_cadence_not_collect_cadence():
+    settings = _settings_for_tests(collect_interval_sec=20, reco_interval_sec=240)
+
+    ttl_sec = _recommendation_ttl_sec(settings)
+
+    assert ttl_sec == 3600
+
+
+def test_recommendation_ttl_respects_explicit_override():
+    settings = _settings_for_tests(reco_interval_sec=20, reco_ttl_sec=1800)
+
+    ttl_sec = _recommendation_ttl_sec(settings)
+
+    assert ttl_sec == 1800
 
 
 def _bot(

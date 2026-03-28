@@ -75,6 +75,9 @@ class Settings:
     llm_reviewer_max_candidates: int = 2
     llm_reviewer_min_confidence: float = 0.65
     llm_reviewer_cadence_sec: int = 300
+    reco_ttl_sec: int | None = None
+    outcomes_interval_sec: int = 60
+    outcomes_max_to_process: int = 200
 
 
 def load_settings() -> Settings:
@@ -109,6 +112,10 @@ def load_settings() -> Settings:
     llm_reviewer_max_candidates = max(1, min(100, int(_env("LLM_REVIEWER_MAX_CANDIDATES", "2"))))
     llm_reviewer_min_confidence = max(0.0, min(1.0, float(_env("LLM_REVIEWER_MIN_CONFIDENCE", "0.65"))))
     llm_reviewer_cadence_sec = max(60, int(_env("LLM_REVIEWER_CADENCE_SEC", "300")))
+    reco_ttl_raw = os.getenv("RECO_TTL_SEC")
+    reco_ttl_sec = None if reco_ttl_raw in (None, "") else max(180, int(reco_ttl_raw))
+    outcomes_interval_sec = max(20, int(_env("OUTCOMES_INTERVAL_SEC", "60")))
+    outcomes_max_to_process = max(10, min(2000, int(_env("OUTCOMES_MAX_TO_PROCESS", "200"))))
 
     return Settings(
         require_conf_gate=require_conf_gate,
@@ -145,4 +152,7 @@ def load_settings() -> Settings:
         llm_reviewer_max_candidates=llm_reviewer_max_candidates,
         llm_reviewer_min_confidence=llm_reviewer_min_confidence,
         llm_reviewer_cadence_sec=llm_reviewer_cadence_sec,
+        reco_ttl_sec=reco_ttl_sec,
+        outcomes_interval_sec=outcomes_interval_sec,
+        outcomes_max_to_process=outcomes_max_to_process,
     )

@@ -22,6 +22,9 @@ def connect(db_path: str) -> sqlite3.Connection:
     try:
         conn.execute("PRAGMA busy_timeout=60000;")
         conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
     except Exception:
         logger.debug("PRAGMA setup error", exc_info=True)
     return conn
@@ -688,6 +691,29 @@ def get_latest_reco_ts(conn: sqlite3.Connection, venue: str | None = None) -> in
         cur = conn.execute(f"""SELECT MAX(ts) AS m FROM recommendations WHERE {_supported_sql}""", _supported_params)
     r = cur.fetchone()
     return int(r["m"]) if r and r["m"] is not None else None
+
+
+def get_recommendation_status_counts(
+    conn: sqlite3.Connection,
+    venue: str | None = None,
+    snapshot_ts: int | None = None,
+) -> dict[str, int]:
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
+    if snapshot_ts is not None:
+        q = f"""SELECT status, COUNT(*) AS c FROM recommendations WHERE ts = ? AND {_supported_sql}"""
+        params: list[Any] = [snapshot_ts, *_supported_params]
+    else:
+        q = f"""SELECT status, COUNT(*) AS c FROM recommendations WHERE ts > ? AND {_supported_sql}"""
+        params = [now_ts() - 86400, *_supported_params]
+    if venue:
+        q += " AND venue=?"
+        params.append(venue)
+    q += " GROUP BY status"
+    cur = conn.execute(q, params)
+    counts = {k: 0 for k in ("recommended", "blocked", "no_trade", "suppressed", "expired", "executed", "ignored")}
+    for row in cur.fetchall():
+        counts[str(row["status"])] = int(row["c"] or 0)
+    return counts
 
 
 # ── funding rate ──────────────────────────────────────────────────────────────

@@ -41,6 +41,19 @@ def _get_conn():
     return db.connect(settings.db_path)
 
 
+def _interval_loop_start(interval_sec: int) -> float:
+    return time.monotonic() + max(1, int(interval_sec))
+
+
+def _interval_loop_wait(next_run: float, interval_sec: int) -> float:
+    interval = max(1, int(interval_sec))
+    now = time.monotonic()
+    if now < next_run:
+        time.sleep(next_run - now)
+    # If the previous iteration overran, do not add another full sleep on top.
+    return max(next_run + interval, time.monotonic())
+
+
 def _bootstrap_db() -> None:
     with closing(_get_conn()) as conn:
         db.init_db(conn)
@@ -324,6 +337,9 @@ def api_recommendations(
         )
 
         no_trade = True
+        status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
+        snapshot_age_sec = None if snapshot_ts is None else max(0, int(time.time()) - int(snapshot_ts))
+        snapshot_is_stale = bool(snapshot_age_sec is not None and snapshot_age_sec > max(180, int(settings.reco_interval_sec) * 3))
         if snapshot_ts is not None:
             no_trade = db.count_visible_recommendations(
                 conn,
@@ -342,7 +358,17 @@ def api_recommendations(
             "confidence": 0.0,
         }
 
-        return {"ts": int(time.time()), "regime": regime, "items": items, "no_trade": no_trade, "min_conf": float(effective_min_conf)}
+        return {
+            "ts": int(time.time()),
+            "snapshot_ts": snapshot_ts,
+            "snapshot_age_sec": snapshot_age_sec,
+            "snapshot_is_stale": snapshot_is_stale,
+            "regime": regime,
+            "items": items,
+            "no_trade": no_trade,
+            "min_conf": float(effective_min_conf),
+            "status_counts": status_counts,
+        }
 
 
 @app.get("/api/v1/recommendations/{rec_id}")
@@ -574,28 +600,27 @@ def _collector_thread():
     _last_futures_collect = 0.0
     lock_key = "runtime:collector"
     lock_ttl = max(60, settings.collect_interval_sec * 4)
+    next_run = _interval_loop_start(settings.collect_interval_sec)
     try:
         while True:
             with closing(_get_conn()) as conn:
                 has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
-            if not has_lock:
-                time.sleep(settings.collect_interval_sec)
-                continue
-            with closing(_get_conn()) as conn:
-                for venue in settings.venues:
-                    symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
-                    try:
-                        collect_once(conn, client, venue, symbols)
-                    except Exception as e:
-                        db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
-            if time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
+            if has_lock:
                 with closing(_get_conn()) as conn:
-                    try:
-                        collect_futures_once(conn, client, settings.symbols_linear)
-                        _last_futures_collect = time.time()
-                    except Exception as e:
-                        db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
-            time.sleep(settings.collect_interval_sec)
+                    for venue in settings.venues:
+                        symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
+                        try:
+                            collect_once(conn, client, venue, symbols)
+                        except Exception as e:
+                            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
+                if time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
+                    with closing(_get_conn()) as conn:
+                        try:
+                            collect_futures_once(conn, client, settings.symbols_linear)
+                            _last_futures_collect = time.time()
+                        except Exception as e:
+                            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
+            next_run = _interval_loop_wait(next_run, settings.collect_interval_sec)
     finally:
         client.close()
 
@@ -603,73 +628,77 @@ def _collector_thread():
 def _sentiment_thread():
     lock_key = "runtime:sentiment"
     lock_ttl = max(60, settings.sentiment_interval_sec * 4)
+    next_run = _interval_loop_start(settings.sentiment_interval_sec)
     while True:
         with closing(_get_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
-        if not has_lock:
-            time.sleep(settings.sentiment_interval_sec)
-            continue
-        with closing(_get_conn()) as conn:
-            try:
-                pts = collect_sentiment_once()
-                for p in pts:
-                    db.insert_sentiment_point(conn, p["scope"], p["key"], p["ts"], p["sentiment"], p["velocity"], p["volume"], p["sources"], p["tags"])
-                db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)})
-            except Exception as e:
-                db.log_decision(conn, "SENTIMENT_ERROR", None, None, {"err": str(e)})
-        time.sleep(settings.sentiment_interval_sec)
+        if has_lock:
+            with closing(_get_conn()) as conn:
+                try:
+                    pts = collect_sentiment_once()
+                    for p in pts:
+                        db.insert_sentiment_point(conn, p["scope"], p["key"], p["ts"], p["sentiment"], p["velocity"], p["volume"], p["sources"], p["tags"])
+                    db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)})
+                except Exception as e:
+                    db.log_decision(conn, "SENTIMENT_ERROR", None, None, {"err": str(e)})
+        next_run = _interval_loop_wait(next_run, settings.sentiment_interval_sec)
 
 
 def _reco_thread():
     _last_prune = 0.0
+    _last_outcomes = 0.0
     PRUNE_INTERVAL = 3600
     lock_key = "runtime:reco"
     lock_ttl = max(60, settings.reco_interval_sec * 4)
+    next_run = _interval_loop_start(settings.reco_interval_sec)
     while True:
         result = {}
         with closing(_get_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
-        if not has_lock:
-            time.sleep(settings.reco_interval_sec)
-            continue
-
-        with closing(_get_conn()) as conn:
-            try:
-                result = run_recommender_once(conn, settings)
-                compute_outcomes_once(conn, horizon_sec=settings.outcome_horizon_fallback_sec)
-            except Exception as e:
-                db.log_decision(conn, "RECO_ERROR", None, None, {"err": str(e)})
-
-        with closing(_get_conn()) as conn:
-            try:
-                db.expire_stale_recommendations(conn)
-            except Exception:
-                logger.debug("expire_stale_recommendations error", exc_info=True)
-
-        if time.time() - _last_prune >= PRUNE_INTERVAL:
+        if has_lock:
             with closing(_get_conn()) as conn:
                 try:
-                    deleted = db.prune_old_data(conn, retain_days=7)
-                    db.log_decision(conn, "DB_PRUNE", None, None, deleted)
-                    _last_prune = time.time()
+                    result = run_recommender_once(conn, settings)
+                    if time.time() - _last_outcomes >= int(getattr(settings, "outcomes_interval_sec", 60) or 60):
+                        compute_outcomes_once(
+                            conn,
+                            horizon_sec=settings.outcome_horizon_fallback_sec,
+                            max_to_process=int(getattr(settings, "outcomes_max_to_process", 200) or 200),
+                        )
+                        _last_outcomes = time.time()
+                except Exception as e:
+                    db.log_decision(conn, "RECO_ERROR", None, None, {"err": str(e)})
+
+            with closing(_get_conn()) as conn:
+                try:
+                    db.expire_stale_recommendations(conn)
                 except Exception:
-                    logger.debug("prune_old_data error", exc_info=True)
+                    logger.debug("expire_stale_recommendations error", exc_info=True)
 
-        if settings.telegram_token:
-            try:
+            if time.time() - _last_prune >= PRUNE_INTERVAL:
                 with closing(_get_conn()) as conn:
-                    health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
-                    err_cur = conn.execute(
-                        """SELECT COUNT(*) as c FROM decision_log
-                           WHERE action='COLLECT_ERROR' AND ts >= ?""",
-                        (int(time.time()) - 600,),
-                    )
-                    err_count = int(err_cur.fetchone()["c"])
-                check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
-            except Exception:
-                logger.debug("telegram alert error", exc_info=True)
+                    try:
+                        deleted = db.prune_old_data(conn, retain_days=7)
+                        db.log_decision(conn, "DB_PRUNE", None, None, deleted)
+                        _last_prune = time.time()
+                    except Exception:
+                        logger.debug("prune_old_data error", exc_info=True)
 
-        time.sleep(settings.reco_interval_sec)
+            if settings.telegram_token:
+                try:
+                    with closing(_get_conn()) as conn:
+                        health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
+                        err_cur = conn.execute(
+                            """SELECT COUNT(*) as c FROM decision_log
+                               WHERE action='COLLECT_ERROR' AND ts >= ?""",
+                            (int(time.time()) - 600,),
+                        )
+                        err_count = int(err_cur.fetchone()["c"])
+                    check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
+                except Exception:
+                    logger.debug("telegram alert error", exc_info=True)
+
+        next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
 
 
 @app.get("/api/v1/status")

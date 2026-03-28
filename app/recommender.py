@@ -1171,6 +1171,20 @@ def _persistence_fresh_gap(settings) -> int:
     return max(180, min(600, reco_interval * 15))
 
 
+def _recommendation_ttl_sec(settings) -> int:
+    explicit_ttl = getattr(settings, "reco_ttl_sec", None)
+    if explicit_ttl is not None:
+        try:
+            return max(180, int(explicit_ttl))
+        except Exception:
+            pass
+    reco_interval = max(20, int(getattr(settings, "reco_interval_sec", 20) or 20))
+    # Recommendations should survive materially longer than a single cycle.
+    # Using collect_interval here was inconsistent with the actual publish cadence
+    # and made operational gaps far more likely when the recommender loop slowed down.
+    return max(900, reco_interval * 15)
+
+
 def _persistence_gate_requirements(rec: dict[str, Any], settings) -> tuple[int, str]:
     score = float(rec.get("score") or 0.0)
     confidence = float(rec.get("confidence") or 0.0)
@@ -2008,7 +2022,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "reasons": reasons2,
                 "blocks": blocks,
                 "status": status,
-                "ttl_sec": max(180, settings.collect_interval_sec * 15),  # at least 15 collect cycles
+                "ttl_sec": _recommendation_ttl_sec(settings),
                 "model_version": model_version,
                 "features_ref_ts": int(f["ts_last"]),
             })

@@ -175,6 +175,71 @@ def test_api_execute_and_trade_lifecycle_is_idempotent(client_and_conn):
 
 
 
+def test_api_recommendations_exposes_snapshot_metadata_and_status_counts(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_regime(conn, ts_now, {'vol_state': 'low', 'trend_state': 'mixed', 'risk_state': 'risk_on', 'confidence': 0.61})
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-rec',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.41,
+                'confidence': 0.71,
+                'expected_rr': 1.2,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            },
+            {
+                'rec_id': 'R-api-supp',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'ETHUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'neutral',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.11,
+                'confidence': 0.62,
+                'expected_rr': 0.3,
+                'risk_score': 0.1,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'suppressed',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            },
+        ],
+    )
+
+    resp = client.get('/api/v1/recommendations?show_suppressed=true&min_conf=0')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['snapshot_ts'] == ts_now
+    assert body['snapshot_age_sec'] >= 0
+    assert body['snapshot_is_stale'] is False
+    assert body['status_counts']['recommended'] == 1
+    assert body['status_counts']['suppressed'] == 1
+    assert body['no_trade'] is False
+    assert len(body['items']) == 2
+
+
 def test_api_health_exposes_llm_reviewer_config(client_and_conn, monkeypatch):
     client, _ = client_and_conn
 
