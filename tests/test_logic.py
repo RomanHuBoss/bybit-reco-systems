@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib
 import json
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -31,6 +33,7 @@ from app.recommender import (
 from app.settings import Settings
 from app.risk import compute_risk_status, gate_candidate, get_risk_limits
 from app.shock_guard import _stabilize_market_shock, _stabilize_fast_veto, compute_market_shock, apply_market_shock_gate
+from app.features import compute_features_from_ohlcv
 
 
 
@@ -1871,6 +1874,18 @@ def test_fit_logreg_tolerates_malformed_feature_snapshot_values():
 
 
 
+def test_load_settings_resolves_relative_db_path_against_project_root(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DB_PATH", "./tmp/test-relative.db")
+
+    sys.modules.pop("app.settings", None)
+    settings_module = importlib.import_module("app.settings")
+    settings = settings_module.load_settings()
+
+    assert settings.db_path == str((settings_module._PROJECT_ROOT / "tmp" / "test-relative.db").resolve())
+
+    sys.modules.pop("app.settings", None)
+
+
 def test_load_settings_falls_back_when_risk_limits_json_is_malformed(monkeypatch: pytest.MonkeyPatch):
     import importlib
     import sys
@@ -2000,6 +2015,32 @@ def test_db_get_latest_ohlcv_skips_corrupted_rows(conn):
 
 
 
+def test_db_get_latest_ohlcv_overfetches_past_invalid_newest_rows(conn):
+    base_ts = 1_700_000_000
+    rows = []
+    for idx in range(6):
+        rows.append({
+            'venue': 'linear', 'symbol': 'BTCUSDT', 'tf_sec': 60, 'ts': base_ts + idx * 60,
+            'open': 100.0 + idx, 'high': 101.0 + idx, 'low': 99.0 + idx, 'close': 100.5 + idx, 'volume': 10.0,
+        })
+    rows.extend([
+        {
+            'venue': 'linear', 'symbol': 'BTCUSDT', 'tf_sec': 60, 'ts': base_ts + 6 * 60,
+            'open': 106.0, 'high': 105.0, 'low': 104.0, 'close': 104.5, 'volume': 11.0,
+        },
+        {
+            'venue': 'linear', 'symbol': 'BTCUSDT', 'tf_sec': 60, 'ts': base_ts + 7 * 60,
+            'open': 107.0, 'high': 108.0, 'low': 108.5, 'close': 107.5, 'volume': 12.0,
+        },
+    ])
+    db.upsert_ohlcv(conn, rows)
+
+    latest = db.get_latest_ohlcv(conn, 'linear', 'BTCUSDT', 60, limit=6)
+
+    assert len(latest) == 6
+    assert [int(r['ts']) for r in latest] == [base_ts + idx * 60 for idx in range(5, -1, -1)]
+
+
 def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
     from app import collector
 
@@ -2052,6 +2093,46 @@ def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
 
     conn.close()
 
+
+
+def test_collector_sanitizes_crossed_quotes(tmp_path: Path):
+    from app import collector
+
+    collector._DISABLED_SYMBOLS["spot"].clear()
+    collector._DISABLED_SYMBOLS["linear"].clear()
+
+    class CrossedQuoteClient:
+        def get_tickers(self, *, category: str, symbol: str):
+            return [{
+                "lastPrice": "100",
+                "bid1Price": "101",
+                "ask1Price": "99",
+                "volume24h": "1000",
+                "turnover24h": "500000",
+            }]
+
+        def get_kline(self, *, category: str, symbol: str, interval: str, limit: int):
+            return [["1700000000000", "100", "101", "99", "100.5", "10", "0"]]
+
+    conn = db.connect(str(tmp_path / "collector_crossed_quotes.db"))
+    db.init_db(conn)
+
+    collector.collect_once(conn, CrossedQuoteClient(), "spot", ["BTCUSDT"])
+
+    ticker = db.get_latest_ticker(conn, "spot", "BTCUSDT")
+    assert ticker is not None
+    assert ticker["last"] == 100.0
+    assert ticker["bid"] is None
+    assert ticker["ask"] is None
+
+    feat = compute_features_from_ohlcv(
+        [{"ts": i, "close": 100 + i, "high": 101 + i, "low": 99 + i, "volume": 10.0} for i in range(1, 35)],
+        ticker,
+    )
+    assert feat is not None
+    assert feat["spread_bps"] is None
+
+    conn.close()
 
 
 def test_collector_retries_temporarily_disabled_symbol_after_ttl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

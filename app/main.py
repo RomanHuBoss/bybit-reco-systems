@@ -93,7 +93,7 @@ def _bootstrap_db() -> None:
 
 
 _bootstrap_db()
-
+logger.info("db_path=%s", Path(settings.db_path).resolve())
 
 
 def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:

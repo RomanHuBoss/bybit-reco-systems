@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from .llm_review import parse_tf_secs
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DOTENV_LOADED = False
 
 
@@ -19,7 +20,7 @@ def _maybe_load_dotenv() -> None:
         return
     if "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules:
         return
-    env_path = Path(__file__).resolve().parent.parent / ".env"
+    env_path = _PROJECT_ROOT / ".env"
     if env_path.exists():
         load_dotenv(env_path, override=False)
     _DOTENV_LOADED = True
@@ -39,6 +40,16 @@ def _env_json_dict(key: str, default_json: str) -> dict:
     except Exception:
         loaded = json.loads(default_json)
     return loaded if isinstance(loaded, dict) else json.loads(default_json)
+
+
+def _resolve_project_path(raw: str) -> str:
+    value = str(raw or '').strip()
+    if not value:
+        return str((_PROJECT_ROOT / 'data' / 'app.db').resolve())
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = (_PROJECT_ROOT / candidate).resolve()
+    return str(candidate)
 
 
 def _env_int(key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
@@ -160,7 +171,7 @@ def load_settings() -> Settings:
 
     return Settings(
         require_conf_gate=require_conf_gate,
-        db_path=_env("DB_PATH", "./data/app.db"),
+        db_path=_resolve_project_path(_env("DB_PATH", "./data/app.db")),
         bybit_base_url=_env("BYBIT_BASE_URL", "https://api.bybit.com"),
         collect_interval_sec=_env_int("COLLECT_INTERVAL_SEC", 20, minimum=5, maximum=3600),
         stale_data_max_sec=_env_int("STALE_DATA_MAX_SEC", 300, minimum=60, maximum=24 * 3600),

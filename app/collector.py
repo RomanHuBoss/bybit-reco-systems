@@ -31,6 +31,21 @@ def _to_float(x: Any, *, minimum: float | None = None) -> float | None:
     return num
 
 
+def _sanitize_ticker_payload(t: dict[str, Any]) -> dict[str, Any]:
+    last = _to_float(t.get("lastPrice"), minimum=0.0)
+    bid = _to_float(t.get("bid1Price"), minimum=0.0)
+    ask = _to_float(t.get("ask1Price"), minimum=0.0)
+    if bid is not None and ask is not None and ask < bid:
+        bid = None
+        ask = None
+    return {
+        "last": last,
+        "bid": bid,
+        "ask": ask,
+        "vol24h": _to_float(t.get("volume24h"), minimum=0.0),
+        "turnover24h": _to_float(t.get("turnover24h"), minimum=0.0),
+    }
+
 
 def _purge_expired_disabled_symbols(venue: str, now_ts: int) -> dict[str, int]:
     disabled = _DISABLED_SYMBOLS.setdefault(venue, {})
@@ -69,15 +84,16 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
             if not lst:
                 continue
             t = lst[0]
+            snap = _sanitize_ticker_payload(t)
             ticker_rows.append({
                 "venue": venue,
                 "symbol": sym,
                 "ts": ts,
-                "last": _to_float(t.get("lastPrice"), minimum=0.0),
-                "bid": _to_float(t.get("bid1Price"), minimum=0.0),
-                "ask": _to_float(t.get("ask1Price"), minimum=0.0),
-                "vol24h": _to_float(t.get("volume24h"), minimum=0.0),
-                "turnover24h": _to_float(t.get("turnover24h"), minimum=0.0),
+                "last": snap["last"],
+                "bid": snap["bid"],
+                "ask": snap["ask"],
+                "vol24h": snap["vol24h"],
+                "turnover24h": snap["turnover24h"],
             })
         except Exception as e:
             if _is_not_supported_symbol(e):
@@ -121,6 +137,10 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                     close_px = _to_float(row[4], minimum=0.0)
                     volume = _to_float(row[5], minimum=0.0)
                     if None in (open_px, high_px, low_px, close_px, volume):
+                        continue
+                    if high_px < max(open_px, close_px, low_px):
+                        continue
+                    if low_px > min(open_px, close_px, high_px):
                         continue
                     ohlcv_rows.append({
                         "venue": venue,

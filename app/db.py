@@ -149,6 +149,81 @@ def log_decision(conn: sqlite3.Connection, action: str, rec_id: str | None, oper
     )
     conn.commit()
 
+
+
+def _is_valid_ticker_row(row: Any) -> bool:
+    try:
+        ts = int(row["ts"] or 0)
+    except Exception:
+        return False
+    if ts <= 0:
+        return False
+
+    last = row["last"]
+    bid = row["bid"]
+    ask = row["ask"]
+    turnover = row["turnover24h"]
+    vol24h = row["vol24h"]
+
+    def _optional_non_negative(value: Any, *, strictly_positive: bool = False) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            num = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(num):
+            return None
+        if strictly_positive and num <= 0:
+            return None
+        if not strictly_positive and num < 0:
+            return None
+        return num
+
+    last_num = _optional_non_negative(last, strictly_positive=True)
+    if last not in (None, "") and last_num is None:
+        return False
+    bid_num = _optional_non_negative(bid, strictly_positive=True)
+    ask_num = _optional_non_negative(ask, strictly_positive=True)
+    if bid not in (None, "") and bid_num is None:
+        return False
+    if ask not in (None, "") and ask_num is None:
+        return False
+    if bid_num is not None and ask_num is not None and ask_num < bid_num:
+        return False
+    if turnover not in (None, "") and _optional_non_negative(turnover) is None:
+        return False
+    if vol24h not in (None, "") and _optional_non_negative(vol24h) is None:
+        return False
+    return True
+
+
+def _sanitize_ticker_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    payload = dict(row)
+    if not _is_valid_ticker_row(payload):
+        # Historical rows may contain crossed quotes or non-finite values.
+        # Keep the turnover/volume snapshot but drop the quote fields so cost-model
+        # falls back to conservative defaults instead of treating bad quotes as free liquidity.
+        bid = _finite_float_or_default(payload.get('bid'), float('nan'))
+        ask = _finite_float_or_default(payload.get('ask'), float('nan'))
+        last = _finite_float_or_default(payload.get('last'), float('nan'))
+        if not math.isfinite(last) or last <= 0:
+            payload['last'] = None
+        if not (math.isfinite(bid) and bid > 0):
+            payload['bid'] = None
+        if not (math.isfinite(ask) and ask > 0):
+            payload['ask'] = None
+        if payload.get('bid') is not None and payload.get('ask') is not None and float(payload['ask']) < float(payload['bid']):
+            payload['bid'] = None
+            payload['ask'] = None
+        if payload.get('vol24h') is not None and not math.isfinite(_finite_float_or_default(payload.get('vol24h'), float('nan'))):
+            payload['vol24h'] = None
+        if payload.get('turnover24h') is not None and not math.isfinite(_finite_float_or_default(payload.get('turnover24h'), float('nan'))):
+            payload['turnover24h'] = None
+    return payload
+
 def _is_valid_ohlcv_row(row: Any) -> bool:
     try:
         ts = int(row["ts"] or 0)
@@ -168,29 +243,36 @@ def _is_valid_ohlcv_row(row: Any) -> bool:
         return False
     if volume < 0:
         return False
+    if high_px < max(open_px, close_px, low_px):
+        return False
+    if low_px > min(open_px, close_px, high_px):
+        return False
     return True
 
 
 def get_latest_ohlcv(conn: sqlite3.Connection, venue: str, symbol: str, tf_sec: int, limit: int = 240) -> list[sqlite3.Row]:
+    safe_limit = max(1, int(limit))
+    fetch_limit = max(safe_limit, min(5000, safe_limit * 4))
     cur = conn.execute(
         """SELECT * FROM ohlcv WHERE venue=? AND symbol=? AND tf_sec=? ORDER BY ts DESC LIMIT ?""",
-        (venue, symbol, tf_sec, limit),
+        (venue, symbol, tf_sec, fetch_limit),
     )
     # IMPORTANT CONTRACT:
     #   Returned rows are ordered newest -> oldest (ts DESC), matching the SQL.
     #   Callers that need oldest -> newest (e.g. indicator calculations) must reverse().
     #
-    # Defensive filtering: historical DB rows may contain malformed or non-finite OHLCV
-    # values from prior builds or manual imports. Skip them here so one poisoned bar
-    # cannot destabilise feature extraction, shock-guard logic, or LLM payload building.
-    return [row for row in cur.fetchall() if _is_valid_ohlcv_row(row)]
+    # Defensive filtering: historical DB rows may contain malformed OHLCV values from
+    # prior builds or manual imports. Over-fetch before filtering so a cluster of bad
+    # newest bars does not starve callers of older valid history.
+    valid_rows = [row for row in cur.fetchall() if _is_valid_ohlcv_row(row)]
+    return valid_rows[:safe_limit]
 
-def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> sqlite3.Row | None:
+def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> dict[str, Any] | None:
     cur = conn.execute(
         """SELECT * FROM ticker_snap WHERE venue=? AND symbol=? ORDER BY ts DESC LIMIT 1""",
         (venue, symbol),
     )
-    return cur.fetchone()
+    return _sanitize_ticker_row(cur.fetchone())
 
 def get_latest_features_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
     cur = conn.execute(

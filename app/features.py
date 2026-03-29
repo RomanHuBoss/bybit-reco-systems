@@ -71,7 +71,7 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
     if ticker:
         bid = ticker.get("bid")
         ask = ticker.get("ask")
-        if bid is not None and ask is not None and bid > 0 and ask > 0:
+        if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
             mid = (bid + ask) / 2
             spread_bps = (ask - bid) / mid * 1e4 if mid else None
 

@@ -1237,9 +1237,16 @@ async function loadDetails(recId) {
     if (!res.ok) {
       if (reqSeq !== detailsRequestSeq) return;
       clearDetailsHeaderLinks();
-      $("details").textContent = `Ошибка загрузки деталей (HTTP ${res.status}).`;
-      btn.disabled = false;
-      btn.textContent = "Обновить";
+      if (res.status === 404) {
+        currentRecId = null;
+        currentMeta = null;
+        btn.classList.add("hidden");
+        $("details").textContent = "Карточка больше не существует в текущей БД. Выберите рекомендацию заново.";
+      } else {
+        $("details").textContent = `Ошибка загрузки деталей (HTTP ${res.status}).`;
+        btn.disabled = false;
+        btn.textContent = "Обновить";
+      }
       return;
     }
     it = await res.json();
@@ -1247,6 +1254,7 @@ async function loadDetails(recId) {
     if (reqSeq !== detailsRequestSeq) return;
     clearDetailsHeaderLinks();
     $("details").textContent = `Ошибка сети при загрузке деталей.`;
+    btn.classList.remove("hidden");
     btn.disabled = false;
     btn.textContent = "Обновить";
     return;
