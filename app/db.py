@@ -943,6 +943,18 @@ def _extract_llm_review_snapshot(reasons_json: str | None) -> dict[str, Any] | N
     else:
         risk_flags = []
 
+    review_ts_raw = llm_review.get("review_ts")
+    try:
+        review_ts = int(review_ts_raw) if review_ts_raw is not None else None
+    except Exception:
+        review_ts = None
+
+    cache_age_raw = llm_review.get("cache_age_sec")
+    try:
+        cache_age_sec = int(cache_age_raw) if cache_age_raw is not None else None
+    except Exception:
+        cache_age_sec = None
+
     return {
         "status": str(llm_review.get("status") or "unknown"),
         "provider": llm_review.get("provider"),
@@ -957,6 +969,10 @@ def _extract_llm_review_snapshot(reasons_json: str | None) -> dict[str, Any] | N
         "summary": llm_review.get("summary"),
         "error": llm_review.get("error"),
         "risk_flags": risk_flags,
+        "cached": bool(llm_review.get("cached")),
+        "cache_age_sec": cache_age_sec,
+        "source": llm_review.get("source"),
+        "review_ts": review_ts,
     }
 
 

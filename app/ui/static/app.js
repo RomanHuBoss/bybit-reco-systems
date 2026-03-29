@@ -917,6 +917,10 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
   const gateDecision = llm.gate_decision || "—";
   const regimeView = llm.regime_view || "—";
   const summary = llm.summary || llm.error || "—";
+  const source = llm.source || (llm.cached ? "cache" : "live");
+  const freshness = llm.cache_age_sec === null || llm.cache_age_sec === undefined ? "—" : formatAgeHuman(llm.cache_age_sec);
+  const reviewTs = llm.review_ts ? formatTs(llm.review_ts) : "—";
+  const inheritedFrom = llm.inherited_from_rec_id || "—";
   const errorLine = llm.error ? `<div class="helper-text llm-error-text">Ошибка reviewer: ${escapeHtml(String(llm.error))}</div>` : "";
 
   return `
@@ -925,8 +929,12 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
       <div class="operator-grid">
         ${fieldBox("Статус", status, null)}
         ${fieldBox("Провайдер / модель", formatReviewerModel(llm), null)}
+        ${fieldBox("Источник", source, null)}
         ${fieldBox("Режим", mode, null)}
         ${fieldBox("Gate decision", gateDecision, null)}
+        ${fieldBox("Время review", reviewTs, null)}
+        ${fieldBox("Свежесть review", freshness, null)}
+        ${fieldBox("Наследовано от rec_id", inheritedFrom, null)}
         ${fieldBox("Engine direction", directionRu(engineDirection || "neutral"), null)}
         ${fieldBox("LLM thesis", directionRu(llm.thesis_direction || "neutral"), null)}
         ${fieldBox("LLM execution", directionRu(llm.execution_direction || "neutral"), null)}
@@ -940,7 +948,7 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
           ${renderAgreementBadge(llm.agree_with_engine)}
           ${renderDirectionBadge(llm.execution_direction || "neutral")}
         </div>
-        <div class="helper-text">LLM-слой опционален и отображается как second opinion поверх основного движка.</div>
+        <div class="helper-text">LLM-слой опционален и может переиспользоваться между соседними rec_id, пока review остаётся свежим.</div>
       </div>
       <div class="llm-summary-box">${escapeHtml(summary)}</div>
       ${errorLine}
@@ -1457,6 +1465,9 @@ function startCountdown() {
 async function refreshAll() {
   await loadStatus();
   await loadRecommendations();
+  if (currentRecId) {
+    await loadDetails(currentRecId);
+  }
   startCountdown();
 }
 
@@ -1561,32 +1572,8 @@ document.querySelector("#recoTable thead").addEventListener("click", (e) => {
 });
 
 $("refreshDetailsBtn").addEventListener("click", () => {
-  if (!currentMeta) return;
-  // Every recommender cycle produces new rec_ids for the same (venue, symbol, bot_type).
-  // Look for the freshest rec_id in the current table DOM before falling back to the
-  // stored one — otherwise we always re-fetch the stale record from a previous cycle.
-  let freshId = null;
-  if (currentMeta) {
-    const rows = $("recoBody").querySelectorAll("tr");
-    for (const row of rows) {
-      const detailsBtn = row.querySelector('button[data-act="details"]');
-      if (!detailsBtn) continue;
-      const rid = detailsBtn.dataset.id || "";
-      // rec_id format: R-{ts}-{venue}-{symbol}-{bot_type}-{hex}
-      const parts = rid.split("-");
-      // parts: ["R", ts, venue, symbol, bot_type_part1, ..., hex]
-      // Reconstruct venue/symbol/bot_type from the known values stored in currentMeta
-      if (
-        rid.includes(`-${currentMeta.venue}-`) &&
-        rid.includes(`-${currentMeta.symbol}-`) &&
-        rid.includes(`-${currentMeta.bot_type}-`)
-      ) {
-        freshId = rid;
-        break;
-      }
-    }
-  }
-  loadDetails(freshId || currentRecId);
+  if (!currentRecId) return;
+  loadDetails(currentRecId);
 });
 
 $("modalClose").addEventListener("click", (e) => { e.stopPropagation(); hideModal(); });

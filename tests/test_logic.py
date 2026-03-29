@@ -417,6 +417,70 @@ def test_async_llm_sweep_gate_persists_veto_status_in_db(conn, monkeypatch):
 
 
 
+
+
+def test_mark_llm_reviews_async_reuses_fresh_cache_for_new_rec_ids(conn):
+    ts_now = int(time.time())
+    cached_state = {
+        "linear|BTCUSDT|futures_grid|long": {
+            "ts": ts_now,
+            "provider": "ollama",
+            "model": "fake-llm",
+            "prompt_version": "ohlcv_multitf_v1",
+            "thesis_direction": "long",
+            "confidence": 0.74,
+            "regime_view": "bullish_range",
+            "summary": "reuse cached review",
+            "risk_flags": ["carry_risk"],
+        }
+    }
+    db.set_app_config_json(conn, recommender_module.LLM_REVIEW_CACHE_APP_KEY, cached_state)
+
+    recs = [{
+        "rec_id": "R-cache-inherit-1",
+        "ts": ts_now,
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "bot_type": "futures_grid",
+        "direction": "long",
+        "account_mode": "one_way",
+        "margin_mode": "isolated",
+        "score": 0.51,
+        "confidence": 0.79,
+        "expected_rr": 1.4,
+        "risk_score": 0.18,
+        "params": {"grid_levels": 8},
+        "reasons": {
+            "direction_agg": {"direction": "long", "raw_direction": "long"},
+            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "spot_short_neutralized": False},
+        },
+        "blocks": [],
+        "status": "recommended",
+        "ttl_sec": 1800,
+        "model_version": "test",
+        "features_ref_ts": ts_now,
+    }]
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_cadence_sec=300,
+        llm_reviewer_max_candidates=1,
+    )
+
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+    stats = recommender_module._mark_llm_reviews_async(conn, recs, settings, reviewer=FakeReviewer())
+
+    assert stats["queued"] == 0
+    assert stats["cached"] == 1
+    assert stats["inherited"] == 1
+    assert recs[0]["reasons"]["llm_review"]["status"] == "ok"
+    assert recs[0]["reasons"]["llm_review"]["source"] == "cache_inherited"
+    assert recs[0]["reasons"]["llm_review"]["summary"] == "reuse cached review"
+
 def test_async_llm_sweep_processes_pending_backlog_across_recent_snapshots(conn, monkeypatch):
     class FakeReviewer:
         provider = "ollama"
@@ -478,12 +542,15 @@ def test_async_llm_sweep_processes_pending_backlog_across_recent_snapshots(conn,
     rec_old = db.get_recommendation_by_id(conn, "R-async-backlog-1")
     rec_new = db.get_recommendation_by_id(conn, "R-async-backlog-2")
 
-    assert reviewer.calls == 2
+    assert reviewer.calls == 1
     assert stats["pending_before"] == 2
     assert stats["pending_after"] == 0
     assert stats["completed"] == 2
+    assert stats["inherited"] == 1
     assert rec_old["reasons"]["llm_review"]["status"] == "ok"
     assert rec_new["reasons"]["llm_review"]["status"] == "ok"
+    assert rec_old["reasons"]["llm_review"]["source"] == "async_inherited"
+    assert rec_new["reasons"]["llm_review"]["source"] == "async_live"
 
 
 def test_persistence_fresh_gap_allows_confirmation_across_brief_collection_gaps():
