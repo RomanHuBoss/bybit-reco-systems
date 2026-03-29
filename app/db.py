@@ -808,6 +808,46 @@ def get_recent_llm_review_candidates(
     return out
 
 
+
+
+def get_llm_status_counts(
+    conn: sqlite3.Connection,
+    *,
+    venue: str | None,
+    min_conf: float,
+    statuses: list[str] | None = None,
+    snapshot_ts: int | None = None,
+    strict_min_conf: bool = False,
+) -> dict[str, int]:
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
+    if snapshot_ts is not None:
+        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts = ? AND {_supported_sql}"""
+        params: list[Any] = [snapshot_ts, *_supported_params]
+    else:
+        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts > ? AND {_supported_sql}"""
+        params = [now_ts() - 86400, *_supported_params]
+    if venue:
+        q += " AND venue=?"
+        params.append(venue)
+    if statuses is not None:
+        if not statuses:
+            return {"ok": 0, "pending": 0, "error": 0, "skipped": 0, "none": 0, "other": 0}
+        placeholders = ",".join("?" for _ in statuses)
+        q += f" AND status IN ({placeholders})"
+        params.extend(statuses)
+
+    counts = {"ok": 0, "pending": 0, "error": 0, "skipped": 0, "none": 0, "other": 0}
+    cur = conn.execute(q, params)
+    for row in cur.fetchall():
+        if not _recommended_row_passes_conf_filter(row, min_conf=min_conf, strict_min_conf=strict_min_conf):
+            continue
+        review = _extract_llm_review_snapshot(row["reasons_json"])
+        llm_status = str((review or {}).get("status") or "none").strip().lower()
+        if llm_status not in counts:
+            llm_status = "other"
+        counts[llm_status] += 1
+    return counts
+
 def get_recommendation_status_counts(
     conn: sqlite3.Connection,
     venue: str | None = None,

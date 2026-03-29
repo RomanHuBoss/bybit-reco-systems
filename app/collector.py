@@ -5,8 +5,11 @@ from typing import Any
 from .bybit_client import BybitPublicClient
 from . import db
 
-# Symbols that Bybit rejects (e.g., futures-only symbols passed into spot collector)
-_DISABLED_SYMBOLS: dict[str, set[str]] = {"spot": set(), "linear": set()}
+# Symbols that Bybit rejects (e.g., futures-only symbols passed into spot collector).
+# Keep a retry TTL instead of poisoning the symbol forever: listings can appear later,
+# config may be corrected at runtime, and transient exchange-side validation glitches should self-heal.
+_DISABLED_SYMBOLS: dict[str, dict[str, int]] = {"spot": {}, "linear": {}}
+DISABLED_SYMBOL_RETRY_TTL_SEC = 6 * 60 * 60
 
 VENUE_TO_CATEGORY = {
     "spot": "spot",
@@ -21,6 +24,22 @@ def _to_float(x: Any) -> float | None:
     except Exception:
         return None
 
+
+
+def _purge_expired_disabled_symbols(venue: str, now_ts: int) -> dict[str, int]:
+    disabled = _DISABLED_SYMBOLS.setdefault(venue, {})
+    expired = [sym for sym, until_ts in disabled.items() if int(until_ts or 0) <= int(now_ts)]
+    for sym in expired:
+        disabled.pop(sym, None)
+    return disabled
+
+
+def _disable_symbol(venue: str, symbol: str, now_ts: int) -> int:
+    disabled = _DISABLED_SYMBOLS.setdefault(venue, {})
+    retry_at = int(now_ts) + DISABLED_SYMBOL_RETRY_TTL_SEC
+    disabled[str(symbol or '').upper()] = retry_at
+    return retry_at
+
 def _is_not_supported_symbol(err: Exception) -> bool:
     msg = str(err)
     if "10001" not in msg:
@@ -34,8 +53,8 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     category = VENUE_TO_CATEGORY[venue]
     ts = db.now_ts()
 
-    disabled = _DISABLED_SYMBOLS.setdefault(venue, set())
-    symbols2 = [s for s in symbols if s not in disabled]
+    disabled = _purge_expired_disabled_symbols(venue, ts)
+    symbols2 = [str(s).upper() for s in symbols if int(disabled.get(str(s).upper(), 0) or 0) <= ts]
 
     ticker_rows: list[dict[str, Any]] = []
     for sym in symbols2:
@@ -56,8 +75,8 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
             })
         except Exception as e:
             if _is_not_supported_symbol(e):
-                disabled.add(sym)
-                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e)})
+                retry_at = _disable_symbol(venue, sym, ts)
+                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e), "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC, "retry_at": retry_at})
                 continue
             # Log with symbol name so operator can identify the culprit
             db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "err": str(e)})
@@ -79,7 +98,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
 
     ohlcv_rows: list[dict[str, Any]] = []
     for sym in symbols2:
-        if sym in disabled:
+        if int(disabled.get(sym, 0) or 0) > ts:
             continue
         for interval, tf_sec in intervals.items():
             try:
@@ -100,8 +119,8 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                     })
             except Exception as e:
                 if _is_not_supported_symbol(e):
-                    disabled.add(sym)
-                    db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e)})
+                    retry_at = _disable_symbol(venue, sym, ts)
+                    db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e), "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC, "retry_at": retry_at})
                     break
                 # Transient error (rate limit, timeout) — continue with next interval
                 # only break for symbol-level errors (_is_not_supported_symbol handles those above)
@@ -117,14 +136,13 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
     Called once per collect cycle, only for futures venue.
     Errors are logged per-symbol and never abort the cycle.
     """
-    import time
     ts_now = db.now_ts()
     funding_rows: list[dict] = []
 
-    disabled = _DISABLED_SYMBOLS.setdefault("linear", set())
+    disabled = _purge_expired_disabled_symbols("linear", ts_now)
 
-    for sym in symbols_linear:
-        if sym in disabled:
+    for sym in [str(s).upper() for s in symbols_linear]:
+        if int(disabled.get(sym, 0) or 0) > ts_now:
             continue
         # Funding rate — reuse linear tickers (already fetched in collect_once,
         # but fundingRate is in the ticker payload, so we grab it separately here
@@ -136,8 +154,8 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
                 funding_rows.append(fr)
         except Exception as e:
             if _is_not_supported_symbol(e):
-                disabled.add(sym)
-                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": sym, "reason": str(e), "field": "funding_rate"})
+                retry_at = _disable_symbol("linear", sym, ts_now)
+                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": sym, "reason": str(e), "field": "funding_rate", "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC, "retry_at": retry_at})
                 continue
             db.log_decision(conn, "COLLECT_ERROR", None, None,
                             {"venue": "linear", "symbol": sym, "field": "funding_rate", "err": str(e)})
@@ -149,8 +167,8 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
                 db.upsert_open_interest(conn, sym, oi_rows)
         except Exception as e:
             if _is_not_supported_symbol(e):
-                disabled.add(sym)
-                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": sym, "reason": str(e), "field": "open_interest"})
+                retry_at = _disable_symbol("linear", sym, ts_now)
+                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": sym, "reason": str(e), "field": "open_interest", "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC, "retry_at": retry_at})
                 continue
             db.log_decision(conn, "COLLECT_ERROR", None, None,
                             {"venue": "linear", "symbol": sym, "field": "open_interest", "err": str(e)})

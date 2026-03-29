@@ -41,6 +41,32 @@ def _env_json_dict(key: str, default_json: str) -> dict:
     return loaded if isinstance(loaded, dict) else json.loads(default_json)
 
 
+def _env_int(key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = os.getenv(key)
+    try:
+        value = int(str(raw if raw not in (None, '') else default).strip())
+    except Exception:
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return int(value)
+
+
+def _env_float(key: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
+    raw = os.getenv(key)
+    try:
+        value = float(str(raw if raw not in (None, '') else default).strip())
+    except Exception:
+        value = float(default)
+    if minimum is not None:
+        value = max(float(minimum), value)
+    if maximum is not None:
+        value = min(float(maximum), value)
+    return float(value)
+
+
 @dataclass(frozen=True)
 class Settings:
     outcome_horizon_fallback_sec: int
@@ -104,8 +130,13 @@ def load_settings() -> Settings:
     master_key = os.getenv("MASTER_KEY", "") or None
     admin_api_key = os.getenv("ADMIN_API_KEY", "") or None
 
-    outcome_horizon_fallback_sec = int(os.getenv("OUTCOME_HORIZON_FALLBACK_SEC", os.getenv("OUTCOME_HORIZON_SEC", "900")))
-    calib_min_samples = max(80, int(_env("CALIB_MIN_SAMPLES", "80")))
+    outcome_horizon_fallback_sec = _env_int(
+        "OUTCOME_HORIZON_FALLBACK_SEC",
+        _env_int("OUTCOME_HORIZON_SEC", 900, minimum=300),
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    calib_min_samples = _env_int("CALIB_MIN_SAMPLES", 80, minimum=80, maximum=200_000)
     require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1", "true", "yes", "y")
 
     llm_reviewer_enabled = _env("LLM_REVIEWER_ENABLED", "0").strip().lower() in ("1", "true", "yes", "y")
@@ -115,38 +146,38 @@ def load_settings() -> Settings:
     llm_reviewer_provider = _env("LLM_REVIEWER_PROVIDER", "ollama").strip().lower() or "ollama"
     llm_reviewer_url = _env("LLM_REVIEWER_URL", "http://127.0.0.1:11434").strip()
     llm_reviewer_model = _env("LLM_REVIEWER_MODEL", "qwen3:8b").strip()
-    llm_reviewer_timeout_sec = max(5, int(_env("LLM_REVIEWER_TIMEOUT_SEC", "60")))
+    llm_reviewer_timeout_sec = _env_int("LLM_REVIEWER_TIMEOUT_SEC", 60, minimum=5, maximum=600)
     llm_reviewer_tf_secs = parse_tf_secs(_env("LLM_REVIEWER_TFS", "15m,1h,4h"))
-    llm_reviewer_candles_per_tf = max(16, min(96, int(_env("LLM_REVIEWER_CANDLES_PER_TF", "32"))))
-    llm_reviewer_max_candidates = max(1, min(100, int(_env("LLM_REVIEWER_MAX_CANDIDATES", "60"))))
-    llm_reviewer_max_workers = max(1, min(32, int(_env("LLM_REVIEWER_MAX_WORKERS", "8"))))
-    llm_reviewer_min_confidence = max(0.0, min(1.0, float(_env("LLM_REVIEWER_MIN_CONFIDENCE", "0.65"))))
-    llm_reviewer_cadence_sec = max(5, int(_env("LLM_REVIEWER_CADENCE_SEC", "300")))
+    llm_reviewer_candles_per_tf = _env_int("LLM_REVIEWER_CANDLES_PER_TF", 32, minimum=16, maximum=96)
+    llm_reviewer_max_candidates = _env_int("LLM_REVIEWER_MAX_CANDIDATES", 60, minimum=1, maximum=100)
+    llm_reviewer_max_workers = _env_int("LLM_REVIEWER_MAX_WORKERS", 8, minimum=1, maximum=32)
+    llm_reviewer_min_confidence = _env_float("LLM_REVIEWER_MIN_CONFIDENCE", 0.65, minimum=0.0, maximum=1.0)
+    llm_reviewer_cadence_sec = _env_int("LLM_REVIEWER_CADENCE_SEC", 300, minimum=5, maximum=3600)
     reco_ttl_raw = os.getenv("RECO_TTL_SEC")
-    reco_ttl_sec = None if reco_ttl_raw in (None, "") else max(180, int(reco_ttl_raw))
-    outcomes_interval_sec = max(20, int(_env("OUTCOMES_INTERVAL_SEC", "60")))
-    outcomes_max_to_process = max(10, min(2000, int(_env("OUTCOMES_MAX_TO_PROCESS", "200"))))
+    reco_ttl_sec = None if reco_ttl_raw in (None, "") else _env_int("RECO_TTL_SEC", 180, minimum=180, maximum=7 * 24 * 3600)
+    outcomes_interval_sec = _env_int("OUTCOMES_INTERVAL_SEC", 60, minimum=20, maximum=3600)
+    outcomes_max_to_process = _env_int("OUTCOMES_MAX_TO_PROCESS", 200, minimum=10, maximum=2000)
 
     return Settings(
         require_conf_gate=require_conf_gate,
         db_path=_env("DB_PATH", "./data/app.db"),
         bybit_base_url=_env("BYBIT_BASE_URL", "https://api.bybit.com"),
-        collect_interval_sec=int(_env("COLLECT_INTERVAL_SEC", "20")),
-        stale_data_max_sec=int(_env("STALE_DATA_MAX_SEC", "300")),
-        reco_interval_sec=int(_env("RECO_INTERVAL_SEC", "20")),
-        top_n=int(_env("TOP_N", "20")),
+        collect_interval_sec=_env_int("COLLECT_INTERVAL_SEC", 20, minimum=5, maximum=3600),
+        stale_data_max_sec=_env_int("STALE_DATA_MAX_SEC", 300, minimum=60, maximum=24 * 3600),
+        reco_interval_sec=_env_int("RECO_INTERVAL_SEC", 20, minimum=5, maximum=3600),
+        top_n=_env_int("TOP_N", 20, minimum=1, maximum=500),
         venues=venues,
         symbols_spot=symbols_spot,
         symbols_linear=symbols_linear,
         risk_limits=risk_limits,
-        min_score_to_recommend=float(_env("MIN_SCORE_TO_RECOMMEND", "0.08")),
-        min_conf_to_recommend=float(_env("MIN_CONF_TO_RECOMMEND", "0.52")),
-        taker_fee_bps_spot=float(_env("TAKER_FEE_BPS_SPOT", "10")),
-        taker_fee_bps_linear=float(_env("TAKER_FEE_BPS_LINEAR", "6")),
+        min_score_to_recommend=_env_float("MIN_SCORE_TO_RECOMMEND", 0.08, minimum=-1.0, maximum=1.0),
+        min_conf_to_recommend=_env_float("MIN_CONF_TO_RECOMMEND", 0.52, minimum=0.0, maximum=1.0),
+        taker_fee_bps_spot=_env_float("TAKER_FEE_BPS_SPOT", 10.0, minimum=0.0, maximum=500.0),
+        taker_fee_bps_linear=_env_float("TAKER_FEE_BPS_LINEAR", 6.0, minimum=0.0, maximum=500.0),
         master_key=master_key,
         admin_api_key=admin_api_key,
-        sentiment_interval_sec=int(_env("SENTIMENT_INTERVAL_SEC", "60")),
-        futures_collect_interval_sec=int(_env("FUTURES_COLLECT_INTERVAL_SEC", "900")),
+        sentiment_interval_sec=_env_int("SENTIMENT_INTERVAL_SEC", 60, minimum=10, maximum=3600),
+        futures_collect_interval_sec=_env_int("FUTURES_COLLECT_INTERVAL_SEC", 900, minimum=60, maximum=24 * 3600),
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
         outcome_horizon_fallback_sec=outcome_horizon_fallback_sec,

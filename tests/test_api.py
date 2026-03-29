@@ -701,3 +701,51 @@ def test_instrument_meta_failures_are_short_term_cached(tmp_path: Path, monkeypa
     assert first == {}
     assert second == {}
     assert calls['count'] == 1
+
+
+def test_api_recommendations_uses_single_recommendations_query_for_llm_counts(client_and_conn, monkeypatch: pytest.MonkeyPatch):
+    client, conn = client_and_conn
+    import app.main as app_main
+
+    ts_now = int(time.time())
+    db.insert_regime(conn, ts_now, {"vol_state": "low", "trend_state": "mixed", "risk_state": "risk_on", "confidence": 0.61})
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                "rec_id": "R-ok",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.41,
+                "confidence": 0.71,
+                "expected_rr": 1.2,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "ok", "mode": "advisory"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+            }
+        ],
+    )
+
+    original_get_recommendations = app_main.db.get_recommendations
+    calls: list[int] = []
+
+    def wrapped_get_recommendations(*args, **kwargs):
+        calls.append(int(kwargs.get("top_n", -1)))
+        return original_get_recommendations(*args, **kwargs)
+
+    monkeypatch.setattr(app_main.db, "get_recommendations", wrapped_get_recommendations)
+
+    resp = client.get('/api/v1/recommendations?top_n=1&min_conf=0&snapshot=latest')
+    assert resp.status_code == 200
+    assert resp.json()['llm_status_counts']['ok'] == 1
+    assert calls == [1]

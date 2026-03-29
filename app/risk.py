@@ -23,6 +23,43 @@ class RiskStatus:
     cooldown_active: bool
     symbol_bot_counts: dict[str, int]
 
+
+def _limit_int(limits: dict[str, Any], key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int(limits.get(key, default))
+    except Exception:
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return int(value)
+
+
+def _limit_float(limits: dict[str, Any], key: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
+    try:
+        value = float(limits.get(key, default))
+    except Exception:
+        value = float(default)
+    if minimum is not None:
+        value = max(float(minimum), value)
+    if maximum is not None:
+        value = min(float(maximum), value)
+    return float(value)
+
+
+def _normalize_risk_limits(active: Any, fallback_limits: dict[str, Any]) -> dict[str, Any]:
+    fallback = dict(fallback_limits or {})
+    if not isinstance(active, dict):
+        return fallback
+    merged = dict(fallback)
+    merged.update(active)
+    merged["max_concurrent_bots"] = _limit_int(merged, "max_concurrent_bots", int(fallback.get("max_concurrent_bots", 4) or 4), minimum=1, maximum=100000)
+    merged["max_daily_dd_usdt"] = _limit_float(merged, "max_daily_dd_usdt", float(fallback.get("max_daily_dd_usdt", 200.0) or 200.0), minimum=0.0, maximum=1e12)
+    merged["cooldown_after_loss_min"] = _limit_int(merged, "cooldown_after_loss_min", int(fallback.get("cooldown_after_loss_min", 30) or 30), minimum=0, maximum=7 * 24 * 60)
+    merged["max_symbol_bots"] = _limit_int(merged, "max_symbol_bots", int(fallback.get("max_symbol_bots", 1) or 1), minimum=1, maximum=100000)
+    return merged
+
 def day_start_ts_utc() -> int:
     """Day boundary used for daily PnL/DD limits.
 
@@ -47,7 +84,7 @@ def day_start_ts_utc() -> int:
 
 def get_risk_limits(conn, fallback_limits: dict[str, Any]) -> dict[str, Any]:
     active = db.get_active_risk_limits(conn)
-    return active if active else fallback_limits
+    return _normalize_risk_limits(active, fallback_limits)
 
 def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     active_bots = db.get_active_bots(conn)
@@ -79,7 +116,8 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     # cooldown: use the latest realised loss from trades first; fall back to explicit LOSS log entry.
     # The previous implementation only looked for action='LOSS', but no code path emits that
     # action, so cooldown_after_loss_min was effectively dead and never blocked candidates.
-    cooldown_min = int(limits.get("cooldown_after_loss_min", 0))
+    limits = _normalize_risk_limits(limits, limits)
+    cooldown_min = _limit_int(limits, "cooldown_after_loss_min", 0, minimum=0, maximum=7 * 24 * 60)
     cooldown_active = False
     if cooldown_min > 0:
         last_loss_ts = None
@@ -122,18 +160,19 @@ def gate_candidate(conn, venue: str, symbol: str, limits: dict[str, Any], cached
     # Accept pre-computed risk status to avoid re-querying DB per (symbol, bot_type)
     rs = cached_status if cached_status is not None else compute_risk_status(conn, limits)
 
-    max_conc = int(limits.get("max_concurrent_bots", 999999))
+    limits = _normalize_risk_limits(limits, limits)
+    max_conc = _limit_int(limits, "max_concurrent_bots", 999999, minimum=1, maximum=100000)
     if rs.active_bots >= max_conc:
         blocks.append({"code":"MAX_CONCURRENT_BOTS", "msg": f"active_bots={rs.active_bots} >= limit={max_conc}"})
 
-    max_dd = float(limits.get("max_daily_dd_usdt", 1e18))
+    max_dd = _limit_float(limits, "max_daily_dd_usdt", 1e18, minimum=0.0, maximum=1e18)
     if rs.daily_dd >= max_dd:
         blocks.append({"code":"MAX_DD_DAY", "msg": f"daily_dd={rs.daily_dd:.2f} >= limit={max_dd:.2f}"})
 
     if rs.cooldown_active:
         blocks.append({"code":"COOLDOWN_ACTIVE", "msg":"cooldown after losses is active"})
 
-    max_symbol_bots = int(limits.get("max_symbol_bots", 999999))
+    max_symbol_bots = _limit_int(limits, "max_symbol_bots", 999999, minimum=1, maximum=100000)
     active_for_symbol = rs.symbol_bot_counts.get(f"{venue}:{symbol}", 0)
     if active_for_symbol >= max_symbol_bots:
         blocks.append({"code":"MAX_SYMBOL_BOTS", "msg": f"{venue}:{symbol} active={active_for_symbol} >= limit={max_symbol_bots}"})

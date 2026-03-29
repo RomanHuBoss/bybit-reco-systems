@@ -29,7 +29,7 @@ from app.recommender import (
     run_recommender_once,
 )
 from app.settings import Settings
-from app.risk import compute_risk_status, gate_candidate
+from app.risk import compute_risk_status, gate_candidate, get_risk_limits
 from app.shock_guard import _stabilize_market_shock, _stabilize_fast_veto, compute_market_shock, apply_market_shock_gate
 
 
@@ -1875,3 +1875,122 @@ def test_load_settings_falls_back_when_risk_limits_json_is_malformed(monkeypatch
     }
 
     sys.modules.pop("app.settings", None)
+
+
+def test_load_settings_clamps_and_defaults_invalid_numeric_env(monkeypatch: pytest.MonkeyPatch):
+    import importlib
+    import sys
+
+    monkeypatch.setenv("COLLECT_INTERVAL_SEC", "oops")
+    monkeypatch.setenv("RECO_INTERVAL_SEC", "0")
+    monkeypatch.setenv("STALE_DATA_MAX_SEC", "-5")
+    monkeypatch.setenv("TOP_N", "-100")
+    monkeypatch.setenv("MIN_CONF_TO_RECOMMEND", "1.7")
+    monkeypatch.setenv("TAKER_FEE_BPS_LINEAR", "-9")
+    monkeypatch.setenv("OUTCOME_HORIZON_FALLBACK_SEC", "nan")
+    monkeypatch.setenv("SENTIMENT_INTERVAL_SEC", "3")
+    monkeypatch.setenv("FUTURES_COLLECT_INTERVAL_SEC", "-1")
+
+    sys.modules.pop("app.settings", None)
+    settings_module = importlib.import_module("app.settings")
+    settings = settings_module.load_settings()
+
+    assert settings.collect_interval_sec == 20
+    assert settings.reco_interval_sec == 5
+    assert settings.stale_data_max_sec == 60
+    assert settings.top_n == 1
+    assert settings.min_conf_to_recommend == 1.0
+    assert settings.taker_fee_bps_linear == 0.0
+    assert settings.outcome_horizon_fallback_sec == 900
+    assert settings.sentiment_interval_sec == 10
+    assert settings.futures_collect_interval_sec == 60
+
+    sys.modules.pop("app.settings", None)
+
+
+def test_get_risk_limits_normalizes_corrupted_active_limits(tmp_path: Path):
+    conn = db.connect(str(tmp_path / "risk.db"))
+    db.init_db(conn)
+    db.upsert_risk_limits(
+        conn,
+        version="bad-active",
+        limits={
+            "max_concurrent_bots": "oops",
+            "max_daily_dd_usdt": "-15",
+            "cooldown_after_loss_min": "abc",
+            "max_symbol_bots": -7,
+        },
+        is_active=True,
+    )
+
+    normalized = get_risk_limits(
+        conn,
+        {
+            "max_concurrent_bots": 4,
+            "max_daily_dd_usdt": 200.0,
+            "cooldown_after_loss_min": 30,
+            "max_symbol_bots": 1,
+        },
+    )
+
+    assert normalized == {
+        "max_concurrent_bots": 4,
+        "max_daily_dd_usdt": 0.0,
+        "cooldown_after_loss_min": 30,
+        "max_symbol_bots": 1,
+    }
+
+    blocks = gate_candidate(conn, "linear", "BTCUSDT", normalized)
+    assert any(b["code"] == "MAX_DD_DAY" for b in blocks)
+
+
+class _RetryingCollectorClient:
+    def __init__(self):
+        self.ticker_calls: list[str] = []
+        self.kline_calls: list[tuple[str, str]] = []
+        self.failures_left = 1
+
+    def get_tickers(self, *, category: str, symbol: str):
+        self.ticker_calls.append(symbol)
+        if self.failures_left > 0:
+            self.failures_left -= 1
+            raise RuntimeError("Bybit error 10001: params error: symbol invalid")
+        return [{
+            "lastPrice": "100",
+            "bid1Price": "99",
+            "ask1Price": "101",
+            "volume24h": "1000",
+            "turnover24h": "100000",
+        }]
+
+    def get_kline(self, *, category: str, symbol: str, interval: str, limit: int):
+        self.kline_calls.append((symbol, interval))
+        return [["1700000000000", "100", "101", "99", "100.5", "10", "0"]]
+
+
+def test_collector_retries_temporarily_disabled_symbol_after_ttl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from app import collector
+
+    collector._DISABLED_SYMBOLS["spot"].clear()
+    collector._DISABLED_SYMBOLS["linear"].clear()
+
+    conn = db.connect(str(tmp_path / "collector.db"))
+    db.init_db(conn)
+    client = _RetryingCollectorClient()
+    base_ts = 1_700_000_000
+
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts)
+    collector.collect_once(conn, client, "spot", ["btcusdt"])
+    assert client.ticker_calls == ["BTCUSDT"]
+    assert collector._DISABLED_SYMBOLS["spot"]["BTCUSDT"] == base_ts + collector.DISABLED_SYMBOL_RETRY_TTL_SEC
+
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts + 60)
+    collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    assert client.ticker_calls == ["BTCUSDT"]
+
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts + collector.DISABLED_SYMBOL_RETRY_TTL_SEC + 1)
+    collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+
+    assert client.ticker_calls == ["BTCUSDT", "BTCUSDT"]
+    assert any(symbol == "BTCUSDT" and interval == "1" for symbol, interval in client.kline_calls)
+    assert db.get_latest_ticker(conn, "spot", "BTCUSDT") is not None
