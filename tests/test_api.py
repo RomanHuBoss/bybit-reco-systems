@@ -644,3 +644,60 @@ def test_api_details_and_decisions_tolerate_corrupt_json_rows(client_and_conn):
     decisions = decisions_resp.json()
     broken = next(item for item in decisions if item['action'] == 'BROKEN_JSON')
     assert broken['details'] == {}
+
+
+
+def test_api_decisions_clamps_negative_limit(client_and_conn):
+    client, conn = client_and_conn
+
+    base_ts = db.now_ts() + 10
+    for idx in range(3):
+        conn.execute(
+            "INSERT INTO decision_log(ts, action, rec_id, operator, details_json) VALUES(?,?,?,?,?)",
+            (base_ts + idx, f"ACTION_{idx}", None, None, json.dumps({"idx": idx})),
+        )
+    conn.commit()
+
+    resp = client.get('/api/v1/decisions?limit=-5')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]['action'] == 'ACTION_2'
+
+
+
+def test_instrument_meta_failures_are_short_term_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / 'meta-cache.db'
+    monkeypatch.setenv('DB_PATH', str(db_path))
+    monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
+    monkeypatch.setenv('SYMBOLS_SPOT', 'BTCUSDT')
+    monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
+
+    sys.modules.pop('app.main', None)
+    app_main = importlib.import_module('app.main')
+
+    calls = {'count': 0}
+
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_instrument_info(self, category: str, symbol: str):
+            calls['count'] += 1
+            raise RuntimeError('boom')
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(app_main, 'BybitPublicClient', FailingClient)
+    app_main._instrument_meta_cache.clear()
+
+    try:
+        first = app_main._fetch_bybit_instrument_meta('linear', 'BTCUSDT')
+        second = app_main._fetch_bybit_instrument_meta('linear', 'BTCUSDT')
+    finally:
+        sys.modules.pop('app.main', None)
+
+    assert first == {}
+    assert second == {}
+    assert calls['count'] == 1

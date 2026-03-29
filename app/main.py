@@ -35,7 +35,8 @@ settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 OUTCOME_LABEL_VERSION = "grid_label_v2"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
-_instrument_meta_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
+_instrument_meta_cache: dict[tuple[str, str], tuple[float, dict[str, Any], bool]] = {}
 _instrument_meta_lock = threading.Lock()
 
 
@@ -102,39 +103,45 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
     with _instrument_meta_lock:
         cached = _instrument_meta_cache.get(cache_key)
         if cached is not None:
-            cached_ts, cached_value = cached
-            if now - cached_ts <= INSTRUMENT_META_CACHE_TTL_SEC:
+            try:
+                cached_ts, cached_value, cache_ok = cached
+            except Exception:
+                cached_ts, cached_value, cache_ok = 0.0, {}, False
+            ttl = INSTRUMENT_META_CACHE_TTL_SEC if bool(cache_ok) else INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC
+            if now - float(cached_ts) <= ttl:
                 return dict(cached_value)
             _instrument_meta_cache.pop(cache_key, None)
     client = BybitPublicClient(settings.bybit_base_url)
+    cache_ok = False
+    meta: dict[str, Any] = {}
     try:
         info = client.get_instrument_info(category, symbol)
     except Exception as exc:
         logger.warning("instrument meta fetch failed for %s/%s: %s", venue, symbol, exc)
-        return {}
+        info = None
     finally:
         try:
             client.close()
         except Exception:
             pass
 
-    if not info:
-        return {}
+    if info:
+        price_filter = info.get("priceFilter") or {}
+        lot_filter = info.get("lotSizeFilter") or {}
+        meta = {
+            "category": category,
+            "symbol": symbol,
+            "tick_size": price_filter.get("tickSize"),
+            "min_price": price_filter.get("minPrice"),
+            "max_price": price_filter.get("maxPrice"),
+            "qty_step": lot_filter.get("qtyStep"),
+            "min_order_qty": lot_filter.get("minOrderQty"),
+            "price_scale": info.get("priceScale"),
+        }
+        cache_ok = True
 
-    price_filter = info.get("priceFilter") or {}
-    lot_filter = info.get("lotSizeFilter") or {}
-    meta = {
-        "category": category,
-        "symbol": symbol,
-        "tick_size": price_filter.get("tickSize"),
-        "min_price": price_filter.get("minPrice"),
-        "max_price": price_filter.get("maxPrice"),
-        "qty_step": lot_filter.get("qtyStep"),
-        "min_order_qty": lot_filter.get("minOrderQty"),
-        "price_scale": info.get("priceScale"),
-    }
     with _instrument_meta_lock:
-        _instrument_meta_cache[cache_key] = (now, dict(meta))
+        _instrument_meta_cache[cache_key] = (time.time(), dict(meta), cache_ok)
     return meta
 
 
@@ -143,6 +150,14 @@ def _json_loads_or_default(raw: str | None, default: Any) -> Any:
         return json.loads(raw) if raw else default
     except Exception:
         return default
+
+
+def _bounded_limit(value: int, *, default: int, max_value: int) -> int:
+    try:
+        num = int(value)
+    except Exception:
+        num = int(default)
+    return max(1, min(num, int(max_value)))
 
 
 def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
@@ -379,6 +394,7 @@ def api_recommendations(
     show_suppressed: bool = False,
     snapshot: str = "latest_operator",
 ) -> dict[str, Any]:
+    top_n = _bounded_limit(top_n, default=20, max_value=200)
     with closing(_get_conn()) as conn:
         statuses: list[str] = []
         if show_recommended:
@@ -511,6 +527,7 @@ def api_reco_action(rec_id: str, req: RecoActionRequest, x_api_key: str | None =
 
 @app.get("/api/v1/bots")
 def api_bots(status: str | None = None, limit: int = 200) -> dict[str, Any]:
+    limit = _bounded_limit(limit, default=200, max_value=1000)
     with closing(_get_conn()) as conn:
         items = db.list_bot_instances(conn, status=status, limit=limit)
         return {"items": items, "count": len(items)}
@@ -612,6 +629,7 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
 
 @app.get("/api/v1/trades")
 def api_trades(bot_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+    limit = _bounded_limit(limit, default=200, max_value=1000)
     with closing(_get_conn()) as conn:
         items = db.list_trades(conn, bot_id=bot_id, limit=limit)
         return {"items": items, "count": len(items)}
@@ -653,6 +671,7 @@ def api_symbol_health() -> dict[str, Any]:
 
 @app.get("/api/v1/decisions")
 def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
+    limit = _bounded_limit(limit, default=200, max_value=1000)
     with closing(_get_conn()) as conn:
         rows = conn.execute(
             """SELECT ts, action, rec_id, operator, details_json
@@ -683,6 +702,7 @@ def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header
 
 @app.get("/api/v1/sentiment")
 def api_sentiment_get(scope: str = "global", key: str = "crypto", limit: int = 120) -> dict[str, Any]:
+    limit = _bounded_limit(limit, default=120, max_value=1000)
     with closing(_get_conn()) as conn:
         series = db.get_sentiment_series(conn, scope, key, limit=limit)
         return {"scope": scope, "key": key, "items": series}

@@ -32,6 +32,15 @@ def _env(key: str, default: str | None = None) -> str:
     return v
 
 
+def _env_json_dict(key: str, default_json: str) -> dict:
+    raw = _env(key, default_json)
+    try:
+        loaded = json.loads(raw)
+    except Exception:
+        loaded = json.loads(default_json)
+    return loaded if isinstance(loaded, dict) else json.loads(default_json)
+
+
 @dataclass(frozen=True)
 class Settings:
     outcome_horizon_fallback_sec: int
@@ -87,11 +96,10 @@ def load_settings() -> Settings:
     symbols_spot = [s.strip().upper() for s in _env("SYMBOLS_SPOT", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
     symbols_linear = [s.strip().upper() for s in _env("SYMBOLS_LINEAR", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
 
-    risk_limits_json = _env(
+    risk_limits = _env_json_dict(
         "RISK_LIMITS_JSON",
         '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1}',
     )
-    risk_limits = json.loads(risk_limits_json)
 
     master_key = os.getenv("MASTER_KEY", "") or None
     admin_api_key = os.getenv("ADMIN_API_KEY", "") or None

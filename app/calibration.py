@@ -144,6 +144,18 @@ N_FEATURES = len(FEATURE_NAMES)
 
 _LIQ_TIER_MAP = {"micro": 0.0, "low": 0.33, "medium": 0.67, "high": 1.0}
 
+def _safe_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        if value is None:
+            return default
+        num = float(value)
+        if not math.isfinite(num):
+            return default
+        return num
+    except Exception:
+        return default
+
+
 
 def extract_features(row: dict[str, Any]) -> list[float] | None:
     """Extract a fixed-length feature vector from an outcome+rec joined row.
@@ -171,48 +183,48 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
     snap = reasons.get("feature_snapshot") or {}
     if isinstance(snap, dict) and snap:
         return [
-            _clamp(float(snap.get("range_score", 0.5)), 0.0, 1.0),
-            _clamp(float(snap.get("trend_strength", 0.0)), 0.0, 1.0),
-            _clamp(float(snap.get("atr_pct_norm", 0.0)), 0.0, 2.0),
-            _clamp(float(snap.get("effective_sentiment", 0.0)), -1.0, 1.0),
-            _clamp(float(snap.get("dir_conf", 0.5)), 0.0, 1.0),
-            _clamp(float(snap.get("coherence", 0.5)), 0.0, 1.0),
-            _clamp(float(snap.get("spread_bps_norm", 0.8)), 0.0, 5.0),
-            _clamp(float(snap.get("score", score)), -1.0, 1.0),
-            _clamp(float(snap.get("oi_4h_norm", 0.0)), -3.0, 3.0),
-            _clamp(float(snap.get("funding_norm", 0.0)), -2.0, 2.0),
-            _clamp(float(snap.get("liq_tier_num", 0.67)), 0.0, 1.0),
-            _clamp(float(snap.get("btc_corr", 0.0)), -1.0, 1.0),
-            _clamp(float(snap.get("regime_conf", 0.5)), 0.0, 1.0),
+            _clamp(float(_safe_float(snap.get("range_score"), 0.5) or 0.5), 0.0, 1.0),
+            _clamp(float(_safe_float(snap.get("trend_strength"), 0.0) or 0.0), 0.0, 1.0),
+            _clamp(float(_safe_float(snap.get("atr_pct_norm"), 0.0) or 0.0), 0.0, 2.0),
+            _clamp(float(_safe_float(snap.get("effective_sentiment"), 0.0) or 0.0), -1.0, 1.0),
+            _clamp(float(_safe_float(snap.get("dir_conf"), 0.5) or 0.5), 0.0, 1.0),
+            _clamp(float(_safe_float(snap.get("coherence"), 0.5) or 0.5), 0.0, 1.0),
+            _clamp(float(_safe_float(snap.get("spread_bps_norm"), 0.8) or 0.8), 0.0, 5.0),
+            _clamp(float(_safe_float(snap.get("score"), _safe_float(score, 0.0)) or 0.0), -1.0, 1.0),
+            _clamp(float(_safe_float(snap.get("oi_4h_norm"), 0.0) or 0.0), -3.0, 3.0),
+            _clamp(float(_safe_float(snap.get("funding_norm"), 0.0) or 0.0), -2.0, 2.0),
+            _clamp(float(_safe_float(snap.get("liq_tier_num"), 0.67) or 0.67), 0.0, 1.0),
+            _clamp(float(_safe_float(snap.get("btc_corr"), 0.0) or 0.0), -1.0, 1.0),
+            _clamp(float(_safe_float(snap.get("regime_conf"), 0.5) or 0.5), 0.0, 1.0),
         ]
 
     dir_agg = reasons.get("direction_agg") or {}
     _dc = dir_agg.get("direction_confidence_calibrated")
     if _dc is None:
         _dc = dir_agg.get("direction_confidence")
-    dir_conf = float(_dc) if _dc is not None else 0.5
+    dir_conf = float(_safe_float(_dc, 0.5) or 0.5)
     coherence_raw = dir_agg.get("coherence")
-    coherence = float(coherence_raw) if coherence_raw is not None else 0.5
+    coherence = float(_safe_float(coherence_raw, 0.5) or 0.5)
 
     strengths = dir_agg.get("strength") or {}
     if isinstance(strengths, dict):
-        trend_strength = abs(float(strengths.get("all") or 0.0))
+        trend_strength = abs(float(_safe_float(strengths.get("all"), 0.0) or 0.0))
     else:
-        trend_strength = abs(float(strengths or 0.0))
+        trend_strength = abs(float(_safe_float(strengths, 0.0) or 0.0))
     range_score = max(0.0, 1.0 - trend_strength)
 
     cost = reasons.get("cost_model") or {}
     spread_raw = cost.get("spread_bps")
     if spread_raw is None:
         spread_raw = cost.get("total_cost_bps")
-    spread_bps = float(spread_raw) if spread_raw is not None else 8.0
+    spread_bps = float(_safe_float(spread_raw, 8.0) or 8.0)
     sent_raw = reasons.get("effective_sentiment")
-    sent = float(sent_raw) if sent_raw is not None else 0.0
-    atr_pct = _extract_factor_value(reasons, "atr_pct") or 0.0
+    sent = float(_safe_float(sent_raw, 0.0) or 0.0)
+    atr_pct = float(_safe_float(_extract_factor_value(reasons, "atr_pct"), 0.0) or 0.0)
 
     oi_block = reasons.get("open_interest") or {}
     oi_4h_raw = oi_block.get("oi_4h_chg_pct")
-    oi_4h_norm = _clamp(float(oi_4h_raw) / 10.0, -3.0, 3.0) if oi_4h_raw is not None else 0.0
+    oi_4h_norm = _clamp(float(_safe_float(oi_4h_raw, 0.0) or 0.0) / 10.0, -3.0, 3.0) if oi_4h_raw is not None else 0.0
 
     fund_block = reasons.get("funding") or {}
     fund_raw = fund_block.get("expected_funding_bps")
@@ -220,7 +232,7 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
         fund_raw = fund_block.get("directional_funding_bps_8h")
     if fund_raw is None:
         fund_raw = fund_block.get("carry_cost_bps_8h")
-    funding_norm = _clamp(float(fund_raw) / 20.0, -2.0, 2.0) if fund_raw is not None else 0.0
+    funding_norm = _clamp(float(_safe_float(fund_raw, 0.0) or 0.0) / 20.0, -2.0, 2.0) if fund_raw is not None else 0.0
 
     liq_block = reasons.get("liquidity") or {}
     liq_tier_str = str(liq_block.get("tier") or "medium").lower()
@@ -228,10 +240,10 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
 
     btc_block = reasons.get("btc_beta") or {}
     btc_corr_raw = btc_block.get("correlation")
-    btc_corr = _clamp(float(btc_corr_raw), -1.0, 1.0) if btc_corr_raw is not None else 0.0
+    btc_corr = _clamp(float(_safe_float(btc_corr_raw, 0.0) or 0.0), -1.0, 1.0) if btc_corr_raw is not None else 0.0
 
     regime_conf_raw = dir_agg.get("regime_confidence")
-    regime_conf = _clamp(float(regime_conf_raw), 0.0, 1.0) if regime_conf_raw is not None else 0.5
+    regime_conf = _clamp(float(_safe_float(regime_conf_raw, 0.5) or 0.5), 0.0, 1.0) if regime_conf_raw is not None else 0.5
 
     return [
         _clamp(range_score, 0.0, 1.0),
@@ -241,7 +253,7 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
         _clamp(dir_conf, 0.0, 1.0),
         _clamp(coherence, 0.0, 1.0),
         _clamp(spread_bps / 10.0, 0.0, 5.0),
-        _clamp(float(score), -1.0, 1.0),
+        _clamp(float(_safe_float(score, 0.0) or 0.0), -1.0, 1.0),
         oi_4h_norm,
         funding_norm,
         liq_tier_num,
@@ -259,7 +271,7 @@ def _extract_factor_value(reasons: dict, feature: str) -> float | None:
             if isinstance(f, dict) and f.get("feature") == feature:
                 v = f.get("value")
                 if v is not None:
-                    return float(v)
+                    return float(_safe_float(v, 0.0) or 0.0)
     return None
 
 

@@ -1720,3 +1720,158 @@ def test_run_llm_review_sweep_once_updates_latest_snapshot_asynchronously(conn, 
     assert saved is not None
     assert saved["reasons"]["llm_review"]["status"] == "ok"
     assert saved["reasons"]["llm_review"]["summary"] == "async ok"
+
+
+
+def test_compute_outcomes_scans_past_stuck_unprocessable_rows(conn):
+    from app.outcomes import compute_outcomes_once
+
+    now = db.now_ts()
+    stuck_ts = now - 9 * 3600
+    good_ts = now - 8 * 3600
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                "rec_id": "R-stuck-old",
+                "ts": stuck_ts,
+                "venue": "linear",
+                "symbol": "ETHUSDT",
+                "bot_type": "futures_grid",
+                "direction": "neutral",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.1,
+                "confidence": 0.6,
+                "expected_rr": 1.2,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                "reasons": {},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": stuck_ts,
+            },
+            {
+                "rec_id": "R-good-newer",
+                "ts": good_ts,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "neutral",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.2,
+                "confidence": 0.62,
+                "expected_rr": 1.1,
+                "risk_score": 0.25,
+                "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                "reasons": {},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": good_ts,
+            },
+        ],
+    )
+
+    entry_ts = good_ts + 60
+    exit_ts = entry_ts + 6 * 3600
+    db.upsert_ohlcv(
+        conn,
+        [
+            {
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "tf_sec": 60,
+                "ts": entry_ts,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.5,
+                "close": 100.2,
+                "volume": 10.0,
+            },
+            {
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "tf_sec": 60,
+                "ts": exit_ts,
+                "open": 100.1,
+                "high": 100.5,
+                "low": 99.8,
+                "close": 100.0,
+                "volume": 8.0,
+            },
+        ],
+    )
+
+    done = compute_outcomes_once(conn, horizon_sec=30 * 60, max_to_process=1)
+
+    assert done == 1
+    assert db.outcome_exists(conn, "R-good-newer") is True
+    assert db.outcome_exists(conn, "R-stuck-old") is False
+
+
+
+def test_fit_logreg_tolerates_malformed_feature_snapshot_values():
+    from app.calibration import fit_logreg
+
+    now = int(time.time())
+    base_snapshot = {
+        "range_score": 0.7,
+        "trend_strength": 0.2,
+        "atr_pct_norm": 0.4,
+        "effective_sentiment": 0.1,
+        "dir_conf": 0.65,
+        "coherence": 0.6,
+        "spread_bps_norm": 0.5,
+        "score": 0.35,
+        "oi_4h_norm": 0.2,
+        "funding_norm": -0.1,
+        "liq_tier_num": 0.9,
+        "btc_corr": 0.25,
+        "regime_conf": 0.7,
+    }
+    rows = []
+    for idx in range(12):
+        snap = dict(base_snapshot)
+        if idx == 0:
+            snap["range_score"] = "oops"
+            snap["dir_conf"] = {"unexpected": True}
+            snap["btc_corr"] = "nan"
+        success = 1 if idx < 6 else 0
+        score = 0.6 if success else -0.6
+        rows.append({
+            "score": score,
+            "success": success,
+            "ts": now - idx * 60,
+            "reasons": {"feature_snapshot": snap},
+        })
+
+    model = fit_logreg(rows, min_samples=4, logreg_min_samples=4)
+
+    assert model.fitted is True
+    assert model.n_samples == len(rows)
+
+
+
+def test_load_settings_falls_back_when_risk_limits_json_is_malformed(monkeypatch: pytest.MonkeyPatch):
+    import importlib
+    import sys
+
+    monkeypatch.setenv("RISK_LIMITS_JSON", "{bad-json")
+    sys.modules.pop("app.settings", None)
+    settings_module = importlib.import_module("app.settings")
+    settings = settings_module.load_settings()
+
+    assert settings.risk_limits == {
+        "max_concurrent_bots": 4,
+        "max_daily_dd_usdt": 200.0,
+        "cooldown_after_loss_min": 30,
+        "max_symbol_bots": 1,
+    }
+
+    sys.modules.pop("app.settings", None)

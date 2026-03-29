@@ -350,6 +350,7 @@ def _grid_outcome(
 
 def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
     min_horizon = min(BOT_HORIZONS.values())
+    fetch_limit = max(int(max_to_process), min(2000, int(max_to_process) * 12))
 
     cur = conn.execute(
         """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
@@ -359,12 +360,14 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
            WHERE r.ts <= ? AND o.rec_id IS NULL
            AND r.status NOT IN ('blocked', 'no_trade', 'suppressed')
            ORDER BY r.ts ASC LIMIT ?""",
-        (db.now_ts() - min_horizon, max_to_process),
+        (db.now_ts() - min_horizon, fetch_limit),
     )
     rows = cur.fetchall()
     done = 0
 
     for r in rows:
+        if done >= int(max_to_process):
+            break
         rec_id = r["rec_id"]
         bot_type = r["bot_type"]
         if bot_type not in SUPPORTED_BOT_TYPES:
