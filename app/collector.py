@@ -25,9 +25,10 @@ def _is_not_supported_symbol(err: Exception) -> bool:
     msg = str(err)
     if "10001" not in msg:
         return False
+    msg_l = msg.lower()
     # Bybit returns different messages for invalid/pre-market/delisted symbols:
     # "Not supported symbols", "symbol invalid", "params error: symbol invalid"
-    return any(k in msg for k in ("Not supported symbols", "symbol invalid", "Symbol invalid"))
+    return any(k in msg_l for k in ("not supported symbols", "symbol invalid"))
 
 def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]) -> None:
     category = VENUE_TO_CATEGORY[venue]

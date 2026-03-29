@@ -11,7 +11,7 @@ from app import db
 from app import recommender as recommender_module
 from app.direction import aggregate_direction
 from app.outcomes import _get_first_tradeable_candle_after
-from app.llm_review import LLMReviewResult, OllamaCandleReviewer, parse_review_content
+from app.llm_review import LLMReviewResult, OllamaCandleReviewer, parse_review_content, parse_tf_secs
 from app.recommender import (
     _apply_llm_reviewer,
     _advance_persistence_gate,
@@ -90,6 +90,39 @@ def test_parse_review_content_handles_json_fence_and_spot_short_execution_neutra
 
 
 
+
+
+def test_parse_tf_secs_ignores_invalid_tokens_and_keeps_supported_order():
+    assert parse_tf_secs("15m,garbage,1h,999,4h,bad") == [15 * 60, 60 * 60, 4 * 60 * 60]
+
+
+def test_explicit_label_horizon_is_clamped_for_grid_bots():
+    from app.outcomes import _resolve_effective_horizon
+
+    horizon_sec, used_fallback = _resolve_effective_horizon("futures_grid", {"label_horizon_hours": 240}, 1800)
+
+    assert used_fallback is False
+    assert horizon_sec == 48 * 3600
+
+
+def test_alert_cooldown_is_not_consumed_when_send_fails(monkeypatch: pytest.MonkeyPatch):
+    from app import alerts
+
+    alerts._last_sent.clear()
+    attempts: list[str] = []
+
+    def _fake_send(token: str, chat_id: str, text: str) -> bool:
+        attempts.append(text)
+        return False
+
+    monkeypatch.setattr(alerts, "send_telegram", _fake_send)
+
+    payload = [{"status": "ok"}, {"status": "missing"}]
+    alerts.check_and_alert("token", "chat", payload, collect_errors_10m=7, reco_count=0)
+    alerts.check_and_alert("token", "chat", payload, collect_errors_10m=7, reco_count=0)
+
+    assert len(attempts) == 6
+    assert alerts._last_sent == {}
 
 
 def test_load_llm_candles_for_symbol_drops_open_candle(conn):

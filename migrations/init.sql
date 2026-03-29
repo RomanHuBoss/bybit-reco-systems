@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS recommendations (
 
 CREATE INDEX IF NOT EXISTS idx_reco_ts ON recommendations(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_symbol ON recommendations(venue, symbol, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reco_status_ts ON recommendations(status, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reco_venue_status_ts ON recommendations(venue, status, ts DESC);
 
 CREATE TABLE IF NOT EXISTS decision_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +88,7 @@ CREATE TABLE IF NOT EXISTS decision_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_decision_ts ON decision_log(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_action_ts ON decision_log(action, ts DESC);
 
 CREATE TABLE IF NOT EXISTS bot_instances (
   bot_id TEXT PRIMARY KEY,

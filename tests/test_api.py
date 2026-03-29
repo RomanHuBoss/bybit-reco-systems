@@ -591,3 +591,56 @@ def test_api_status_and_health_report_large_batch_llm_default_capacity(client_an
     health_resp = client.get('/api/v1/health/symbols')
     assert health_resp.status_code == 200
     assert health_resp.json()['llm_reviewer']['max_candidates'] == 60
+
+
+def test_api_details_and_decisions_tolerate_corrupt_json_rows(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-corrupt-1',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {'ok': True},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+    conn.execute(
+        "UPDATE recommendations SET reasons_json=?, blocks_json=? WHERE rec_id=?",
+        ('{bad json', '{bad json', 'R-corrupt-1'),
+    )
+    conn.execute(
+        "INSERT INTO decision_log(ts, action, rec_id, operator, details_json) VALUES(?,?,?,?,?)",
+        (ts_now, 'BROKEN_JSON', None, None, '{bad json'),
+    )
+    conn.commit()
+
+    details_resp = client.get('/api/v1/recommendations/R-corrupt-1')
+    assert details_resp.status_code == 200
+    details = details_resp.json()
+    assert details['reasons'] == {}
+    assert details['blocks'] == []
+
+    decisions_resp = client.get('/api/v1/decisions?limit=5')
+    assert decisions_resp.status_code == 200
+    decisions = decisions_resp.json()
+    broken = next(item for item in decisions if item['action'] == 'BROKEN_JSON')
+    assert broken['details'] == {}

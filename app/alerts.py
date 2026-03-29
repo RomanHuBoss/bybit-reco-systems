@@ -16,10 +16,11 @@ COOLDOWN_SEC = 600                   # don't repeat same alert class within 10 m
 
 def _can_send(key: str) -> bool:
     now = time.time()
-    if now - _last_sent.get(key, 0) >= COOLDOWN_SEC:
-        _last_sent[key] = now
-        return True
-    return False
+    return now - _last_sent.get(key, 0) >= COOLDOWN_SEC
+
+
+def _mark_sent(key: str) -> None:
+    _last_sent[key] = time.time()
 
 
 def send_telegram(token: str, chat_id: str, text: str) -> bool:
@@ -49,26 +50,29 @@ def check_and_alert(
 
     # 1. Collect error spike
     if collect_errors_10m >= 5 and _can_send("collect_errors"):
-        send_telegram(token, chat_id,
+        if send_telegram(token, chat_id,
             f"⚠️ <b>{bot_name}</b>\n"
             f"🔴 {collect_errors_10m} ошибок сбора за 10 мин\n"
             f"Проверьте подключение к Bybit API или символы в .env"
-        )
+        ):
+            _mark_sent("collect_errors")
 
     # 2. Majority of symbols stale/missing
     n_bad = sum(1 for s in symbol_health if s["status"] in ("stale", "missing"))
     n_total = len(symbol_health)
     if n_total > 0 and n_bad / n_total >= 0.5 and _can_send("symbols_stale"):
-        send_telegram(token, chat_id,
+        if send_telegram(token, chat_id,
             f"🔴 <b>{bot_name}</b>\n"
             f"Данные устарели/отсутствуют для {n_bad}/{n_total} символов\n"
             f"Возможно коллектор упал. Проверьте логи."
-        )
+        ):
+            _mark_sent("symbols_stale")
 
     # 3. No recommendations at all
     if reco_count == 0 and _can_send("no_recos"):
-        send_telegram(token, chat_id,
+        if send_telegram(token, chat_id,
             f"⚠️ <b>{bot_name}</b>\n"
             f"Нет рекомендаций в текущем цикле\n"
             f"Рынок в risk-off режиме или все символы заблокированы."
-        )
+        ):
+            _mark_sent("no_recos")

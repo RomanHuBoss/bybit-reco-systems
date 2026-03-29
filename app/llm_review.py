@@ -137,14 +137,17 @@ def parse_tf_secs(raw: str | None) -> list[int]:
         p = part.strip().lower()
         if not p:
             continue
-        if p.endswith("m"):
-            val = int(p[:-1]) * 60
-        elif p.endswith("h"):
-            val = int(p[:-1]) * 3600
-        elif p.endswith("d"):
-            val = int(p[:-1]) * 86400
-        else:
-            val = int(float(p))
+        try:
+            if p.endswith("m"):
+                val = int(p[:-1]) * 60
+            elif p.endswith("h"):
+                val = int(p[:-1]) * 3600
+            elif p.endswith("d"):
+                val = int(p[:-1]) * 86400
+            else:
+                val = int(float(p))
+        except Exception:
+            continue
         if val in SUPPORTED_TF_SECS and val not in seen:
             out.append(val)
             seen.add(val)

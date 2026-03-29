@@ -27,6 +27,14 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
             return None
         return int(hours * 3600)
 
+    def _bounded_hours(hours: float) -> float:
+        bounds = {
+            "spot_grid": (6.0, 48.0),
+            "futures_grid": (6.0, 48.0),
+        }
+        lo, hi = bounds.get(bot_type, (0.5, 72.0))
+        return max(lo, min(hi, float(hours)))
+
     trade_plan = params.get("trade_plan") or {}
     expected_horizon = trade_plan.get("expected_horizon") or {}
 
@@ -41,7 +49,7 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
     )
     explicit_sec = _hours_to_sec(explicit_hours)
     if explicit_sec is not None:
-        return explicit_sec, False
+        return int(_bounded_hours(explicit_sec / 3600.0) * 3600), False
 
     builtin_horizon = BOT_HORIZONS.get(bot_type)
     if builtin_horizon is not None:
@@ -50,12 +58,7 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
     max_hours_raw = expected_horizon.get("max_hours")
     max_sec = _hours_to_sec(max_hours_raw)
     if max_sec is not None:
-        bounds = {
-            "spot_grid": (6.0, 48.0),
-            "futures_grid": (6.0, 48.0),
-        }
-        lo, hi = bounds.get(bot_type, (0.5, 72.0))
-        return int(max(lo, min(hi, max_sec / 3600.0)) * 3600), False
+        return int(_bounded_hours(max_sec / 3600.0) * 3600), False
 
     return int(fallback_horizon_sec), True
 

@@ -43,6 +43,16 @@ def now_ts() -> int:
     return int(time.time())
 
 
+def _json_loads_or_default(raw: Any, default: Any) -> Any:
+    if raw in (None, ""):
+        return default
+    try:
+        loaded = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return default
+    return loaded
+
+
 def set_app_config_json(conn: sqlite3.Connection, key: str, value: Any) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO app_config(key, value_json, updated_ts) VALUES(?,?,?)",
@@ -57,7 +67,7 @@ def get_app_config_json(conn: sqlite3.Connection, key: str, default: Any = None)
     if not row:
         return default
     try:
-        return json.loads(row["value_json"])
+        return _json_loads_or_default(row["value_json"], default)
     except Exception:
         return default
 
@@ -147,7 +157,7 @@ def get_latest_features(conn: sqlite3.Connection, venue: str, symbol: str) -> di
         (venue, symbol),
     )
     row = cur.fetchone()
-    return json.loads(row["features_json"]) if row else None
+    return _json_loads_or_default(row["features_json"], None) if row else None
 
 def get_active_bots(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     _supported_sql, _supported_params = sql_in_clause("bot_type")
@@ -256,9 +266,9 @@ def _decode_bot_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
         "venue": r["venue"],
         "symbol": r["symbol"],
         "bot_type": r["bot_type"],
-        "mode": json.loads(r["mode_json"]),
-        "params": json.loads(r["params_json"]),
-        "state": json.loads(r["state_json"]),
+        "mode": _json_loads_or_default(r["mode_json"], {}),
+        "params": _json_loads_or_default(r["params_json"], {}),
+        "state": _json_loads_or_default(r["state_json"], {}),
         "status": r["status"],
         "origin_rec_id": r["origin_rec_id"],
     }
@@ -290,7 +300,7 @@ def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any
     row = cur.fetchone()
     if not row:
         return False
-    state = json.loads(row["state_json"]) if row["state_json"] else {}
+    state = _json_loads_or_default(row["state_json"], {})
     state = {**state, **patch} if merge else dict(patch)
     conn.execute("UPDATE bot_instances SET state_json=? WHERE bot_id=?", (json.dumps(state, ensure_ascii=False), bot_id))
     conn.commit()
@@ -362,7 +372,7 @@ def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int 
             "symbol": r["symbol"],
             "pnl": r["pnl"],
             "fee": r["fee"],
-            "meta": json.loads(r["meta_json"]),
+            "meta": _json_loads_or_default(r["meta_json"], {}),
         })
     return out
 
@@ -399,7 +409,7 @@ def _recommended_row_passes_conf_filter(row: sqlite3.Row, min_conf: float, stric
     if strict_min_conf:
         return conf >= float(min_conf)
     try:
-        reasons = json.loads(row["reasons_json"]) if row["reasons_json"] else {}
+        reasons = _json_loads_or_default(row["reasons_json"], {})
     except Exception:
         reasons = {}
     confidence_model = reasons.get("confidence_model") if isinstance(reasons, dict) else {}
@@ -461,9 +471,9 @@ def get_recommendations(
             "confidence": r["confidence"],
             "expected_rr": r["expected_rr"],
             "risk_score": r["risk_score"],
-            "params": json.loads(r["params_json"]),
-            "reasons": json.loads(r["reasons_json"]),
-            "blocks": json.loads(r["blocks_json"]),
+            "params": _json_loads_or_default(r["params_json"], {}),
+            "reasons": _json_loads_or_default(r["reasons_json"], {}),
+            "blocks": _json_loads_or_default(r["blocks_json"], []),
             "status": r["status"],
             "ttl_sec": r["ttl_sec"],
             "model_version": r["model_version"],
@@ -491,9 +501,9 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str,
         "confidence": r["confidence"],
         "expected_rr": r["expected_rr"],
         "risk_score": r["risk_score"],
-        "params": json.loads(r["params_json"]),
-        "reasons": json.loads(r["reasons_json"]),
-        "blocks": json.loads(r["blocks_json"]),
+        "params": _json_loads_or_default(r["params_json"], {}),
+        "reasons": _json_loads_or_default(r["reasons_json"], {}),
+        "blocks": _json_loads_or_default(r["blocks_json"], []),
         "status": r["status"],
         "ttl_sec": r["ttl_sec"],
         "model_version": r["model_version"],
@@ -581,13 +591,36 @@ def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str,
 def get_active_risk_limits(conn: sqlite3.Connection) -> dict[str, Any] | None:
     cur = conn.execute("""SELECT limits_json FROM risk_limits WHERE is_active=1 ORDER BY created_ts DESC LIMIT 1""")
     row = cur.fetchone()
-    return json.loads(row["limits_json"]) if row else None
+    return _json_loads_or_default(row["limits_json"], None) if row else None
 
 def insert_sentiment_point(conn: sqlite3.Connection, scope: str, key: str, ts: int, sentiment: float, velocity: float, volume: int, sources: dict, tags: list[str]) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO sentiment(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)
            VALUES(?,?,?,?,?,?,?,?)""",
         (scope, key, ts, float(sentiment), float(velocity), int(volume), json.dumps(sources, ensure_ascii=False), json.dumps(tags, ensure_ascii=False)),
+    )
+    conn.commit()
+
+
+def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    conn.executemany(
+        """INSERT OR REPLACE INTO sentiment(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)
+           VALUES(?,?,?,?,?,?,?,?)""",
+        [
+            (
+                row["scope"],
+                row["key"],
+                int(row["ts"]),
+                float(row["sentiment"]),
+                float(row.get("velocity") or 0.0),
+                int(row.get("volume") or 0),
+                json.dumps(row.get("sources") or {}, ensure_ascii=False),
+                json.dumps(row.get("tags") or [], ensure_ascii=False),
+            )
+            for row in rows
+        ],
     )
     conn.commit()
 
@@ -605,8 +638,8 @@ def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: 
             "sentiment": r["sentiment"],
             "velocity": r["velocity"],
             "volume": r["volume"],
-            "sources": json.loads(r["sources_json"]),
-            "tags": json.loads(r["tags_json"]),
+            "sources": _json_loads_or_default(r["sources_json"], {}),
+            "tags": _json_loads_or_default(r["tags_json"], []),
         })
     return out
 
@@ -645,8 +678,8 @@ def get_latest_sentiment(conn: sqlite3.Connection, scope: str, key: str) -> dict
         "sentiment": r["sentiment"],
         "velocity": r["velocity"],
         "volume": r["volume"],
-        "sources": json.loads(r["sources_json"]),
-        "tags": json.loads(r["tags_json"]),
+        "sources": _json_loads_or_default(r["sources_json"], {}),
+        "tags": _json_loads_or_default(r["tags_json"], []),
     }
 
 
@@ -666,7 +699,7 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000) -> list[
     out = []
     for row in cur.fetchall():
         try:
-            reasons = json.loads(row["reasons_json"]) if row["reasons_json"] else {}
+            reasons = _json_loads_or_default(row["reasons_json"], {})
         except Exception:
             reasons = {}
         out.append({
@@ -764,9 +797,9 @@ def get_recent_llm_review_candidates(
             "confidence": r["confidence"],
             "expected_rr": r["expected_rr"],
             "risk_score": r["risk_score"],
-            "params": json.loads(r["params_json"]),
-            "reasons": json.loads(r["reasons_json"]),
-            "blocks": json.loads(r["blocks_json"]),
+            "params": _json_loads_or_default(r["params_json"], {}),
+            "reasons": _json_loads_or_default(r["reasons_json"], {}),
+            "blocks": _json_loads_or_default(r["blocks_json"], []),
             "status": r["status"],
             "ttl_sec": r["ttl_sec"],
             "model_version": r["model_version"],
@@ -910,7 +943,7 @@ def _normalize_direction(direction: Any, fallback: str = "neutral") -> str:
 
 def _parse_reasons_json(reasons_json: str | None) -> dict[str, Any]:
     try:
-        reasons = json.loads(reasons_json) if reasons_json else {}
+        reasons = _json_loads_or_default(reasons_json, {})
     except Exception:
         reasons = {}
     return reasons if isinstance(reasons, dict) else {}
@@ -1263,7 +1296,7 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
     error_counts: dict[tuple[str, str], int] = {}
     for row in cur.fetchall():
         try:
-            d = json.loads(row["details_json"])
+            d = _json_loads_or_default(row["details_json"], {})
             venue = str(d.get("venue") or "")
             sym = str(d.get("symbol") or "UNKNOWN")
             key = (venue, sym)
@@ -1280,7 +1313,7 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
     disabled_syms: set[tuple[str, str]] = set()
     for row in cur.fetchall():
         try:
-            d = json.loads(row["details_json"])
+            d = _json_loads_or_default(row["details_json"], {})
             disabled_syms.add((str(d.get("venue") or ""), str(d.get("symbol") or "")))
         except Exception:
             logger.debug("health: error_counts parse error", exc_info=True)
@@ -1294,7 +1327,7 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
     stale_counts: dict[tuple[str, str], int] = {}
     for row in cur.fetchall():
         try:
-            d = json.loads(row["details_json"])
+            d = _json_loads_or_default(row["details_json"], {})
             venue = str(d.get("venue") or "")
             sym = str(d.get("symbol") or "UNKNOWN")
             key = (venue, sym)

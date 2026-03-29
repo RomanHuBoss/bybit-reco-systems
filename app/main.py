@@ -6,7 +6,6 @@ import os
 import secrets
 import threading
 import socket
-from functools import lru_cache
 import time
 from contextlib import closing, asynccontextmanager
 from pathlib import Path
@@ -35,6 +34,9 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 OUTCOME_LABEL_VERSION = "grid_label_v2"
+INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
+_instrument_meta_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_instrument_meta_lock = threading.Lock()
 
 
 def _get_conn():
@@ -93,9 +95,17 @@ _bootstrap_db()
 
 
 
-@lru_cache(maxsize=512)
 def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
     category = "linear" if str(venue or "").lower() == "linear" else "spot"
+    cache_key = (str(venue or "").lower(), str(symbol or "").upper())
+    now = time.time()
+    with _instrument_meta_lock:
+        cached = _instrument_meta_cache.get(cache_key)
+        if cached is not None:
+            cached_ts, cached_value = cached
+            if now - cached_ts <= INSTRUMENT_META_CACHE_TTL_SEC:
+                return dict(cached_value)
+            _instrument_meta_cache.pop(cache_key, None)
     client = BybitPublicClient(settings.bybit_base_url)
     try:
         info = client.get_instrument_info(category, symbol)
@@ -113,7 +123,7 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
 
     price_filter = info.get("priceFilter") or {}
     lot_filter = info.get("lotSizeFilter") or {}
-    return {
+    meta = {
         "category": category,
         "symbol": symbol,
         "tick_size": price_filter.get("tickSize"),
@@ -123,6 +133,16 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
         "min_order_qty": lot_filter.get("minOrderQty"),
         "price_scale": info.get("priceScale"),
     }
+    with _instrument_meta_lock:
+        _instrument_meta_cache[cache_key] = (now, dict(meta))
+    return meta
+
+
+def _json_loads_or_default(raw: str | None, default: Any) -> Any:
+    try:
+        return json.loads(raw) if raw else default
+    except Exception:
+        return default
 
 
 def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
@@ -404,7 +424,12 @@ def api_recommendations(
 
         cur = conn.execute("SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1")
         row = cur.fetchone()
-        regime = json.loads(row["regime_json"]) if row else {
+        regime = _json_loads_or_default(row["regime_json"], {
+            "vol_state": "unknown",
+            "trend_state": "unknown",
+            "risk_state": "unknown",
+            "confidence": 0.0,
+        }) if row else {
             "vol_state": "unknown",
             "trend_state": "unknown",
             "risk_state": "unknown",
@@ -641,7 +666,7 @@ def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
                 "action": r["action"],
                 "rec_id": r["rec_id"],
                 "operator": r["operator"],
-                "details": json.loads(r["details_json"]),
+                "details": _json_loads_or_default(r["details_json"], {}),
             })
         return out
 
@@ -704,8 +729,7 @@ def _sentiment_thread():
             with closing(_get_conn()) as conn:
                 try:
                     pts = collect_sentiment_once()
-                    for p in pts:
-                        db.insert_sentiment_point(conn, p["scope"], p["key"], p["ts"], p["sentiment"], p["velocity"], p["volume"], p["sources"], p["tags"])
+                    db.insert_sentiment_points(conn, pts)
                     db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)})
                 except Exception as e:
                     db.log_decision(conn, "SENTIMENT_ERROR", None, None, {"err": str(e)})
