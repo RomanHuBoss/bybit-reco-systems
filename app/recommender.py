@@ -61,6 +61,30 @@ def _pct_dist(a: float | None, b: float | None) -> float | None:
         return None
 
 
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    try:
+        num = float(value)
+    except Exception:
+        return float(default)
+    if not math.isfinite(num):
+        return float(default)
+    return num
+
+
+def _llm_reviewer_context_signature(settings) -> str:
+    tf_secs = []
+    for tf in (getattr(settings, "llm_reviewer_tf_secs", []) or []):
+        try:
+            tf_i = int(tf)
+        except Exception:
+            continue
+        if tf_i > 0:
+            tf_secs.append(tf_i)
+    tf_secs = sorted(set(tf_secs))
+    candles_per_tf = max(1, int(getattr(settings, "llm_reviewer_candles_per_tf", 32) or 32))
+    return f"tf={','.join(str(tf) for tf in tf_secs)}|candles={candles_per_tf}"
+
+
 
 def _serialize_llm_candles(rows_oldest_first: list[dict[str, Any]] | list[Any], limit: int) -> list[list[float | int]]:
     out: list[list[float | int]] = []
@@ -142,7 +166,8 @@ def _load_llm_review_cache(conn) -> dict[str, dict[str, Any]]:
                 "prompt_version": str(state.get("prompt_version") or ""),
                 "thesis_direction": normalize_direction(state.get("thesis_direction"), allow_short=True),
                 "execution_direction": normalize_direction(state.get("execution_direction"), allow_short=True),
-                "confidence": float(state.get("confidence", 0.0) or 0.0),
+                "confidence": _finite_float(state.get("confidence", 0.0), 0.0),
+                "context_signature": str(state.get("context_signature") or ""),
                 "regime_view": str(state.get("regime_view") or "unknown"),
                 "summary": state.get("summary"),
                 "risk_flags": [str(x) for x in (state.get("risk_flags") or [])[:8]],
@@ -169,7 +194,8 @@ def _save_llm_review_cache(conn, state: dict[str, dict[str, Any]], cadence_sec: 
             "prompt_version": str(meta.get("prompt_version") or ""),
             "thesis_direction": normalize_direction(meta.get("thesis_direction"), allow_short=True),
             "execution_direction": normalize_direction(meta.get("execution_direction"), allow_short=True),
-            "confidence": float(meta.get("confidence", 0.0) or 0.0),
+            "confidence": _finite_float(meta.get("confidence", 0.0), 0.0),
+            "context_signature": str(meta.get("context_signature") or ""),
             "regime_view": str(meta.get("regime_view") or "unknown"),
             "summary": meta.get("summary"),
             "risk_flags": [str(x) for x in (meta.get("risk_flags") or [])[:8]],
@@ -200,7 +226,7 @@ def _llm_cache_key(rec: dict[str, Any]) -> str:
     ])
 
 
-def _cache_meta_from_result(result: Any) -> dict[str, Any] | None:
+def _cache_meta_from_result(result: Any, *, context_signature: str = "") -> dict[str, Any] | None:
     if str(getattr(result, "status", "")) != "ok":
         return None
     return {
@@ -209,10 +235,11 @@ def _cache_meta_from_result(result: Any) -> dict[str, Any] | None:
         "prompt_version": getattr(result, "prompt_version", ""),
         "thesis_direction": normalize_direction(getattr(result, "thesis_direction", None), allow_short=True),
         "execution_direction": normalize_direction(getattr(result, "execution_direction", None), allow_short=True),
-        "confidence": float(getattr(result, "confidence", 0.0) or 0.0),
+        "confidence": _finite_float(getattr(result, "confidence", 0.0), 0.0),
         "regime_view": str(getattr(result, "regime_view", "unknown") or "unknown"),
         "summary": getattr(result, "summary", None),
         "risk_flags": [str(x) for x in (getattr(result, "risk_flags", []) or [])[:8]],
+        "context_signature": str(context_signature or ""),
     }
 
 
@@ -249,7 +276,7 @@ def _build_cached_review_dict(
         "gate_decision": "pass",
         "thesis_direction": thesis_direction,
         "execution_direction": execution_direction,
-        "confidence": float(meta.get("confidence", 0.0) or 0.0),
+        "confidence": _finite_float(meta.get("confidence", 0.0), 0.0),
         "regime_view": str(meta.get("regime_view") or "unknown"),
         "summary": meta.get("summary"),
         "risk_flags": [str(x) for x in (meta.get("risk_flags") or [])[:8]],
@@ -280,6 +307,8 @@ def _is_fresh_llm_cache_entry(
     meta: dict[str, Any],
     reviewer: OllamaCandleReviewer | None,
     cadence_sec: int,
+    *,
+    context_signature: str = "",
 ) -> tuple[bool, int | None]:
     cache_age = _llm_cache_age_sec(meta)
     if not isinstance(meta, dict) or not meta or cache_age is None:
@@ -295,6 +324,11 @@ def _is_fresh_llm_cache_entry(
     if provider != reviewer_provider or model != reviewer_model:
         return False, cache_age
     if prompt_version and prompt_version != reviewer_prompt_version:
+        return False, cache_age
+    cached_context_signature = str(meta.get("context_signature") or "")
+    if context_signature and cached_context_signature and cached_context_signature != context_signature:
+        return False, cache_age
+    if context_signature and not cached_context_signature:
         return False, cache_age
     return True, cache_age
 
@@ -326,6 +360,7 @@ def _sanitize_llm_review_dict(rec: dict[str, Any], review_dict: dict[str, Any]) 
         execution_direction = "neutral"
     out["thesis_direction"] = thesis_direction
     out["execution_direction"] = execution_direction
+    out["confidence"] = _finite_float(out.get("confidence", 0.0), 0.0)
     out["agree_with_engine"] = execution_direction == normalize_direction(rec.get("direction"), allow_short=allow_short_exec)
     return out
 
@@ -339,6 +374,7 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
         mode = "advisory"
     cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65)
+    context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4))
     candidates = [r for r in recs if str(r.get("status") or "") == "recommended"]
@@ -351,7 +387,7 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
         reasons = rec.setdefault("reasons", {})
         cache_key = _llm_cache_key(rec)
         cache_meta = llm_cache.get(cache_key) or {}
-        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec)
+        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec, context_signature=context_signature)
         if cache_is_fresh:
             review_dict = _build_cached_review_dict(
                 cache_meta,
@@ -502,6 +538,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65)
     cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+    context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     cache_dirty = False
 
@@ -516,7 +553,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
     for rec in candidates:
         cache_key = _llm_cache_key(rec)
         cache_meta = llm_cache.get(cache_key) or {}
-        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec)
+        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec, context_signature=context_signature)
         if cache_is_fresh:
             reasons = rec.setdefault("reasons", {})
             review_dict = _build_cached_review_dict(
@@ -605,7 +642,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
                 continue
 
             review_ts = int(time.time())
-            result_meta = _cache_meta_from_result(result)
+            result_meta = _cache_meta_from_result(result, context_signature=context_signature)
             if result_meta is not None:
                 llm_cache[cache_key] = {"ts": review_ts, **result_meta}
                 cache_dirty = True
@@ -693,7 +730,8 @@ def _apply_llm_review_decision(
         })
         return False, True
 
-    if mode == "gate" and float(review_dict.get("confidence") or 0.0) >= float(min_conf) and str(review_dict.get("execution_direction") or "neutral") != str(rec.get("direction") or "neutral"):
+    llm_confidence = _finite_float(review_dict.get("confidence") or 0.0, 0.0)
+    if mode == "gate" and llm_confidence >= float(min_conf) and str(review_dict.get("execution_direction") or "neutral") != str(rec.get("direction") or "neutral"):
         prev_status = str(rec.get("status") or "")
         rec["status"] = "no_trade"
         review_dict["gate_decision"] = "veto"
@@ -707,7 +745,7 @@ def _apply_llm_review_decision(
             "engine_direction": rec.get("direction"),
             "llm_execution_direction": review_dict.get("execution_direction"),
             "llm_thesis_direction": review_dict.get("thesis_direction"),
-            "llm_confidence": review_dict.get("confidence"),
+            "llm_confidence": llm_confidence,
             "model": review_dict.get("model"),
             "source": source,
             "latency_ms": latency_ms,
@@ -722,7 +760,7 @@ def _apply_llm_review_decision(
         "engine_direction": rec.get("direction"),
         "llm_execution_direction": review_dict.get("execution_direction"),
         "llm_thesis_direction": review_dict.get("thesis_direction"),
-        "llm_confidence": review_dict.get("confidence"),
+        "llm_confidence": llm_confidence,
         "mode": mode,
         "gate_decision": review_dict.get("gate_decision"),
         "model": review_dict.get("model"),
@@ -769,6 +807,7 @@ def _apply_llm_reviewer(
     max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4))
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65)
     cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+    context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     cache_dirty = False
     live_calls = 0
@@ -782,7 +821,7 @@ def _apply_llm_reviewer(
         symbol = str(rec.get("symbol") or "")
         cache_key = _llm_cache_key(rec)
         cache_meta = llm_cache.get(cache_key) or {}
-        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec)
+        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec, context_signature=context_signature)
         if cache_is_fresh:
             review_dict = _build_cached_review_dict(cache_meta, rec, mode, int(cache_age or 0), source="cache")
             reasons["llm_review"] = review_dict
@@ -832,7 +871,7 @@ def _apply_llm_reviewer(
         stats["reviewed"] += 1
         live_calls += 1
 
-        cache_meta_new = _cache_meta_from_result(result)
+        cache_meta_new = _cache_meta_from_result(result, context_signature=context_signature)
         if cache_meta_new is not None:
             llm_cache[cache_key] = {"ts": int(time.time()), **cache_meta_new}
             cache_dirty = True

@@ -92,6 +92,17 @@ def test_parse_review_content_handles_json_fence_and_spot_short_execution_neutra
 
 
 
+def test_parse_review_content_treats_nonfinite_confidence_as_zero():
+    parsed = parse_review_content(
+        '{"thesis_direction":"long","execution_direction":"long","confidence":"NaN","summary":"bad conf"}',
+        bot_type="futures_grid",
+        engine_direction="long",
+    )
+
+    assert parsed["confidence"] == 0.0
+
+
+
 def test_parse_tf_secs_ignores_invalid_tokens_and_keeps_supported_order():
     assert parse_tf_secs("15m,garbage,1h,999,4h,bad") == [15 * 60, 60 * 60, 4 * 60 * 60]
 
@@ -477,6 +488,7 @@ def test_cached_llm_review_preserves_execution_direction_from_live_result(conn):
             "thesis_direction": "short",
             "execution_direction": "neutral",
             "confidence": 0.70,
+            "context_signature": "tf=900,3600,14400|candles=32",
             "regime_view": "range with weak downside bias",
             "summary": "neutral execution despite bearish thesis",
             "risk_flags": ["low_confidence"],
@@ -540,6 +552,7 @@ def test_mark_llm_reviews_async_reuses_fresh_cache_for_new_rec_ids(conn):
             "thesis_direction": "long",
             "execution_direction": "long",
             "confidence": 0.74,
+            "context_signature": "tf=900,3600,14400|candles=32",
             "regime_view": "bullish_range",
             "summary": "reuse cached review",
             "risk_flags": ["carry_risk"],
@@ -1968,6 +1981,79 @@ class _RetryingCollectorClient:
         return [["1700000000000", "100", "101", "99", "100.5", "10", "0"]]
 
 
+def test_db_get_latest_ohlcv_skips_corrupted_rows(conn):
+    good_ts = 1_700_000_000
+    db.upsert_ohlcv(conn, [
+        {
+            'venue': 'linear', 'symbol': 'BTCUSDT', 'tf_sec': 60, 'ts': good_ts,
+            'open': 100.0, 'high': 101.0, 'low': 99.5, 'close': 100.5, 'volume': 12.0,
+        },
+        {
+            'venue': 'linear', 'symbol': 'BTCUSDT', 'tf_sec': 60, 'ts': good_ts + 60,
+            'open': 0.0, 'high': 102.0, 'low': 100.0, 'close': 101.0, 'volume': 10.0,
+        },
+    ])
+
+    rows = db.get_latest_ohlcv(conn, 'linear', 'BTCUSDT', 60, limit=10)
+
+    assert [int(r['ts']) for r in rows] == [good_ts]
+
+
+
+def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
+    from app import collector
+
+    collector._DISABLED_SYMBOLS["spot"].clear()
+    collector._DISABLED_SYMBOLS["linear"].clear()
+
+    class BadPayloadClient:
+        def get_tickers(self, *, category: str, symbol: str):
+            return [{
+                "lastPrice": "NaN",
+                "bid1Price": "99",
+                "ask1Price": "101",
+                "volume24h": "1000",
+                "turnover24h": "inf",
+            }]
+
+        def get_kline(self, *, category: str, symbol: str, interval: str, limit: int):
+            return [
+                ["1700000060000", "NaN", "101", "99", "100.5", "10", "0"],
+                ["1700000000000", "100", "101", "99", "100.5", "10", "0"],
+            ]
+
+        def get_funding_rate(self, symbol: str):
+            return {"symbol": symbol, "funding_rate": float('nan'), "next_funding_ts": 1700003600}
+
+        def get_open_interest(self, symbol: str, interval: str = "1h", limit: int = 48):
+            return [
+                {"ts": 1700003600, "oi": float('nan')},
+                {"ts": 1700000000, "oi": 123.0},
+            ]
+
+    conn = db.connect(str(tmp_path / "collector_bad_rows.db"))
+    db.init_db(conn)
+    client = BadPayloadClient()
+
+    collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    collector.collect_futures_once(conn, client, ["BTCUSDT"])
+
+    ticker = db.get_latest_ticker(conn, "spot", "BTCUSDT")
+    rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 60, limit=10)
+    oi_rows = db.get_oi_series(conn, "BTCUSDT", limit=10)
+    funding = db.get_latest_funding_rate(conn, "BTCUSDT")
+
+    assert ticker is not None
+    assert ticker["turnover24h"] is None
+    assert len(rows) == 1
+    assert int(rows[0]["ts"]) == 1700000000
+    assert len(oi_rows) == 1
+    assert funding is None
+
+    conn.close()
+
+
+
 def test_collector_retries_temporarily_disabled_symbol_after_ttl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from app import collector
 
@@ -1994,6 +2080,62 @@ def test_collector_retries_temporarily_disabled_symbol_after_ttl(tmp_path: Path,
     assert client.ticker_calls == ["BTCUSDT", "BTCUSDT"]
     assert any(symbol == "BTCUSDT" and interval == "1" for symbol, interval in client.kline_calls)
     assert db.get_latest_ticker(conn, "spot", "BTCUSDT") is not None
+
+
+def test_llm_cache_context_signature_mismatch_does_not_get_reused(conn):
+    cache_key = 'linear|BTCUSDT|futures_grid|long'
+    db.set_app_config_json(
+        conn,
+        recommender_module.LLM_REVIEW_CACHE_APP_KEY,
+        {
+            cache_key: {
+                'ts': int(time.time()),
+                'provider': 'ollama',
+                'model': 'fake-llm',
+                'prompt_version': 'ohlcv_multitf_v1',
+                'context_signature': 'tf=900,3600|candles=32',
+                'thesis_direction': 'long',
+                'execution_direction': 'long',
+                'confidence': 0.82,
+                'summary': 'stale context',
+                'risk_flags': [],
+            }
+        },
+    )
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode='advisory',
+        llm_reviewer_model='fake-llm',
+        llm_reviewer_tf_secs=[15 * 60, 60 * 60, 4 * 60 * 60],
+        llm_reviewer_candles_per_tf=48,
+        llm_reviewer_max_candidates=5,
+        llm_reviewer_cadence_sec=300,
+    )
+
+    class FakeReviewer:
+        provider = 'ollama'
+        model = 'fake-llm'
+        prompt_version = 'ohlcv_multitf_v1'
+
+    rec = {
+        'rec_id': 'R-cache-context',
+        'ts': int(time.time()),
+        'venue': 'linear',
+        'symbol': 'BTCUSDT',
+        'bot_type': 'futures_grid',
+        'direction': 'long',
+        'status': 'recommended',
+        'confidence': 0.7,
+        'score': 0.3,
+        'reasons': {},
+    }
+
+    stats = recommender_module._mark_llm_reviews_async(conn, [rec], settings, reviewer=FakeReviewer())
+
+    assert stats['cached'] == 0
+    assert rec['reasons']['llm_review']['status'] == 'pending'
+
 
 
 def test_llm_cache_prompt_version_mismatch_does_not_get_reused(conn):

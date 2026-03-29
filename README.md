@@ -1,55 +1,81 @@
 # Bybit Recommender — grid-only build
 
-Сервис собирает market data Bybit, считает multi-timeframe признаки, строит рекомендации только для grid-стратегий и сохраняет audit trail в SQLite.
+Сервис собирает рыночные данные Bybit, рассчитывает multi-timeframe признаки, строит рекомендации только для grid-стратегий, дополнительно может подключать локальный LLM-reviewer по свечам и хранит полный audit trail в SQLite.
+
+Проект рассчитан прежде всего на **операторский / полуавтоматический контур**: система формирует интерпретируемую рекомендацию, показывает причины, ограничения и риск-контекст, а оператор уже принимает решение о запуске бота на бирже.
 
 ## Поддерживаемые bot_type
 - `spot_grid`
 - `futures_grid`
 
-## Что входит
+## Что делает система
+- собирает `spot` / `linear` тикеры и OHLCV по нескольким таймфреймам;
+- собирает `funding rate` и `open interest` для perpetual linear;
+- ведёт эвристический sentiment pipeline (`global`, `symbol`, `topic` scopes);
+- определяет direction/regime на нескольких ТФ;
+- считает score / confidence / expected RR / risk score;
+- применяет risk-gate, publication-gate, market shock guard и symbol fast-veto;
+- при необходимости отправляет кандидат в локальный LLM-reviewer;
+- сохраняет рекомендации, решения, outcome-labeling, calibration state, trade history и risk limits в SQLite;
+- отдаёт REST API и операторский UI.
+
+## Архитектурный принцип
+Система разделяет несколько слоёв:
+
+1. **Data layer** — сбор и нормализация рыночных данных.
+2. **Inference layer** — признаки, direction aggregation, regime, scoring.
+3. **Control layer** — risk gate, shock guard, publication gate, LLM reviewer.
+4. **Audit layer** — `recommendations`, `decision_log`, `bot_instances`, `trades`, `reco_outcomes`.
+5. **Operator layer** — UI и API для ручного исполнения и анализа.
+
+Это **не execution engine биржевого уровня** и не полноценный симулятор исполнения. Сервис оценивает пригодность сетапа и его качество, но не заменяет отдельный production-grade execution layer.
+
+## Что важно в текущей версии
+### Логика LLM-reviewer
+- LLM-review теперь не живёт в ритме каждого нового `rec_id`.
+- Свежий review переиспользуется между соседними рекомендациями одного `(venue, symbol, bot_type, direction-signature)`.
+- Кэш LLM теперь инвалидируется не только по `model/provider/prompt_version`, но и по **контексту ревью**: набору ТФ и числу свечей на ТФ. Это исключает тихое наследование старого review после изменения входного LLM-контекста.
+- Нефинитные значения confidence (`NaN`, `inf`) из LLM больше не превращаются в ложный `1.0`; они безопасно нормализуются к `0.0`.
+
+### Защита от плохих market-data рядов
+- Некорректные OHLCV-бары (нефинитные, нулевые/отрицательные цены, отрицательный объём) отсекаются на чтении из БД, чтобы один испорченный бар не ломал features, direction, shock guard и LLM payload.
+- Коллектор дополнительно отбрасывает невалидные `ticker`, `OHLCV`, `funding`, `OI` значения ещё до записи в БД.
+- Нефинитный sentiment из внешних источников больше не усиливается clamp-логикой до экстремальных значений.
+
+### Интерпретируемость
+- В `reasons_json` сохраняются факторы, контекст сигнала, execution-constraints, funding/OI/liquidity, market shock и LLM review.
+- UI и API различают raw / calibrated confidence и показывают оператору итоговый статус вместе с блоками решения.
+- Для grid-стратегий outcome-labeling и calibration живут отдельно от операторского max holding window.
+
+## Что входит в проект
 - сбор spot/linear тикеров и OHLCV;
 - сбор funding и open interest для linear;
 - sentiment pipeline с global и symbol scopes;
-- операторский UI не пытается выдавать heuristic sentiment за полноценный deep news-анализ: в интерфейсе и README это явно помечено как эвристический фон;
 - multi-timeframe direction/regime inference;
 - scoring + risk gating + calibration;
 - outcome labeling для проверки качества рекомендаций;
-- операторский UI с явной маркировкой raw/platt/cal confidence;
+- операторский UI;
 - REST API для рекомендаций, risk status, sentiment, bot lifecycle и trade ingestion;
-- SQLite persistence с decision log и outcome history.
-
-## Что изменено в этой сборке
-- проект переведён на grid-only набор стратегий;
-- генерация, API, GUI, calibration и outcome labeling оставлены только для `spot_grid` и `futures_grid`;
-- legacy-записи с неподдерживаемыми `bot_type` не попадают в read-only выдачу и статусные агрегаты;
-- убраны лишние ветки scoring/trade-plan/outcome logic для неподдерживаемых стратегий;
-- execution lifecycle, funding/cost model и калибровка оставлены только для активных grid-ботов;
-- добавлен двусторонний `market shock guard` (`amber_down`, `red_down`, `amber_up`, `red_up`, `chaos`) с ручным operator lock/guard режимом;
-- добавлен fast-veto на уровне символа по 1m/3m/5m импульсу против направления;
-- панель деталей переписана под ручной запуск: JSON убран из основной операторской зоны; вместо него выводятся копируемые поля именно под форму Bybit для конкретного типа бота (`диапазон`, `сетки`, `интервал`, `плечо`, `TP/SL` или верхняя/нижняя стоп-цена); избыточный текстовый `лист запуска` убран; в таблице вместо отдельной `Площадки` теперь используется компактный индикатор `spot grid / futures grid`, а в верхней части деталей остаётся тот же компактный индикатор без дублирования рынка; ссылки на график и страницу создания бота вынесены только в заголовок панели деталей и в таблицу и оформлены единым SVG-стилем;
-- значения уровней в панели деталей форматируются в bybit-friendly виде: десятичная точка, без разделителей тысяч, с попыткой подстроиться под `tickSize` инструмента;
-- в верхней плашке деталей добавлен индикатор `BTC-завис.` с `r=...` и цветовой иконкой состояния (независимый / частично коррелированный / сильно коррелированный сигнал);
-- в деталях возвращены скрытые раньше, но полезные для оператора блоки: положительные/отрицательные факторы решения, контекст сигнала, исполнение и ликвидность;
-- краткая инструкция оператора лежит в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`;
-- видимый `Скор UI` в таблице и в панели деталей теперь показывается как percentile `0–100` среди текущих кандидатов с буквенной зоной `A–E`; это операторская шкала представления, она не меняет ядро отбора и не заменяет raw score в математике;
+- SQLite persistence с decision log и outcome history;
+- краткая инструкция оператора в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`.
 
 ## Ограничения дизайна
-- текущий sentiment pipeline остаётся эвристическим: RSS/Reddit/market context помогают поймать фон, но это не LLM/NER/newsroom-уровень семантического анализа заголовков и статей; отсутствие sentiment-данных трактуется как неопределённость, а не как «истинный neutral»;
-- это recommendation/evaluation engine, а не exchange-grade execution simulator;
-- глобальный calibrator хранится для диагностики/статуса, но inference намеренно не использует cross-bot fallback probability;
-- grid outcomes остаются упрощёнными path approximations, но теперь label success требует не только net>0, а подтверждённых oscillation legs, приемлемого time-in-range и отсутствия kill-switch breach; maturity horizon для label/calibration фиксирован по bot_type (сейчас 6h), а не по operator-facing max holding window;
-- risk limits начинают работать полноценно только если в `trades` реально пишутся realized fills/PnL;
-- при смене версии outcome-labeling сервис автоматически очищает `reco_outcomes` и сохранённые calibrator state, чтобы не смешивать старые мягкие метки с новой логикой.
+- sentiment pipeline остаётся **эвристическим**, а не newsroom/LLM/NER-уровня;
+- отсутствие sentiment-данных трактуется как неопределённость, а не как «истинный neutral»;
+- grid outcomes остаются приближённой path-approximation, а не биржевой truth-моделью исполнения;
+- risk limits начинают полноценно отражать реальность только если в `trades` действительно пишутся realized fills / PnL / fee;
+- локальный LLM-reviewer — это **консервативный reviewer поверх движка**, а не замена scoring/risk/calibration;
+- проект не предназначен для немедленного запуска на полный объём капитала без staging-прогона.
 
-
-## Как читать ключевые индикаторы
-- `Статус` — допуск к рассмотрению. Если не `recommended`, идею обычно пропускают.
-- `Ув. напр.` — confidence выбранного режима `long / short / neutral`. Для `neutral` высокое значение — это хорошо: система уверенно видит диапазон.
-- coherent `bullish range` / `bearish range` теперь может публиковать directional thesis (`long`/`short`) для grid, если bias подтверждён и тактическими, и структурными ТФ; на `spot_grid` bearish-range по исполнению всё равно остаётся `neutral`, но raw thesis сохраняется в audit trail.
-- `Скор UI` — percentile 0–100 среди текущих кандидатов; это шкала удобства для оператора, а не вероятность. Ориентир: `80–100 = A`, `60–79 = B`, `40–59 = C`, `20–39 = D`, `<20 = E`.
-- `Ож. RR` — экономический смысл идеи. Для futures учитывает не только execution friction, но и ожидаемый funding carry по горизонту метки. Чем выше, тем лучше, но он читается только после статуса/режима.
-- `Увер.` — общий confidence рекомендации; используйте как усилитель/ослабитель доверия, а не как единственный критерий.
-- `BTC-завис.` — происхождение сигнала: независимый он или в основном повторяет BTC. Это фильтр диверсификации, а не прямой запрет.
+## Как читать ключевые поля
+- `status` — итоговый допуск идеи к рассмотрению.
+- `direction` — исполнимое направление для текущего bot_type.
+- `confidence` — степень уверенности системы; не читать изолированно от score, RR и risk context.
+- `expected_rr` — экономический смысл идеи после учёта friction/funding.
+- `risk_score` — грубая оценка рыночной/исполнительной сложности.
+- `reasons.direction_agg` — агрегированное направление и структура голосов по ТФ.
+- `reasons.execution_constraints` — что можно, а что нельзя исполнить на выбранном bot_type.
+- `reasons.llm_review` — second opinion LLM, включая источник (`live`, `cache`, `cache_inherited`, `async_live`, `async_inherited`).
 
 ## Быстрый запуск
 ```bash
@@ -62,42 +88,48 @@ python main.py
 
 API поднимется на `127.0.0.1:8000`.
 
+## Минимальная проверка после установки
+```bash
+pytest -q
+python -m py_compile app/*.py tests/*.py main.py
+```
+
 ## Ключевые env
 - `DB_PATH` — путь к SQLite;
 - `SYMBOLS_SPOT`, `SYMBOLS_LINEAR` — списки символов;
-- `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — пороги публикации;
-- `FUTURES_COLLECT_INTERVAL_SEC` — отдельный интервал обновления funding/open-interest;
-- `CALIB_MIN_SAMPLES=80` — минимум before calibration;
-- `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon только для неизвестных/legacy bot_type (legacy `OUTCOME_HORIZON_SEC` тоже принимается);
-- `ADMIN_API_KEY` — если задан, обязателен для mutating endpoints;
+- `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
+- `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
+- `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
+- `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
+- `ADMIN_API_KEY` — ключ для mutating endpoints;
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.
 
-### Опциональный локальный LLM-reviewer по свечам
-Проект теперь умеет дополнительно отправлять в локальную LLM мультитаймфреймный OHLCV-пакет по выбранным символам и сохранять её вердикт в `reasons_json` и `decision_log`.
-
-Режимы работы:
-- `LLM_REVIEWER_ENABLED=0` — модуль полностью выключен;
-- `LLM_REVIEWER_MODE=advisory` — LLM только пишет second opinion, но не меняет статус рекомендации;
-- `LLM_REVIEWER_MODE=gate` — если LLM уверенно расходится с `execution_direction`, рекомендация переводится в `no_trade`.
-
-Рекомендованный старт для локальной Ollama на Windows:
+### Опциональный локальный LLM-reviewer
+Основные настройки:
+- `LLM_REVIEWER_ENABLED=1`
+- `LLM_REVIEWER_MODE=advisory` или `gate`
 - `LLM_REVIEWER_PROVIDER=ollama`
 - `LLM_REVIEWER_URL=http://127.0.0.1:11434`
-- `LLM_REVIEWER_MODEL=qwen3:8b` или ваш локальный тег вроде `qwen3.5:9b`
+- `LLM_REVIEWER_MODEL=qwen3:8b`
 - `LLM_REVIEWER_TFS=15m,1h,4h`
 - `LLM_REVIEWER_CANDLES_PER_TF=32`
 - `LLM_REVIEWER_MAX_CANDIDATES=60`
+- `LLM_REVIEWER_MAX_WORKERS=8`
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
-- `LLM_REVIEWER_CADENCE_SEC=300` — базовая редкая полная sweep-итерация; при наличии backlog pending-рекомендаций сервис сам временно ускоряет async-sweep до cadence recommendation loop, не блокируя публикацию engine-сигналов.
-- `LLM_REVIEWER_MAX_WORKERS=8` — параллелизм фоновых LLM-review задач.
+- `LLM_REVIEWER_CADENCE_SEC=300`
 
-Важно: reviewer теперь работает асинхронно. Движок публикует core-рекомендации сразу, а LLM-доработка дописывается позже в ту же запись. Для крупных батчей (`MAX_CANDIDATES=60`) это штатный режим. API `/api/v1/recommendations` дополнительно понимает `snapshot=latest_visible`, `snapshot=latest_llm_ready` и `snapshot=latest_operator` (режим по умолчанию для UI), если оператору нужен последний непустой или уже отreviewенный срез.
+Режимы:
+- `advisory` — LLM пишет second opinion, но не меняет статус рекомендации;
+- `gate` — уверенное расхождение LLM с `execution_direction` может перевести идею в `no_trade`.
 
-LLM-reviewer задуман как консервативный reviewer поверх текущего движка, а не как замена scoring/risk/calibration.
+Важно:
+- LLM-reviewer работает асинхронно и не должен блокировать публикацию core-сигналов.
+- UI и API умеют показывать `pending`, `ok`, `error`, `cache_inherited`, `async_live` и другие состояния reviewer.
+- После изменения `LLM_REVIEWER_TFS` или `LLM_REVIEWER_CANDLES_PER_TF` старый кэш reviewer больше не переиспользуется автоматически.
 
 ## Основные API
 ### Read-only
-- `GET /api/v1/recommendations` (`min_conf` по умолчанию равен publish-threshold `MIN_CONF_TO_RECOMMEND`, но raw-only рекомендации не скрываются автоматически, если confidence gate для них не применялся; явно переданный `min_conf` фильтрует строго; `snapshot` по умолчанию = `latest_operator`)
+- `GET /api/v1/recommendations`
 - `GET /api/v1/recommendations/{rec_id}`
 - `GET /api/v1/risk/status`
 - `GET /api/v1/bots`
@@ -106,12 +138,12 @@ LLM-reviewer задуман как консервативный reviewer пов�
 - `GET /api/v1/outcomes/stats`
 - `GET /api/v1/health/symbols`
 - `GET /api/v1/decisions`
-- `GET /api/v1/sentiment` (`scope`/`key` optional; по умолчанию `global` / `crypto`)
+- `GET /api/v1/sentiment`
 - `GET /api/v1/status`
 
 ### Mutating (`X-API-Key`, если задан `ADMIN_API_KEY`)
-- `POST /api/v1/recommendations/{rec_id}/action` with `{"action":"executed|ignored","operator":"..."}`
-- `POST /api/v1/bots/{bot_id}/trades` (`pnl` = gross realized PnL before fee, `fee` deducted отдельно to net)
+- `POST /api/v1/recommendations/{rec_id}/action` с `{"action":"executed|ignored","operator":"..."}`
+- `POST /api/v1/bots/{bot_id}/trades`
 - `POST /api/v1/bots/{bot_id}/stop`
 - `POST /api/v1/risk/limits`
 - `POST /api/v1/sentiment`
@@ -121,34 +153,36 @@ LLM-reviewer задуман как консервативный reviewer пов�
 2. оператор вызывает `/recommendations/{rec_id}/action` с `executed`;
 3. создаётся `bot_instance`, recommendation переводится в `executed`;
 4. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
-5. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL;
+5. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
 6. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
 
-## Почему confidence теперь честнее
-- калибратор получает тот же feature vector, что и inference;
-- в inference остались только стратегии с исполнимым outcome model;
-- пустой sentiment теперь создаёт неопределённость, а не сильный `neutral`/`risk_on`;
-- funding penalty/bonus учитывает direction и реальный funding event horizon;
-- raw confidence теперь явно маркируется в UI и режется консервативным cap, чтобы оператор не путал heuristic signal с calibrated probability;
-- confidence gate применяется только когда для bot_type реально есть fitted calibrator;
-- publication gate для grid-ботов больше не требует жёстко двух подряд циклов каждые ~40–50 секунд: окно подтверждения расширено, а явно сильные сетапы могут публиковаться сразу;
-- outcome labeling для grid считается на выделенном label horizon, penalizes unresolved drift / range breach и не ждёт operator max_hours.
+## Stability notes
+- background loops используют SQLite runtime lock, поэтому активным сборщиком/рекомендером остаётся только один лидер;
+- SQLite работает в `WAL`-режиме с увеличенным `busy_timeout`;
+- ошибки одного символа не должны ронять весь collect/recommend loop;
+- corrupted JSON в критичных местах читается через safe fallback;
+- риск-лимиты и многие env-параметры нормализуются и зажимаются в разумные пределы;
+- исторические trade rows с невалидными значениями не должны отравлять daily PnL / drawdown summaries.
+
+## Рекомендации перед live-запуском
+Не начинать сразу с полного размера.
+
+Рекомендуемая последовательность:
+1. Прогонить сервис на реальном market data без исполнения.
+2. Проверить `decision_log`, `risk/status`, `health/symbols`, `outcomes/stats`.
+3. Убедиться, что `trades` и `bot_instances` пишутся корректно на тестовом сценарии.
+4. Запустить минимальный размер / paper-like режим / ручное подтверждение.
+5. Только после этого переходить к рабочему объёму.
+
+## Что особенно проверить оператору
+- нет ли частых `COLLECT_ERROR`, `LLM_REVIEW_ERROR`, `STALE_DATA_SKIP`, `SYMBOL_DISABLED`;
+- не «залипает» ли `pending` у LLM-reviewer;
+- совпадает ли Bybit-форма бота с тем, что показывает панель деталей;
+- не деградирует ли quality score / confidence после накопления новых outcome labels;
+- корректно ли отрабатывают risk limits после записи реальных trade rows.
 
 ## Production notes
-- для продакшена используйте внешний process supervisor и backup SQLite;
-- background loops используют SQLite runtime lock, поэтому даже при multi-worker запуске активным сборщиком/рекомендером остаётся только один лидер;
-- на mutating endpoints задайте `ADMIN_API_KEY`;
+- используйте внешний process supervisor;
+- делайте резервные копии SQLite;
 - не храните реальные секреты в `.env` внутри репозитория;
-- если нужен реальный execution layer, его следует строить отдельно от recommendation engine.
-
-## Что важно после обновления
-- при первом запуске этой версии сервис сам сбросит старые `reco_outcomes` и сохранённые calibrator state (`OUTCOME_LABEL_VERSION_RESET` в `decision_log`), потому что логика меток стала строже и старые outcome rows больше нельзя смешивать с новыми;
-- после сброса win-rate/калибровка временно будут строиться заново по мере накопления свежих исходов;
-- если UI показывает `raw`, это operator-grade heuristic confidence с cap, а не откалиброванная вероятность успеха.
-
-
-## Calibration notes
-
-- Bot-specific calibrators now gate fitting on **effective samples** (`2 × minority_class_count`), not on raw outcome count.
-- UI status text distinguishes **labeled outcomes** from **rows actually used in LogReg fit** (`fit_rows`), so `wins + losses` may exceed `fit_rows` when some historical rows lack a complete feature snapshot for feature-based fitting.
-- A fitted `spot_grid`/`futures_grid` calibrator can therefore report, for example, `fit_rows=3672/3679`, which is expected and no longer shown as an arithmetic inconsistency.
+- если нужен полноценный execution layer, его нужно строить отдельно от recommendation engine.

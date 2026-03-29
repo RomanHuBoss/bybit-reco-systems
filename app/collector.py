@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .bybit_client import BybitPublicClient
@@ -16,13 +17,18 @@ VENUE_TO_CATEGORY = {
     "linear": "linear",
 }
 
-def _to_float(x: Any) -> float | None:
+def _to_float(x: Any, *, minimum: float | None = None) -> float | None:
     try:
         if x is None:
             return None
-        return float(x)
+        num = float(x)
     except Exception:
         return None
+    if not math.isfinite(num):
+        return None
+    if minimum is not None and num < float(minimum):
+        return None
+    return num
 
 
 
@@ -67,11 +73,11 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                 "venue": venue,
                 "symbol": sym,
                 "ts": ts,
-                "last": _to_float(t.get("lastPrice")),
-                "bid": _to_float(t.get("bid1Price")),
-                "ask": _to_float(t.get("ask1Price")),
-                "vol24h": _to_float(t.get("volume24h")),
-                "turnover24h": _to_float(t.get("turnover24h")),
+                "last": _to_float(t.get("lastPrice"), minimum=0.0),
+                "bid": _to_float(t.get("bid1Price"), minimum=0.0),
+                "ask": _to_float(t.get("ask1Price"), minimum=0.0),
+                "vol24h": _to_float(t.get("volume24h"), minimum=0.0),
+                "turnover24h": _to_float(t.get("turnover24h"), minimum=0.0),
             })
         except Exception as e:
             if _is_not_supported_symbol(e):
@@ -105,17 +111,27 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                 limit = 220 if tf_sec <= 3600 else 320
                 kl = client.get_kline(category=category, symbol=sym, interval=interval, limit=limit)
                 for row in kl:
-                    start_ms = int(row[0])
+                    try:
+                        start_ms = int(row[0])
+                    except Exception:
+                        continue
+                    open_px = _to_float(row[1], minimum=0.0)
+                    high_px = _to_float(row[2], minimum=0.0)
+                    low_px = _to_float(row[3], minimum=0.0)
+                    close_px = _to_float(row[4], minimum=0.0)
+                    volume = _to_float(row[5], minimum=0.0)
+                    if None in (open_px, high_px, low_px, close_px, volume):
+                        continue
                     ohlcv_rows.append({
                         "venue": venue,
                         "symbol": sym,
                         "tf_sec": tf_sec,
                         "ts": start_ms // 1000,
-                        "open": float(row[1]),
-                        "high": float(row[2]),
-                        "low": float(row[3]),
-                        "close": float(row[4]),
-                        "volume": float(row[5]),
+                        "open": open_px,
+                        "high": high_px,
+                        "low": low_px,
+                        "close": close_px,
+                        "volume": volume,
                     })
             except Exception as e:
                 if _is_not_supported_symbol(e):
@@ -150,8 +166,21 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
         try:
             fr = client.get_funding_rate(sym)
             if fr:
-                fr["ts"] = ts_now
-                funding_rows.append(fr)
+                funding_rate = _to_float(fr.get("funding_rate"))
+                next_funding_ts = None
+                try:
+                    raw_next_funding_ts = fr.get("next_funding_ts")
+                    if raw_next_funding_ts not in (None, ""):
+                        next_funding_ts = int(raw_next_funding_ts)
+                except Exception:
+                    next_funding_ts = None
+                if funding_rate is not None:
+                    funding_rows.append({
+                        "symbol": sym,
+                        "ts": ts_now,
+                        "funding_rate": funding_rate,
+                        "next_funding_ts": next_funding_ts,
+                    })
         except Exception as e:
             if _is_not_supported_symbol(e):
                 retry_at = _disable_symbol("linear", sym, ts_now)
@@ -162,7 +191,17 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
 
         # Open interest — 48 × 1h candles
         try:
-            oi_rows = client.get_open_interest(sym, interval="1h", limit=48)
+            oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=48)
+            oi_rows = []
+            for row in oi_rows_raw or []:
+                try:
+                    ts = int(row.get("ts") or 0)
+                except Exception:
+                    continue
+                oi = _to_float(row.get("oi"), minimum=0.0)
+                if ts <= 0 or oi is None:
+                    continue
+                oi_rows.append({"ts": ts, "oi": oi})
             if oi_rows:
                 db.upsert_open_interest(conn, sym, oi_rows)
         except Exception as e:

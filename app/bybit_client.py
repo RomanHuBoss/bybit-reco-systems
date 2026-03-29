@@ -1,7 +1,26 @@
 from __future__ import annotations
 
+import math
+
 import httpx
 from typing import Any
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return num
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
 
 class BybitPublicClient:
     def __init__(self, base_url: str, timeout: float = 10.0):
@@ -39,13 +58,14 @@ class BybitPublicClient:
         if not items:
             return None
         t = items[0]
-        next_funding_raw = int(t.get("nextFundingTime") or 0)
+        next_funding_raw = _safe_int(t.get("nextFundingTime") or 0)
         # Bybit returns nextFundingTime in milliseconds. Normalize to seconds so
         # all downstream horizon comparisons use one unit system.
         next_funding_ts = next_funding_raw // 1000 if next_funding_raw > 10**11 else next_funding_raw
+        funding_rate = _safe_float(t.get("fundingRate"))
         return {
             "symbol": symbol,
-            "funding_rate": float(t.get("fundingRate") or 0.0),
+            "funding_rate": funding_rate,
             "next_funding_ts": next_funding_ts,
         }
 
@@ -61,7 +81,15 @@ class BybitPublicClient:
             "limit": str(limit),
         })
         items = data.get("result", {}).get("list", []) or []
-        return [{"ts": int(r["timestamp"]) // 1000, "oi": float(r["openInterest"])} for r in items]
+        out: list[dict[str, Any]] = []
+        for r in items:
+            ts_raw = _safe_int(r.get("timestamp"))
+            oi = _safe_float(r.get("openInterest"))
+            if ts_raw <= 0 or oi is None or oi < 0:
+                continue
+            ts = ts_raw // 1000 if ts_raw > 10**11 else ts_raw
+            out.append({"ts": ts, "oi": oi})
+        return out
     def get_instrument_info(self, category: str, symbol: str) -> dict[str, Any] | None:
         """Metadata for a single instrument (tick size, lot size, etc.)."""
         data = self._get("/v5/market/instruments-info", {"category": category, "symbol": symbol})

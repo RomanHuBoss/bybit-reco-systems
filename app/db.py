@@ -149,6 +149,28 @@ def log_decision(conn: sqlite3.Connection, action: str, rec_id: str | None, oper
     )
     conn.commit()
 
+def _is_valid_ohlcv_row(row: Any) -> bool:
+    try:
+        ts = int(row["ts"] or 0)
+        open_px = float(row["open"])
+        high_px = float(row["high"])
+        low_px = float(row["low"])
+        close_px = float(row["close"])
+        volume = float(row["volume"] or 0.0)
+    except Exception:
+        return False
+    if ts <= 0:
+        return False
+    vals = (open_px, high_px, low_px, close_px, volume)
+    if not all(math.isfinite(v) for v in vals):
+        return False
+    if min(open_px, high_px, low_px, close_px) <= 0:
+        return False
+    if volume < 0:
+        return False
+    return True
+
+
 def get_latest_ohlcv(conn: sqlite3.Connection, venue: str, symbol: str, tf_sec: int, limit: int = 240) -> list[sqlite3.Row]:
     cur = conn.execute(
         """SELECT * FROM ohlcv WHERE venue=? AND symbol=? AND tf_sec=? ORDER BY ts DESC LIMIT ?""",
@@ -157,7 +179,11 @@ def get_latest_ohlcv(conn: sqlite3.Connection, venue: str, symbol: str, tf_sec: 
     # IMPORTANT CONTRACT:
     #   Returned rows are ordered newest -> oldest (ts DESC), matching the SQL.
     #   Callers that need oldest -> newest (e.g. indicator calculations) must reverse().
-    return list(cur.fetchall())
+    #
+    # Defensive filtering: historical DB rows may contain malformed or non-finite OHLCV
+    # values from prior builds or manual imports. Skip them here so one poisoned bar
+    # cannot destabilise feature extraction, shock-guard logic, or LLM payload building.
+    return [row for row in cur.fetchall() if _is_valid_ohlcv_row(row)]
 
 def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> sqlite3.Row | None:
     cur = conn.execute(

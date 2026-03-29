@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -30,7 +31,13 @@ SYSTEM_PROMPT = (
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
+    try:
+        num = float(x)
+    except Exception:
+        return float(lo)
+    if not math.isfinite(num):
+        return float(lo)
+    return max(lo, min(hi, num))
 
 
 def _trim_text(value: Any, limit: int = 600) -> str | None:
@@ -234,7 +241,7 @@ def parse_review_content(text: str, *, bot_type: str, engine_direction: str) -> 
     if bot_type == "spot_grid" and thesis_direction == "short":
         execution_direction = "neutral"
 
-    confidence = _clamp(float(obj.get("confidence", 0.0) or 0.0), 0.0, 1.0)
+    confidence = _clamp(obj.get("confidence", 0.0), 0.0, 1.0)
     regime_view = str(obj.get("regime_view") or obj.get("regime") or "unknown").strip() or "unknown"
     risk_flags_raw = obj.get("risk_flags") or []
     if isinstance(risk_flags_raw, str):

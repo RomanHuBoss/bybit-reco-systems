@@ -121,7 +121,13 @@ def _score_text(text: str) -> float:
     return (p - n) / float(p + n)
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v))
+    try:
+        num = float(v)
+    except Exception:
+        return float(lo)
+    if not math.isfinite(num):
+        return float(lo)
+    return max(lo, min(hi, num))
 
 
 def _keyword_match(text: str, token_set: set[str], keyword: str) -> bool:
