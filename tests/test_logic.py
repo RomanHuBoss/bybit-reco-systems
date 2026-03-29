@@ -680,6 +680,117 @@ def test_async_llm_sweep_processes_pending_backlog_across_recent_snapshots(conn,
     assert rec_new["reasons"]["llm_review"]["source"] == "async_live"
 
 
+
+def test_async_llm_sweep_does_not_let_cached_top_keys_starve_uncached_pending_symbols(conn, monkeypatch):
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def __init__(self):
+            self.calls = 0
+
+        def review(self, payload):
+            self.calls += 1
+            symbol = str((payload or {}).get("symbol") or "")
+            return LLMReviewResult(
+                provider=self.provider,
+                model=self.model,
+                execution_direction="long",
+                thesis_direction="long",
+                confidence=0.74,
+                regime_view="bullish_range",
+                risk_flags=[],
+                summary=f"live ok {symbol}",
+            )
+
+    ts_now = int(time.time())
+    cached_state = {
+        "linear|AAAUSDT|futures_grid|neutral->long": {
+            "ts": ts_now,
+            "provider": "ollama",
+            "model": "fake-llm",
+            "prompt_version": recommender_module.PROMPT_VERSION,
+            "thesis_direction": "long",
+            "execution_direction": "long",
+            "confidence": 0.81,
+            "context_signature": recommender_module._llm_reviewer_context_signature(_settings_for_tests(llm_reviewer_candles_per_tf=32)),
+            "regime_view": "bullish_range",
+            "summary": "cached AAA",
+            "risk_flags": [],
+        },
+        "linear|BBBUSDT|futures_grid|neutral->long": {
+            "ts": ts_now,
+            "provider": "ollama",
+            "model": "fake-llm",
+            "prompt_version": recommender_module.PROMPT_VERSION,
+            "thesis_direction": "long",
+            "execution_direction": "long",
+            "confidence": 0.80,
+            "context_signature": recommender_module._llm_reviewer_context_signature(_settings_for_tests(llm_reviewer_candles_per_tf=32)),
+            "regime_view": "bullish_range",
+            "summary": "cached BBB",
+            "risk_flags": [],
+        },
+    }
+    db.set_app_config_json(conn, recommender_module.LLM_REVIEW_CACHE_APP_KEY, cached_state)
+
+    rows = []
+    for idx, sym in enumerate(("AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT")):
+        rows.append({
+            "rec_id": f"R-cache-budget-{sym}",
+            "ts": ts_now,
+            "venue": "linear",
+            "symbol": sym,
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.9 - idx * 0.1,
+            "confidence": 0.9 - idx * 0.1,
+            "expected_rr": 1.2,
+            "risk_score": 0.2,
+            "params": {"grid_levels": 8},
+            "reasons": {"llm_review": {"status": "pending", "mode": "advisory", "gate_decision": "pending"}},
+            "blocks": [],
+            "status": "recommended",
+            "ttl_sec": 1800,
+            "model_version": "test",
+            "features_ref_ts": ts_now,
+        })
+    db.insert_recommendations(conn, rows)
+
+    reviewer = FakeReviewer()
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_max_candidates=2,
+        llm_reviewer_max_workers=1,
+        llm_reviewer_cadence_sec=300,
+        llm_reviewer_candles_per_tf=32,
+    )
+    monkeypatch.setattr(recommender_module, "_make_llm_reviewer", lambda settings: reviewer)
+    monkeypatch.setattr(recommender_module, "_load_llm_candles_for_symbol", lambda *args, **kwargs: {900: [[1, 1, 1, 1, 1, 1.0]]})
+
+    stats = run_llm_review_sweep_once(conn, settings)
+    rec_aaa = db.get_recommendation_by_id(conn, "R-cache-budget-AAAUSDT")
+    rec_bbb = db.get_recommendation_by_id(conn, "R-cache-budget-BBBUSDT")
+    rec_ccc = db.get_recommendation_by_id(conn, "R-cache-budget-CCCUSDT")
+    rec_ddd = db.get_recommendation_by_id(conn, "R-cache-budget-DDDUSDT")
+
+    assert stats["pending_before"] == 4
+    assert stats["cached"] == 2
+    assert stats["queued"] == 2
+    assert stats["completed"] == 2
+    assert stats["pending_after"] == 0
+    assert reviewer.calls == 2
+    assert rec_aaa["reasons"]["llm_review"]["source"] == "async_cache"
+    assert rec_bbb["reasons"]["llm_review"]["source"] == "async_cache"
+    assert rec_ccc["reasons"]["llm_review"]["status"] == "ok"
+    assert rec_ddd["reasons"]["llm_review"]["status"] == "ok"
+    assert rec_ccc["reasons"]["llm_review"]["source"] == "async_live"
+    assert rec_ddd["reasons"]["llm_review"]["source"] == "async_live"
+
 def test_recent_pending_llm_candidates_prioritizes_unique_cache_keys(conn):
     ts_now = int(time.time())
     rows = []

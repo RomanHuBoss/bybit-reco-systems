@@ -552,7 +552,12 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
     cache_dirty = False
 
     stats["pending_before"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
-    candidates = _recent_pending_llm_candidates(conn, settings, stats["max_candidates"], snapshot_ts=snapshot_ts)
+    # Candidate selection must scan beyond the live-call cap. Otherwise fresh-cache keys can
+    # consume the whole selection budget and permanently starve lower-ranked uncached symbols.
+    # Scan the whole latest pending snapshot (capped) and only apply the live-call cap after
+    # cache hits have been resolved.
+    candidate_scan_budget = max(stats["max_candidates"], min(300, int(stats.get("pending_before", 0) or 0)))
+    candidates = _recent_pending_llm_candidates(conn, settings, candidate_scan_budget, snapshot_ts=snapshot_ts)
     if not candidates:
         stats["duration_ms"] = int((time.time() - t0) * 1000)
         stats["pending_after"] = 0
@@ -595,6 +600,8 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
     candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", 48) or 48)
     jobs: list[tuple[str, dict[str, Any], list[dict[str, Any]], dict[str, Any]]] = []
     for cache_key, peers in grouped_candidates.items():
+        if len(jobs) >= int(stats["max_candidates"]):
+            break
         rec = peers[0]
         venue = str(rec.get("venue") or "")
         symbol = str(rec.get("symbol") or "")
