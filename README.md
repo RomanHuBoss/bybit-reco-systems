@@ -88,7 +88,10 @@ API поднимется на `127.0.0.1:8000`.
 - `LLM_REVIEWER_CANDLES_PER_TF=32`
 - `LLM_REVIEWER_MAX_CANDIDATES=2`
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
-- `LLM_REVIEWER_CADENCE_SEC=300` — не дёргать LLM чаще одного раза в 5 минут на символ; между вызовами используется последний свежий verdict
+- `LLM_REVIEWER_CADENCE_SEC=300` — базовая редкая полная sweep-итерация; при наличии backlog pending-рекомендаций сервис сам временно ускоряет async-sweep до cadence recommendation loop, не блокируя публикацию engine-сигналов.
+- `LLM_REVIEWER_MAX_WORKERS=8` — параллелизм фоновых LLM-review задач.
+
+Важно: reviewer теперь работает асинхронно. Движок публикует core-рекомендации сразу, а LLM-доработка дописывается позже в ту же запись. Для крупных батчей (`MAX_CANDIDATES=60`) это штатный режим. API `/api/v1/recommendations` дополнительно понимает `snapshot=latest_visible` и `snapshot=latest_llm_ready`, если оператору нужен последний непустой или уже отreviewенный срез.
 
 LLM-reviewer задуман как консервативный reviewer поверх текущего движка, а не как замена scoring/risk/calibration.
 

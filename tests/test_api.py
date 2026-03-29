@@ -240,6 +240,132 @@ def test_api_recommendations_exposes_snapshot_metadata_and_status_counts(client_
     assert len(body['items']) == 2
 
 
+def test_api_recommendations_supports_latest_visible_snapshot_mode(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_regime(conn, ts_now, {"vol_state": "low", "trend_state": "mixed", "risk_state": "risk_on", "confidence": 0.61})
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                "rec_id": "R-old-visible",
+                "ts": ts_now - 120,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.41,
+                "confidence": 0.71,
+                "expected_rr": 1.2,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "ok", "mode": "advisory"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now - 120,
+            },
+            {
+                "rec_id": "R-new-blocked",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "ETHUSDT",
+                "bot_type": "futures_grid",
+                "direction": "neutral",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.05,
+                "confidence": 0.4,
+                "expected_rr": 0.1,
+                "risk_score": 0.1,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "pending", "mode": "advisory"}},
+                "blocks": [{"code": "TEST"}],
+                "status": "blocked",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+            },
+        ],
+    )
+
+    resp = client.get('/api/v1/recommendations?snapshot=latest_visible&min_conf=0')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['snapshot_mode'] == 'latest_visible'
+    assert body['snapshot_ts'] == ts_now - 120
+    assert len(body['items']) == 1
+    assert body['items'][0]['rec_id'] == 'R-old-visible'
+    assert body['llm_status_counts']['ok'] == 1
+
+
+
+def test_api_recommendations_supports_latest_llm_ready_snapshot_mode(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_regime(conn, ts_now, {"vol_state": "low", "trend_state": "mixed", "risk_state": "risk_on", "confidence": 0.61})
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                "rec_id": "R-old-reviewed",
+                "ts": ts_now - 120,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.41,
+                "confidence": 0.71,
+                "expected_rr": 1.2,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "ok", "mode": "advisory"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now - 120,
+            },
+            {
+                "rec_id": "R-new-pending",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "ETHUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.38,
+                "confidence": 0.69,
+                "expected_rr": 1.0,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "pending", "mode": "advisory"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+            },
+        ],
+    )
+
+    resp = client.get('/api/v1/recommendations?snapshot=latest_llm_ready&min_conf=0')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['snapshot_mode'] == 'latest_llm_ready'
+    assert body['snapshot_ts'] == ts_now - 120
+    assert body['items'][0]['rec_id'] == 'R-old-reviewed'
+    assert body['llm_status_counts']['ok'] == 1
+
+
 def test_api_health_exposes_llm_reviewer_config(client_and_conn, monkeypatch):
     client, _ = client_and_conn
 
@@ -306,6 +432,6 @@ def test_env_example_llm_reviewer_defaults_match_runtime_defaults():
 
     assert env_map['LLM_REVIEWER_ENABLED'] == '0'
     assert env_map['LLM_REVIEWER_CANDLES_PER_TF'] == '32'
-    assert env_map['LLM_REVIEWER_MAX_CANDIDATES'] == '2'
+    assert env_map['LLM_REVIEWER_MAX_CANDIDATES'] == '60'
     assert env_map['LLM_REVIEWER_MAX_WORKERS'] == '8'
     assert env_map['LLM_REVIEWER_CADENCE_SEC'] == '300'

@@ -874,6 +874,7 @@ function renderLlmStatusBadge(status) {
   const value = String(status || "unknown").toLowerCase();
   let cls = "llm-badge llm-badge-neutral";
   if (value === "ok") cls = "llm-badge llm-badge-ok";
+  else if (value === "pending") cls = "llm-badge llm-badge-pending";
   else if (value === "error") cls = "llm-badge llm-badge-error";
   else if (value === "skipped") cls = "llm-badge llm-badge-skipped";
   return `<span class="${cls}">${escapeHtml(value)}</span>`;

@@ -718,6 +718,63 @@ def get_latest_reco_ts(conn: sqlite3.Connection, venue: str | None = None) -> in
     return int(r["m"]) if r and r["m"] is not None else None
 
 
+def list_recent_reco_snapshot_ts(conn: sqlite3.Connection, venue: str | None = None, limit: int = 50) -> list[int]:
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
+    q = f"""SELECT DISTINCT ts FROM recommendations WHERE {_supported_sql}"""
+    params: list[Any] = [*_supported_params]
+    if venue:
+        q += " AND venue=?"
+        params.append(venue)
+    q += " ORDER BY ts DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+    cur = conn.execute(q, params)
+    return [int(r["ts"]) for r in cur.fetchall() if r["ts"] is not None]
+
+
+def get_recent_llm_review_candidates(
+    conn: sqlite3.Connection,
+    *,
+    venue: str | None = None,
+    recent_sec: int = 3600,
+    limit: int = 60,
+) -> list[dict[str, Any]]:
+    cutoff_ts = max(0, now_ts() - max(60, int(recent_sec)))
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
+    q = f"""SELECT * FROM recommendations
+            WHERE ts >= ? AND status='recommended' AND {_supported_sql}"""
+    params: list[Any] = [cutoff_ts, *_supported_params]
+    if venue:
+        q += " AND venue=?"
+        params.append(venue)
+    q += " ORDER BY ts DESC, confidence DESC, score DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+    cur = conn.execute(q, params)
+    out: list[dict[str, Any]] = []
+    for r in cur.fetchall():
+        out.append({
+            "rec_id": r["rec_id"],
+            "ts": r["ts"],
+            "venue": r["venue"],
+            "symbol": r["symbol"],
+            "bot_type": r["bot_type"],
+            "direction": r["direction"],
+            "account_mode": r["account_mode"],
+            "margin_mode": r["margin_mode"],
+            "score": r["score"],
+            "confidence": r["confidence"],
+            "expected_rr": r["expected_rr"],
+            "risk_score": r["risk_score"],
+            "params": json.loads(r["params_json"]),
+            "reasons": json.loads(r["reasons_json"]),
+            "blocks": json.loads(r["blocks_json"]),
+            "status": r["status"],
+            "ttl_sec": r["ttl_sec"],
+            "model_version": r["model_version"],
+            "features_ref_ts": r["features_ref_ts"],
+        })
+    return out
+
+
 def get_recommendation_status_counts(
     conn: sqlite3.Connection,
     venue: str | None = None,
@@ -784,7 +841,9 @@ def get_oi_series(conn: sqlite3.Connection, symbol: str, limit: int = 48) -> lis
 OPERATOR_STATUSES = {"executed", "ignored", "recommended", "blocked", "no_trade", "suppressed", "expired"}
 TERMINAL_RECOMMENDATION_STATUSES = {"executed", "ignored", "expired", "blocked", "no_trade", "suppressed"}
 _ALLOWED_STATUS_TRANSITIONS = {
-    "recommended": {"recommended", "executed", "ignored"},
+    # recommendation engine / async reviewers may still downgrade a recommended idea
+    # before an operator explicitly acts on it.
+    "recommended": {"recommended", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
     "executed": {"executed"},
     "ignored": {"ignored"},
     "expired": {"expired"},

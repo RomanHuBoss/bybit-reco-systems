@@ -299,6 +299,27 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     return created or bot, False
 
 
+def _resolve_recommendation_snapshot_ts(conn, venue: str | None, snapshot: str, *, min_conf: float, strict_min_conf: bool) -> int | None:
+    mode = str(snapshot or "latest").strip().lower()
+    if mode == "latest":
+        return db.get_latest_reco_ts(conn, venue=venue)
+    recent = db.list_recent_reco_snapshot_ts(conn, venue=venue, limit=50)
+    if not recent:
+        return None
+    if mode == "latest_visible":
+        for ts in recent:
+            if db.count_visible_recommendations(conn, venue=venue, min_conf=min_conf, snapshot_ts=ts, strict_min_conf=strict_min_conf) > 0:
+                return ts
+        return recent[0]
+    if mode == "latest_llm_ready":
+        for ts in recent:
+            items = db.get_recommendations(conn, venue=venue, top_n=200, min_conf=min_conf, statuses=["recommended"], snapshot_ts=ts, strict_min_conf=strict_min_conf)
+            if any(str((((item.get("reasons") or {}).get("llm_review") or {}).get("status") or "")).lower() in {"ok", "error", "skipped"} for item in items):
+                return ts
+        return recent[0]
+    raise HTTPException(status_code=400, detail="unsupported snapshot mode")
+
+
 @app.get("/api/v1/recommendations")
 def api_recommendations(
     venue: str | None = None,
@@ -321,12 +342,15 @@ def api_recommendations(
         if show_suppressed:
             statuses.append("suppressed")
 
-        snapshot_ts = None
-        if snapshot == "latest":
-            snapshot_ts = db.get_latest_reco_ts(conn, venue=venue)
-
         effective_min_conf = settings.min_conf_to_recommend if min_conf is None else float(min_conf)
         strict_min_conf = min_conf is not None
+        snapshot_ts = _resolve_recommendation_snapshot_ts(
+            conn,
+            venue,
+            snapshot,
+            min_conf=effective_min_conf,
+            strict_min_conf=strict_min_conf,
+        )
         items = db.get_recommendations(
             conn,
             venue=venue,
@@ -359,8 +383,16 @@ def api_recommendations(
             "confidence": 0.0,
         }
 
+        llm_status_counts = {"ok": 0, "pending": 0, "error": 0, "skipped": 0, "other": 0}
+        for item in items:
+            llm_status = str((((item.get("reasons") or {}).get("llm_review") or {}).get("status") or "pending")).lower()
+            if llm_status not in llm_status_counts:
+                llm_status = "other"
+            llm_status_counts[llm_status] += 1
+
         return {
             "ts": int(time.time()),
+            "snapshot_mode": str(snapshot or "latest").strip().lower(),
             "snapshot_ts": snapshot_ts,
             "snapshot_age_sec": snapshot_age_sec,
             "snapshot_is_stale": snapshot_is_stale,
@@ -369,6 +401,7 @@ def api_recommendations(
             "no_trade": no_trade,
             "min_conf": float(effective_min_conf),
             "status_counts": status_counts,
+            "llm_status_counts": llm_status_counts,
         }
 
 
@@ -708,8 +741,11 @@ def _llm_reviewer_thread():
     if not bool(getattr(settings, "llm_reviewer_enabled", False)):
         return
     lock_key = "runtime:llm_reviewer"
-    lock_ttl = max(60, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300) * 4)
+    base_interval = int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300)
+    eager_interval = max(5, min(base_interval, int(getattr(settings, "reco_interval_sec", 20) or 20)))
+    lock_ttl = max(60, base_interval * 4)
     next_run = time.monotonic()
+    interval_sec = eager_interval
     while True:
         with closing(_get_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
@@ -718,10 +754,12 @@ def _llm_reviewer_thread():
                 try:
                     stats = run_llm_review_sweep_once(conn, settings)
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
+                    interval_sec = eager_interval if int(stats.get("pending_after", 0) or 0) > 0 else base_interval
                 except Exception as e:
+                    interval_sec = base_interval
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {"enabled": True, "error": str(e), "updated_ts": int(time.time())})
                     db.log_decision(conn, "LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(e)})
-        next_run = _interval_loop_wait(next_run, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+        next_run = _interval_loop_wait(next_run, interval_sec)
 
 
 @app.get("/api/v1/status")

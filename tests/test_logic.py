@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app import db
+from app import recommender as recommender_module
 from app.direction import aggregate_direction
 from app.outcomes import _get_first_tradeable_candle_after
 from app.llm_review import LLMReviewResult, OllamaCandleReviewer, parse_review_content
@@ -350,6 +351,139 @@ def test_apply_llm_reviewer_does_not_reuse_cache_across_venue_or_bot_type(conn):
     assert stats["cached"] == 0
     assert recs[1]["reasons"]["llm_review"].get("cached") is not True
     assert recs[1]["reasons"]["llm_review"]["execution_direction"] == "neutral"
+
+
+def test_async_llm_sweep_gate_persists_veto_status_in_db(conn, monkeypatch):
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def review(self, payload):
+            return LLMReviewResult(
+                provider=self.provider,
+                model=self.model,
+                execution_direction="short",
+                thesis_direction="short",
+                confidence=0.91,
+                regime_view="bearish_range",
+                risk_flags=["llm_veto"],
+                summary="async disagreement",
+            )
+
+    ts_now = int(time.time())
+    db.insert_recommendations(
+        conn,
+        [{
+            "rec_id": "R-async-veto",
+            "ts": ts_now,
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.55,
+            "confidence": 0.8,
+            "expected_rr": 1.4,
+            "risk_score": 0.2,
+            "params": {"grid_levels": 8},
+            "reasons": {"llm_review": {"status": "pending", "mode": "gate", "gate_decision": "pending"}},
+            "blocks": [],
+            "status": "recommended",
+            "ttl_sec": 1800,
+            "model_version": "test",
+            "features_ref_ts": ts_now,
+        }],
+    )
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="gate",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_min_confidence=0.65,
+        llm_reviewer_max_candidates=10,
+    )
+    monkeypatch.setattr(recommender_module, "_make_llm_reviewer", lambda settings: FakeReviewer())
+    monkeypatch.setattr(recommender_module, "_load_llm_candles_for_symbol", lambda *args, **kwargs: {900: [[1, 1, 1, 1, 1, 1.0]]})
+
+    stats = run_llm_review_sweep_once(conn, settings)
+    rec = db.get_recommendation_by_id(conn, "R-async-veto")
+
+    assert stats["completed"] == 1
+    assert stats["vetoed"] == 1
+    assert rec is not None
+    assert rec["status"] == "no_trade"
+    assert rec["reasons"]["llm_review"]["gate_decision"] == "veto"
+
+
+
+def test_async_llm_sweep_processes_pending_backlog_across_recent_snapshots(conn, monkeypatch):
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def __init__(self):
+            self.calls = 0
+
+        def review(self, payload):
+            self.calls += 1
+            return LLMReviewResult(
+                provider=self.provider,
+                model=self.model,
+                execution_direction="long",
+                thesis_direction="long",
+                confidence=0.72,
+                regime_view="bullish_range",
+                risk_flags=[],
+                summary="async ok",
+            )
+
+    ts_now = int(time.time())
+    rows = []
+    for i, rec_ts in enumerate((ts_now - 60, ts_now), start=1):
+        rows.append({
+            "rec_id": f"R-async-backlog-{i}",
+            "ts": rec_ts,
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.5 - i * 0.01,
+            "confidence": 0.78 - i * 0.01,
+            "expected_rr": 1.3,
+            "risk_score": 0.2,
+            "params": {"grid_levels": 8},
+            "reasons": {"llm_review": {"status": "pending", "mode": "advisory", "gate_decision": "pending"}},
+            "blocks": [],
+            "status": "recommended",
+            "ttl_sec": 1800,
+            "model_version": "test",
+            "features_ref_ts": rec_ts,
+        })
+    db.insert_recommendations(conn, rows)
+
+    reviewer = FakeReviewer()
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_max_candidates=2,
+    )
+    monkeypatch.setattr(recommender_module, "_make_llm_reviewer", lambda settings: reviewer)
+    monkeypatch.setattr(recommender_module, "_load_llm_candles_for_symbol", lambda *args, **kwargs: {900: [[1, 1, 1, 1, 1, 1.0]]})
+
+    stats = run_llm_review_sweep_once(conn, settings)
+    rec_old = db.get_recommendation_by_id(conn, "R-async-backlog-1")
+    rec_new = db.get_recommendation_by_id(conn, "R-async-backlog-2")
+
+    assert reviewer.calls == 2
+    assert stats["pending_before"] == 2
+    assert stats["pending_after"] == 0
+    assert stats["completed"] == 2
+    assert rec_old["reasons"]["llm_review"]["status"] == "ok"
+    assert rec_new["reasons"]["llm_review"]["status"] == "ok"
 
 
 def test_persistence_fresh_gap_allows_confirmation_across_brief_collection_gaps():
@@ -1316,9 +1450,10 @@ def test_run_llm_review_sweep_once_updates_latest_snapshot_asynchronously(conn, 
         llm_reviewer_candles_per_tf=16,
     )
 
+    ts_now = int(time.time())
     rec = {
         "rec_id": "R-async-1",
-        "ts": 1_700_000_000,
+        "ts": ts_now,
         "venue": "linear",
         "symbol": "BTCUSDT",
         "bot_type": "futures_grid",
@@ -1337,17 +1472,17 @@ def test_run_llm_review_sweep_once_updates_latest_snapshot_asynchronously(conn, 
             "decision_layers": {"final_status": "recommended"},
             "symbol_sentiment": {"effective": 0.1, "global": 0.1},
             "market_shock": {"state": "normal"},
-            "llm_review": {"status": "pending", "mode": "advisory", "queued_ts": 1_700_000_000},
+            "llm_review": {"status": "pending", "mode": "advisory", "queued_ts": ts_now},
         },
         "blocks": [],
         "status": "recommended",
         "ttl_sec": 900,
         "model_version": "test",
-        "features_ref_ts": 1_700_000_000,
+        "features_ref_ts": ts_now,
     }
     db.insert_recommendations(conn, [rec])
     db.upsert_ohlcv(conn, [{
-        "venue": "linear", "symbol": "BTCUSDT", "tf_sec": 900, "ts": 1_700_000_000,
+        "venue": "linear", "symbol": "BTCUSDT", "tf_sec": 900, "ts": ts_now,
         "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 123.0,
     }])
 

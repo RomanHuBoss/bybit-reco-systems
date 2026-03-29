@@ -314,19 +314,32 @@ def _should_enqueue_llm_review(rec: dict[str, Any]) -> bool:
     return True
 
 
-def _latest_snapshot_recommended(conn, snapshot_ts: int, max_candidates: int) -> list[dict[str, Any]]:
-    recs = db.get_recommendations(
+def _llm_review_recent_sec(settings) -> int:
+    ttl_sec = _recommendation_ttl_sec(settings)
+    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+    return max(int(ttl_sec), cadence_sec * 4, 3600)
+
+
+def _recent_pending_llm_candidates(conn, settings, max_candidates: int) -> list[dict[str, Any]]:
+    recent_sec = _llm_review_recent_sec(settings)
+    pool = db.get_recent_llm_review_candidates(
         conn,
-        venue=None,
-        top_n=max(1, int(max_candidates)) * 4,
-        min_conf=0.0,
-        statuses=["recommended"],
-        snapshot_ts=int(snapshot_ts),
-        strict_min_conf=False,
+        recent_sec=recent_sec,
+        limit=max(max_candidates * 8, max_candidates),
     )
-    recs = [r for r in recs if _should_enqueue_llm_review(r)]
-    recs.sort(key=_llm_candidate_sort_key, reverse=True)
-    return recs[:max(1, int(max_candidates))]
+    pending = [r for r in pool if _should_enqueue_llm_review(r)]
+    pending.sort(key=lambda r: (int(r.get("ts") or 0), float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
+    return pending[:max(1, int(max_candidates))]
+
+
+def _count_recent_pending_llm_candidates(conn, settings) -> int:
+    recent_sec = _llm_review_recent_sec(settings)
+    pool = db.get_recent_llm_review_candidates(
+        conn,
+        recent_sec=recent_sec,
+        limit=2000,
+    )
+    return sum(1 for r in pool if _should_enqueue_llm_review(r))
 
 
 def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
@@ -338,6 +351,9 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
         "errors": 0,
         "skipped": 0,
         "snapshot_ts": None,
+        "recent_window_sec": _llm_review_recent_sec(settings),
+        "pending_before": 0,
+        "pending_after": 0,
         "duration_ms": 0,
         "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 8) or 8),
         "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4),
@@ -360,10 +376,12 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
     if snapshot_ts is None:
         return stats
 
-    candidates = _latest_snapshot_recommended(conn, int(snapshot_ts), stats["max_candidates"])
+    stats["pending_before"] = _count_recent_pending_llm_candidates(conn, settings)
+    candidates = _recent_pending_llm_candidates(conn, settings, stats["max_candidates"])
     stats["queued"] = len(candidates)
     if not candidates:
         stats["duration_ms"] = int((time.time() - t0) * 1000)
+        stats["pending_after"] = 0
         return stats
 
     tf_secs = list(getattr(settings, "llm_reviewer_tf_secs", []) or [])
@@ -435,6 +453,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
                 stats["vetoed"] += 1
             if errored:
                 stats["errors"] += 1
+    stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings)
     stats["duration_ms"] = int((time.time() - t0) * 1000)
     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
     db.log_decision(conn, "LLM_REVIEW_SWEEP", None, None, stats)
