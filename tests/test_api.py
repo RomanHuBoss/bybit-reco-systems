@@ -435,3 +435,159 @@ def test_env_example_llm_reviewer_defaults_match_runtime_defaults():
     assert env_map['LLM_REVIEWER_MAX_CANDIDATES'] == '60'
     assert env_map['LLM_REVIEWER_MAX_WORKERS'] == '8'
     assert env_map['LLM_REVIEWER_CADENCE_SEC'] == '300'
+
+
+def test_api_recommendations_counts_missing_llm_review_as_none_and_not_pending(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_regime(conn, ts_now, {"vol_state": "low", "trend_state": "mixed", "risk_state": "risk_on", "confidence": 0.61})
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                "rec_id": "R-none-1",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.41,
+                "confidence": 0.71,
+                "expected_rr": 1.2,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+            },
+            {
+                "rec_id": "R-ok-1",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "ETHUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.39,
+                "confidence": 0.69,
+                "expected_rr": 1.0,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "ok", "mode": "advisory"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+            },
+            {
+                "rec_id": "R-pending-1",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "SOLUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.38,
+                "confidence": 0.68,
+                "expected_rr": 0.9,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "pending", "mode": "advisory"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+            },
+        ],
+    )
+
+    resp = client.get('/api/v1/recommendations?top_n=1&min_conf=0&snapshot=latest')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body['items']) == 1
+    assert body['llm_status_counts']['none'] == 1
+    assert body['llm_status_counts']['ok'] == 1
+    assert body['llm_status_counts']['pending'] == 1
+
+
+def test_api_recommendations_supports_latest_operator_snapshot_mode(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_regime(conn, ts_now, {"vol_state": "low", "trend_state": "mixed", "risk_state": "risk_on", "confidence": 0.61})
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                "rec_id": "R-older-reviewed",
+                "ts": ts_now - 120,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.41,
+                "confidence": 0.71,
+                "expected_rr": 1.2,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "ok", "mode": "advisory"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now - 120,
+            },
+            {
+                "rec_id": "R-latest-pending",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "ETHUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.44,
+                "confidence": 0.75,
+                "expected_rr": 1.1,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {"llm_review": {"status": "pending", "mode": "advisory"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+            },
+        ],
+    )
+
+    resp = client.get('/api/v1/recommendations?snapshot=latest_operator&min_conf=0')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['snapshot_mode'] == 'latest_operator'
+    assert body['snapshot_ts'] == ts_now - 120
+    assert body['items'][0]['rec_id'] == 'R-older-reviewed'
+
+
+def test_api_status_and_health_report_large_batch_llm_default_capacity(client_and_conn):
+    client, _ = client_and_conn
+
+    status_resp = client.get('/api/v1/status')
+    assert status_resp.status_code == 200
+    assert status_resp.json()['llm_reviewer']['max_candidates'] == 60
+
+    health_resp = client.get('/api/v1/health/symbols')
+    assert health_resp.status_code == 200
+    assert health_resp.json()['llm_reviewer']['max_candidates'] == 60

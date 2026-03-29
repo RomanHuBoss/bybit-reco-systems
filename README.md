@@ -86,18 +86,18 @@ API поднимется на `127.0.0.1:8000`.
 - `LLM_REVIEWER_MODEL=qwen3:8b` или ваш локальный тег вроде `qwen3.5:9b`
 - `LLM_REVIEWER_TFS=15m,1h,4h`
 - `LLM_REVIEWER_CANDLES_PER_TF=32`
-- `LLM_REVIEWER_MAX_CANDIDATES=2`
+- `LLM_REVIEWER_MAX_CANDIDATES=60`
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
 - `LLM_REVIEWER_CADENCE_SEC=300` — базовая редкая полная sweep-итерация; при наличии backlog pending-рекомендаций сервис сам временно ускоряет async-sweep до cadence recommendation loop, не блокируя публикацию engine-сигналов.
 - `LLM_REVIEWER_MAX_WORKERS=8` — параллелизм фоновых LLM-review задач.
 
-Важно: reviewer теперь работает асинхронно. Движок публикует core-рекомендации сразу, а LLM-доработка дописывается позже в ту же запись. Для крупных батчей (`MAX_CANDIDATES=60`) это штатный режим. API `/api/v1/recommendations` дополнительно понимает `snapshot=latest_visible` и `snapshot=latest_llm_ready`, если оператору нужен последний непустой или уже отreviewенный срез.
+Важно: reviewer теперь работает асинхронно. Движок публикует core-рекомендации сразу, а LLM-доработка дописывается позже в ту же запись. Для крупных батчей (`MAX_CANDIDATES=60`) это штатный режим. API `/api/v1/recommendations` дополнительно понимает `snapshot=latest_visible`, `snapshot=latest_llm_ready` и `snapshot=latest_operator` (режим по умолчанию для UI), если оператору нужен последний непустой или уже отreviewенный срез.
 
 LLM-reviewer задуман как консервативный reviewer поверх текущего движка, а не как замена scoring/risk/calibration.
 
 ## Основные API
 ### Read-only
-- `GET /api/v1/recommendations` (`min_conf` по умолчанию равен publish-threshold `MIN_CONF_TO_RECOMMEND`, но raw-only рекомендации не скрываются автоматически, если confidence gate для них не применялся; явно переданный `min_conf` фильтрует строго)
+- `GET /api/v1/recommendations` (`min_conf` по умолчанию равен publish-threshold `MIN_CONF_TO_RECOMMEND`, но raw-only рекомендации не скрываются автоматически, если confidence gate для них не применялся; явно переданный `min_conf` фильтрует строго; `snapshot` по умолчанию = `latest_operator`)
 - `GET /api/v1/recommendations/{rec_id}`
 - `GET /api/v1/risk/status`
 - `GET /api/v1/bots`

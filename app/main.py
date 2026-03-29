@@ -299,24 +299,52 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     return created or bot, False
 
 
+def _llm_status_value(item: dict[str, Any]) -> str:
+    review = ((item.get("reasons") or {}).get("llm_review") if isinstance(item.get("reasons"), dict) else None) or {}
+    raw = str(review.get("status") or "").strip().lower()
+    return raw or "none"
+
+
+def _build_llm_status_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"ok": 0, "pending": 0, "error": 0, "skipped": 0, "none": 0, "other": 0}
+    for item in items:
+        llm_status = _llm_status_value(item)
+        if llm_status not in counts:
+            llm_status = "other"
+        counts[llm_status] += 1
+    return counts
+
+
 def _resolve_recommendation_snapshot_ts(conn, venue: str | None, snapshot: str, *, min_conf: float, strict_min_conf: bool) -> int | None:
-    mode = str(snapshot or "latest").strip().lower()
+    mode = str(snapshot or "latest_operator").strip().lower()
     if mode == "latest":
         return db.get_latest_reco_ts(conn, venue=venue)
     recent = db.list_recent_reco_snapshot_ts(conn, venue=venue, limit=50)
     if not recent:
         return None
+    latest_visible_ts: int | None = None
+    latest_llm_ready_ts: int | None = None
+    for ts in recent:
+        visible_items = db.get_recommendations(
+            conn,
+            venue=venue,
+            top_n=5000,
+            min_conf=min_conf,
+            statuses=["recommended"],
+            snapshot_ts=ts,
+            strict_min_conf=strict_min_conf,
+        )
+        if visible_items and latest_visible_ts is None:
+            latest_visible_ts = ts
+        if visible_items and any(_llm_status_value(item) in {"ok", "error", "skipped"} for item in visible_items):
+            latest_llm_ready_ts = ts
+            break
     if mode == "latest_visible":
-        for ts in recent:
-            if db.count_visible_recommendations(conn, venue=venue, min_conf=min_conf, snapshot_ts=ts, strict_min_conf=strict_min_conf) > 0:
-                return ts
-        return recent[0]
+        return latest_visible_ts if latest_visible_ts is not None else recent[0]
     if mode == "latest_llm_ready":
-        for ts in recent:
-            items = db.get_recommendations(conn, venue=venue, top_n=200, min_conf=min_conf, statuses=["recommended"], snapshot_ts=ts, strict_min_conf=strict_min_conf)
-            if any(str((((item.get("reasons") or {}).get("llm_review") or {}).get("status") or "")).lower() in {"ok", "error", "skipped"} for item in items):
-                return ts
-        return recent[0]
+        return latest_llm_ready_ts if latest_llm_ready_ts is not None else (latest_visible_ts if latest_visible_ts is not None else recent[0])
+    if mode == "latest_operator":
+        return latest_llm_ready_ts if latest_llm_ready_ts is not None else (latest_visible_ts if latest_visible_ts is not None else recent[0])
     raise HTTPException(status_code=400, detail="unsupported snapshot mode")
 
 
@@ -329,7 +357,7 @@ def api_recommendations(
     show_blocked: bool = False,
     show_no_trade: bool = False,
     show_suppressed: bool = False,
-    snapshot: str = "latest",
+    snapshot: str = "latest_operator",
 ) -> dict[str, Any]:
     with closing(_get_conn()) as conn:
         statuses: list[str] = []
@@ -383,12 +411,16 @@ def api_recommendations(
             "confidence": 0.0,
         }
 
-        llm_status_counts = {"ok": 0, "pending": 0, "error": 0, "skipped": 0, "other": 0}
-        for item in items:
-            llm_status = str((((item.get("reasons") or {}).get("llm_review") or {}).get("status") or "pending")).lower()
-            if llm_status not in llm_status_counts:
-                llm_status = "other"
-            llm_status_counts[llm_status] += 1
+        llm_count_items = db.get_recommendations(
+            conn,
+            venue=venue,
+            top_n=max(5000, top_n),
+            min_conf=effective_min_conf,
+            statuses=statuses,
+            snapshot_ts=snapshot_ts,
+            strict_min_conf=strict_min_conf,
+        )
+        llm_status_counts = _build_llm_status_counts(llm_count_items)
 
         return {
             "ts": int(time.time()),
@@ -584,7 +616,7 @@ def api_symbol_health() -> dict[str, Any]:
                 "model": getattr(settings, "llm_reviewer_model", None),
                 "tf_secs": list(getattr(settings, "llm_reviewer_tf_secs", []) or []),
                 "candles_per_tf": int(getattr(settings, "llm_reviewer_candles_per_tf", 32) or 32),
-                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 2) or 2),
+                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 60) or 60),
                 "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 8) or 8),
                 "async_mode": True,
                 "min_confidence": float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65),
@@ -933,7 +965,7 @@ def api_status() -> dict[str, Any]:
                 "model": getattr(settings, "llm_reviewer_model", None),
                 "tf_secs": list(getattr(settings, "llm_reviewer_tf_secs", []) or []),
                 "candles_per_tf": int(getattr(settings, "llm_reviewer_candles_per_tf", 32) or 32),
-                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 2) or 2),
+                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 60) or 60),
                 "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 8) or 8),
                 "async_mode": True,
                 "min_confidence": float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65),
