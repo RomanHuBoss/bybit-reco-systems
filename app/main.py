@@ -24,7 +24,7 @@ from .collector import collect_once, collect_futures_once
 from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import compute_outcomes_once
-from .recommender import run_recommender_once
+from .recommender import run_recommender_once, run_llm_review_sweep_once, LLM_REVIEW_ASYNC_STATUS_APP_KEY
 from .risk import get_risk_limits, compute_risk_status, gate_candidate
 from .security import is_authorized
 from . import db
@@ -140,6 +140,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_collector_thread, daemon=True).start()
     threading.Thread(target=_sentiment_thread, daemon=True).start()
     threading.Thread(target=_reco_thread, daemon=True).start()
+    threading.Thread(target=_llm_reviewer_thread, daemon=True).start()
     yield
 
 
@@ -551,6 +552,8 @@ def api_symbol_health() -> dict[str, Any]:
                 "tf_secs": list(getattr(settings, "llm_reviewer_tf_secs", []) or []),
                 "candles_per_tf": int(getattr(settings, "llm_reviewer_candles_per_tf", 32) or 32),
                 "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 2) or 2),
+                "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 8) or 8),
+                "async_mode": True,
                 "min_confidence": float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65),
                 "cadence_sec": int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300),
             },
@@ -701,11 +704,33 @@ def _reco_thread():
         next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
 
 
+def _llm_reviewer_thread():
+    if not bool(getattr(settings, "llm_reviewer_enabled", False)):
+        return
+    lock_key = "runtime:llm_reviewer"
+    lock_ttl = max(60, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300) * 4)
+    next_run = time.monotonic()
+    while True:
+        with closing(_get_conn()) as conn:
+            has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+        if has_lock:
+            with closing(_get_conn()) as conn:
+                try:
+                    stats = run_llm_review_sweep_once(conn, settings)
+                    db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
+                except Exception as e:
+                    db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {"enabled": True, "error": str(e), "updated_ts": int(time.time())})
+                    db.log_decision(conn, "LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(e)})
+        next_run = _interval_loop_wait(next_run, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+
+
 @app.get("/api/v1/status")
 def api_status() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
         from .calibration import load_logreg_from_db, GLOBAL_LOGREG_KEY, BOT_CALIB_KEYS, label_balance_stats
         from .sentiment_features import compute_sentiment_agg
+
+        llm_async_status = db.get_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, default={}) or {}
 
         global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
         calib_fitted = bool(global_model and global_model.fitted)
@@ -863,6 +888,20 @@ def api_status() -> dict[str, Any]:
                 "data_quality": sent.get("data_quality"),
             },
             "market_shock": market_shock,
+            "llm_reviewer": {
+                "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
+                "mode": getattr(settings, "llm_reviewer_mode", "advisory"),
+                "provider": getattr(settings, "llm_reviewer_provider", "ollama"),
+                "model": getattr(settings, "llm_reviewer_model", None),
+                "tf_secs": list(getattr(settings, "llm_reviewer_tf_secs", []) or []),
+                "candles_per_tf": int(getattr(settings, "llm_reviewer_candles_per_tf", 32) or 32),
+                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 2) or 2),
+                "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 8) or 8),
+                "async_mode": True,
+                "min_confidence": float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65),
+                "cadence_sec": int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300),
+                "worker": llm_async_status,
+            },
         }
 
 

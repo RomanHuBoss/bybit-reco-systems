@@ -73,6 +73,7 @@ class Settings:
     llm_reviewer_tf_secs: list[int] = field(default_factory=lambda: [15 * 60, 60 * 60, 4 * 60 * 60])
     llm_reviewer_candles_per_tf: int = 32
     llm_reviewer_max_candidates: int = 2
+    llm_reviewer_max_workers: int = 8
     llm_reviewer_min_confidence: float = 0.65
     llm_reviewer_cadence_sec: int = 300
     reco_ttl_sec: int | None = None
@@ -110,8 +111,9 @@ def load_settings() -> Settings:
     llm_reviewer_tf_secs = parse_tf_secs(_env("LLM_REVIEWER_TFS", "15m,1h,4h"))
     llm_reviewer_candles_per_tf = max(16, min(96, int(_env("LLM_REVIEWER_CANDLES_PER_TF", "32"))))
     llm_reviewer_max_candidates = max(1, min(100, int(_env("LLM_REVIEWER_MAX_CANDIDATES", "2"))))
+    llm_reviewer_max_workers = max(1, min(32, int(_env("LLM_REVIEWER_MAX_WORKERS", "8"))))
     llm_reviewer_min_confidence = max(0.0, min(1.0, float(_env("LLM_REVIEWER_MIN_CONFIDENCE", "0.65"))))
-    llm_reviewer_cadence_sec = max(60, int(_env("LLM_REVIEWER_CADENCE_SEC", "300")))
+    llm_reviewer_cadence_sec = max(5, int(_env("LLM_REVIEWER_CADENCE_SEC", "300")))
     reco_ttl_raw = os.getenv("RECO_TTL_SEC")
     reco_ttl_sec = None if reco_ttl_raw in (None, "") else max(180, int(reco_ttl_raw))
     outcomes_interval_sec = max(20, int(_env("OUTCOMES_INTERVAL_SEC", "60")))
@@ -150,6 +152,7 @@ def load_settings() -> Settings:
         llm_reviewer_tf_secs=llm_reviewer_tf_secs,
         llm_reviewer_candles_per_tf=llm_reviewer_candles_per_tf,
         llm_reviewer_max_candidates=llm_reviewer_max_candidates,
+        llm_reviewer_max_workers=llm_reviewer_max_workers,
         llm_reviewer_min_confidence=llm_reviewer_min_confidence,
         llm_reviewer_cadence_sec=llm_reviewer_cadence_sec,
         reco_ttl_sec=reco_ttl_sec,

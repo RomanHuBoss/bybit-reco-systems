@@ -501,6 +501,31 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str,
     }
 
 
+def update_recommendation_review(
+    conn: sqlite3.Connection,
+    rec_id: str,
+    *,
+    reasons: dict[str, Any],
+    status: str | None = None,
+) -> bool:
+    cur = conn.execute("SELECT status FROM recommendations WHERE rec_id=?", (rec_id,))
+    row = cur.fetchone()
+    if not row:
+        return False
+    current = str(row["status"])
+    new_status = current
+    if status and status in OPERATOR_STATUSES:
+        allowed = _ALLOWED_STATUS_TRANSITIONS.get(current, {current})
+        if status in allowed:
+            new_status = status
+    conn.execute(
+        "UPDATE recommendations SET reasons_json=?, status=? WHERE rec_id=?",
+        (json.dumps(reasons, ensure_ascii=False), new_status, rec_id),
+    )
+    conn.commit()
+    return True
+
+
 
 def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, ttl_sec: int = 90) -> bool:
     """Cross-process best-effort leader lock backed by SQLite."""

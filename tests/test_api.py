@@ -261,6 +261,7 @@ def test_api_health_uses_explicit_llm_env_config(tmp_path: Path, monkeypatch: py
     monkeypatch.setenv('LLM_REVIEWER_MAX_CANDIDATES', '60')
     monkeypatch.setenv('LLM_REVIEWER_CANDLES_PER_TF', '40')
     monkeypatch.setenv('LLM_REVIEWER_CADENCE_SEC', '420')
+    monkeypatch.setenv('LLM_REVIEWER_MAX_WORKERS', '12')
 
     sys.modules.pop('app.main', None)
     app_main = importlib.import_module('app.main')
@@ -275,6 +276,7 @@ def test_api_health_uses_explicit_llm_env_config(tmp_path: Path, monkeypatch: py
         assert body['llm_reviewer']['enabled'] is True
         assert body['llm_reviewer']['max_candidates'] == 60
         assert body['llm_reviewer']['candles_per_tf'] == 40
+        assert body['llm_reviewer']['max_workers'] == 12
         assert body['llm_reviewer']['cadence_sec'] == 420
     finally:
         client.close()
@@ -305,4 +307,5 @@ def test_env_example_llm_reviewer_defaults_match_runtime_defaults():
     assert env_map['LLM_REVIEWER_ENABLED'] == '0'
     assert env_map['LLM_REVIEWER_CANDLES_PER_TF'] == '32'
     assert env_map['LLM_REVIEWER_MAX_CANDIDATES'] == '2'
+    assert env_map['LLM_REVIEWER_MAX_WORKERS'] == '8'
     assert env_map['LLM_REVIEWER_CADENCE_SEC'] == '300'

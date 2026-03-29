@@ -24,6 +24,7 @@ from app.recommender import (
     _stable_range_score,
     _stabilize_direction_agg,
     PERSISTENCE_BOTS,
+    run_llm_review_sweep_once,
     run_recommender_once,
 )
 from app.settings import Settings
@@ -261,7 +262,7 @@ def test_apply_llm_reviewer_advisory_keeps_status_and_records_alignment(conn):
     assert rec["reasons"]["decision_layers"]["llm_reviewer"]["status"] == "ok"
 
 
-def test_apply_llm_reviewer_reuses_recent_symbol_cache_between_bot_types(conn):
+def test_apply_llm_reviewer_does_not_reuse_cache_across_venue_or_bot_type(conn):
     class CountingReviewer:
         provider = "ollama"
         model = "fake-llm"
@@ -344,10 +345,10 @@ def test_apply_llm_reviewer_reuses_recent_symbol_cache_between_bot_types(conn):
         reviewer=reviewer,
     )
 
-    assert reviewer.calls == 1
-    assert stats["reviewed"] == 1
-    assert stats["cached"] == 1
-    assert recs[1]["reasons"]["llm_review"]["cached"] is True
+    assert reviewer.calls == 2
+    assert stats["reviewed"] == 2
+    assert stats["cached"] == 0
+    assert recs[1]["reasons"]["llm_review"].get("cached") is not True
     assert recs[1]["reasons"]["llm_review"]["execution_direction"] == "neutral"
 
 
@@ -1283,3 +1284,80 @@ def test_outcomes_stats_fallback_to_outcome_direction_when_recommendation_missin
     assert stats["direction_pairs"][0]["execution_direction"] == "short"
     assert stats["recent"][0]["raw_direction"] == "short"
     assert stats["recent"][0]["execution_direction"] == "short"
+
+
+def test_run_llm_review_sweep_once_updates_latest_snapshot_asynchronously(conn, monkeypatch):
+    from app import recommender as recommender_module
+
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def review(self, payload):
+            return LLMReviewResult(
+                provider=self.provider,
+                model=self.model,
+                execution_direction="neutral",
+                thesis_direction="neutral",
+                confidence=0.71,
+                regime_view="range",
+                risk_flags=["ok"],
+                summary="async ok",
+            )
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_max_candidates=60,
+        llm_reviewer_max_workers=4,
+        llm_reviewer_cadence_sec=5,
+        llm_reviewer_tf_secs=[900],
+        llm_reviewer_candles_per_tf=16,
+    )
+
+    rec = {
+        "rec_id": "R-async-1",
+        "ts": 1_700_000_000,
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "bot_type": "futures_grid",
+        "direction": "neutral",
+        "account_mode": "unified",
+        "margin_mode": "isolated",
+        "score": 0.41,
+        "confidence": 0.73,
+        "expected_rr": 1.5,
+        "risk_score": 0.17,
+        "params": {"grid_levels": 8, "grid_spacing_pct": 0.9, "price_range_lower": 95.0, "price_range_upper": 105.0},
+        "reasons": {
+            "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
+            "direction_agg": {"direction": "neutral", "raw_direction": "neutral", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
+            "execution_constraints": {"raw_direction": "neutral", "executable_direction": "neutral", "spot_short_neutralized": False},
+            "decision_layers": {"final_status": "recommended"},
+            "symbol_sentiment": {"effective": 0.1, "global": 0.1},
+            "market_shock": {"state": "normal"},
+            "llm_review": {"status": "pending", "mode": "advisory", "queued_ts": 1_700_000_000},
+        },
+        "blocks": [],
+        "status": "recommended",
+        "ttl_sec": 900,
+        "model_version": "test",
+        "features_ref_ts": 1_700_000_000,
+    }
+    db.insert_recommendations(conn, [rec])
+    db.upsert_ohlcv(conn, [{
+        "venue": "linear", "symbol": "BTCUSDT", "tf_sec": 900, "ts": 1_700_000_000,
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 123.0,
+    }])
+
+    monkeypatch.setattr(recommender_module, "_make_llm_reviewer", lambda settings: FakeReviewer())
+
+    stats = run_llm_review_sweep_once(conn, settings)
+    saved = db.get_recommendation_by_id(conn, "R-async-1")
+
+    assert stats["queued"] == 1
+    assert stats["completed"] == 1
+    assert saved is not None
+    assert saved["reasons"]["llm_review"]["status"] == "ok"
+    assert saved["reasons"]["llm_review"]["summary"] == "async ok"
