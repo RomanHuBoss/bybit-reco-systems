@@ -118,10 +118,11 @@ class Settings:
     llm_reviewer_timeout_sec: int = 60
     llm_reviewer_tf_secs: list[int] = field(default_factory=lambda: [15 * 60, 60 * 60, 4 * 60 * 60])
     llm_reviewer_candles_per_tf: int = 32
-    llm_reviewer_max_candidates: int = 60
-    llm_reviewer_max_workers: int = 8
+    llm_reviewer_max_candidates: int = 24
+    llm_reviewer_max_workers: int = 2
     llm_reviewer_min_confidence: float = 0.65
     llm_reviewer_cadence_sec: int = 300
+    llm_reviewer_keep_alive: str = "90s"
     reco_ttl_sec: int | None = None
     outcomes_interval_sec: int = 60
     outcomes_max_to_process: int = 200
@@ -160,10 +161,11 @@ def load_settings() -> Settings:
     llm_reviewer_timeout_sec = _env_int("LLM_REVIEWER_TIMEOUT_SEC", 60, minimum=5, maximum=600)
     llm_reviewer_tf_secs = parse_tf_secs(_env("LLM_REVIEWER_TFS", "15m,1h,4h"))
     llm_reviewer_candles_per_tf = _env_int("LLM_REVIEWER_CANDLES_PER_TF", 32, minimum=16, maximum=96)
-    llm_reviewer_max_candidates = _env_int("LLM_REVIEWER_MAX_CANDIDATES", 60, minimum=1, maximum=100)
-    llm_reviewer_max_workers = _env_int("LLM_REVIEWER_MAX_WORKERS", 8, minimum=1, maximum=32)
+    llm_reviewer_max_candidates = _env_int("LLM_REVIEWER_MAX_CANDIDATES", 24, minimum=1, maximum=100)
+    llm_reviewer_max_workers = _env_int("LLM_REVIEWER_MAX_WORKERS", 2, minimum=1, maximum=32)
     llm_reviewer_min_confidence = _env_float("LLM_REVIEWER_MIN_CONFIDENCE", 0.65, minimum=0.0, maximum=1.0)
     llm_reviewer_cadence_sec = _env_int("LLM_REVIEWER_CADENCE_SEC", 300, minimum=5, maximum=3600)
+    llm_reviewer_keep_alive = _env("LLM_REVIEWER_KEEP_ALIVE", "90s").strip() or "90s"
     reco_ttl_raw = os.getenv("RECO_TTL_SEC")
     reco_ttl_sec = None if reco_ttl_raw in (None, "") else _env_int("RECO_TTL_SEC", 180, minimum=180, maximum=7 * 24 * 3600)
     outcomes_interval_sec = _env_int("OUTCOMES_INTERVAL_SEC", 60, minimum=20, maximum=3600)
@@ -205,6 +207,7 @@ def load_settings() -> Settings:
         llm_reviewer_max_workers=llm_reviewer_max_workers,
         llm_reviewer_min_confidence=llm_reviewer_min_confidence,
         llm_reviewer_cadence_sec=llm_reviewer_cadence_sec,
+        llm_reviewer_keep_alive=llm_reviewer_keep_alive,
         reco_ttl_sec=reco_ttl_sec,
         outcomes_interval_sec=outcomes_interval_sec,
         outcomes_max_to_process=outcomes_max_to_process,

@@ -670,7 +670,7 @@ def test_async_llm_sweep_processes_pending_backlog_across_recent_snapshots(conn,
     rec_new = db.get_recommendation_by_id(conn, "R-async-backlog-2")
 
     assert reviewer.calls == 1
-    assert stats["pending_before"] == 2
+    assert stats["pending_before"] == 1
     assert stats["pending_after"] == 0
     assert stats["completed"] == 2
     assert stats["inherited"] == 1
@@ -1736,6 +1736,139 @@ def test_run_llm_review_sweep_once_updates_latest_snapshot_asynchronously(conn, 
     assert saved is not None
     assert saved["reasons"]["llm_review"]["status"] == "ok"
     assert saved["reasons"]["llm_review"]["summary"] == "async ok"
+
+
+
+def test_mark_llm_reviews_async_defers_overflow_candidates_without_final_skip(conn):
+    ts_now = int(time.time())
+    recs = []
+    for idx, symbol in enumerate(["BTCUSDT", "ETHUSDT", "SOLUSDT"], start=1):
+        recs.append({
+            "rec_id": f"R-overflow-{idx}",
+            "ts": ts_now,
+            "venue": "linear",
+            "symbol": symbol,
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.7 - idx * 0.01,
+            "confidence": 0.8 - idx * 0.01,
+            "expected_rr": 1.2,
+            "risk_score": 0.2,
+            "params": {"grid_levels": 8},
+            "reasons": {},
+            "blocks": [],
+            "status": "recommended",
+            "ttl_sec": 900,
+            "model_version": "test",
+            "features_ref_ts": ts_now,
+        })
+
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_max_candidates=1,
+    )
+
+    stats = recommender_module._mark_llm_reviews_async(conn, recs, settings, reviewer=FakeReviewer())
+
+    assert stats["queued"] == 1
+    assert stats["deferred"] == 2
+    assert recs[0]["reasons"]["llm_review"]["status"] == "pending"
+    assert recs[1]["reasons"]["llm_review"]["status"] == "pending"
+    assert "deferred_candidate_cap" in recs[1]["reasons"]["llm_review"]["reason"]
+    assert recs[1]["reasons"]["llm_review"]["gate_decision"] == "pending"
+
+
+def test_run_llm_review_sweep_only_counts_latest_snapshot_pending(conn, monkeypatch):
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def __init__(self):
+            self.calls = 0
+
+        def review(self, payload):
+            self.calls += 1
+            return LLMReviewResult(
+                provider=self.provider,
+                model=self.model,
+                execution_direction="neutral",
+                thesis_direction="neutral",
+                confidence=0.5,
+                regime_view="range",
+                risk_flags=[],
+                summary="ok",
+            )
+
+    ts_now = int(time.time())
+    db.insert_recommendations(conn, [
+        {
+            "rec_id": "R-old-pending",
+            "ts": ts_now - 60,
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.5,
+            "confidence": 0.7,
+            "expected_rr": 1.2,
+            "risk_score": 0.2,
+            "params": {"grid_levels": 8},
+            "reasons": {"llm_review": {"status": "pending", "mode": "advisory", "gate_decision": "pending"}},
+            "blocks": [],
+            "status": "recommended",
+            "ttl_sec": 900,
+            "model_version": "test",
+            "features_ref_ts": ts_now - 60,
+        },
+        {
+            "rec_id": "R-new-reviewed",
+            "ts": ts_now,
+            "venue": "linear",
+            "symbol": "ETHUSDT",
+            "bot_type": "futures_grid",
+            "direction": "neutral",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.4,
+            "confidence": 0.69,
+            "expected_rr": 1.1,
+            "risk_score": 0.2,
+            "params": {"grid_levels": 8},
+            "reasons": {"llm_review": {"status": "ok", "mode": "advisory", "gate_decision": "pass"}},
+            "blocks": [],
+            "status": "recommended",
+            "ttl_sec": 900,
+            "model_version": "test",
+            "features_ref_ts": ts_now,
+        },
+    ])
+
+    reviewer = FakeReviewer()
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_max_candidates=5,
+    )
+    monkeypatch.setattr(recommender_module, "_make_llm_reviewer", lambda settings: reviewer)
+
+    stats = run_llm_review_sweep_once(conn, settings)
+
+    assert stats["snapshot_ts"] == ts_now
+    assert stats["pending_before"] == 0
+    assert stats["pending_after"] == 0
+    assert stats["queued"] == 0
+    assert reviewer.calls == 0
 
 
 

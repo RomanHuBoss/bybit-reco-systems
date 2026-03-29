@@ -705,11 +705,12 @@ def api_symbol_health() -> dict[str, Any]:
                 "model": getattr(settings, "llm_reviewer_model", None),
                 "tf_secs": list(getattr(settings, "llm_reviewer_tf_secs", []) or []),
                 "candles_per_tf": int(getattr(settings, "llm_reviewer_candles_per_tf", 32) or 32),
-                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 60) or 60),
-                "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 8) or 8),
+                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 24) or 24),
+                "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 2) or 2),
                 "async_mode": True,
                 "min_confidence": float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65),
                 "cadence_sec": int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300),
+                "keep_alive": str(getattr(settings, "llm_reviewer_keep_alive", "90s") or "90s"),
             },
             "symbols": items,
         }
@@ -864,7 +865,8 @@ def _llm_reviewer_thread():
         return
     lock_key = "runtime:llm_reviewer"
     base_interval = int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300)
-    eager_interval = max(5, min(base_interval, int(getattr(settings, "reco_interval_sec", 20) or 20)))
+    reco_interval = max(5, int(getattr(settings, "reco_interval_sec", 20) or 20))
+    eager_interval = min(base_interval, max(60, reco_interval * 3))
     lock_ttl = max(60, base_interval * 4)
     next_run = time.monotonic()
     interval_sec = eager_interval
@@ -1055,11 +1057,12 @@ def api_status() -> dict[str, Any]:
                 "model": getattr(settings, "llm_reviewer_model", None),
                 "tf_secs": list(getattr(settings, "llm_reviewer_tf_secs", []) or []),
                 "candles_per_tf": int(getattr(settings, "llm_reviewer_candles_per_tf", 32) or 32),
-                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 60) or 60),
-                "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 8) or 8),
+                "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 24) or 24),
+                "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 2) or 2),
                 "async_mode": True,
                 "min_confidence": float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65),
                 "cadence_sec": int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300),
+                "keep_alive": str(getattr(settings, "llm_reviewer_keep_alive", "90s") or "90s"),
                 "worker": llm_async_status,
             },
         }

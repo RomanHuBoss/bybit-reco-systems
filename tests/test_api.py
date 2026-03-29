@@ -432,9 +432,10 @@ def test_env_example_llm_reviewer_defaults_match_runtime_defaults():
 
     assert env_map['LLM_REVIEWER_ENABLED'] == '0'
     assert env_map['LLM_REVIEWER_CANDLES_PER_TF'] == '32'
-    assert env_map['LLM_REVIEWER_MAX_CANDIDATES'] == '60'
-    assert env_map['LLM_REVIEWER_MAX_WORKERS'] == '8'
+    assert env_map['LLM_REVIEWER_MAX_CANDIDATES'] == '24'
+    assert env_map['LLM_REVIEWER_MAX_WORKERS'] == '2'
     assert env_map['LLM_REVIEWER_CADENCE_SEC'] == '300'
+    assert env_map['LLM_REVIEWER_KEEP_ALIVE'] == '90s'
 
 
 def test_api_recommendations_counts_missing_llm_review_as_none_and_not_pending(client_and_conn):
@@ -586,11 +587,11 @@ def test_api_status_and_health_report_large_batch_llm_default_capacity(client_an
 
     status_resp = client.get('/api/v1/status')
     assert status_resp.status_code == 200
-    assert status_resp.json()['llm_reviewer']['max_candidates'] == 60
+    assert status_resp.json()['llm_reviewer']['max_candidates'] == 24
 
     health_resp = client.get('/api/v1/health/symbols')
     assert health_resp.status_code == 200
-    assert health_resp.json()['llm_reviewer']['max_candidates'] == 60
+    assert health_resp.json()['llm_reviewer']['max_candidates'] == 24
 
 
 def test_api_details_and_decisions_tolerate_corrupt_json_rows(client_and_conn):

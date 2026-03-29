@@ -927,12 +927,18 @@ def get_recent_llm_review_candidates(
     venue: str | None = None,
     recent_sec: int = 3600,
     limit: int = 60,
+    snapshot_ts: int | None = None,
 ) -> list[dict[str, Any]]:
     cutoff_ts = max(0, now_ts() - max(60, int(recent_sec)))
     _supported_sql, _supported_params = sql_in_clause("bot_type")
-    q = f"""SELECT * FROM recommendations
+    if snapshot_ts is not None:
+        q = f"""SELECT * FROM recommendations
+            WHERE ts = ? AND status='recommended' AND {_supported_sql}"""
+        params: list[Any] = [int(snapshot_ts), *_supported_params]
+    else:
+        q = f"""SELECT * FROM recommendations
             WHERE ts >= ? AND status='recommended' AND {_supported_sql}"""
-    params: list[Any] = [cutoff_ts, *_supported_params]
+        params = [cutoff_ts, *_supported_params]
     if venue:
         q += " AND venue=?"
         params.append(venue)

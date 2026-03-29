@@ -117,6 +117,7 @@ def _make_llm_reviewer(settings) -> OllamaCandleReviewer | None:
         base_url=str(getattr(settings, "llm_reviewer_url", "http://127.0.0.1:11434") or "http://127.0.0.1:11434"),
         model=model,
         timeout_sec=int(getattr(settings, "llm_reviewer_timeout_sec", 60) or 60),
+        keep_alive=str(getattr(settings, "llm_reviewer_keep_alive", "90s") or "90s"),
     )
 
 
@@ -366,7 +367,7 @@ def _sanitize_llm_review_dict(rec: dict[str, Any], review_dict: dict[str, Any]) 
 
 
 def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer: OllamaCandleReviewer | None = None) -> dict[str, int]:
-    stats = {"queued": 0, "skipped": 0, "reviewed": 0, "cached": 0, "vetoed": 0, "errors": 0, "inherited": 0}
+    stats = {"queued": 0, "skipped": 0, "deferred": 0, "reviewed": 0, "cached": 0, "vetoed": 0, "errors": 0, "inherited": 0}
     if not bool(getattr(settings, "llm_reviewer_enabled", False)):
         return stats
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
@@ -417,15 +418,8 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
             reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason="queued_async")
             stats["queued"] += 1
         else:
-            reasons["llm_review"] = {
-                "provider": getattr(reviewer, "provider", "ollama") if reviewer is not None else "ollama",
-                "model": getattr(reviewer, "model", "") if reviewer is not None else "",
-                "status": "skipped",
-                "mode": mode,
-                "error": f"candidate cap reached ({max_candidates})",
-                "gate_decision": "skipped",
-            }
-            stats["skipped"] += 1
+            reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason=f"deferred_candidate_cap ({max_candidates})")
+            stats["deferred"] += 1
         _sync_recommendation_metadata(rec)
     return stats
 
@@ -462,21 +456,22 @@ def _llm_review_recent_sec(settings) -> int:
     return max(int(ttl_sec), cadence_sec * 4, 3600)
 
 
-def _recent_pending_llm_candidates(conn, settings, max_candidates: int) -> list[dict[str, Any]]:
+def _recent_pending_llm_candidates(conn, settings, max_candidates: int, *, snapshot_ts: int | None = None) -> list[dict[str, Any]]:
     recent_sec = _llm_review_recent_sec(settings)
     limit = max(max_candidates * 12, max_candidates)
-    pool = db.get_recent_llm_review_candidates(
+    snapshot_pool = db.get_recent_llm_review_candidates(
         conn,
         recent_sec=recent_sec,
         limit=limit,
+        snapshot_ts=snapshot_ts,
     )
-    pending = [r for r in pool if _should_enqueue_llm_review(r)]
-    pending.sort(key=lambda r: (int(r.get("ts") or 0), float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
+    pending_snapshot = [r for r in snapshot_pool if _should_enqueue_llm_review(r)]
+    pending_snapshot.sort(key=lambda r: (int(r.get("ts") or 0), float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
 
     selected_keys: list[str] = []
     selected_set: set[str] = set()
     max_unique = max(1, int(max_candidates))
-    for rec in pending:
+    for rec in pending_snapshot:
         cache_key = _llm_cache_key(rec)
         if cache_key in selected_set:
             continue
@@ -486,15 +481,29 @@ def _recent_pending_llm_candidates(conn, settings, max_candidates: int) -> list[
             break
     if not selected_set:
         return []
+
+    if snapshot_ts is None:
+        pending = pending_snapshot
+    else:
+        recent_pool = db.get_recent_llm_review_candidates(
+            conn,
+            recent_sec=recent_sec,
+            limit=max(limit * 6, 200),
+            snapshot_ts=None,
+        )
+        pending = [r for r in recent_pool if _should_enqueue_llm_review(r)]
+        pending.sort(key=lambda r: (int(r.get("ts") or 0), float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
+
     return [rec for rec in pending if _llm_cache_key(rec) in selected_set]
 
 
-def _count_recent_pending_llm_candidates(conn, settings) -> int:
+def _count_recent_pending_llm_candidates(conn, settings, *, snapshot_ts: int | None = None) -> int:
     recent_sec = _llm_review_recent_sec(settings)
     pool = db.get_recent_llm_review_candidates(
         conn,
         recent_sec=recent_sec,
         limit=2000,
+        snapshot_ts=snapshot_ts,
     )
     return sum(1 for r in pool if _should_enqueue_llm_review(r))
 
@@ -542,8 +551,8 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
     llm_cache = _load_llm_review_cache(conn)
     cache_dirty = False
 
-    stats["pending_before"] = _count_recent_pending_llm_candidates(conn, settings)
-    candidates = _recent_pending_llm_candidates(conn, settings, stats["max_candidates"])
+    stats["pending_before"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
+    candidates = _recent_pending_llm_candidates(conn, settings, stats["max_candidates"], snapshot_ts=snapshot_ts)
     if not candidates:
         stats["duration_ms"] = int((time.time() - t0) * 1000)
         stats["pending_after"] = 0
@@ -606,7 +615,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
 
     stats["queued"] = len(jobs)
     if not jobs:
-        stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings)
+        stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
         stats["duration_ms"] = int((time.time() - t0) * 1000)
         db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
         db.log_decision(conn, "LLM_REVIEW_SWEEP", None, None, stats)
@@ -694,7 +703,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
                     stats["errors"] += 1
     if cache_dirty:
         _save_llm_review_cache(conn, llm_cache, cadence_sec)
-    stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings)
+    stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
     stats["duration_ms"] = int((time.time() - t0) * 1000)
     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
     db.log_decision(conn, "LLM_REVIEW_SWEEP", None, None, stats)

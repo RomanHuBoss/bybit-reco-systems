@@ -12,7 +12,7 @@ import httpx
 ALLOWED_DIRECTIONS = {"long", "short", "neutral"}
 PROMPT_VERSION = "ohlcv_multitf_v1"
 SUPPORTED_TF_SECS = (60, 15 * 60, 30 * 60, 60 * 60, 4 * 60 * 60, 24 * 60 * 60)
-DEFAULT_KEEP_ALIVE = "15m"
+DEFAULT_KEEP_ALIVE = "90s"
 
 
 SYSTEM_PROMPT = (
