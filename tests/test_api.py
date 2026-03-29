@@ -749,3 +749,171 @@ def test_api_recommendations_uses_single_recommendations_query_for_llm_counts(cl
     assert resp.status_code == 200
     assert resp.json()['llm_status_counts']['ok'] == 1
     assert calls == [1]
+
+
+def test_api_trade_retry_after_stop_bot_is_idempotent(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-stop-retry',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-api-stop-retry/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert exec_resp.status_code == 200
+    bot_id = exec_resp.json()['bot_id']
+
+    trade_payload = {
+        'trade_id': 'T-api-stop-retry',
+        'ts': ts_now + 60,
+        'pnl': 5.0,
+        'fee': 0.5,
+        'operator': 'tester',
+        'meta': {'fill_count': 1},
+        'stop_bot': True,
+    }
+
+    first = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json=trade_payload,
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert first.status_code == 200
+    assert first.json()['insert_result'] == 'inserted'
+    assert first.json()['bot_status'] == 'stopped'
+
+    second = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json=trade_payload,
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert second.status_code == 200
+    body = second.json()
+    assert body['insert_result'] == 'duplicate'
+    assert body['idempotent'] is True
+    assert body['bot_status'] == 'stopped'
+    assert body['trade_count'] == 1
+    assert body['realized_pnl_net'] == pytest.approx(4.5)
+
+
+def test_api_trade_rejects_non_finite_numbers(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-inf',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-api-inf/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    bot_id = exec_resp.json()['bot_id']
+
+    bad_trade = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json={'trade_id': 'T-bad', 'ts': ts_now + 60, 'pnl': 'inf', 'fee': 0.1},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert bad_trade.status_code == 422
+
+
+def test_api_recommendations_sanitizes_non_finite_min_conf(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_regime(conn, ts_now, {'vol_state': 'low', 'trend_state': 'mixed', 'risk_state': 'risk_on', 'confidence': 0.61})
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-minconf',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.41,
+                'confidence': 0.71,
+                'expected_rr': 1.2,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    resp = client.get('/api/v1/recommendations?min_conf=nan')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['min_conf'] == pytest.approx(0.52)
+    assert len(body['items']) == 1
+
+
+def test_api_sentiment_rejects_non_finite_velocity(client_and_conn):
+    client, _ = client_and_conn
+
+    resp = client.post(
+        '/api/v1/sentiment',
+        json={'scope': 'global', 'key': 'crypto', 'sentiment': 0.1, 'velocity': 'inf', 'volume': 1},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert resp.status_code == 422

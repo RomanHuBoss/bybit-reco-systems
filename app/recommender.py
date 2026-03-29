@@ -15,7 +15,7 @@ from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .outcomes import BOT_HORIZONS
 from .bot_types import SUPPORTED_BOT_TYPES
-from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction
+from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
@@ -288,9 +288,13 @@ def _is_fresh_llm_cache_entry(
         return False, cache_age
     provider = str(meta.get("provider") or "ollama")
     model = str(meta.get("model") or "")
+    prompt_version = str(meta.get("prompt_version") or "")
     reviewer_provider = str(getattr(reviewer, "provider", "ollama") or "ollama")
     reviewer_model = str(getattr(reviewer, "model", "") or "")
+    reviewer_prompt_version = str(getattr(reviewer, "prompt_version", PROMPT_VERSION) or PROMPT_VERSION)
     if provider != reviewer_provider or model != reviewer_model:
+        return False, cache_age
+    if prompt_version and prompt_version != reviewer_prompt_version:
         return False, cache_age
     return True, cache_age
 

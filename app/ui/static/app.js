@@ -6,6 +6,7 @@ let statusPayload = null;
 let countdownTimer = null;
 let countdownVal = 10;
 let currentRecId = null;   // rec_id currently shown in Details panel
+let detailsRequestSeq = 0;
 let currentMeta  = null;   // {venue, symbol, bot_type} — used to find fresh rec_id on refresh
 
 // ── sort state ────────────────────────────────────────────────────────────────
@@ -1224,6 +1225,7 @@ function directionBadge(dir) {
 
 async function loadDetails(recId) {
   currentRecId = recId;
+  const reqSeq = ++detailsRequestSeq;
   const btn = $("refreshDetailsBtn");
   btn.classList.remove("hidden");
   btn.disabled = true;
@@ -1233,6 +1235,7 @@ async function loadDetails(recId) {
   try {
     const res = await fetch(`/api/v1/recommendations/${recId}`);
     if (!res.ok) {
+      if (reqSeq !== detailsRequestSeq) return;
       clearDetailsHeaderLinks();
       $("details").textContent = `Ошибка загрузки деталей (HTTP ${res.status}).`;
       btn.disabled = false;
@@ -1241,6 +1244,7 @@ async function loadDetails(recId) {
     }
     it = await res.json();
   } catch (e) {
+    if (reqSeq !== detailsRequestSeq) return;
     clearDetailsHeaderLinks();
     $("details").textContent = `Ошибка сети при загрузке деталей.`;
     btn.disabled = false;
@@ -1248,6 +1252,7 @@ async function loadDetails(recId) {
     return;
   }
 
+  if (reqSeq !== detailsRequestSeq) return;
   currentMeta = { venue: it.venue, symbol: it.symbol, bot_type: it.bot_type };
   it.ui_score_meta = ensureUiScoreMeta(it, lastItems);
   currentRecId = it.rec_id;

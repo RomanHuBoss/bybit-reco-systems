@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -105,7 +106,13 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     peak = 0.0
     max_dd = 0.0
     for row in cur.fetchall():
-        cumulative += float(row["net_pnl"] or 0.0)
+        try:
+            net_pnl = float(row["net_pnl"] or 0.0)
+        except Exception:
+            net_pnl = 0.0
+        if not math.isfinite(net_pnl):
+            net_pnl = 0.0
+        cumulative += net_pnl
         if cumulative > peak:
             peak = cumulative
         dd = peak - cumulative

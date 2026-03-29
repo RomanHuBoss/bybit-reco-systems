@@ -1994,3 +1994,98 @@ def test_collector_retries_temporarily_disabled_symbol_after_ttl(tmp_path: Path,
     assert client.ticker_calls == ["BTCUSDT", "BTCUSDT"]
     assert any(symbol == "BTCUSDT" and interval == "1" for symbol, interval in client.kline_calls)
     assert db.get_latest_ticker(conn, "spot", "BTCUSDT") is not None
+
+
+def test_llm_cache_prompt_version_mismatch_does_not_get_reused(conn):
+    now = int(time.time())
+    cache_key = 'linear|BTCUSDT|futures_grid|long'
+    db.set_app_config_json(
+        conn,
+        recommender_module.LLM_REVIEW_CACHE_APP_KEY,
+        {
+            cache_key: {
+                'ts': now,
+                'provider': 'ollama',
+                'model': 'fake-llm',
+                'prompt_version': 'older_prompt_v0',
+                'thesis_direction': 'long',
+                'execution_direction': 'long',
+                'confidence': 0.8,
+                'regime_view': 'range',
+                'summary': 'stale cache',
+                'risk_flags': [],
+            }
+        },
+    )
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode='advisory',
+        llm_reviewer_model='fake-llm',
+        llm_reviewer_max_candidates=5,
+        llm_reviewer_cadence_sec=300,
+    )
+
+    class FakeReviewer:
+        provider = 'ollama'
+        model = 'fake-llm'
+        prompt_version = 'ohlcv_multitf_v1'
+
+    rec = {
+        'rec_id': 'R-cache-version',
+        'venue': 'linear',
+        'symbol': 'BTCUSDT',
+        'bot_type': 'futures_grid',
+        'direction': 'long',
+        'status': 'recommended',
+        'score': 0.51,
+        'confidence': 0.81,
+        'expected_rr': 1.4,
+        'risk_score': 0.2,
+        'params': {},
+        'reasons': {
+            'direction_agg': {'raw_direction': 'long'},
+            'execution_constraints': {'raw_direction': 'long'},
+        },
+    }
+
+    stats = recommender_module._mark_llm_reviews_async(conn, [rec], settings, reviewer=FakeReviewer())
+
+    assert stats['queued'] == 1
+    assert stats['cached'] == 0
+    assert rec['reasons']['llm_review']['status'] == 'pending'
+
+
+def test_trade_summary_ignores_non_finite_rows(conn):
+    conn.execute(
+        """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json) VALUES(?,?,?,?,?,?,?)""",
+        ('T-good', 'B-1', 1_700_000_000, 'BTCUSDT', 10.0, 1.5, '{}'),
+    )
+    conn.execute(
+        """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json) VALUES(?,?,?,?,?,?,?)""",
+        ('T-bad', 'B-1', 1_700_000_060, 'BTCUSDT', float('inf'), float('inf'), '{}'),
+    )
+    conn.commit()
+
+    summary = db.get_bot_trade_summary(conn, 'B-1')
+
+    assert summary['trade_count'] == 2
+    assert summary['realized_pnl_gross'] == pytest.approx(10.0)
+    assert summary['realized_fee'] == pytest.approx(1.5)
+    assert summary['realized_pnl_net'] == pytest.approx(8.5)
+
+
+def test_insert_trade_rejects_non_finite_numbers(conn):
+    with pytest.raises(ValueError, match='finite number'):
+        db.insert_trade(
+            conn,
+            {
+                'trade_id': 'T-nonfinite',
+                'bot_id': 'B-1',
+                'ts': 1_700_000_000,
+                'symbol': 'BTCUSDT',
+                'pnl': float('inf'),
+                'fee': 0.1,
+                'meta': {},
+            },
+        )

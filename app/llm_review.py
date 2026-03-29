@@ -335,6 +335,7 @@ def build_review_payload(
 
 class OllamaCandleReviewer:
     provider = "ollama"
+    prompt_version = PROMPT_VERSION
 
     def __init__(self, *, base_url: str, model: str, timeout_sec: int = 60, keep_alive: str = DEFAULT_KEEP_ALIVE):
         self.base_url = str(base_url or "http://127.0.0.1:11434").rstrip("/")

@@ -160,6 +160,35 @@ def _bounded_limit(value: int, *, default: int, max_value: int) -> int:
     return max(1, min(num, int(max_value)))
 
 
+def _bounded_probability(value: float | None, *, default: float) -> float:
+    try:
+        num = float(value if value is not None else default)
+    except Exception:
+        num = float(default)
+    if not math.isfinite(num):
+        num = float(default)
+    return max(0.0, min(num, 1.0))
+
+
+def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: str, symbol: str, ts: int | None, pnl: float, fee: float, meta: dict[str, Any]) -> bool:
+    if not existing:
+        return False
+    if str(existing.get("bot_id") or "") != str(bot_id):
+        return False
+    if str(existing.get("symbol") or "") != str(symbol):
+        return False
+    if ts is not None and int(existing.get("ts") or 0) != int(ts):
+        return False
+    try:
+        pnl_match = math.isclose(float(existing.get("pnl") or 0.0), float(pnl), rel_tol=1e-12, abs_tol=1e-12)
+        fee_match = math.isclose(float(existing.get("fee") or 0.0), float(fee), rel_tol=1e-12, abs_tol=1e-12)
+    except Exception:
+        return False
+    if not (pnl_match and fee_match):
+        return False
+    return (existing.get("meta") or {}) == (meta or {})
+
+
 def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     out = dict(rec)
     venue = str(out.get("venue") or "")
@@ -205,8 +234,8 @@ class SentimentPointRequest(BaseModel):
     scope: str = Field(..., pattern="^(global|symbol|topic)$")
     key: str
     ts: int | None = None
-    sentiment: float = Field(..., ge=-1.0, le=1.0)
-    velocity: float = 0.0
+    sentiment: float = Field(..., ge=-1.0, le=1.0, allow_inf_nan=False)
+    velocity: float = Field(0.0, allow_inf_nan=False)
     volume: int = 1
     sources: dict[str, Any] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
@@ -225,8 +254,8 @@ class BotStopRequest(BaseModel):
 class BotTradeRequest(BaseModel):
     trade_id: str | None = None
     ts: int | None = None
-    pnl: float = Field(..., description="Gross realized PnL before fee; net PnL is computed as pnl - fee")
-    fee: float = Field(0.0, ge=0.0, description="Exchange fees for this trade; deducted from pnl to compute net")
+    pnl: float = Field(..., allow_inf_nan=False, description="Gross realized PnL before fee; net PnL is computed as pnl - fee")
+    fee: float = Field(0.0, ge=0.0, allow_inf_nan=False, description="Exchange fees for this trade; deducted from pnl to compute net")
     operator: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
     stop_bot: bool = False
@@ -397,7 +426,7 @@ def api_recommendations(
         if show_suppressed:
             statuses.append("suppressed")
 
-        effective_min_conf = settings.min_conf_to_recommend if min_conf is None else float(min_conf)
+        effective_min_conf = _bounded_probability(min_conf, default=float(settings.min_conf_to_recommend))
         strict_min_conf = min_conf is not None
         snapshot_ts = _resolve_recommendation_snapshot_ts(
             conn,
@@ -553,11 +582,39 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
         bot = db.get_bot_instance(conn, bot_id)
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
-        if str(bot.get("status") or "") != "running":
-            raise HTTPException(status_code=409, detail=f"cannot record trade for bot status={bot.get('status')}")
 
         trade_id = req.trade_id or f"T-{int(time.time())}-{secrets.token_hex(4)}"
         ts = req.ts or int(time.time())
+        if str(bot.get("status") or "") != "running":
+            existing_trade = db.get_trade_by_id(conn, trade_id) if req.trade_id else None
+            if _existing_trade_matches_request(
+                existing_trade,
+                bot_id=bot_id,
+                symbol=str(bot.get("symbol") or ""),
+                ts=req.ts,
+                pnl=req.pnl,
+                fee=req.fee,
+                meta=req.meta,
+            ):
+                trade_summary = db.get_bot_trade_summary(conn, bot_id)
+                realized_pnl_gross = float(trade_summary["realized_pnl_gross"])
+                realized_fee = float(trade_summary["realized_fee"])
+                realized_pnl_net = float(trade_summary["realized_pnl_net"])
+                return {
+                    "ok": True,
+                    "trade_id": trade_id,
+                    "bot_id": bot_id,
+                    "trade_count": int(trade_summary["trade_count"]),
+                    "insert_result": "duplicate",
+                    "realized_pnl": realized_pnl_net,
+                    "realized_pnl_gross": realized_pnl_gross,
+                    "realized_pnl_net": realized_pnl_net,
+                    "realized_fee": realized_fee,
+                    "bot_status": bot["status"],
+                    "idempotent": True,
+                }
+            raise HTTPException(status_code=409, detail=f"cannot record trade for bot status={bot.get('status')}")
+
         current_ts = int(time.time())
         max_future_skew_sec = 300
         if ts > current_ts + max_future_skew_sec:

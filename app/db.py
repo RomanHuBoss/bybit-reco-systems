@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
@@ -51,6 +52,28 @@ def _json_loads_or_default(raw: Any, default: Any) -> Any:
     except Exception:
         return default
     return loaded
+
+
+def _finite_float_or_default(value: Any, default: float = 0.0) -> float:
+    try:
+        num = float(value)
+    except Exception:
+        return float(default)
+    if not math.isfinite(num):
+        return float(default)
+    return num
+
+
+def _require_finite_float(name: str, value: Any, *, minimum: float | None = None) -> float:
+    try:
+        num = float(value)
+    except Exception as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(num):
+        raise ValueError(f"{name} must be a finite number")
+    if minimum is not None and num < float(minimum):
+        raise ValueError(f"{name} must be >= {minimum}")
+    return num
 
 
 def set_app_config_json(conn: sqlite3.Connection, key: str, value: Any) -> None:
@@ -322,8 +345,8 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any]) -> str:
         trade["bot_id"],
         int(trade["ts"]),
         trade["symbol"],
-        float(trade.get("pnl") or 0.0),
-        float(trade.get("fee") or 0.0),
+        _require_finite_float("pnl", trade.get("pnl") or 0.0),
+        _require_finite_float("fee", trade.get("fee") or 0.0, minimum=0.0),
         json.dumps(trade.get("meta") or {}, ensure_ascii=False),
     )
     cur = conn.execute(
@@ -355,6 +378,22 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any]) -> str:
     return "inserted"
 
 
+def get_trade_by_id(conn: sqlite3.Connection, trade_id: str) -> dict[str, Any] | None:
+    cur = conn.execute("SELECT * FROM trades WHERE trade_id=?", (trade_id,))
+    r = cur.fetchone()
+    if not r:
+        return None
+    return {
+        "trade_id": r["trade_id"],
+        "bot_id": r["bot_id"],
+        "ts": int(r["ts"]),
+        "symbol": r["symbol"],
+        "pnl": _finite_float_or_default(r["pnl"], 0.0),
+        "fee": _finite_float_or_default(r["fee"], 0.0),
+        "meta": _json_loads_or_default(r["meta_json"], {}),
+    }
+
+
 def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
     if bot_id:
         cur = conn.execute(
@@ -370,8 +409,8 @@ def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int 
             "bot_id": r["bot_id"],
             "ts": r["ts"],
             "symbol": r["symbol"],
-            "pnl": r["pnl"],
-            "fee": r["fee"],
+            "pnl": _finite_float_or_default(r["pnl"], 0.0),
+            "fee": _finite_float_or_default(r["fee"], 0.0),
             "meta": _json_loads_or_default(r["meta_json"], {}),
         })
     return out
@@ -380,17 +419,23 @@ def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int 
 
 def get_bot_trade_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any]:
     cur = conn.execute(
-        """SELECT COUNT(*) AS trade_count,
-                  COALESCE(SUM(pnl), 0.0) AS realized_pnl_gross,
-                  COALESCE(SUM(fee), 0.0) AS realized_fee,
-                  MAX(ts) AS last_trade_ts
-           FROM trades WHERE bot_id=?""",
+        """SELECT ts, pnl, fee
+           FROM trades WHERE bot_id=?
+           ORDER BY ts ASC, trade_id ASC""",
         (bot_id,),
     )
-    row = cur.fetchone()
-    trade_count = int(row["trade_count"] or 0) if row else 0
-    realized_pnl_gross = float(row["realized_pnl_gross"] or 0.0) if row else 0.0
-    realized_fee = float(row["realized_fee"] or 0.0) if row else 0.0
+    trade_count = 0
+    realized_pnl_gross = 0.0
+    realized_fee = 0.0
+    last_trade_ts: int | None = None
+    for row in cur.fetchall():
+        trade_count += 1
+        realized_pnl_gross += _finite_float_or_default(row["pnl"], 0.0)
+        realized_fee += _finite_float_or_default(row["fee"], 0.0)
+        try:
+            last_trade_ts = int(row["ts"])
+        except Exception:
+            pass
     realized_pnl_net = realized_pnl_gross - realized_fee
     return {
         "trade_count": trade_count,
@@ -398,7 +443,7 @@ def get_bot_trade_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, An
         "realized_fee": realized_fee,
         "realized_pnl_net": realized_pnl_net,
         "realized_pnl": realized_pnl_net,
-        "last_trade_ts": int(row["last_trade_ts"]) if row and row["last_trade_ts"] is not None else None,
+        "last_trade_ts": last_trade_ts,
     }
 
 
@@ -644,22 +689,26 @@ def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: 
     return out
 
 def sum_daily_gross_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
-    cur = conn.execute("""SELECT COALESCE(SUM(pnl),0.0) AS s FROM trades WHERE ts>=?""", (day_start_ts,))
-    return float(cur.fetchone()["s"])
+    cur = conn.execute("SELECT pnl FROM trades WHERE ts>=?", (day_start_ts,))
+    return sum(_finite_float_or_default(row["pnl"], 0.0) for row in cur.fetchall())
 
 
 def sum_daily_fees(conn: sqlite3.Connection, day_start_ts: int) -> float:
-    cur = conn.execute("""SELECT COALESCE(SUM(fee),0.0) AS s FROM trades WHERE ts>=?""", (day_start_ts,))
-    return float(cur.fetchone()["s"])
+    cur = conn.execute("SELECT fee FROM trades WHERE ts>=?", (day_start_ts,))
+    return sum(_finite_float_or_default(row["fee"], 0.0) for row in cur.fetchall())
 
 
 def sum_daily_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
     """Net daily PnL after fees.
 
     Risk limits must use net economics, not gross trade PnL.
+    Ignore non-finite rows so one corrupted trade cannot poison the whole day's risk status.
     """
-    cur = conn.execute("""SELECT COALESCE(SUM(pnl - fee),0.0) AS s FROM trades WHERE ts>=?""", (day_start_ts,))
-    return float(cur.fetchone()["s"])
+    cur = conn.execute("SELECT pnl, fee FROM trades WHERE ts>=?", (day_start_ts,))
+    total = 0.0
+    for row in cur.fetchall():
+        total += _finite_float_or_default(row["pnl"], 0.0) - _finite_float_or_default(row["fee"], 0.0)
+    return total
 
 
 
