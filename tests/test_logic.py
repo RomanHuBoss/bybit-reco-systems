@@ -92,6 +92,20 @@ def test_parse_review_content_handles_json_fence_and_spot_short_execution_neutra
 
 
 
+def test_load_llm_candles_for_symbol_drops_open_candle(conn):
+    ts_now = 1_700_000_090
+    rows = [
+        {"venue": "linear", "symbol": "BTCUSDT", "tf_sec": 60, "ts": 1_700_000_060, "open": 101.0, "high": 102.0, "low": 100.0, "close": 101.5, "volume": 12.0},
+        {"venue": "linear", "symbol": "BTCUSDT", "tf_sec": 60, "ts": 1_700_000_000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0},
+    ]
+    db.upsert_ohlcv(conn, rows)
+
+    candles = recommender_module._load_llm_candles_for_symbol(conn, "linear", "BTCUSDT", [60], 8, ts_now=ts_now)
+
+    assert list(candles) == [60]
+    assert candles[60] == [[1_700_000_000, 100.0, 101.0, 99.0, 100.5, 10.0]]
+
+
 def test_ollama_reviewer_falls_back_to_generate_and_keeps_chat_diagnostics():
     class FakeReviewer(OllamaCandleReviewer):
         def __init__(self):
@@ -419,6 +433,69 @@ def test_async_llm_sweep_gate_persists_veto_status_in_db(conn, monkeypatch):
 
 
 
+def test_cached_llm_review_preserves_execution_direction_from_live_result(conn):
+    ts_now = int(time.time())
+    cached_state = {
+        "linear|LINKUSDT|futures_grid|short": {
+            "ts": ts_now,
+            "provider": "ollama",
+            "model": "fake-llm",
+            "prompt_version": "ohlcv_multitf_v1",
+            "thesis_direction": "short",
+            "execution_direction": "neutral",
+            "confidence": 0.70,
+            "regime_view": "range with weak downside bias",
+            "summary": "neutral execution despite bearish thesis",
+            "risk_flags": ["low_confidence"],
+        }
+    }
+    db.set_app_config_json(conn, recommender_module.LLM_REVIEW_CACHE_APP_KEY, cached_state)
+
+    recs = [{
+        "rec_id": "R-cache-neutral-exec-1",
+        "ts": ts_now,
+        "venue": "linear",
+        "symbol": "LINKUSDT",
+        "bot_type": "futures_grid",
+        "direction": "short",
+        "account_mode": "one_way",
+        "margin_mode": "isolated",
+        "score": 0.47,
+        "confidence": 0.73,
+        "expected_rr": 1.18,
+        "risk_score": 0.19,
+        "params": {"grid_levels": 8},
+        "reasons": {
+            "direction_agg": {"direction": "short", "raw_direction": "short"},
+            "execution_constraints": {"raw_direction": "short", "executable_direction": "short", "spot_short_neutralized": False},
+        },
+        "blocks": [],
+        "status": "recommended",
+        "ttl_sec": 1800,
+        "model_version": "test",
+        "features_ref_ts": ts_now,
+    }]
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_cadence_sec=300,
+        llm_reviewer_max_candidates=1,
+    )
+
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+    stats = recommender_module._mark_llm_reviews_async(conn, recs, settings, reviewer=FakeReviewer())
+
+    assert stats["cached"] == 1
+    review = recs[0]["reasons"]["llm_review"]
+    assert review["execution_direction"] == "neutral"
+    assert review["thesis_direction"] == "short"
+    assert review["agree_with_engine"] is False
+
+
 def test_mark_llm_reviews_async_reuses_fresh_cache_for_new_rec_ids(conn):
     ts_now = int(time.time())
     cached_state = {
@@ -428,6 +505,7 @@ def test_mark_llm_reviews_async_reuses_fresh_cache_for_new_rec_ids(conn):
             "model": "fake-llm",
             "prompt_version": "ohlcv_multitf_v1",
             "thesis_direction": "long",
+            "execution_direction": "long",
             "confidence": 0.74,
             "regime_view": "bullish_range",
             "summary": "reuse cached review",
@@ -551,6 +629,52 @@ def test_async_llm_sweep_processes_pending_backlog_across_recent_snapshots(conn,
     assert rec_new["reasons"]["llm_review"]["status"] == "ok"
     assert rec_old["reasons"]["llm_review"]["source"] == "async_inherited"
     assert rec_new["reasons"]["llm_review"]["source"] == "async_live"
+
+
+def test_recent_pending_llm_candidates_prioritizes_unique_cache_keys(conn):
+    ts_now = int(time.time())
+    rows = []
+    for i, (symbol, rec_ts) in enumerate([
+        ("BTCUSDT", ts_now),
+        ("BTCUSDT", ts_now - 20),
+        ("BTCUSDT", ts_now - 40),
+        ("ETHUSDT", ts_now - 10),
+    ], start=1):
+        rows.append({
+            "rec_id": f"R-pending-unique-{i}",
+            "ts": rec_ts,
+            "venue": "linear",
+            "symbol": symbol,
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.5,
+            "confidence": 0.7,
+            "expected_rr": 1.2,
+            "risk_score": 0.2,
+            "params": {"grid_levels": 8},
+            "reasons": {"llm_review": {"status": "pending", "mode": "advisory", "gate_decision": "pending"}},
+            "blocks": [],
+            "status": "recommended",
+            "ttl_sec": 1800,
+            "model_version": "test",
+            "features_ref_ts": rec_ts,
+        })
+    db.insert_recommendations(conn, rows)
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_max_candidates=2,
+    )
+
+    candidates = recommender_module._recent_pending_llm_candidates(conn, settings, 2)
+    symbols = {item["symbol"] for item in candidates}
+    assert symbols == {"BTCUSDT", "ETHUSDT"}
+    assert len(candidates) == 4
+
+
 
 
 def test_persistence_fresh_gap_allows_confirmation_across_brief_collection_gaps():

@@ -141,6 +141,7 @@ def _load_llm_review_cache(conn) -> dict[str, dict[str, Any]]:
                 "model": str(state.get("model") or ""),
                 "prompt_version": str(state.get("prompt_version") or ""),
                 "thesis_direction": normalize_direction(state.get("thesis_direction"), allow_short=True),
+                "execution_direction": normalize_direction(state.get("execution_direction"), allow_short=True),
                 "confidence": float(state.get("confidence", 0.0) or 0.0),
                 "regime_view": str(state.get("regime_view") or "unknown"),
                 "summary": state.get("summary"),
@@ -167,6 +168,7 @@ def _save_llm_review_cache(conn, state: dict[str, dict[str, Any]], cadence_sec: 
             "model": str(meta.get("model") or ""),
             "prompt_version": str(meta.get("prompt_version") or ""),
             "thesis_direction": normalize_direction(meta.get("thesis_direction"), allow_short=True),
+            "execution_direction": normalize_direction(meta.get("execution_direction"), allow_short=True),
             "confidence": float(meta.get("confidence", 0.0) or 0.0),
             "regime_view": str(meta.get("regime_view") or "unknown"),
             "summary": meta.get("summary"),
@@ -206,6 +208,7 @@ def _cache_meta_from_result(result: Any) -> dict[str, Any] | None:
         "model": getattr(result, "model", ""),
         "prompt_version": getattr(result, "prompt_version", ""),
         "thesis_direction": normalize_direction(getattr(result, "thesis_direction", None), allow_short=True),
+        "execution_direction": normalize_direction(getattr(result, "execution_direction", None), allow_short=True),
         "confidence": float(getattr(result, "confidence", 0.0) or 0.0),
         "regime_view": str(getattr(result, "regime_view", "unknown") or "unknown"),
         "summary": getattr(result, "summary", None),
@@ -224,7 +227,10 @@ def _build_cached_review_dict(
 ) -> dict[str, Any]:
     thesis_direction = normalize_direction(meta.get("thesis_direction"), allow_short=True)
     allow_short_exec = str(rec.get("bot_type") or "") != "spot_grid"
-    execution_direction = normalize_direction(thesis_direction, allow_short=allow_short_exec)
+    execution_direction_raw = meta.get("execution_direction")
+    if execution_direction_raw in (None, ""):
+        execution_direction_raw = thesis_direction
+    execution_direction = normalize_direction(execution_direction_raw, allow_short=allow_short_exec)
     if thesis_direction == "neutral":
         execution_direction = "neutral"
     if str(rec.get("bot_type") or "") == "spot_grid" and thesis_direction == "short":
@@ -384,16 +390,19 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
     return stats
 
 
-def _load_llm_candles_for_symbol(conn, venue: str, symbol: str, tf_secs: list[int], candle_limit: int) -> dict[int, list[list[float | int]]]:
+def _load_llm_candles_for_symbol(conn, venue: str, symbol: str, tf_secs: list[int], candle_limit: int, *, ts_now: int | None = None) -> dict[int, list[list[float | int]]]:
     out: dict[int, list[list[float | int]]] = {}
+    if ts_now is None:
+        ts_now = int(time.time())
     for tf_sec in tf_secs:
         try:
             rows_newest = db.get_latest_ohlcv(conn, venue, symbol, tf_sec=tf_sec, limit=candle_limit)
         except Exception:
             continue
+        rows_newest = _drop_open_candle(rows_newest, tf_sec=int(tf_sec), ts_now=int(ts_now))
         if not rows_newest:
             continue
-        out[int(tf_sec)] = _serialize_llm_candles(list(reversed(rows_newest)), candle_limit)
+        out[int(tf_sec)] = _serialize_llm_candles([dict(r) for r in reversed(rows_newest)], candle_limit)
     return out
 
 
@@ -415,14 +424,29 @@ def _llm_review_recent_sec(settings) -> int:
 
 def _recent_pending_llm_candidates(conn, settings, max_candidates: int) -> list[dict[str, Any]]:
     recent_sec = _llm_review_recent_sec(settings)
+    limit = max(max_candidates * 12, max_candidates)
     pool = db.get_recent_llm_review_candidates(
         conn,
         recent_sec=recent_sec,
-        limit=max(max_candidates * 8, max_candidates),
+        limit=limit,
     )
     pending = [r for r in pool if _should_enqueue_llm_review(r)]
     pending.sort(key=lambda r: (int(r.get("ts") or 0), float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
-    return pending[:max(1, int(max_candidates))]
+
+    selected_keys: list[str] = []
+    selected_set: set[str] = set()
+    max_unique = max(1, int(max_candidates))
+    for rec in pending:
+        cache_key = _llm_cache_key(rec)
+        if cache_key in selected_set:
+            continue
+        selected_keys.append(cache_key)
+        selected_set.add(cache_key)
+        if len(selected_keys) >= max_unique:
+            break
+    if not selected_set:
+        return []
+    return [rec for rec in pending if _llm_cache_key(rec) in selected_set]
 
 
 def _count_recent_pending_llm_candidates(conn, settings) -> int:
@@ -528,7 +552,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
         direction_agg = reasons.get("direction_agg") if isinstance(reasons, dict) else {}
         sentiment_summary = reasons.get("symbol_sentiment") if isinstance(reasons, dict) else {}
         market_shock = reasons.get("market_shock") if isinstance(reasons, dict) else {}
-        candles_by_tf = _load_llm_candles_for_symbol(conn, venue, symbol, tf_secs, candle_limit)
+        candles_by_tf = _load_llm_candles_for_symbol(conn, venue, symbol, tf_secs, candle_limit, ts_now=int(time.time()))
         payload = build_review_payload(
             rec=rec,
             feature_snapshot=(reasons.get("feature_snapshot") if isinstance(reasons, dict) else None) or {},
