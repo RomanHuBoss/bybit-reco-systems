@@ -12,6 +12,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+MARKET_DATA_MAX_FUTURE_SKEW_SEC = 300
+LATEST_ROW_SCAN_LIMIT = 1024
+
 MIGRATION_INIT_SQL = Path(__file__).resolve().parent.parent / "migrations" / "init.sql"
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -42,6 +45,16 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def now_ts() -> int:
     return int(time.time())
+
+
+def _is_plausible_market_ts(ts: int, *, max_future_skew_sec: int = MARKET_DATA_MAX_FUTURE_SKEW_SEC) -> bool:
+    try:
+        ts_int = int(ts)
+    except Exception:
+        return False
+    if ts_int <= 0:
+        return False
+    return ts_int <= now_ts() + max(0, int(max_future_skew_sec))
 
 
 def _json_loads_or_default(raw: Any, default: Any) -> Any:
@@ -173,7 +186,7 @@ def _is_valid_ticker_row(row: Any) -> bool:
         ts = int(row["ts"] or 0)
     except Exception:
         return False
-    if ts <= 0:
+    if not _is_plausible_market_ts(ts):
         return False
 
     last = row["last"]
@@ -219,6 +232,12 @@ def _sanitize_ticker_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, 
     if row is None:
         return None
     payload = dict(row)
+    try:
+        ts = int(payload.get("ts") or 0)
+    except Exception:
+        return None
+    if not _is_plausible_market_ts(ts):
+        return None
     if not _is_valid_ticker_row(payload):
         # Historical rows may contain crossed quotes or non-finite values.
         # Keep the turnover/volume snapshot but drop the quote fields so cost-model
@@ -251,7 +270,7 @@ def _is_valid_ohlcv_row(row: Any) -> bool:
         volume = float(row["volume"] or 0.0)
     except Exception:
         return False
-    if ts <= 0:
+    if not _is_plausible_market_ts(ts):
         return False
     vals = (open_px, high_px, low_px, close_px, volume)
     if not all(math.isfinite(v) for v in vals):
@@ -290,8 +309,8 @@ def get_latest_ohlcv_ts(conn: sqlite3.Connection, venue: str, symbol: str, tf_se
         """SELECT * FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=?
            ORDER BY ts DESC
-           LIMIT 256""",
-        (venue, symbol, tf_sec),
+           LIMIT ?""",
+        (venue, symbol, tf_sec, LATEST_ROW_SCAN_LIMIT),
     )
     for row in cur.fetchall():
         if _is_valid_ohlcv_row(row):
@@ -300,10 +319,27 @@ def get_latest_ohlcv_ts(conn: sqlite3.Connection, venue: str, symbol: str, tf_se
 
 def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> dict[str, Any] | None:
     cur = conn.execute(
-        """SELECT * FROM ticker_snap WHERE venue=? AND symbol=? ORDER BY ts DESC LIMIT 1""",
-        (venue, symbol),
+        """SELECT * FROM ticker_snap WHERE venue=? AND symbol=? ORDER BY ts DESC LIMIT ?""",
+        (venue, symbol, LATEST_ROW_SCAN_LIMIT),
     )
-    return _sanitize_ticker_row(cur.fetchone())
+    fallback: dict[str, Any] | None = None
+    for row in cur.fetchall():
+        payload = dict(row)
+        if _is_valid_ticker_row(payload):
+            return payload
+        if fallback is None:
+            fallback = _sanitize_ticker_row(payload)
+    return fallback
+
+
+def get_latest_ticker_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
+    row = get_latest_ticker(conn, venue, symbol)
+    if not row:
+        return None
+    try:
+        return int(row["ts"])
+    except Exception:
+        return None
 
 def get_latest_features_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
     cur = conn.execute(
@@ -1085,7 +1121,7 @@ def _normalize_funding_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str
         funding_rate = float(payload.get("funding_rate"))
     except Exception:
         return None
-    if ts <= 0 or not math.isfinite(funding_rate):
+    if (not _is_plausible_market_ts(ts)) or (not math.isfinite(funding_rate)):
         return None
     next_funding_ts_raw = payload.get("next_funding_ts")
     try:
@@ -1140,7 +1176,7 @@ def _normalize_open_interest_row(symbol: str, row: sqlite3.Row | dict[str, Any] 
         oi = float(payload.get("oi"))
     except Exception:
         return None
-    if ts <= 0 or not math.isfinite(oi) or oi < 0:
+    if (not _is_plausible_market_ts(ts)) or (not math.isfinite(oi)) or oi < 0:
         return None
     return {"symbol": str(symbol or payload.get("symbol") or ""), "ts": ts, "oi": oi}
 
@@ -1180,8 +1216,8 @@ def get_oi_series(conn: sqlite3.Connection, symbol: str, limit: int = 48) -> lis
 
 def get_latest_open_interest_ts(conn: sqlite3.Connection, symbol: str) -> int | None:
     cur = conn.execute(
-        """SELECT ts, oi FROM open_interest WHERE symbol=? ORDER BY ts DESC LIMIT 256""",
-        (symbol,),
+        """SELECT ts, oi FROM open_interest WHERE symbol=? ORDER BY ts DESC LIMIT ?""",
+        (symbol, LATEST_ROW_SCAN_LIMIT),
     )
     for row in cur.fetchall():
         normalized = _normalize_open_interest_row(symbol, row)
@@ -1699,18 +1735,8 @@ def get_symbol_health(
     for venue, symbols in venue_symbols:
         for sym in symbols:
             # last 1m candle
-            cur2 = conn.execute(
-                """SELECT MAX(ts) as m FROM ohlcv WHERE venue=? AND symbol=? AND tf_sec=60""",
-                (venue, sym),
-            )
-            r = cur2.fetchone()
-            last_ts = int(r["m"]) if r and r["m"] else None
-            cur3 = conn.execute(
-                """SELECT MAX(ts) as m FROM ticker_snap WHERE venue=? AND symbol=?""",
-                (venue, sym),
-            )
-            rt = cur3.fetchone()
-            last_ticker_ts = int(rt["m"]) if rt and rt["m"] else None
+            last_ts = get_latest_ohlcv_ts(conn, venue, sym, 60)
+            last_ticker_ts = get_latest_ticker_ts(conn, venue, sym)
             age_sec = (now - last_ts) if last_ts else None
             is_disabled = int(disabled_until.get((venue, sym), 0) or 0) > now
 

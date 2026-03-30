@@ -229,13 +229,13 @@ def _extract_funding_row(symbol: str, ticker: dict[str, Any], fallback_ts: int) 
     }
 
 
-def _client_get_tickers_batch(client: BybitPublicClient, category: str) -> list[dict[str, Any]] | None:
+def _client_get_tickers_batch(client: BybitPublicClient, category: str) -> tuple[list[dict[str, Any]] | None, Exception | None]:
     try:
-        return client.get_tickers(category=category)
+        return client.get_tickers(category=category), None
     except TypeError:
-        return None
-    except Exception:
-        raise
+        return None, None
+    except Exception as exc:
+        return None, exc
 
 
 def _fetch_ticker_payloads(
@@ -252,7 +252,9 @@ def _fetch_ticker_payloads(
     funding_rows: list[dict[str, Any]] = []
     fetched_symbols: set[str] = set()
 
-    batch_items = _client_get_tickers_batch(client, category)
+    batch_items, batch_error = _client_get_tickers_batch(client, category)
+    if batch_error is not None:
+        db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "__BATCH__", "field": "ticker_batch", "err": str(batch_error)}, commit=False)
     if batch_items is not None:
         batch_ts = db.now_ts()
         for item in batch_items:
@@ -695,7 +697,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
             _heartbeat(heartbeat)
     for action, details in bootstrap_log_events:
         db.log_decision(conn, action, None, None, details, commit=False)
-    if bootstrap_log_events:
+    if bootstrap_tasks or bootstrap_log_events:
         conn.commit()
     _heartbeat(heartbeat)
 

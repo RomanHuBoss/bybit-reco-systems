@@ -212,9 +212,9 @@ def _log_decision_fresh(action: str, rec_id: str | None, operator: str | None, d
         db.log_decision(log_conn, action, rec_id, operator, details)
 
 
-def _make_runtime_lock_heartbeat(conn, lock_key: str):
+def _make_runtime_lock_heartbeat(lock_conn, lock_key: str):
     def _heartbeat() -> bool:
-        return bool(db.heartbeat_runtime_lock(conn, lock_key, RUNTIME_OWNER))
+        return bool(db.heartbeat_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER))
     return _heartbeat
 
 @asynccontextmanager
@@ -805,8 +805,8 @@ def _collector_thread():
                     "futures_collect_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
                 }
                 lock_lost = False
-                with closing(_get_conn()) as conn:
-                    heartbeat = _make_runtime_lock_heartbeat(conn, lock_key)
+                with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
+                    heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
                     for venue in settings.venues:
                         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
                         try:
@@ -831,8 +831,8 @@ def _collector_thread():
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
                         heartbeat()
                 if (not lock_lost) and time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
-                    with closing(_get_conn()) as conn:
-                        heartbeat = _make_runtime_lock_heartbeat(conn, lock_key)
+                    with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
+                        heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
                         try:
                             cycle_stats["futures_meta"] = collect_futures_once(
                                 conn,

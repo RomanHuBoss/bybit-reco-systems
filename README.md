@@ -11,12 +11,14 @@
 ## Что дополнительно усилено в текущей ревизии
 - Добавлен отдельный endpoint `/metrics` с ключевыми gauge-метриками: здоровье символов, число активных рекомендаций, недавние ошибки сбора, длительность последнего collector cycle и настройки worker-параллелизма.
 - Внутренние записи в `decision_log` внутри collector больше не коммитят данные посреди случайных веток ошибок. Ошибки API-stage теперь сначала буферизуются в памяти и сбрасываются в БД только на явной stage-boundary, а не через побочный `commit` из произвольной точки цикла.
-- Heartbeat runtime lock теперь реально сочетается с SQLite-поведениям: collector не держит длинную открытую write-транзакцию через весь цикл, а коммитит данные на явных stage-boundary, после чего heartbeat продлевает lock без скрытых partial-commit побочных эффектов. При потере лидерства активный цикл прерывается, а незавершённая stage откатывается.
+- Heartbeat runtime lock теперь действительно идёт через отдельное SQLite-соединение, а не через тот же connection, что пишет collector-stage. Это убирает скрытый partial-commit риск и делает stage-boundary commit честным: потеря лидерства больше не может «случайно» зафиксировать чужую незавершённую запись через heartbeat.
 - REST-fetch для OHLCV и open interest теперь поддерживает bounded parallelism через `COLLECTOR_MAX_WORKERS` и `FUTURES_COLLECT_MAX_WORKERS`, так что full-universe режим больше не остаётся строго однопоточным.
 - Исправлен cold-start разрыв целостности для derived TF: `15m` / `30m` получают одноразовый REST bootstrap, если локально ещё нет достаточной истории для multi-timeframe logic. Для `4h` bootstrap теперь **не выполняется**, если уже есть достаточная `1h` история для локальной сборки. Это убирает лишние REST-вызовы и ложные bootstrap-ошибки при полностью достаточном source TF.
 - Сбор `open interest` и OHLCV теперь действительно gap-aware после простоев: длинные разрывы восстанавливаются адаптивными окнами, а open interest дополнительно дочитывается через cursor pagination, если разрыв больше одного API-page. Слой БД жёстче фильтрует невалидные `OI`/`funding` записи и не позволяет «битым» историческим строкам отравлять latest-ts и downstream сигналы.
-- `get_latest_ohlcv_ts()` и `get_latest_open_interest_ts()` больше не доверяют сырому `MAX(ts)` безусловно: если в БД попала испорченная строка из старой сборки, ручного импорта или прошлой версии, incremental collector ориентируется на **последнюю валидную** запись, а не на мусорный timestamp.
+- `get_latest_ohlcv_ts()` и `get_latest_open_interest_ts()` больше не доверяют сырому `MAX(ts)` безусловно: если в БД попала испорченная строка из старой сборки, ручного импорта или прошлой версии, incremental collector ориентируется на **последнюю валидную** запись, а не на мусорный timestamp. То же касается `health` и ticker-latest путей: future-poisoned market-data строки больше не могут подменить собой «последнюю свежую» запись.
 - Добавлена дополнительная защита логики признаков: `funding_signal()` и `oi_trend()` теперь безопасно обрабатывают `NaN/inf` и грязные ряды вместо молчаливого протаскивания нефинитных значений.
+- Derived bootstrap stage теперь тоже коммитится на явной stage-boundary. Раньше он мог успешно собрать `15m/30m`, а затем потерять leadership на следующем heartbeat и откатить уже рассчитанный bootstrap, хотя README обещал обратное.
+- Если batch `get_tickers(category=...)` временно падает, collector больше не теряет весь venue-цикл целиком: фиксируется один batch-error и включается per-symbol fallback-path.
 - Добавлены новые регрессионные тесты на длинный kline catch-up после downtime, open-interest cursor pagination, rollback при потере runtime lock, buffered error handling внутри collector-stage, poisoned historical rows, DB-level валидацию `funding/open interest`, пропуск лишнего `4h` bootstrap и защиту feature-layer от грязных значений.
 
 ## Что делает система
@@ -115,9 +117,9 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `111 passed`
+- `116 passed`
 - покрытие `app/*` — `74%`
-- регрессионные тесты покрывают collector / Bybit client / health semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression
+- регрессионные тесты покрывают collector / Bybit client / health semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring
 
 ## Ключевые env
 - `DB_PATH` — путь к SQLite. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
