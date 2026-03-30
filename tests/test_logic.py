@@ -2230,6 +2230,8 @@ def test_get_risk_limits_normalizes_corrupted_active_limits(tmp_path: Path):
     blocks = gate_candidate(conn, "linear", "BTCUSDT", normalized)
     assert any(b["code"] == "MAX_DD_DAY" for b in blocks)
 
+    conn.close()
+
 
 class _RetryingCollectorClient:
     def __init__(self):
@@ -2420,6 +2422,8 @@ def test_collector_retries_temporarily_disabled_symbol_after_ttl(tmp_path: Path,
     assert client.ticker_calls == ["BTCUSDT", "BTCUSDT"]
     assert any(symbol == "BTCUSDT" and interval == "1" for symbol, interval in client.kline_calls)
     assert db.get_latest_ticker(conn, "spot", "BTCUSDT") is not None
+
+    conn.close()
 
 
 def test_llm_cache_context_signature_mismatch_does_not_get_reused(conn):
@@ -2718,6 +2722,27 @@ def test_collector_uses_incremental_hot_path_and_local_tf_derivation(tmp_path: P
                     px = 300.0 + idx
                     rows.append([str(ts * 1000), str(px), str(px + 3.0), str(px - 3.0), str(px + 1.0), "1000", "0"])
                 return rows if start is None else rows[-3:]
+            if interval == "15":
+                rows = []
+                for idx in range(120):
+                    ts = (minute_aligned - (119 - idx) * 900) - ((minute_aligned - (119 - idx) * 900) % 900)
+                    px = 400.0 + idx * 0.1
+                    rows.append([str(ts * 1000), str(px), str(px + 1.0), str(px - 1.0), str(px + 0.2), "15", "0"])
+                return rows
+            if interval == "30":
+                rows = []
+                for idx in range(120):
+                    ts = (minute_aligned - (119 - idx) * 1800) - ((minute_aligned - (119 - idx) * 1800) % 1800)
+                    px = 500.0 + idx * 0.1
+                    rows.append([str(ts * 1000), str(px), str(px + 1.0), str(px - 1.0), str(px + 0.2), "30", "0"])
+                return rows
+            if interval == "240":
+                rows = []
+                for idx in range(120):
+                    ts = (hour_aligned - (119 - idx) * 14400) - ((hour_aligned - (119 - idx) * 14400) % 14400)
+                    px = 600.0 + idx * 0.1
+                    rows.append([str(ts * 1000), str(px), str(px + 1.0), str(px - 1.0), str(px + 0.2), "240", "0"])
+                return rows
             raise AssertionError(f"unexpected interval {interval}")
 
     conn = db.connect(str(tmp_path / "collector_incremental.db"))
@@ -2728,8 +2753,9 @@ def test_collector_uses_incremental_hot_path_and_local_tf_derivation(tmp_path: P
     first_stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
     first_call_intervals = [interval for interval, _start, _limit in client.kline_calls]
 
-    assert first_call_intervals == ["1", "60", "D"]
+    assert first_call_intervals == ["1", "60", "D", "15", "30", "240"]
     assert first_stats["api_tf_fetches"] == {"60": 1, "3600": 1, "86400": 1}
+    assert first_stats["derived_tf_bootstrap_fetches"] == {"900": 1, "1800": 1, "14400": 1}
     assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 900, limit=5)
     assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 1800, limit=5)
     assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 14400, limit=5)

@@ -1545,19 +1545,45 @@ def get_symbol_health(
         except Exception:
             pass
 
-    # disabled symbols in last 24h
+    # currently disabled symbols. Use retry_at when available instead of treating any
+    # historic disable event in the last 24h as still active.
     cur = conn.execute(
-        """SELECT details_json FROM decision_log
-           WHERE action='SYMBOL_DISABLED' AND ts >= ?""",
+        """SELECT ts, details_json FROM decision_log
+           WHERE action='SYMBOL_DISABLED' AND ts >= ?
+           ORDER BY ts DESC""",
         (now - 86400,),
     )
-    disabled_syms: set[tuple[str, str]] = set()
+    disabled_until: dict[tuple[str, str], int] = {}
     for row in cur.fetchall():
         try:
             d = _json_loads_or_default(row["details_json"], {})
-            disabled_syms.add((str(d.get("venue") or ""), str(d.get("symbol") or "")))
+            venue = str(d.get("venue") or "")
+            sym = str(d.get("symbol") or "")
+            if not venue or not sym:
+                continue
+            key = (venue, sym)
+            if key in disabled_until:
+                continue
+            retry_at_raw = d.get("retry_at")
+            retry_after_raw = d.get("retry_after_sec")
+            retry_at = None
+            try:
+                if retry_at_raw not in (None, ""):
+                    retry_at = int(retry_at_raw)
+            except Exception:
+                retry_at = None
+            if retry_at is None:
+                try:
+                    retry_after_sec = int(retry_after_raw or 0)
+                except Exception:
+                    retry_after_sec = 0
+                if retry_after_sec > 0:
+                    retry_at = int(row["ts"] or 0) + retry_after_sec
+                else:
+                    retry_at = int(row["ts"] or 0) + 86400
+            disabled_until[key] = max(0, int(retry_at or 0))
         except Exception:
-            logger.debug("health: error_counts parse error", exc_info=True)
+            logger.debug("health: disabled parse error", exc_info=True)
 
     # stale skip counts per symbol in last hour
     cur = conn.execute(
@@ -1599,7 +1625,7 @@ def get_symbol_health(
             rt = cur3.fetchone()
             last_ticker_ts = int(rt["m"]) if rt and rt["m"] else None
             age_sec = (now - last_ts) if last_ts else None
-            is_disabled = (venue, sym) in disabled_syms
+            is_disabled = int(disabled_until.get((venue, sym), 0) or 0) > now
 
             if is_disabled and (last_ts is None or age_sec is None or age_sec > stale_sec):
                 status = "disabled"

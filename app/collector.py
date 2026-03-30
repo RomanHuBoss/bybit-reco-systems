@@ -37,6 +37,16 @@ _DERIVED_TF_SOURCES: dict[int, int] = {
     14400: 3600,
 }
 
+# Derived TFs are maintained locally after the first bootstrap, but the initial 1m bootstrap is
+# intentionally shallow (to keep collector cost bounded). Without a one-off cold backfill, 15m/30m
+# would start with too little history for the recommender's >=80-candle requirement.
+_DERIVED_TF_BOOTSTRAP_MIN_ROWS: dict[int, int] = {
+    900: 96,
+    1800: 96,
+    14400: 96,
+}
+_DERIVED_TF_BOOTSTRAP_RETRY_SEC = 6 * 60 * 60
+
 # In-memory throttle for slow REST paths. This is intentionally process-local: it protects the
 # active leader from hammering Bybit, while warm DB state still survives process restarts.
 _LAST_TF_FETCH_ATTEMPT_TS: dict[tuple[str, str, int], int] = {}
@@ -326,6 +336,49 @@ def _fetch_api_kline_rows(client: BybitPublicClient, category: str, symbol: str,
         return client.get_kline(category=category, symbol=symbol, interval=interval, limit=delta_limit)
 
 
+def _should_bootstrap_derived_tf(conn, venue: str, symbol: str, target_tf_sec: int, now_ts: int) -> bool:
+    minimum_rows = int(_DERIVED_TF_BOOTSTRAP_MIN_ROWS.get(target_tf_sec, 0) or 0)
+    if minimum_rows <= 0:
+        return False
+    existing_rows = db.get_latest_ohlcv(conn, venue, symbol, target_tf_sec, limit=minimum_rows)
+    if len(existing_rows) >= minimum_rows:
+        return False
+    key = (venue, symbol, target_tf_sec)
+    last_attempt_ts = int(_LAST_TF_FETCH_ATTEMPT_TS.get(key, 0) or 0)
+    if last_attempt_ts > 0 and now_ts - last_attempt_ts < _DERIVED_TF_BOOTSTRAP_RETRY_SEC:
+        return False
+    return True
+
+
+def _bootstrap_derived_tf_from_api(client: BybitPublicClient, venue: str, category: str, symbol: str, target_tf_sec: int) -> list[dict[str, Any]]:
+    policy = _API_TF_POLICY[target_tf_sec]
+    interval = str(policy["interval"])
+    limit = int(policy["cold_limit"])
+    try:
+        rows_raw = client.get_kline(category=category, symbol=symbol, interval=interval, limit=limit)
+    except TypeError:
+        rows_raw = client.get_kline(category=category, symbol=symbol, interval=interval, limit=limit)
+    out: list[dict[str, Any]] = []
+    for row in rows_raw:
+        payload = _sanitize_ohlcv_row(venue, symbol, target_tf_sec, row)
+        if payload is not None:
+            out.append(payload)
+    return out
+
+
+def _open_interest_fetch_plan(last_oi_ts: int | None, now_ts: int, interval_sec: int = 3600) -> tuple[int, int | None, int | None]:
+    if last_oi_ts is None:
+        return 72, None, None
+    # Backfill enough rows to cover downtime gaps instead of always asking for a tiny tail.
+    gap_sec = max(0, int(now_ts) - int(last_oi_ts))
+    overlap_bars = 2
+    bars_needed = max(6, math.ceil(gap_sec / max(1, interval_sec)) + overlap_bars)
+    limit = min(200, bars_needed)
+    start_ms = max(0, int(last_oi_ts - overlap_bars * interval_sec) * 1000)
+    end_ms = int(now_ts + interval_sec) * 1000
+    return limit, start_ms, end_ms
+
+
 def _resample_rows(source_rows: list[dict[str, Any]], target_tf_sec: int) -> list[dict[str, Any]]:
     if not source_rows:
         return []
@@ -397,6 +450,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         "funding_written": 0,
         "ohlcv_written": 0,
         "api_tf_fetches": {},
+        "derived_tf_bootstrap_fetches": {},
         "derived_tf_writes": {},
     }
 
@@ -411,6 +465,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
 
     ohlcv_rows: list[dict[str, Any]] = []
     api_fetch_counts: dict[int, int] = {}
+    derived_bootstrap_fetch_counts: dict[int, int] = {}
     derived_write_counts: dict[int, int] = {}
 
     for sym in symbols2:
@@ -460,6 +515,45 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         db.upsert_ohlcv(conn, ohlcv_rows, commit=False)
         stats["ohlcv_written"] += len(ohlcv_rows)
 
+    # One-off cold bootstrap for derived TFs so a fresh DB has enough history for
+    # the recommender's multi-timeframe gates immediately after startup.
+    for target_tf_sec in _DERIVED_TF_SOURCES:
+        for sym in symbols2:
+            if int(disabled.get(sym, 0) or 0) > now_ts:
+                continue
+            if not _should_bootstrap_derived_tf(conn, venue, sym, target_tf_sec, now_ts):
+                continue
+            key = (venue, sym, target_tf_sec)
+            _LAST_TF_FETCH_ATTEMPT_TS[key] = now_ts
+            try:
+                bootstrap_rows = _bootstrap_derived_tf_from_api(client, venue, category, sym, target_tf_sec)
+                if not bootstrap_rows:
+                    continue
+                db.upsert_ohlcv(conn, bootstrap_rows, commit=False)
+                stats["ohlcv_written"] += len(bootstrap_rows)
+                derived_bootstrap_fetch_counts[target_tf_sec] = derived_bootstrap_fetch_counts.get(target_tf_sec, 0) + 1
+            except Exception as e:
+                if _is_not_supported_symbol(e):
+                    retry_at = _disable_symbol(venue, sym, now_ts)
+                    disabled[sym] = retry_at
+                    db.log_decision(
+                        conn,
+                        "SYMBOL_DISABLED",
+                        None,
+                        None,
+                        {
+                            "venue": venue,
+                            "symbol": sym,
+                            "reason": str(e),
+                            "field": f"derived_bootstrap_{target_tf_sec}",
+                            "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                            "retry_at": retry_at,
+                        },
+                    )
+                    continue
+                db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "field": f"derived_bootstrap_{target_tf_sec}", "err": str(e)})
+        _heartbeat(heartbeat)
+
     # Maintain derived TFs locally after primary source TFs are written.
     for target_tf_sec, source_tf_sec in _DERIVED_TF_SOURCES.items():
         for sym in symbols2:
@@ -475,6 +569,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
 
     conn.commit()
     stats["api_tf_fetches"] = {str(tf): cnt for tf, cnt in sorted(api_fetch_counts.items())}
+    stats["derived_tf_bootstrap_fetches"] = {str(tf): cnt for tf, cnt in sorted(derived_bootstrap_fetch_counts.items())}
     stats["derived_tf_writes"] = {str(tf): cnt for tf, cnt in sorted(derived_write_counts.items())}
     return stats
 
@@ -495,8 +590,11 @@ def collect_futures_once(conn, client, symbols_linear: list[str], heartbeat: Cal
             continue
         try:
             last_oi_ts = db.get_latest_open_interest_ts(conn, sym)
-            limit = 72 if last_oi_ts is None else 6
-            oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=limit)
+            limit, start_ms, end_ms = _open_interest_fetch_plan(last_oi_ts, ts_now, interval_sec=3600)
+            try:
+                oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=limit, start_ms=start_ms, end_ms=end_ms)
+            except TypeError:
+                oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=limit)
             oi_rows = []
             for row in oi_rows_raw or []:
                 try:

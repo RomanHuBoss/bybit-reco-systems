@@ -138,19 +138,31 @@ class BybitPublicClient:
             "next_funding_ts": next_funding_ts,
         }
 
-    def get_open_interest(self, symbol: str, interval: str = "1h", limit: int = 48) -> list[dict[str, Any]]:
+    def get_open_interest(
+        self,
+        symbol: str,
+        interval: str = "1h",
+        limit: int = 48,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Historical open interest for a linear perpetual.
         interval: 5min / 15min / 30min / 1h / 4h / 1d
         Returns list newest-first: [{ts, oi}, ...]
         """
+        params: dict[str, str] = {
+            "category": "linear",
+            "symbol": symbol,
+            "intervalTime": interval,
+            "limit": str(max(1, min(int(limit), 200))),
+        }
+        if start_ms is not None:
+            params["startTime"] = str(int(start_ms))
+        if end_ms is not None:
+            params["endTime"] = str(int(end_ms))
         data = self._get(
             "/v5/market/open-interest",
-            {
-                "category": "linear",
-                "symbol": symbol,
-                "intervalTime": interval,
-                "limit": str(max(1, min(int(limit), 200))),
-            },
+            params,
         )
         items = data.get("result", {}).get("list", []) or []
         out: list[dict[str, Any]] = []
