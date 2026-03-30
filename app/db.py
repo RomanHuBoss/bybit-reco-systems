@@ -150,12 +150,21 @@ def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]])
     )
     conn.commit()
 
-def log_decision(conn: sqlite3.Connection, action: str, rec_id: str | None, operator: str | None, details: dict[str, Any]) -> None:
+def log_decision(
+    conn: sqlite3.Connection,
+    action: str,
+    rec_id: str | None,
+    operator: str | None,
+    details: dict[str, Any],
+    *,
+    commit: bool = True,
+) -> None:
     conn.execute(
         """INSERT INTO decision_log(ts, action, rec_id, operator, details_json) VALUES(?,?,?,?,?)""",
         (now_ts(), action, rec_id, operator, json.dumps(details, ensure_ascii=False)),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 

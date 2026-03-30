@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 from .bybit_client import BybitPublicClient
@@ -16,6 +17,35 @@ VENUE_TO_CATEGORY = {
     "spot": "spot",
     "linear": "linear",
 }
+
+
+class RuntimeLockLostError(RuntimeError):
+    """Raised when the active collector loses the runtime leadership lock mid-cycle."""
+
+
+def _run_tasks_bounded(tasks: list[Any], worker: Callable[[Any], Any], max_workers: int) -> list[tuple[Any, Any | None, Exception | None]]:
+    if not tasks:
+        return []
+    workers = max(1, int(max_workers or 1))
+    if workers <= 1 or len(tasks) <= 1:
+        out: list[tuple[Any, Any | None, Exception | None]] = []
+        for task in tasks:
+            try:
+                out.append((task, worker(task), None))
+            except Exception as exc:
+                out.append((task, None, exc))
+        return out
+
+    out: list[tuple[Any, Any | None, Exception | None]] = []
+    with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as executor:
+        future_map = {executor.submit(worker, task): task for task in tasks}
+        for future in as_completed(future_map):
+            task = future_map[future]
+            try:
+                out.append((task, future.result(), None))
+            except Exception as exc:
+                out.append((task, None, exc))
+    return out
 
 # Per-timeframe policy for REST collection.
 # High-frequency bars are updated aggressively; slow bars are throttled and/or derived locally.
@@ -292,9 +322,10 @@ def _fetch_ticker_payloads(
                         "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
                         "retry_at": retry_at,
                     },
+                    commit=False,
                 )
                 continue
-            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "field": "ticker", "err": str(e)})
+            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "field": "ticker", "err": str(e)}, commit=False)
             continue
     return ticker_rows, funding_rows, missing_symbols
 
@@ -441,16 +472,20 @@ def _derive_local_tf_rows(conn, venue: str, symbol: str, source_tf_sec: int, tar
     return _resample_rows(source_rows, target_tf_sec)
 
 
-def _heartbeat(heartbeat: Callable[[], None] | None) -> None:
+def _heartbeat(heartbeat: Callable[[], Any] | None) -> None:
     if heartbeat is None:
         return
     try:
-        heartbeat()
+        result = heartbeat()
+    except RuntimeLockLostError:
+        raise
     except Exception:
         return
+    if result is False:
+        raise RuntimeLockLostError("collector runtime lock lost")
 
 
-def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat: Callable[[], None] | None = None) -> dict[str, Any]:
+def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat: Callable[[], Any] | None = None, *, max_workers: int = 1) -> dict[str, Any]:
     category = VENUE_TO_CATEGORY[venue]
     now_ts = db.now_ts()
 
@@ -481,48 +516,66 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     derived_bootstrap_fetch_counts: dict[int, int] = {}
     derived_write_counts: dict[int, int] = {}
 
+    api_tasks: list[tuple[str, int, int | None]] = []
     for sym in symbols2:
         if int(disabled.get(sym, 0) or 0) > now_ts:
             continue
-        # REST-backed TFs: 1m, 1h, 1d
         for tf_sec in _API_FETCH_TFS:
             if not _should_fetch_api_tf(conn, venue, sym, tf_sec, now_ts):
                 continue
             key = (venue, sym, tf_sec)
             _LAST_TF_FETCH_ATTEMPT_TS[key] = now_ts
-            try:
-                rows_raw = _fetch_api_kline_rows(client, category, sym, tf_sec, db.get_latest_ohlcv_ts(conn, venue, sym, tf_sec))
-                appended = 0
-                for row in rows_raw:
-                    payload = _sanitize_ohlcv_row(venue, sym, tf_sec, row)
-                    if payload is None:
-                        continue
-                    ohlcv_rows.append(payload)
-                    appended += 1
-                if appended > 0:
-                    api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
-            except Exception as e:
-                if _is_not_supported_symbol(e):
-                    retry_at = _disable_symbol(venue, sym, now_ts)
-                    disabled[sym] = retry_at
-                    db.log_decision(
-                        conn,
-                        "SYMBOL_DISABLED",
-                        None,
-                        None,
-                        {
-                            "venue": venue,
-                            "symbol": sym,
-                            "reason": str(e),
-                            "field": f"kline_{tf_sec}",
-                            "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
-                            "retry_at": retry_at,
-                        },
-                    )
-                    break
-                db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "field": f"kline_{tf_sec}", "err": str(e)})
-                continue
-        _heartbeat(heartbeat)
+            api_tasks.append((sym, tf_sec, db.get_latest_ohlcv_ts(conn, venue, sym, tf_sec)))
+
+    def _api_task_worker(task: tuple[str, int, int | None]) -> tuple[str, int, list[list[Any]]]:
+        sym, tf_sec, last_local_ts = task
+        rows_raw = _fetch_api_kline_rows(client, category, sym, tf_sec, last_local_ts)
+        return sym, tf_sec, rows_raw
+
+    for idx, (task, result, err) in enumerate(_run_tasks_bounded(api_tasks, _api_task_worker, max_workers), start=1):
+        sym, tf_sec, _last_local_ts = task
+        if err is not None:
+            if _is_not_supported_symbol(err):
+                retry_at = _disable_symbol(venue, sym, now_ts)
+                disabled[sym] = retry_at
+                db.log_decision(
+                    conn,
+                    "SYMBOL_DISABLED",
+                    None,
+                    None,
+                    {
+                        "venue": venue,
+                        "symbol": sym,
+                        "reason": str(err),
+                        "field": f"kline_{tf_sec}",
+                        "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                        "retry_at": retry_at,
+                    },
+                    commit=False,
+                )
+            else:
+                db.log_decision(
+                    conn,
+                    "COLLECT_ERROR",
+                    None,
+                    None,
+                    {"venue": venue, "symbol": sym, "field": f"kline_{tf_sec}", "err": str(err)},
+                    commit=False,
+                )
+        else:
+            _sym_out, _tf_out, rows_raw = result
+            appended = 0
+            for row in rows_raw:
+                payload = _sanitize_ohlcv_row(venue, sym, tf_sec, row)
+                if payload is None:
+                    continue
+                ohlcv_rows.append(payload)
+                appended += 1
+            if appended > 0:
+                api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
+        if idx % max(1, max_workers) == 0:
+            _heartbeat(heartbeat)
+    _heartbeat(heartbeat)
 
     if ohlcv_rows:
         db.upsert_ohlcv(conn, ohlcv_rows, commit=False)
@@ -530,6 +583,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
 
     # One-off cold bootstrap for derived TFs so a fresh DB has enough history for
     # the recommender's multi-timeframe gates immediately after startup.
+    bootstrap_tasks: list[tuple[str, int]] = []
     for target_tf_sec in _DERIVED_TF_SOURCES:
         for sym in symbols2:
             if int(disabled.get(sym, 0) or 0) > now_ts:
@@ -538,34 +592,52 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                 continue
             key = (venue, sym, target_tf_sec)
             _LAST_TF_FETCH_ATTEMPT_TS[key] = now_ts
-            try:
-                bootstrap_rows = _bootstrap_derived_tf_from_api(client, venue, category, sym, target_tf_sec)
-                if not bootstrap_rows:
-                    continue
+            bootstrap_tasks.append((sym, target_tf_sec))
+
+    def _bootstrap_task_worker(task: tuple[str, int]) -> tuple[str, int, list[dict[str, Any]]]:
+        sym, target_tf_sec = task
+        rows = _bootstrap_derived_tf_from_api(client, venue, category, sym, target_tf_sec)
+        return sym, target_tf_sec, rows
+
+    for idx, (task, result, err) in enumerate(_run_tasks_bounded(bootstrap_tasks, _bootstrap_task_worker, max_workers), start=1):
+        sym, target_tf_sec = task
+        if err is not None:
+            if _is_not_supported_symbol(err):
+                retry_at = _disable_symbol(venue, sym, now_ts)
+                disabled[sym] = retry_at
+                db.log_decision(
+                    conn,
+                    "SYMBOL_DISABLED",
+                    None,
+                    None,
+                    {
+                        "venue": venue,
+                        "symbol": sym,
+                        "reason": str(err),
+                        "field": f"derived_bootstrap_{target_tf_sec}",
+                        "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                        "retry_at": retry_at,
+                    },
+                    commit=False,
+                )
+            else:
+                db.log_decision(
+                    conn,
+                    "COLLECT_ERROR",
+                    None,
+                    None,
+                    {"venue": venue, "symbol": sym, "field": f"derived_bootstrap_{target_tf_sec}", "err": str(err)},
+                    commit=False,
+                )
+        else:
+            _sym_out, _target_out, bootstrap_rows = result
+            if bootstrap_rows:
                 db.upsert_ohlcv(conn, bootstrap_rows, commit=False)
                 stats["ohlcv_written"] += len(bootstrap_rows)
                 derived_bootstrap_fetch_counts[target_tf_sec] = derived_bootstrap_fetch_counts.get(target_tf_sec, 0) + 1
-            except Exception as e:
-                if _is_not_supported_symbol(e):
-                    retry_at = _disable_symbol(venue, sym, now_ts)
-                    disabled[sym] = retry_at
-                    db.log_decision(
-                        conn,
-                        "SYMBOL_DISABLED",
-                        None,
-                        None,
-                        {
-                            "venue": venue,
-                            "symbol": sym,
-                            "reason": str(e),
-                            "field": f"derived_bootstrap_{target_tf_sec}",
-                            "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
-                            "retry_at": retry_at,
-                        },
-                    )
-                    continue
-                db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "field": f"derived_bootstrap_{target_tf_sec}", "err": str(e)})
-        _heartbeat(heartbeat)
+        if idx % max(1, max_workers) == 0:
+            _heartbeat(heartbeat)
+    _heartbeat(heartbeat)
 
     # Maintain derived TFs locally after primary source TFs are written.
     for target_tf_sec, source_tf_sec in _DERIVED_TF_SOURCES.items():
@@ -588,7 +660,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
 
 
 
-def collect_futures_once(conn, client, symbols_linear: list[str], heartbeat: Callable[[], None] | None = None) -> dict[str, Any]:
+def collect_futures_once(conn, client, symbols_linear: list[str], heartbeat: Callable[[], Any] | None = None, *, max_workers: int = 1) -> dict[str, Any]:
     """Collect open interest for all linear symbols.
     Funding rate is refreshed from the linear ticker batch inside collect_once().
     Errors are logged per-symbol and never abort the cycle.
@@ -598,32 +670,36 @@ def collect_futures_once(conn, client, symbols_linear: list[str], heartbeat: Cal
 
     oi_written = 0
     oi_symbols = 0
+    tasks: list[tuple[str, int, int | None, int | None]] = []
     for sym in _normalize_symbols(symbols_linear, disabled, ts_now):
         if int(disabled.get(sym, 0) or 0) > ts_now:
             continue
+        last_oi_ts = db.get_latest_open_interest_ts(conn, sym)
+        limit, start_ms, end_ms = _open_interest_fetch_plan(last_oi_ts, ts_now, interval_sec=3600)
+        tasks.append((sym, limit, start_ms, end_ms))
+
+    def _oi_task_worker(task: tuple[str, int, int | None, int | None]) -> tuple[str, list[dict[str, Any]]]:
+        sym, limit, start_ms, end_ms = task
         try:
-            last_oi_ts = db.get_latest_open_interest_ts(conn, sym)
-            limit, start_ms, end_ms = _open_interest_fetch_plan(last_oi_ts, ts_now, interval_sec=3600)
+            oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=limit, start_ms=start_ms, end_ms=end_ms)
+        except TypeError:
+            oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=limit)
+        oi_rows = []
+        for row in oi_rows_raw or []:
             try:
-                oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=limit, start_ms=start_ms, end_ms=end_ms)
-            except TypeError:
-                oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=limit)
-            oi_rows = []
-            for row in oi_rows_raw or []:
-                try:
-                    ts = int(row.get("ts") or 0)
-                except Exception:
-                    continue
-                oi = _to_float(row.get("oi"), minimum=0.0)
-                if ts <= 0 or oi is None:
-                    continue
-                oi_rows.append({"ts": ts, "oi": oi})
-            if oi_rows:
-                db.upsert_open_interest(conn, sym, oi_rows, commit=False)
-                oi_written += len(oi_rows)
-                oi_symbols += 1
-        except Exception as e:
-            if _is_not_supported_symbol(e):
+                ts = int(row.get("ts") or 0)
+            except Exception:
+                continue
+            oi = _to_float(row.get("oi"), minimum=0.0)
+            if ts <= 0 or oi is None:
+                continue
+            oi_rows.append({"ts": ts, "oi": oi})
+        return sym, oi_rows
+
+    for idx, (task, result, err) in enumerate(_run_tasks_bounded(tasks, _oi_task_worker, max_workers), start=1):
+        sym, _limit, _start_ms, _end_ms = task
+        if err is not None:
+            if _is_not_supported_symbol(err):
                 retry_at = _disable_symbol("linear", sym, ts_now)
                 disabled[sym] = retry_at
                 db.log_decision(
@@ -634,16 +710,31 @@ def collect_futures_once(conn, client, symbols_linear: list[str], heartbeat: Cal
                     {
                         "venue": "linear",
                         "symbol": sym,
-                        "reason": str(e),
+                        "reason": str(err),
                         "field": "open_interest",
                         "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
                         "retry_at": retry_at,
                     },
+                    commit=False,
                 )
-                continue
-            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": sym, "field": "open_interest", "err": str(e)})
-        finally:
+            else:
+                db.log_decision(
+                    conn,
+                    "COLLECT_ERROR",
+                    None,
+                    None,
+                    {"venue": "linear", "symbol": sym, "field": "open_interest", "err": str(err)},
+                    commit=False,
+                )
+        else:
+            _sym_out, oi_rows = result
+            if oi_rows:
+                db.upsert_open_interest(conn, sym, oi_rows, commit=False)
+                oi_written += len(oi_rows)
+                oi_symbols += 1
+        if idx % max(1, max_workers) == 0:
             _heartbeat(heartbeat)
+    _heartbeat(heartbeat)
 
     conn.commit()
     return {"venue": "linear", "open_interest_symbols": oi_symbols, "open_interest_written": oi_written}

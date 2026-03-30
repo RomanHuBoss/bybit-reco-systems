@@ -12,14 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .settings import load_settings
 from .shock_guard import APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .bybit_client import BybitPublicClient
-from .collector import collect_once, collect_futures_once
+from .collector import collect_once, collect_futures_once, RuntimeLockLostError
 from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import compute_outcomes_once
@@ -199,6 +199,12 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
         out["bybit_meta"] = {}
     return out
 
+
+def _make_runtime_lock_heartbeat(conn, lock_key: str):
+    def _heartbeat() -> bool:
+        return bool(db.heartbeat_runtime_lock(conn, lock_key, RUNTIME_OWNER))
+    return _heartbeat
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     threading.Thread(target=_collector_thread, daemon=True).start()
@@ -208,7 +214,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.3", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.4", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -782,23 +788,51 @@ def _collector_thread():
                     "venues": [],
                     "futures_meta": {},
                     "duration_ms": 0,
+                    "lock_lost": False,
+                    "collector_max_workers": int(getattr(settings, "collector_max_workers", 1) or 1),
+                    "futures_collect_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
                 }
+                lock_lost = False
                 with closing(_get_conn()) as conn:
-                    heartbeat = lambda: db.heartbeat_runtime_lock(conn, lock_key, RUNTIME_OWNER)
+                    heartbeat = _make_runtime_lock_heartbeat(conn, lock_key)
                     for venue in settings.venues:
                         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
                         try:
-                            cycle_stats["venues"].append(collect_once(conn, client, venue, symbols, heartbeat=heartbeat))
+                            cycle_stats["venues"].append(
+                                collect_once(
+                                    conn,
+                                    client,
+                                    venue,
+                                    symbols,
+                                    heartbeat=heartbeat,
+                                    max_workers=int(getattr(settings, "collector_max_workers", 1) or 1),
+                                )
+                            )
+                        except RuntimeLockLostError as e:
+                            lock_lost = True
+                            cycle_stats["lock_lost"] = True
+                            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
+                            break
                         except Exception as e:
                             db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
                         heartbeat()
-                if time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
+                if (not lock_lost) and time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
                     with closing(_get_conn()) as conn:
                         try:
-                            heartbeat = lambda: db.heartbeat_runtime_lock(conn, lock_key, RUNTIME_OWNER)
-                            cycle_stats["futures_meta"] = collect_futures_once(conn, client, settings.symbols_linear, heartbeat=heartbeat)
+                            heartbeat = _make_runtime_lock_heartbeat(conn, lock_key)
+                            cycle_stats["futures_meta"] = collect_futures_once(
+                                conn,
+                                client,
+                                settings.symbols_linear,
+                                heartbeat=heartbeat,
+                                max_workers=int(getattr(settings, "futures_collect_max_workers", getattr(settings, "collector_max_workers", 1)) or 1),
+                            )
                             heartbeat()
                             _last_futures_collect = time.time()
+                        except RuntimeLockLostError as e:
+                            lock_lost = True
+                            cycle_stats["lock_lost"] = True
+                            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
                         except Exception as e:
                             db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
                 cycle_stats["duration_ms"] = int((time.time() - cycle_started) * 1000)
@@ -908,6 +942,47 @@ def _llm_reviewer_thread():
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {"enabled": True, "error": str(e), "updated_ts": int(time.time())})
                     db.log_decision(conn, "LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(e)})
         next_run = _interval_loop_wait(next_run, interval_sec)
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics() -> str:
+    with closing(_get_conn()) as conn:
+        health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
+        collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
+        status_counts = {"ok": 0, "stale": 0, "missing": 0, "disabled": 0}
+        for item in health:
+            status = str(item.get("status") or "missing")
+            status_counts[status] = status_counts.get(status, 0) + 1
+        active_recommendations = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM recommendations WHERE status='recommended'"
+        ).fetchone()["c"])
+        collect_errors_10m = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?",
+            (db.now_ts() - 600,),
+        ).fetchone()["c"])
+        lines = [
+            "# TYPE bybit_reco_symbols_total gauge",
+            f"bybit_reco_symbols_total {len(health)}",
+            "# TYPE bybit_reco_symbols_ok gauge",
+            f"bybit_reco_symbols_ok {status_counts.get('ok', 0)}",
+            "# TYPE bybit_reco_symbols_stale gauge",
+            f"bybit_reco_symbols_stale {status_counts.get('stale', 0)}",
+            "# TYPE bybit_reco_symbols_missing gauge",
+            f"bybit_reco_symbols_missing {status_counts.get('missing', 0)}",
+            "# TYPE bybit_reco_symbols_disabled gauge",
+            f"bybit_reco_symbols_disabled {status_counts.get('disabled', 0)}",
+            "# TYPE bybit_reco_collect_errors_10m gauge",
+            f"bybit_reco_collect_errors_10m {collect_errors_10m}",
+            "# TYPE bybit_reco_recommendations_active gauge",
+            f"bybit_reco_recommendations_active {active_recommendations}",
+            "# TYPE bybit_reco_collector_cycle_duration_ms gauge",
+            f"bybit_reco_collector_cycle_duration_ms {int(collector_last_cycle.get('duration_ms') or 0)}",
+            "# TYPE bybit_reco_collector_max_workers gauge",
+            f"bybit_reco_collector_max_workers {int(getattr(settings, 'collector_max_workers', 1) or 1)}",
+            "# TYPE bybit_reco_futures_collect_max_workers gauge",
+            f"bybit_reco_futures_collect_max_workers {int(getattr(settings, 'futures_collect_max_workers', 1) or 1)}",
+        ]
+        return "\n".join(lines) + "\n"
 
 
 @app.get("/api/v1/status")
@@ -1090,7 +1165,11 @@ def api_status() -> dict[str, Any]:
                 "keep_alive": str(getattr(settings, "llm_reviewer_keep_alive", "90s") or "90s"),
                 "worker": llm_async_status,
             },
-            "collector": collector_last_cycle,
+            "collector": {
+                **collector_last_cycle,
+                "max_workers": int(getattr(settings, "collector_max_workers", 1) or 1),
+                "futures_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
+            },
         }
 
 

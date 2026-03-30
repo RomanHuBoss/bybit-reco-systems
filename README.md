@@ -9,6 +9,10 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- Добавлен отдельный endpoint `/metrics` с ключевыми gauge-метриками: здоровье символов, число активных рекомендаций, недавние ошибки сбора, длительность последнего collector cycle и настройки worker-параллелизма.
+- Внутренние записи в `decision_log` внутри collector больше не делают неожиданный `commit` всего батча посередине цикла: error/disable события теперь логируются с deferred-commit семантикой, поэтому staging market-data остаётся целостным до контрольной точки `conn.commit()`.
+- Heartbeat runtime lock перестал быть «декоративным»: если активный collector теряет лидерство посреди цикла, цикл прерывается, а не продолжает запись под уже потерянным lock.
+- REST-fetch для OHLCV и open interest теперь поддерживает bounded parallelism через `COLLECTOR_MAX_WORKERS` и `FUTURES_COLLECT_MAX_WORKERS`, так что full-universe режим больше не остаётся строго однопоточным.
 - Исправлен cold-start разрыв целостности для derived TF: `15m` / `30m` получают одноразовый REST bootstrap, если локально ещё нет достаточной истории для multi-timeframe logic. Для `4h` bootstrap теперь **не выполняется**, если уже есть достаточная `1h` история для локальной сборки. Это убирает лишние REST-вызовы и ложные bootstrap-ошибки при полностью достаточном source TF.
 - Сбор `open interest` остаётся gap-aware после простоев, но теперь слой БД тоже жёстче фильтрует невалидные `OI`/`funding` записи и не позволяет «битым» историческим строкам отравлять latest-ts и downstream сигналы.
 - `get_latest_ohlcv_ts()` и `get_latest_open_interest_ts()` больше не доверяют сырому `MAX(ts)` безусловно: если в БД попала испорченная строка из старой сборки, ручного импорта или прошлой версии, incremental collector ориентируется на **последнюю валидную** запись, а не на мусорный timestamp.
@@ -111,9 +115,9 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `99 passed`
-- покрытие `app/*` — `71%`
-- регрессионные тесты покрывают collector / Bybit client / health semantics / poisoned historical rows / DB validation
+- `106 passed`
+- покрытие `app/*` — `73%`
+- регрессионные тесты покрывают collector / Bybit client / health semantics / poisoned historical rows / DB validation / metrics endpoint / runtime lock loss / bounded-parallel collector soak / sentiment feature compression
 
 ## Ключевые env
 - `DB_PATH` — путь к SQLite. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
@@ -123,6 +127,7 @@ python -m py_compile app/*.py tests/*.py main.py
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
 - `ADMIN_API_KEY` — ключ для mutating endpoints;
+- `COLLECTOR_MAX_WORKERS`, `FUTURES_COLLECT_MAX_WORKERS` — bounded parallelism for collector REST fetches;
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.
 
 ### Опциональный локальный LLM-reviewer
@@ -163,6 +168,7 @@ python -m py_compile app/*.py tests/*.py main.py
 - `GET /api/v1/decisions`
 - `GET /api/v1/sentiment`
 - `GET /api/v1/status`
+- `GET /metrics`
 
 ### Mutating (`X-API-Key`, если задан `ADMIN_API_KEY`)
 - `POST /api/v1/recommendations/{rec_id}/action` с `{"action":"executed|ignored","operator":"..."}`

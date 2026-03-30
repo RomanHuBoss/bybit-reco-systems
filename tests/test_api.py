@@ -959,3 +959,70 @@ def test_api_sentiment_rejects_non_finite_velocity(client_and_conn):
         headers={'X-API-Key': 'test-admin-key'},
     )
     assert resp.status_code == 422
+
+
+def test_metrics_endpoint_reports_core_gauges_and_status_collector_workers(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.upsert_ohlcv(
+        conn,
+        [{
+            'venue': 'linear',
+            'symbol': 'BTCUSDT',
+            'tf_sec': 60,
+            'ts': ts_now,
+            'open': 100.0,
+            'high': 101.0,
+            'low': 99.0,
+            'close': 100.5,
+            'volume': 10.0,
+        }],
+    )
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-metrics-1',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+    db.log_decision(conn, 'COLLECT_ERROR', None, None, {'venue': 'linear', 'symbol': 'BTCUSDT', 'field': 'ticker', 'err': 'boom'})
+    db.set_app_config_json(conn, 'collector_last_cycle', {'duration_ms': 4321})
+
+    metrics_resp = client.get('/metrics')
+    assert metrics_resp.status_code == 200
+    body = metrics_resp.text
+    assert 'bybit_reco_symbols_total 2' in body
+    assert 'bybit_reco_symbols_ok 1' in body
+    assert 'bybit_reco_symbols_missing 1' in body
+    assert 'bybit_reco_collect_errors_10m 1' in body
+    assert 'bybit_reco_recommendations_active 1' in body
+    assert 'bybit_reco_collector_cycle_duration_ms 4321' in body
+    assert 'bybit_reco_collector_max_workers 4' in body
+    assert 'bybit_reco_futures_collect_max_workers 4' in body
+
+    status_resp = client.get('/api/v1/status')
+    assert status_resp.status_code == 200
+    collector_meta = status_resp.json()['collector']
+    assert collector_meta['duration_ms'] == 4321
+    assert collector_meta['max_workers'] == 4
+    assert collector_meta['futures_max_workers'] == 4
