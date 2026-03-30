@@ -138,17 +138,18 @@ class BybitPublicClient:
             "next_funding_ts": next_funding_ts,
         }
 
-    def get_open_interest(
+    def get_open_interest_page(
         self,
         symbol: str,
         interval: str = "1h",
         limit: int = 48,
         start_ms: int | None = None,
         end_ms: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Historical open interest for a linear perpetual.
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Historical open interest page for a linear perpetual.
         interval: 5min / 15min / 30min / 1h / 4h / 1d
-        Returns list newest-first: [{ts, oi}, ...]
+        Returns sanitized rows plus optional pagination cursor.
         """
         params: dict[str, str] = {
             "category": "linear",
@@ -160,11 +161,14 @@ class BybitPublicClient:
             params["startTime"] = str(int(start_ms))
         if end_ms is not None:
             params["endTime"] = str(int(end_ms))
+        if cursor:
+            params["cursor"] = str(cursor)
         data = self._get(
             "/v5/market/open-interest",
             params,
         )
-        items = data.get("result", {}).get("list", []) or []
+        result = data.get("result", {}) or {}
+        items = result.get("list", []) or []
         out: list[dict[str, Any]] = []
         for r in items:
             ts_raw = _safe_int(r.get("timestamp"))
@@ -173,7 +177,31 @@ class BybitPublicClient:
                 continue
             ts = ts_raw // 1000 if ts_raw > 10**11 else ts_raw
             out.append({"ts": ts, "oi": oi})
-        return out
+        next_cursor = result.get("nextPageCursor") or result.get("cursor") or None
+        if next_cursor is not None:
+            next_cursor = str(next_cursor)
+            if not next_cursor.strip():
+                next_cursor = None
+        return out, next_cursor
+
+    def get_open_interest(
+        self,
+        symbol: str,
+        interval: str = "1h",
+        limit: int = 48,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        cursor: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows, _cursor = self.get_open_interest_page(
+            symbol,
+            interval=interval,
+            limit=limit,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            cursor=cursor,
+        )
+        return rows
 
     def get_instrument_info(self, category: str, symbol: str) -> dict[str, Any] | None:
         """Metadata for a single instrument (tick size, lot size, etc.)."""

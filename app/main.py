@@ -200,6 +200,18 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _rollback_quietly(conn) -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        logger.debug("rollback error", exc_info=True)
+
+
+def _log_decision_fresh(action: str, rec_id: str | None, operator: str | None, details: dict[str, Any]) -> None:
+    with closing(_get_conn()) as log_conn:
+        db.log_decision(log_conn, action, rec_id, operator, details)
+
+
 def _make_runtime_lock_heartbeat(conn, lock_key: str):
     def _heartbeat() -> bool:
         return bool(db.heartbeat_runtime_lock(conn, lock_key, RUNTIME_OWNER))
@@ -214,7 +226,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.4", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.5", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -811,15 +823,17 @@ def _collector_thread():
                         except RuntimeLockLostError as e:
                             lock_lost = True
                             cycle_stats["lock_lost"] = True
-                            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
+                            _rollback_quietly(conn)
+                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
                             break
                         except Exception as e:
-                            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
+                            _rollback_quietly(conn)
+                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
                         heartbeat()
                 if (not lock_lost) and time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
                     with closing(_get_conn()) as conn:
+                        heartbeat = _make_runtime_lock_heartbeat(conn, lock_key)
                         try:
-                            heartbeat = _make_runtime_lock_heartbeat(conn, lock_key)
                             cycle_stats["futures_meta"] = collect_futures_once(
                                 conn,
                                 client,
@@ -832,9 +846,11 @@ def _collector_thread():
                         except RuntimeLockLostError as e:
                             lock_lost = True
                             cycle_stats["lock_lost"] = True
-                            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
+                            _rollback_quietly(conn)
+                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
                         except Exception as e:
-                            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
+                            _rollback_quietly(conn)
+                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
                 cycle_stats["duration_ms"] = int((time.time() - cycle_started) * 1000)
                 with closing(_get_conn()) as conn:
                     db.set_app_config_json(conn, "collector_last_cycle", cycle_stats)
@@ -857,7 +873,8 @@ def _sentiment_thread():
                     db.insert_sentiment_points(conn, pts)
                     db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)})
                 except Exception as e:
-                    db.log_decision(conn, "SENTIMENT_ERROR", None, None, {"err": str(e)})
+                    _rollback_quietly(conn)
+                    _log_decision_fresh("SENTIMENT_ERROR", None, None, {"err": str(e)})
         next_run = _interval_loop_wait(next_run, settings.sentiment_interval_sec)
 
 
@@ -884,7 +901,8 @@ def _reco_thread():
                         )
                         _last_outcomes = time.time()
                 except Exception as e:
-                    db.log_decision(conn, "RECO_ERROR", None, None, {"err": str(e)})
+                    _rollback_quietly(conn)
+                    _log_decision_fresh("RECO_ERROR", None, None, {"err": str(e)})
 
             with closing(_get_conn()) as conn:
                 try:
@@ -899,6 +917,7 @@ def _reco_thread():
                         db.log_decision(conn, "DB_PRUNE", None, None, deleted)
                         _last_prune = time.time()
                     except Exception:
+                        _rollback_quietly(conn)
                         logger.debug("prune_old_data error", exc_info=True)
 
             if settings.telegram_token:
@@ -939,8 +958,9 @@ def _llm_reviewer_thread():
                     interval_sec = eager_interval if int(stats.get("pending_after", 0) or 0) > 0 else base_interval
                 except Exception as e:
                     interval_sec = base_interval
+                    _rollback_quietly(conn)
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {"enabled": True, "error": str(e), "updated_ts": int(time.time())})
-                    db.log_decision(conn, "LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(e)})
+                    _log_decision_fresh("LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(e)})
         next_run = _interval_loop_wait(next_run, interval_sec)
 
 
