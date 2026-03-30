@@ -9,6 +9,10 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- Heartbeat runtime lock теперь работает fail-closed: если отдельное heartbeat-соединение не может обновить лидерский lock, collector считает лидерство потерянным и останавливает текущий проход вместо молчаливого продолжения цикла со стареющим lock.
+- `health/symbols` и `/metrics` теперь оценивают свежесть **не только по 1m candles, но и по ticker snapshots**. Состояние `ok` возможно только когда свежи обе плоскости данных; свежие свечи при старом тикере больше не маскируют деградацию execution/cost контекста.
+- `run_recommender_once()` теперь тоже требует свежий ticker. Символ пропускается, если 1m candles свежи, но quote-layer отсутствует или устарел; это убирает внутренне противоречивый режим, в котором idea считалась tradeable по chart data, но spread/cost assumptions уже были неактуальны.
+- Mutating API-paths (`execute recommendation`, `record trade`, `stop bot`) переведены на цельные транзакции без промежуточных commit. Bot instance, status recommendation, trade row, state patch и audit-log теперь фиксируются как одна операция или целиком откатываются при сбое follow-up шага.
 - Добавлен отдельный endpoint `/metrics` с ключевыми gauge-метриками: здоровье символов, число активных рекомендаций, недавние ошибки сбора, длительность последнего collector cycle и настройки worker-параллелизма.
 - Внутренние записи в `decision_log` внутри collector больше не коммитят данные посреди случайных веток ошибок. Ошибки API-stage теперь сначала буферизуются в памяти и сбрасываются в БД только на явной stage-boundary, а не через побочный `commit` из произвольной точки цикла.
 - Heartbeat runtime lock теперь действительно идёт через отдельное SQLite-соединение, а не через тот же connection, что пишет collector-stage. Это убирает скрытый partial-commit риск и делает stage-boundary commit честным: потеря лидерства больше не может «случайно» зафиксировать чужую незавершённую запись через heartbeat.
@@ -117,9 +121,9 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `116 passed`
+- `121 passed`
 - покрытие `app/*` — `74%`
-- регрессионные тесты покрывают collector / Bybit client / health semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring
+- регрессионные тесты покрывают collector / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths
 
 ## Ключевые env
 - `DB_PATH` — путь к SQLite. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;

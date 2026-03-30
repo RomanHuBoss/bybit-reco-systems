@@ -2033,6 +2033,13 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 continue
             trow = db.get_latest_ticker(conn, venue, sym)
             ticker = dict(trow) if trow else None
+            ticker_ts = None
+            if ticker is not None:
+                try:
+                    ticker_ts = int(ticker.get("ts") or 0)
+                except Exception:
+                    ticker_ts = None
+            ticker_age_sec = None if not ticker_ts else max(0, ts_now - ticker_ts)
             # get_latest_ohlcv returns newest-first (ORDER BY ts DESC).
             # compute_features_from_ohlcv and all indicator functions
             # (ma_slope, EMA, RSI, MACD, BB) require oldest-first order.
@@ -2045,12 +2052,25 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 llm_candles[60] = _serialize_llm_candles([dict(r) for r in reversed(rows)], llm_candle_limit)
 
             # ── Stale data gate ──────────────────────────────────────────
-            # If newest 1m candle is too old, data is unreliable — skip symbol
-            data_age_sec = ts_now - int(f["ts_last"])
+            # A recommendation is only as fresh as its slowest required market input.
+            # Fresh candles with stale/missing ticker snapshots create inconsistent
+            # spread/cost assumptions and can silently misprice execution risk.
+            candle_age_sec = max(0, ts_now - int(f["ts_last"]))
+            data_age_sec = candle_age_sec
+            stale_source = "candle"
+            if ticker_age_sec is None:
+                data_age_sec = max(data_age_sec, settings.stale_data_max_sec + 1)
+                stale_source = "ticker_missing"
+            elif ticker_age_sec > data_age_sec:
+                data_age_sec = ticker_age_sec
+                stale_source = "ticker"
             if data_age_sec > settings.stale_data_max_sec:
                 db.log_decision(conn, "STALE_DATA_SKIP", None, None, {
                     "venue": venue, "symbol": sym,
                     "age_sec": data_age_sec, "max_sec": settings.stale_data_max_sec,
+                    "candle_age_sec": candle_age_sec,
+                    "ticker_age_sec": ticker_age_sec,
+                    "source": stale_source,
                 })
                 continue
 

@@ -377,7 +377,7 @@ def count_active_bots_for_symbol(conn: sqlite3.Connection, venue: str, symbol: s
     return int(cur.fetchone()["c"])
 
 
-def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any]) -> str:
+def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit: bool = True) -> str:
     """Insert a bot instance without replacing an existing logical bot.
 
     Returns:
@@ -436,7 +436,8 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any]) -> str:
             ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             payload,
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         return "inserted"
     except sqlite3.IntegrityError:
         origin_rec_id = bot.get("origin_rec_id")
@@ -446,12 +447,13 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any]) -> str:
                 return "duplicate_origin"
         raise
 
-def stop_bot(conn: sqlite3.Connection, bot_id: str) -> bool:
+def stop_bot(conn: sqlite3.Connection, bot_id: str, *, commit: bool = True) -> bool:
     cur = conn.execute("""SELECT bot_id FROM bot_instances WHERE bot_id=? AND status='running'""", (bot_id,))
     if not cur.fetchone():
         return False
     conn.execute("""UPDATE bot_instances SET status='stopped', stopped_ts=? WHERE bot_id=?""", (now_ts(), bot_id))
-    conn.commit()
+    if commit:
+        conn.commit()
     return True
 
 def _decode_bot_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -493,7 +495,7 @@ def list_bot_instances(conn: sqlite3.Connection, status: str | None = None, limi
     return [bot for r in cur.fetchall() if (bot := _decode_bot_row(r)) and is_supported_bot_type(bot.get("bot_type"))]
 
 
-def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any], merge: bool = True) -> bool:
+def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any], merge: bool = True, *, commit: bool = True) -> bool:
     cur = conn.execute("SELECT state_json FROM bot_instances WHERE bot_id=?", (bot_id,))
     row = cur.fetchone()
     if not row:
@@ -501,11 +503,12 @@ def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any
     state = _json_loads_or_default(row["state_json"], {})
     state = {**state, **patch} if merge else dict(patch)
     conn.execute("UPDATE bot_instances SET state_json=? WHERE bot_id=?", (json.dumps(state, ensure_ascii=False), bot_id))
-    conn.commit()
+    if commit:
+        conn.commit()
     return True
 
 
-def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any]) -> str:
+def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any], *, commit: bool = True) -> str:
     """Insert a trade in a conflict-aware way.
 
     Returns:
@@ -549,7 +552,8 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any]) -> str:
            VALUES(?,?,?,?,?,?,?)""",
         payload,
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return "inserted"
 
 
@@ -1244,7 +1248,12 @@ _ALLOWED_STATUS_TRANSITIONS = {
 
 
 def update_recommendation_status(
-    conn: sqlite3.Connection, rec_id: str, status: str, operator: str | None = None
+    conn: sqlite3.Connection,
+    rec_id: str,
+    status: str,
+    operator: str | None = None,
+    *,
+    commit: bool = True,
 ) -> bool:
     if status not in OPERATOR_STATUSES:
         return False
@@ -1262,10 +1271,11 @@ def update_recommendation_status(
         """UPDATE recommendations SET status=? WHERE rec_id=?""",
         (status, rec_id),
     )
-    conn.commit()
     if cur.rowcount == 0:
         return False
-    log_decision(conn, "STATUS_UPDATE", rec_id, operator, {"old_status": current, "new_status": status})
+    log_decision(conn, "STATUS_UPDATE", rec_id, operator, {"old_status": current, "new_status": status}, commit=False)
+    if commit:
+        conn.commit()
     return True
 
 
@@ -1643,10 +1653,12 @@ def get_symbol_health(
     Returns health status for each configured symbol on active venues:
       last_candle_ts: newest 1m candle timestamp
       last_ticker_ts: newest ticker timestamp
-      age_sec:        seconds since last candle
+      age_sec:        seconds since last closed 1m candle
+      ticker_age_sec: seconds since last ticker snapshot
+      data_age_sec:   worst age across candle/ticker freshness gates
       status:         'ok' | 'stale' | 'missing' | 'disabled'
       error_count_10m: COLLECT_ERRORs for this symbol in last 10 min
-      disabled:       True if SYMBOL_DISABLED in last 24h
+      disabled:       True if SYMBOL_DISABLED is still inside retry window
     """
     now = now_ts()
     result: list[dict] = []
@@ -1733,18 +1745,33 @@ def get_symbol_health(
         venue_symbols.append(("linear", symbols_linear))
 
     for venue, symbols in venue_symbols:
-        for sym in symbols:
-            # last 1m candle
+        for raw_sym in symbols:
+            sym = str(raw_sym or "").strip().upper()
+            if not sym:
+                continue
+            # Require both recent 1m candles and recent ticker snapshots. The collector
+            # can keep candles fresh while ticker collection is degraded; in that state
+            # execution/cost assumptions are stale even though the chart looks healthy.
             last_ts = get_latest_ohlcv_ts(conn, venue, sym, 60)
             last_ticker_ts = get_latest_ticker_ts(conn, venue, sym)
             age_sec = (now - last_ts) if last_ts else None
+            ticker_age_sec = (now - last_ticker_ts) if last_ticker_ts else None
             is_disabled = int(disabled_until.get((venue, sym), 0) or 0) > now
+            candle_missing = last_ts is None
+            ticker_missing = last_ticker_ts is None
+            candle_stale = age_sec is not None and age_sec > stale_sec
+            ticker_stale = ticker_age_sec is not None and ticker_age_sec > stale_sec
+            data_age_sec = max(
+                age_sec if age_sec is not None else -1,
+                ticker_age_sec if ticker_age_sec is not None else -1,
+            )
+            data_age_sec = None if data_age_sec < 0 else int(data_age_sec)
 
-            if is_disabled and (last_ts is None or age_sec is None or age_sec > stale_sec):
+            if is_disabled and (candle_missing or ticker_missing or candle_stale or ticker_stale):
                 status = "disabled"
-            elif last_ts is None:
+            elif candle_missing or ticker_missing:
                 status = "missing"
-            elif age_sec > stale_sec:
+            elif candle_stale or ticker_stale:
                 status = "stale"
             else:
                 status = "ok"
@@ -1755,6 +1782,8 @@ def get_symbol_health(
                 "last_candle_ts":  last_ts,
                 "last_ticker_ts":  last_ticker_ts,
                 "age_sec":         age_sec,
+                "ticker_age_sec":  ticker_age_sec,
+                "data_age_sec":    data_age_sec,
                 "status":          status,
                 "error_count_10m": error_counts.get((venue, sym), 0),
                 "stale_skips_1h":  stale_counts.get((venue, sym), 0),

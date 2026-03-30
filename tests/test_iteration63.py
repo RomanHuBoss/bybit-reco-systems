@@ -242,6 +242,19 @@ def test_get_symbol_health_clears_disabled_after_retry_window(tmp_path: Path, mo
             "volume": 10.0,
         }],
     )
+    db.insert_tickers(
+        conn,
+        [{
+            "venue": "linear",
+            "symbol": "BADUSDT",
+            "ts": fresh_bar_ts + 30,
+            "last": 100.5,
+            "bid": 100.0,
+            "ask": 101.0,
+            "vol24h": 1000.0,
+            "turnover24h": 100000.0,
+        }],
+    )
 
     items = db.get_symbol_health(conn, [], ["BADUSDT"], active_venues=["linear"])
     assert items[0]["status"] == "ok"

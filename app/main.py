@@ -214,7 +214,11 @@ def _log_decision_fresh(action: str, rec_id: str | None, operator: str | None, d
 
 def _make_runtime_lock_heartbeat(lock_conn, lock_key: str):
     def _heartbeat() -> bool:
-        return bool(db.heartbeat_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER))
+        try:
+            return bool(db.heartbeat_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER))
+        except Exception:
+            logger.warning("runtime lock heartbeat failed", exc_info=True)
+            return False
     return _heartbeat
 
 @asynccontextmanager
@@ -226,7 +230,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.5", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.6", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -355,28 +359,37 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         "status": "running",
         "origin_rec_id": rec_id,
     }
-    insert_result = db.insert_bot_instance(conn, bot)
-    if insert_result == "duplicate_origin":
-        existing = db.get_bot_by_origin_rec(conn, rec_id)
-        if existing:
-            if rec.get("status") != "executed":
-                db.update_recommendation_status(conn, rec_id, "executed", operator)
-            return existing, True
-        raise HTTPException(status_code=409, detail="bot creation conflicted with an existing origin_rec_id")
+    try:
+        insert_result = db.insert_bot_instance(conn, bot, commit=False)
+        if insert_result == "duplicate_origin":
+            existing = db.get_bot_by_origin_rec(conn, rec_id)
+            if existing:
+                if rec.get("status") != "executed":
+                    db.update_recommendation_status(conn, rec_id, "executed", operator)
+                return existing, True
+            raise HTTPException(status_code=409, detail="bot creation conflicted with an existing origin_rec_id")
 
-    db.update_recommendation_status(conn, rec_id, "executed", operator)
-    db.log_decision(
-        conn,
-        "BOT_STARTED",
-        rec_id,
-        operator,
-        {
-            "bot_id": bot["bot_id"],
-            "symbol": bot["symbol"],
-            "bot_type": bot["bot_type"],
-            "insert_result": insert_result,
-        },
-    )
+        db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
+        db.log_decision(
+            conn,
+            "BOT_STARTED",
+            rec_id,
+            operator,
+            {
+                "bot_id": bot["bot_id"],
+                "symbol": bot["symbol"],
+                "bot_type": bot["bot_type"],
+                "insert_result": insert_result,
+            },
+            commit=False,
+        )
+        conn.commit()
+    except HTTPException:
+        _rollback_quietly(conn)
+        raise
+    except Exception:
+        _rollback_quietly(conn)
+        raise
     created = db.get_bot_instance(conn, bot["bot_id"])
     return created or bot, False
 
@@ -585,11 +598,17 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
         bot = db.get_bot_instance(conn, bot_id)
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
-        ok = db.stop_bot(conn, bot_id)
-        if not ok:
-            return {"ok": False, "bot_id": bot_id, "status": bot["status"]}
-        db.update_bot_state(conn, bot_id, {"stop_reason": req.reason, "stopped_by": req.operator, "stopped_ts": int(time.time())})
-        db.log_decision(conn, "BOT_STOPPED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "reason": req.reason})
+        try:
+            ok = db.stop_bot(conn, bot_id, commit=False)
+            if not ok:
+                _rollback_quietly(conn)
+                return {"ok": False, "bot_id": bot_id, "status": bot["status"]}
+            db.update_bot_state(conn, bot_id, {"stop_reason": req.reason, "stopped_by": req.operator, "stopped_ts": int(time.time())}, commit=False)
+            db.log_decision(conn, "BOT_STOPPED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "reason": req.reason}, commit=False)
+            conn.commit()
+        except Exception:
+            _rollback_quietly(conn)
+            raise
         return {"ok": True, "bot_id": bot_id, "status": "stopped"}
 
 
@@ -650,33 +669,40 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
             "meta": req.meta,
         }
         try:
-            insert_result = db.insert_trade(conn, trade)
+            insert_result = db.insert_trade(conn, trade, commit=False)
         except ValueError as exc:
+            _rollback_quietly(conn)
             raise HTTPException(status_code=409, detail=str(exc))
 
         trade_summary = db.get_bot_trade_summary(conn, bot_id)
         realized_pnl_gross = float(trade_summary["realized_pnl_gross"])
         realized_fee = float(trade_summary["realized_fee"])
         realized_pnl_net = float(trade_summary["realized_pnl_net"])
-        db.update_bot_state(
-            conn,
-            bot_id,
-            {
-                "trade_count": int(trade_summary["trade_count"]),
-                "realized_pnl": realized_pnl_net,
-                "realized_pnl_gross": realized_pnl_gross,
-                "realized_pnl_net": realized_pnl_net,
-                "realized_fee": realized_fee,
-                "last_trade_ts": int(trade_summary.get("last_trade_ts") or ts),
-                "last_trade_id": trade_id,
-                "last_trade_meta": req.meta,
-                "last_operator": req.operator,
-            },
-        )
-        if req.stop_bot:
-            db.stop_bot(conn, bot_id)
-            db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": req.operator, "stopped_ts": int(time.time())})
-        db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot})
+        try:
+            db.update_bot_state(
+                conn,
+                bot_id,
+                {
+                    "trade_count": int(trade_summary["trade_count"]),
+                    "realized_pnl": realized_pnl_net,
+                    "realized_pnl_gross": realized_pnl_gross,
+                    "realized_pnl_net": realized_pnl_net,
+                    "realized_fee": realized_fee,
+                    "last_trade_ts": int(trade_summary.get("last_trade_ts") or ts),
+                    "last_trade_id": trade_id,
+                    "last_trade_meta": req.meta,
+                    "last_operator": req.operator,
+                },
+                commit=False,
+            )
+            if req.stop_bot:
+                db.stop_bot(conn, bot_id, commit=False)
+                db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": req.operator, "stopped_ts": int(time.time())}, commit=False)
+            db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot}, commit=False)
+            conn.commit()
+        except Exception:
+            _rollback_quietly(conn)
+            raise
         return {
             "ok": True,
             "trade_id": trade_id,

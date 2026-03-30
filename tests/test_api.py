@@ -979,6 +979,19 @@ def test_metrics_endpoint_reports_core_gauges_and_status_collector_workers(clien
             'volume': 10.0,
         }],
     )
+    db.insert_tickers(
+        conn,
+        [{
+            'venue': 'linear',
+            'symbol': 'BTCUSDT',
+            'ts': ts_now,
+            'last': 100.5,
+            'bid': 100.0,
+            'ask': 101.0,
+            'vol24h': 1000.0,
+            'turnover24h': 100000.0,
+        }],
+    )
     db.insert_recommendations(
         conn,
         [
