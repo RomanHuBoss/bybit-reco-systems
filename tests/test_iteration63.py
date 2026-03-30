@@ -7,6 +7,7 @@ import pytest
 
 from app import collector, db
 from app.bybit_client import BybitPublicClient
+from app.features import funding_signal, oi_trend
 
 
 class _FakeResponse:
@@ -246,3 +247,150 @@ def test_get_symbol_health_clears_disabled_after_retry_window(tmp_path: Path, mo
     assert items[0]["status"] == "ok"
     assert items[0]["disabled"] is False
     conn.close()
+
+
+
+def test_db_latest_ohlcv_ts_ignores_historical_invalid_newest_rows(tmp_path: Path):
+    conn = db.connect(str(tmp_path / "ohlcv_poison.db"))
+    db.init_db(conn)
+    db.upsert_ohlcv(
+        conn,
+        [{
+            "venue": "spot",
+            "symbol": "BTCUSDT",
+            "tf_sec": 60,
+            "ts": 1_700_000_000,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 10.0,
+        }],
+    )
+    # Simulate a poisoned historical row from an older build / manual import.
+    conn.execute(
+        """INSERT OR REPLACE INTO ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)
+           VALUES(?,?,?,?,?,?,?,?,?)""",
+        ("spot", "BTCUSDT", 60, 1_800_000_000, 0.0, 0.0, 0.0, 0.0, 1.0),
+    )
+    conn.commit()
+
+    assert db.get_latest_ohlcv_ts(conn, "spot", "BTCUSDT", 60) == 1_700_000_000
+    latest_rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 60, limit=5)
+    assert [int(row["ts"]) for row in latest_rows] == [1_700_000_000]
+    conn.close()
+
+
+
+def test_db_filters_invalid_funding_and_open_interest_rows(tmp_path: Path):
+    conn = db.connect(str(tmp_path / "funding_oi_validation.db"))
+    db.init_db(conn)
+
+    db.upsert_funding_rate(
+        conn,
+        [
+            {"symbol": "BTCUSDT", "ts": 1_700_000_000, "funding_rate": 0.0001, "next_funding_ts": 1_700_002_400},
+            {"symbol": "BTCUSDT", "ts": 1_700_000_100, "funding_rate": float("nan"), "next_funding_ts": 1_700_002_800},
+            {"symbol": "BTCUSDT", "ts": -5, "funding_rate": 0.0002, "next_funding_ts": 1_700_003_200},
+        ],
+    )
+    funding = db.get_latest_funding_rate(conn, "BTCUSDT")
+    assert funding == {
+        "symbol": "BTCUSDT",
+        "ts": 1_700_000_000,
+        "funding_rate": 0.0001,
+        "next_funding_ts": 1_700_002_400,
+    }
+
+    db.upsert_open_interest(
+        conn,
+        "BTCUSDT",
+        [
+            {"ts": 1_700_000_000, "oi": 123.0},
+            {"ts": 1_700_000_100, "oi": float("nan")},
+            {"ts": 1_700_000_200, "oi": -1.0},
+        ],
+    )
+    # Simulate a bad legacy import with a newer invalid row.
+    conn.execute("INSERT OR REPLACE INTO open_interest(symbol, ts, oi) VALUES(?,?,?)", ("BTCUSDT", 1_800_000_000, -5.0))
+    conn.commit()
+
+    assert db.get_latest_open_interest_ts(conn, "BTCUSDT") == 1_700_000_000
+    assert db.get_oi_series(conn, "BTCUSDT", limit=5) == [{"ts": 1_700_000_000, "oi": 123.0}]
+    conn.close()
+
+
+
+def test_collector_skips_redundant_4h_bootstrap_when_1h_history_is_sufficient(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    collector._DISABLED_SYMBOLS["spot"].clear()
+    collector._DISABLED_SYMBOLS["linear"].clear()
+    collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
+
+    base_ts = 1_700_000_000
+    minute_aligned = base_ts - (base_ts % 60)
+    hour_aligned = base_ts - (base_ts % 3600)
+    day_aligned = base_ts - (base_ts % 86400)
+
+    class Client:
+        def __init__(self):
+            self.intervals: list[str] = []
+
+        def get_tickers(self, *, category: str, symbol: str):
+            return [{
+                "lastPrice": "100",
+                "bid1Price": "99",
+                "ask1Price": "101",
+                "volume24h": "1000",
+                "turnover24h": "100000",
+            }]
+
+        def get_kline(self, *, category: str, symbol: str, interval: str, limit: int, start: int | None = None):
+            self.intervals.append(interval)
+            if interval == "1":
+                return [
+                    [str((minute_aligned - (359 - idx) * 60) * 1000), str(100 + idx * 0.1), str(101 + idx * 0.1), str(99 + idx * 0.1), str(100.5 + idx * 0.1), "10", "0"]
+                    for idx in range(360)
+                ]
+            if interval == "60":
+                return [
+                    [str((hour_aligned - (419 - idx) * 3600) * 1000), str(200 + idx), str(201 + idx), str(199 + idx), str(200.5 + idx), "100", "0"]
+                    for idx in range(420)
+                ]
+            if interval == "D":
+                return [
+                    [str((day_aligned - (119 - idx) * 86400) * 1000), str(300 + idx), str(301 + idx), str(299 + idx), str(300.5 + idx), "1000", "0"]
+                    for idx in range(120)
+                ]
+            if interval in {"15", "30"}:
+                return []
+            raise AssertionError(f"unexpected interval {interval}")
+
+    conn = db.connect(str(tmp_path / "skip_4h_bootstrap.db"))
+    db.init_db(conn)
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts)
+    client = Client()
+
+    stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+
+    assert "240" not in client.intervals
+    assert stats["derived_tf_bootstrap_fetches"] == {}
+    tf4h = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 14400, limit=120)
+    assert len(tf4h) >= 96
+    conn.close()
+
+
+
+def test_feature_guards_handle_nonfinite_funding_and_dirty_oi_series():
+    assert funding_signal(float("nan"))["signal"] == "unknown"
+
+    series = [
+        {"ts": 5, "oi": float("nan")},
+        {"ts": 4, "oi": -1.0},
+        {"ts": 3, "oi": 120.0},
+        {"ts": 2, "oi": 100.0},
+        {"ts": 1, "oi": 80.0},
+    ]
+    trend = oi_trend(series)
+    assert trend["oi_now"] == 120.0
+    assert trend["trend"] in {"growing", "stable", "falling"}
+    assert trend["signal"] == "pending"

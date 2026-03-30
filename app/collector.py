@@ -343,6 +343,19 @@ def _should_bootstrap_derived_tf(conn, venue: str, symbol: str, target_tf_sec: i
     existing_rows = db.get_latest_ohlcv(conn, venue, symbol, target_tf_sec, limit=minimum_rows)
     if len(existing_rows) >= minimum_rows:
         return False
+
+    # Skip expensive REST bootstrap when the local source timeframe already has enough
+    # history to synthesize the target frame immediately. This matters most for 4h:
+    # a cold 1h fetch already provides >96 derived 4h candles, so hitting /240 again
+    # only burns API budget and can create misleading bootstrap errors.
+    source_tf_sec = _DERIVED_TF_SOURCES.get(target_tf_sec)
+    if source_tf_sec:
+        ratio = max(1, int(target_tf_sec // source_tf_sec))
+        source_needed = minimum_rows * ratio
+        source_rows = db.get_latest_ohlcv(conn, venue, symbol, source_tf_sec, limit=source_needed)
+        if len(source_rows) >= source_needed:
+            return False
+
     key = (venue, symbol, target_tf_sec)
     last_attempt_ts = int(_LAST_TF_FETCH_ATTEMPT_TS.get(key, 0) or 0)
     if last_attempt_ts > 0 and now_ts - last_attempt_ts < _DERIVED_TF_BOOTSTRAP_RETRY_SEC:

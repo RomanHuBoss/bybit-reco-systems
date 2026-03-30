@@ -133,7 +133,12 @@ def funding_signal(funding_rate: float | None) -> dict[str, Any]:
     if funding_rate is None:
         return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_8h": None}
 
-    fr = float(funding_rate)
+    try:
+        fr = float(funding_rate)
+    except Exception:
+        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_8h": None}
+    if not math.isfinite(fr):
+        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_8h": None}
     annualized = fr * 3 * 365 * 100  # % per year
 
     if fr < -0.0001:
@@ -171,11 +176,23 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     if not oi_series or len(oi_series) < 2:
         return empty
 
+    normalized: list[float] = []
+    for row in oi_series:
+        try:
+            oi = float(row.get("oi"))
+        except Exception:
+            continue
+        if not math.isfinite(oi) or oi < 0:
+            continue
+        normalized.append(oi)
+    if len(normalized) < 2:
+        return empty
+
     # series is newest-first
-    oi_now = float(oi_series[0]["oi"])
+    oi_now = normalized[0]
 
     def _pct_chg(old: float) -> float | None:
-        if old == 0:
+        if old <= 0:
             return None
         return (oi_now - old) / old * 100.0
 
@@ -183,8 +200,8 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     # So 4h / 24h reference points are indices 4 and 24 respectively.
     # Previous implementation used 3 / 23, which understated lookback changes
     # and distorted OI trend classification near thresholds.
-    oi_4h = float(oi_series[min(4, len(oi_series)-1)]["oi"])    # ~4h back
-    oi_24h = float(oi_series[min(24, len(oi_series)-1)]["oi"])  # ~24h back
+    oi_4h = normalized[min(4, len(normalized)-1)]    # ~4h back
+    oi_24h = normalized[min(24, len(normalized)-1)]  # ~24h back
 
     chg_4h  = _pct_chg(oi_4h)
     chg_24h = _pct_chg(oi_24h)

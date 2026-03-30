@@ -95,19 +95,25 @@ def get_app_config_json(conn: sqlite3.Connection, key: str, default: Any = None)
         return default
 
 def upsert_ohlcv(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
+    valid_rows = [dict(r) for r in rows if _is_valid_ohlcv_row(r)]
+    if not valid_rows:
+        return
     conn.executemany(
         """INSERT OR REPLACE INTO ohlcv(venue,symbol,tf_sec,ts,open,high,low,close,volume)
            VALUES(?,?,?,?,?,?,?,?,?)""",
-        [(r["venue"], r["symbol"], r["tf_sec"], r["ts"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in rows],
+        [(r["venue"], r["symbol"], r["tf_sec"], r["ts"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in valid_rows],
     )
     if commit:
         conn.commit()
 
 def insert_tickers(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
+    valid_rows = [dict(r) for r in rows if _is_valid_ticker_row(r)]
+    if not valid_rows:
+        return
     conn.executemany(
         """INSERT OR REPLACE INTO ticker_snap(venue,symbol,ts,last,bid,ask,vol24h,turnover24h)
            VALUES(?,?,?,?,?,?,?,?)""",
-        [(r["venue"], r["symbol"], r["ts"], r.get("last"), r.get("bid"), r.get("ask"), r.get("vol24h"), r.get("turnover24h")) for r in rows],
+        [(r["venue"], r["symbol"], r["ts"], r.get("last"), r.get("bid"), r.get("ask"), r.get("vol24h"), r.get("turnover24h")) for r in valid_rows],
     )
     if commit:
         conn.commit()
@@ -272,11 +278,16 @@ def get_latest_ohlcv(conn: sqlite3.Connection, venue: str, symbol: str, tf_sec: 
 
 def get_latest_ohlcv_ts(conn: sqlite3.Connection, venue: str, symbol: str, tf_sec: int) -> int | None:
     cur = conn.execute(
-        """SELECT MAX(ts) AS m FROM ohlcv WHERE venue=? AND symbol=? AND tf_sec=?""",
+        """SELECT * FROM ohlcv
+           WHERE venue=? AND symbol=? AND tf_sec=?
+           ORDER BY ts DESC
+           LIMIT 256""",
         (venue, symbol, tf_sec),
     )
-    row = cur.fetchone()
-    return int(row["m"]) if row and row["m"] not in (None, "") else None
+    for row in cur.fetchall():
+        if _is_valid_ohlcv_row(row):
+            return int(row["ts"])
+    return None
 
 def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> dict[str, Any] | None:
     cur = conn.execute(
@@ -1056,51 +1067,118 @@ def get_recommendation_status_counts(
 
 # ── funding rate ──────────────────────────────────────────────────────────────
 
+def _normalize_funding_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    payload = dict(row)
+    try:
+        ts = int(payload.get("ts") or 0)
+        funding_rate = float(payload.get("funding_rate"))
+    except Exception:
+        return None
+    if ts <= 0 or not math.isfinite(funding_rate):
+        return None
+    next_funding_ts_raw = payload.get("next_funding_ts")
+    try:
+        next_funding_ts = int(next_funding_ts_raw) if next_funding_ts_raw not in (None, "") else None
+    except Exception:
+        next_funding_ts = None
+    if next_funding_ts is not None and next_funding_ts <= 0:
+        next_funding_ts = None
+    return {
+        "symbol": str(payload.get("symbol") or ""),
+        "ts": ts,
+        "funding_rate": funding_rate,
+        "next_funding_ts": next_funding_ts,
+    }
+
+
 def upsert_funding_rate(conn: sqlite3.Connection, rows: list[dict], *, commit: bool = True) -> None:
+    valid_rows = []
+    for row in rows:
+        normalized = _normalize_funding_row(row)
+        if normalized is not None and normalized["symbol"]:
+            valid_rows.append(normalized)
+    if not valid_rows:
+        return
     conn.executemany(
         """INSERT OR REPLACE INTO funding_rate(symbol, ts, funding_rate, next_funding_ts)
            VALUES(?,?,?,?)""",
-        [(r["symbol"], r["ts"], r["funding_rate"], r.get("next_funding_ts")) for r in rows],
+        [(r["symbol"], r["ts"], r["funding_rate"], r.get("next_funding_ts")) for r in valid_rows],
     )
     if commit:
         conn.commit()
 
 def get_latest_funding_rate(conn: sqlite3.Connection, symbol: str) -> dict | None:
     cur = conn.execute(
-        """SELECT * FROM funding_rate WHERE symbol=? ORDER BY ts DESC LIMIT 1""",
+        """SELECT * FROM funding_rate WHERE symbol=? ORDER BY ts DESC LIMIT 64""",
         (symbol,),
     )
-    r = cur.fetchone()
-    if not r:
-        return None
-    return {"symbol": r["symbol"], "ts": r["ts"], "funding_rate": r["funding_rate"],
-            "next_funding_ts": r["next_funding_ts"]}
+    for row in cur.fetchall():
+        normalized = _normalize_funding_row(row)
+        if normalized is not None:
+            return normalized
+    return None
 
 # ── open interest ─────────────────────────────────────────────────────────────
 
+def _normalize_open_interest_row(symbol: str, row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    payload = dict(row)
+    try:
+        ts = int(payload.get("ts") or 0)
+        oi = float(payload.get("oi"))
+    except Exception:
+        return None
+    if ts <= 0 or not math.isfinite(oi) or oi < 0:
+        return None
+    return {"symbol": str(symbol or payload.get("symbol") or ""), "ts": ts, "oi": oi}
+
+
 def upsert_open_interest(conn: sqlite3.Connection, symbol: str, rows: list[dict], *, commit: bool = True) -> None:
+    valid_rows = []
+    for row in rows:
+        normalized = _normalize_open_interest_row(symbol, row)
+        if normalized is not None and normalized["symbol"]:
+            valid_rows.append(normalized)
+    if not valid_rows:
+        return
     conn.executemany(
         """INSERT OR REPLACE INTO open_interest(symbol, ts, oi) VALUES(?,?,?)""",
-        [(symbol, r["ts"], r["oi"]) for r in rows],
+        [(r["symbol"], r["ts"], r["oi"]) for r in valid_rows],
     )
     if commit:
         conn.commit()
 
 def get_oi_series(conn: sqlite3.Connection, symbol: str, limit: int = 48) -> list[dict]:
+    safe_limit = max(1, int(limit))
+    fetch_limit = max(safe_limit, min(5000, safe_limit * 4))
     cur = conn.execute(
         """SELECT ts, oi FROM open_interest WHERE symbol=? ORDER BY ts DESC LIMIT ?""",
-        (symbol, limit),
+        (symbol, fetch_limit),
     )
-    return [{"ts": r["ts"], "oi": r["oi"]} for r in cur.fetchall()]
+    out: list[dict[str, Any]] = []
+    for row in cur.fetchall():
+        normalized = _normalize_open_interest_row(symbol, row)
+        if normalized is None:
+            continue
+        out.append({"ts": normalized["ts"], "oi": normalized["oi"]})
+        if len(out) >= safe_limit:
+            break
+    return out
 
 
 def get_latest_open_interest_ts(conn: sqlite3.Connection, symbol: str) -> int | None:
     cur = conn.execute(
-        """SELECT MAX(ts) AS m FROM open_interest WHERE symbol=?""",
+        """SELECT ts, oi FROM open_interest WHERE symbol=? ORDER BY ts DESC LIMIT 256""",
         (symbol,),
     )
-    row = cur.fetchone()
-    return int(row["m"]) if row and row["m"] not in (None, "") else None
+    for row in cur.fetchall():
+        normalized = _normalize_open_interest_row(symbol, row)
+        if normalized is not None:
+            return int(normalized["ts"])
+    return None
 
 
 # ── Operator actions ──────────────────────────────────────────────────────────
