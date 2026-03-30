@@ -94,21 +94,23 @@ def get_app_config_json(conn: sqlite3.Connection, key: str, default: Any = None)
     except Exception:
         return default
 
-def upsert_ohlcv(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+def upsert_ohlcv(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
     conn.executemany(
         """INSERT OR REPLACE INTO ohlcv(venue,symbol,tf_sec,ts,open,high,low,close,volume)
            VALUES(?,?,?,?,?,?,?,?,?)""",
         [(r["venue"], r["symbol"], r["tf_sec"], r["ts"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in rows],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
-def insert_tickers(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+def insert_tickers(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
     conn.executemany(
         """INSERT OR REPLACE INTO ticker_snap(venue,symbol,ts,last,bid,ask,vol24h,turnover24h)
            VALUES(?,?,?,?,?,?,?,?)""",
         [(r["venue"], r["symbol"], r["ts"], r.get("last"), r.get("bid"), r.get("ask"), r.get("vol24h"), r.get("turnover24h")) for r in rows],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def insert_features(conn: sqlite3.Connection, venue: str, symbol: str, ts: int, features: dict[str, Any]) -> None:
     conn.execute(
@@ -266,6 +268,15 @@ def get_latest_ohlcv(conn: sqlite3.Connection, venue: str, symbol: str, tf_sec: 
     # newest bars does not starve callers of older valid history.
     valid_rows = [row for row in cur.fetchall() if _is_valid_ohlcv_row(row)]
     return valid_rows[:safe_limit]
+
+
+def get_latest_ohlcv_ts(conn: sqlite3.Connection, venue: str, symbol: str, tf_sec: int) -> int | None:
+    cur = conn.execute(
+        """SELECT MAX(ts) AS m FROM ohlcv WHERE venue=? AND symbol=? AND tf_sec=?""",
+        (venue, symbol, tf_sec),
+    )
+    row = cur.fetchone()
+    return int(row["m"]) if row and row["m"] not in (None, "") else None
 
 def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> dict[str, Any] | None:
     cur = conn.execute(
@@ -732,6 +743,15 @@ def release_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) ->
     )
     conn.commit()
 
+
+def heartbeat_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) -> bool:
+    cur = conn.execute(
+        "UPDATE runtime_locks SET heartbeat_ts=? WHERE lock_key=? AND owner=?",
+        (now_ts(), lock_key, owner),
+    )
+    conn.commit()
+    return int(cur.rowcount or 0) > 0
+
 def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str, Any], is_active: bool = True) -> None:
     if is_active:
         conn.execute("""UPDATE risk_limits SET is_active=0""")
@@ -1036,13 +1056,14 @@ def get_recommendation_status_counts(
 
 # ── funding rate ──────────────────────────────────────────────────────────────
 
-def upsert_funding_rate(conn: sqlite3.Connection, rows: list[dict]) -> None:
+def upsert_funding_rate(conn: sqlite3.Connection, rows: list[dict], *, commit: bool = True) -> None:
     conn.executemany(
         """INSERT OR REPLACE INTO funding_rate(symbol, ts, funding_rate, next_funding_ts)
            VALUES(?,?,?,?)""",
         [(r["symbol"], r["ts"], r["funding_rate"], r.get("next_funding_ts")) for r in rows],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def get_latest_funding_rate(conn: sqlite3.Connection, symbol: str) -> dict | None:
     cur = conn.execute(
@@ -1057,12 +1078,13 @@ def get_latest_funding_rate(conn: sqlite3.Connection, symbol: str) -> dict | Non
 
 # ── open interest ─────────────────────────────────────────────────────────────
 
-def upsert_open_interest(conn: sqlite3.Connection, symbol: str, rows: list[dict]) -> None:
+def upsert_open_interest(conn: sqlite3.Connection, symbol: str, rows: list[dict], *, commit: bool = True) -> None:
     conn.executemany(
         """INSERT OR REPLACE INTO open_interest(symbol, ts, oi) VALUES(?,?,?)""",
         [(symbol, r["ts"], r["oi"]) for r in rows],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def get_oi_series(conn: sqlite3.Connection, symbol: str, limit: int = 48) -> list[dict]:
     cur = conn.execute(
@@ -1070,6 +1092,15 @@ def get_oi_series(conn: sqlite3.Connection, symbol: str, limit: int = 48) -> lis
         (symbol, limit),
     )
     return [{"ts": r["ts"], "oi": r["oi"]} for r in cur.fetchall()]
+
+
+def get_latest_open_interest_ts(conn: sqlite3.Connection, symbol: str) -> int | None:
+    cur = conn.execute(
+        """SELECT MAX(ts) AS m FROM open_interest WHERE symbol=?""",
+        (symbol,),
+    )
+    row = cur.fetchone()
+    return int(row["m"]) if row and row["m"] not in (None, "") else None
 
 
 # ── Operator actions ──────────────────────────────────────────────────────────

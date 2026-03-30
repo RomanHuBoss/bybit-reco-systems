@@ -2571,3 +2571,179 @@ def test_insert_trade_rejects_non_finite_numbers(conn):
                 'meta': {},
             },
         )
+
+
+def test_db_heartbeat_runtime_lock_extends_existing_owner_ttl(conn, monkeypatch: pytest.MonkeyPatch):
+    base_ts = 1_700_000_000
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts)
+    assert db.acquire_runtime_lock(conn, "runtime:test", "owner-A", ttl_sec=60) is True
+
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts + 30)
+    assert db.heartbeat_runtime_lock(conn, "runtime:test", "owner-A") is True
+
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts + 70)
+    assert db.acquire_runtime_lock(conn, "runtime:test", "owner-B", ttl_sec=60) is False
+
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts + 95)
+    assert db.acquire_runtime_lock(conn, "runtime:test", "owner-B", ttl_sec=60) is True
+
+
+
+def test_collector_uses_linear_batch_tickers_for_ticker_and_funding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from app import collector
+
+    collector._DISABLED_SYMBOLS["spot"].clear()
+    collector._DISABLED_SYMBOLS["linear"].clear()
+    collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
+
+    base_ts = 1_700_000_000
+    hour_aligned = base_ts - (base_ts % 3600)
+    day_aligned = base_ts - (base_ts % 86400)
+
+    class BatchLinearClient:
+        def __init__(self):
+            self.batch_calls = 0
+            self.symbol_calls: list[str] = []
+            self.kline_calls: list[tuple[str, str]] = []
+
+        def get_tickers(self, *, category: str, symbol: str | None = None):
+            if symbol is None:
+                self.batch_calls += 1
+                return [
+                    {
+                        "symbol": "BTCUSDT",
+                        "lastPrice": "100",
+                        "bid1Price": "99",
+                        "ask1Price": "101",
+                        "volume24h": "1000",
+                        "turnover24h": "100000",
+                        "fundingRate": "0.0001",
+                        "nextFundingTime": str((base_ts + 3600) * 1000),
+                    },
+                    {
+                        "symbol": "ETHUSDT",
+                        "lastPrice": "200",
+                        "bid1Price": "199",
+                        "ask1Price": "201",
+                        "volume24h": "2000",
+                        "turnover24h": "200000",
+                        "fundingRate": "0.0002",
+                        "nextFundingTime": str((base_ts + 7200) * 1000),
+                    },
+                ]
+            self.symbol_calls.append(symbol)
+            return []
+
+        def get_kline(self, *, category: str, symbol: str, interval: str, limit: int, start: int | None = None):
+            self.kline_calls.append((symbol, interval))
+            if interval == "1":
+                return [[str(base_ts * 1000), "100", "101", "99", "100.5", "10", "0"]]
+            if interval == "60":
+                return [[str(hour_aligned * 1000), "100", "105", "95", "102", "50", "0"]]
+            if interval == "D":
+                return [[str(day_aligned * 1000), "100", "110", "90", "103", "500", "0"]]
+            return []
+
+    conn = db.connect(str(tmp_path / "collector_batch_linear.db"))
+    db.init_db(conn)
+    client = BatchLinearClient()
+
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts)
+    stats = collector.collect_once(conn, client, "linear", ["BTCUSDT", "ETHUSDT"])
+
+    assert client.batch_calls == 1
+    assert client.symbol_calls == []
+    assert stats["tickers_written"] == 2
+    assert stats["funding_written"] == 2
+    assert db.get_latest_ticker(conn, "linear", "BTCUSDT") is not None
+    assert db.get_latest_funding_rate(conn, "BTCUSDT") is not None
+    assert db.get_latest_funding_rate(conn, "ETHUSDT") is not None
+
+    conn.close()
+
+
+
+def test_collector_uses_incremental_hot_path_and_local_tf_derivation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from app import collector
+
+    collector._DISABLED_SYMBOLS["spot"].clear()
+    collector._DISABLED_SYMBOLS["linear"].clear()
+    collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
+
+    base_ts = 1_700_000_000
+    minute_aligned = base_ts - (base_ts % 60)
+    hour_aligned = base_ts - (base_ts % 3600)
+    day_aligned = base_ts - (base_ts % 86400)
+
+    class IncrementalClient:
+        def __init__(self):
+            self.kline_calls: list[tuple[str, int | None, int]] = []
+
+        def get_tickers(self, *, category: str, symbol: str):
+            return [{
+                "lastPrice": "100",
+                "bid1Price": "99",
+                "ask1Price": "101",
+                "volume24h": "1000",
+                "turnover24h": "100000",
+            }]
+
+        def get_kline(self, *, category: str, symbol: str, interval: str, limit: int, start: int | None = None):
+            self.kline_calls.append((interval, start, limit))
+            if interval == "1":
+                if start is None:
+                    rows = []
+                    for idx in range(180):
+                        ts = minute_aligned - (179 - idx) * 60
+                        px = 100.0 + idx * 0.1
+                        rows.append([str(ts * 1000), str(px), str(px + 1.0), str(px - 1.0), str(px + 0.2), "10", "0"])
+                    return rows
+                rows = []
+                for idx in range(8):
+                    ts = minute_aligned + idx * 60
+                    px = 120.0 + idx * 0.1
+                    rows.append([str(ts * 1000), str(px), str(px + 1.0), str(px - 1.0), str(px + 0.2), "10", "0"])
+                return rows
+            if interval == "60":
+                rows = []
+                for idx in range(120):
+                    ts = hour_aligned - (119 - idx) * 3600
+                    px = 200.0 + idx
+                    rows.append([str(ts * 1000), str(px), str(px + 2.0), str(px - 2.0), str(px + 0.5), "100", "0"])
+                return rows if start is None else rows[-6:]
+            if interval == "D":
+                rows = []
+                for idx in range(100):
+                    ts = day_aligned - (99 - idx) * 86400
+                    px = 300.0 + idx
+                    rows.append([str(ts * 1000), str(px), str(px + 3.0), str(px - 3.0), str(px + 1.0), "1000", "0"])
+                return rows if start is None else rows[-3:]
+            raise AssertionError(f"unexpected interval {interval}")
+
+    conn = db.connect(str(tmp_path / "collector_incremental.db"))
+    db.init_db(conn)
+    client = IncrementalClient()
+
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts)
+    first_stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    first_call_intervals = [interval for interval, _start, _limit in client.kline_calls]
+
+    assert first_call_intervals == ["1", "60", "D"]
+    assert first_stats["api_tf_fetches"] == {"60": 1, "3600": 1, "86400": 1}
+    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 900, limit=5)
+    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 1800, limit=5)
+    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 14400, limit=5)
+
+    before_second = len(client.kline_calls)
+    monkeypatch.setattr(db, "now_ts", lambda: base_ts + 20)
+    second_stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    second_calls = client.kline_calls[before_second:]
+
+    assert [interval for interval, _start, _limit in second_calls] == ["1"]
+    assert second_calls[0][1] is not None
+    assert second_stats["api_tf_fetches"] == {"60": 1}
+    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 900, limit=5)
+    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 1800, limit=5)
+    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 14400, limit=5)
+
+    conn.close()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Callable
 
 from .bybit_client import BybitPublicClient
 from . import db
@@ -16,6 +16,31 @@ VENUE_TO_CATEGORY = {
     "spot": "spot",
     "linear": "linear",
 }
+
+# Per-timeframe policy for REST collection.
+# High-frequency bars are updated aggressively; slow bars are throttled and/or derived locally.
+_API_TF_POLICY: dict[int, dict[str, Any]] = {
+    60: {"interval": "1", "cold_limit": 360, "delta_limit": 8, "overlap_bars": 4, "refresh_sec": 0},
+    900: {"interval": "15", "cold_limit": 120, "delta_limit": 4, "overlap_bars": 3, "refresh_sec": None},
+    1800: {"interval": "30", "cold_limit": 120, "delta_limit": 4, "overlap_bars": 3, "refresh_sec": None},
+    3600: {"interval": "60", "cold_limit": 420, "delta_limit": 6, "overlap_bars": 4, "refresh_sec": 5 * 60},
+    14400: {"interval": "240", "cold_limit": 120, "delta_limit": 4, "overlap_bars": 3, "refresh_sec": None},
+    86400: {"interval": "D", "cold_limit": 120, "delta_limit": 3, "overlap_bars": 2, "refresh_sec": 2 * 60 * 60},
+}
+
+# Only these TFs are fetched from REST after iteration #62.
+# 15m / 30m are maintained from 1m. 4h is maintained from 1h.
+_API_FETCH_TFS = (60, 3600, 86400)
+_DERIVED_TF_SOURCES: dict[int, int] = {
+    900: 60,
+    1800: 60,
+    14400: 3600,
+}
+
+# In-memory throttle for slow REST paths. This is intentionally process-local: it protects the
+# active leader from hammering Bybit, while warm DB state still survives process restarts.
+_LAST_TF_FETCH_ATTEMPT_TS: dict[tuple[str, str, int], int] = {}
+
 
 def _to_float(x: Any, *, minimum: float | None = None) -> float | None:
     try:
@@ -58,160 +83,420 @@ def _purge_expired_disabled_symbols(venue: str, now_ts: int) -> dict[str, int]:
 def _disable_symbol(venue: str, symbol: str, now_ts: int) -> int:
     disabled = _DISABLED_SYMBOLS.setdefault(venue, {})
     retry_at = int(now_ts) + DISABLED_SYMBOL_RETRY_TTL_SEC
-    disabled[str(symbol or '').upper()] = retry_at
+    disabled[str(symbol or "").upper()] = retry_at
     return retry_at
+
 
 def _is_not_supported_symbol(err: Exception) -> bool:
     msg = str(err)
     if "10001" not in msg:
         return False
     msg_l = msg.lower()
-    # Bybit returns different messages for invalid/pre-market/delisted symbols:
-    # "Not supported symbols", "symbol invalid", "params error: symbol invalid"
-    return any(k in msg_l for k in ("not supported symbols", "symbol invalid"))
+    return any(
+        k in msg_l
+        for k in (
+            "not supported symbols",
+            "symbol invalid",
+            "symbol not found",
+            "symbol is invalid",
+            "instrument does not exist",
+            "pre-market",
+            "delist",
+            "settlement",
+        )
+    )
 
-def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]) -> None:
-    category = VENUE_TO_CATEGORY[venue]
-    ts = db.now_ts()
 
-    disabled = _purge_expired_disabled_symbols(venue, ts)
-    symbols2 = [str(s).upper() for s in symbols if int(disabled.get(str(s).upper(), 0) or 0) <= ts]
+def _normalize_symbols(symbols: list[str], disabled: dict[str, int], now_ts: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        sym = str(raw or "").strip().upper()
+        if not sym or sym in seen:
+            continue
+        if int(disabled.get(sym, 0) or 0) > now_ts:
+            continue
+        out.append(sym)
+        seen.add(sym)
+    return out
 
+
+def _sanitize_ohlcv_row(venue: str, symbol: str, tf_sec: int, row: list[Any]) -> dict[str, Any] | None:
+    try:
+        start_ms = int(row[0])
+    except Exception:
+        return None
+    open_px = _to_float(row[1], minimum=0.0)
+    high_px = _to_float(row[2], minimum=0.0)
+    low_px = _to_float(row[3], minimum=0.0)
+    close_px = _to_float(row[4], minimum=0.0)
+    volume = _to_float(row[5], minimum=0.0)
+    if None in (open_px, high_px, low_px, close_px, volume):
+        return None
+    if high_px < max(open_px, close_px, low_px):
+        return None
+    if low_px > min(open_px, close_px, high_px):
+        return None
+    return {
+        "venue": venue,
+        "symbol": symbol,
+        "tf_sec": tf_sec,
+        "ts": start_ms // 1000,
+        "open": open_px,
+        "high": high_px,
+        "low": low_px,
+        "close": close_px,
+        "volume": volume,
+    }
+
+
+def _remote_ticker_ts(ticker: dict[str, Any], fallback_ts: int) -> int:
+    candidates = (
+        ticker.get("time"),
+        ticker.get("updateTime"),
+        ticker.get("ts"),
+        ticker.get("lastPriceTime"),
+    )
+    for raw in candidates:
+        try:
+            ts = int(raw)
+        except Exception:
+            continue
+        if ts > 10**11:
+            ts //= 1000
+        if ts > 0:
+            return ts
+    return int(fallback_ts)
+
+
+def _extract_funding_row(symbol: str, ticker: dict[str, Any], fallback_ts: int) -> dict[str, Any] | None:
+    funding_rate = _to_float(ticker.get("fundingRate"))
+    if funding_rate is None:
+        return None
+    next_funding_ts = None
+    try:
+        nft = int(ticker.get("nextFundingTime") or 0)
+        if nft > 10**11:
+            nft //= 1000
+        next_funding_ts = nft if nft > 0 else None
+    except Exception:
+        next_funding_ts = None
+    return {
+        "symbol": symbol,
+        "ts": _remote_ticker_ts(ticker, fallback_ts),
+        "funding_rate": funding_rate,
+        "next_funding_ts": next_funding_ts,
+    }
+
+
+def _client_get_tickers_batch(client: BybitPublicClient, category: str) -> list[dict[str, Any]] | None:
+    try:
+        return client.get_tickers(category=category)
+    except TypeError:
+        return None
+    except Exception:
+        raise
+
+
+def _fetch_ticker_payloads(
+    conn,
+    client: BybitPublicClient,
+    venue: str,
+    category: str,
+    symbols: list[str],
+    disabled: dict[str, int],
+    now_ts: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    symbols_set = set(symbols)
     ticker_rows: list[dict[str, Any]] = []
-    for sym in symbols2:
+    funding_rows: list[dict[str, Any]] = []
+    fetched_symbols: set[str] = set()
+
+    batch_items = _client_get_tickers_batch(client, category)
+    if batch_items is not None:
+        batch_ts = db.now_ts()
+        for item in batch_items:
+            sym = str(item.get("symbol") or "").upper()
+            if sym not in symbols_set:
+                continue
+            fetched_symbols.add(sym)
+            snap = _sanitize_ticker_payload(item)
+            ticker_rows.append(
+                {
+                    "venue": venue,
+                    "symbol": sym,
+                    "ts": _remote_ticker_ts(item, batch_ts),
+                    "last": snap["last"],
+                    "bid": snap["bid"],
+                    "ask": snap["ask"],
+                    "vol24h": snap["vol24h"],
+                    "turnover24h": snap["turnover24h"],
+                }
+            )
+            if venue == "linear":
+                funding_row = _extract_funding_row(sym, item, batch_ts)
+                if funding_row is not None:
+                    funding_rows.append(funding_row)
+
+    missing_symbols: list[str] = []
+    for sym in symbols:
+        if sym in fetched_symbols:
+            continue
         try:
             lst = client.get_tickers(category=category, symbol=sym)
             if not lst:
+                missing_symbols.append(sym)
                 continue
-            t = lst[0]
-            snap = _sanitize_ticker_payload(t)
-            ticker_rows.append({
-                "venue": venue,
-                "symbol": sym,
-                "ts": ts,
-                "last": snap["last"],
-                "bid": snap["bid"],
-                "ask": snap["ask"],
-                "vol24h": snap["vol24h"],
-                "turnover24h": snap["turnover24h"],
-            })
+            item = lst[0]
+            snap = _sanitize_ticker_payload(item)
+            row_ts = _remote_ticker_ts(item, db.now_ts())
+            ticker_rows.append(
+                {
+                    "venue": venue,
+                    "symbol": sym,
+                    "ts": row_ts,
+                    "last": snap["last"],
+                    "bid": snap["bid"],
+                    "ask": snap["ask"],
+                    "vol24h": snap["vol24h"],
+                    "turnover24h": snap["turnover24h"],
+                }
+            )
+            if venue == "linear":
+                funding_row = _extract_funding_row(sym, item, row_ts)
+                if funding_row is not None:
+                    funding_rows.append(funding_row)
         except Exception as e:
             if _is_not_supported_symbol(e):
-                retry_at = _disable_symbol(venue, sym, ts)
-                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e), "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC, "retry_at": retry_at})
-                continue
-            # Log with symbol name so operator can identify the culprit
-            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "err": str(e)})
-            continue  # don't crash the whole cycle for one symbol
-
-    if ticker_rows:
-        db.insert_tickers(conn, ticker_rows)
-
-    # Bybit v5 API valid kline intervals: 1, 3, 5, 15, 30, 60, 120, 240, 360, 720, D, W, M
-    # "1440" is NOT valid — use "D" for daily candles
-    intervals: dict[str, int] = {
-        "1": 60,
-        "15": 15 * 60,
-        "30": 30 * 60,
-        "60": 60 * 60,
-        "240": 240 * 60,
-        "D": 24 * 60 * 60,
-    }
-
-    ohlcv_rows: list[dict[str, Any]] = []
-    for sym in symbols2:
-        if int(disabled.get(sym, 0) or 0) > ts:
-            continue
-        for interval, tf_sec in intervals.items():
-            try:
-                limit = 220 if tf_sec <= 3600 else 320
-                kl = client.get_kline(category=category, symbol=sym, interval=interval, limit=limit)
-                for row in kl:
-                    try:
-                        start_ms = int(row[0])
-                    except Exception:
-                        continue
-                    open_px = _to_float(row[1], minimum=0.0)
-                    high_px = _to_float(row[2], minimum=0.0)
-                    low_px = _to_float(row[3], minimum=0.0)
-                    close_px = _to_float(row[4], minimum=0.0)
-                    volume = _to_float(row[5], minimum=0.0)
-                    if None in (open_px, high_px, low_px, close_px, volume):
-                        continue
-                    if high_px < max(open_px, close_px, low_px):
-                        continue
-                    if low_px > min(open_px, close_px, high_px):
-                        continue
-                    ohlcv_rows.append({
+                retry_at = _disable_symbol(venue, sym, now_ts)
+                disabled[sym] = retry_at
+                db.log_decision(
+                    conn,
+                    "SYMBOL_DISABLED",
+                    None,
+                    None,
+                    {
                         "venue": venue,
                         "symbol": sym,
-                        "tf_sec": tf_sec,
-                        "ts": start_ms // 1000,
-                        "open": open_px,
-                        "high": high_px,
-                        "low": low_px,
-                        "close": close_px,
-                        "volume": volume,
-                    })
+                        "reason": str(e),
+                        "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                        "retry_at": retry_at,
+                    },
+                )
+                continue
+            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "field": "ticker", "err": str(e)})
+            continue
+    return ticker_rows, funding_rows, missing_symbols
+
+
+def _should_fetch_api_tf(conn, venue: str, symbol: str, tf_sec: int, now_ts: int) -> bool:
+    policy = _API_TF_POLICY[tf_sec]
+    last_local_ts = db.get_latest_ohlcv_ts(conn, venue, symbol, tf_sec)
+    if last_local_ts is None:
+        return True
+    refresh_sec = policy.get("refresh_sec")
+    if refresh_sec in (None, 0):
+        return True
+    key = (venue, symbol, tf_sec)
+    last_attempt_ts = int(_LAST_TF_FETCH_ATTEMPT_TS.get(key, 0) or 0)
+    if now_ts - last_local_ts >= tf_sec:
+        return True
+    if last_attempt_ts <= 0:
+        return now_ts - last_local_ts >= int(refresh_sec)
+    return now_ts - last_attempt_ts >= int(refresh_sec)
+
+
+
+def _fetch_api_kline_rows(client: BybitPublicClient, category: str, symbol: str, tf_sec: int, last_local_ts: int | None) -> list[list[Any]]:
+    policy = _API_TF_POLICY[tf_sec]
+    interval = str(policy["interval"])
+    if last_local_ts is None:
+        limit = int(policy["cold_limit"])
+        try:
+            return client.get_kline(category=category, symbol=symbol, interval=interval, limit=limit)
+        except TypeError:
+            return client.get_kline(category=category, symbol=symbol, interval=interval, limit=limit)
+
+    overlap_bars = max(1, int(policy.get("overlap_bars", 2) or 2))
+    delta_limit = max(2, int(policy.get("delta_limit", overlap_bars + 2) or (overlap_bars + 2)))
+    start_ms = max(0, int(last_local_ts - overlap_bars * tf_sec) * 1000)
+    try:
+        return client.get_kline(category=category, symbol=symbol, interval=interval, limit=delta_limit, start=start_ms)
+    except TypeError:
+        return client.get_kline(category=category, symbol=symbol, interval=interval, limit=delta_limit)
+
+
+def _resample_rows(source_rows: list[dict[str, Any]], target_tf_sec: int) -> list[dict[str, Any]]:
+    if not source_rows:
+        return []
+    rows_ord = sorted(source_rows, key=lambda r: int(r["ts"]))
+    out: list[dict[str, Any]] = []
+    current_bucket: int | None = None
+    current_row: dict[str, Any] | None = None
+    for row in rows_ord:
+        ts = int(row["ts"])
+        bucket_ts = ts - (ts % int(target_tf_sec))
+        if current_bucket != bucket_ts:
+            if current_row is not None:
+                out.append(current_row)
+            current_bucket = bucket_ts
+            current_row = {
+                "venue": row["venue"],
+                "symbol": row["symbol"],
+                "tf_sec": int(target_tf_sec),
+                "ts": int(bucket_ts),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row["volume"]),
+            }
+            continue
+        assert current_row is not None
+        current_row["high"] = max(float(current_row["high"]), float(row["high"]))
+        current_row["low"] = min(float(current_row["low"]), float(row["low"]))
+        current_row["close"] = float(row["close"])
+        current_row["volume"] = float(current_row["volume"]) + float(row["volume"])
+    if current_row is not None:
+        out.append(current_row)
+    return out
+
+
+def _derive_local_tf_rows(conn, venue: str, symbol: str, source_tf_sec: int, target_tf_sec: int) -> list[dict[str, Any]]:
+    if source_tf_sec == 60:
+        source_limit = 360
+    elif source_tf_sec == 3600:
+        source_limit = 420
+    else:
+        source_limit = 500
+    source_rows = [dict(r) for r in reversed(db.get_latest_ohlcv(conn, venue, symbol, source_tf_sec, limit=source_limit))]
+    if not source_rows:
+        return []
+    return _resample_rows(source_rows, target_tf_sec)
+
+
+def _heartbeat(heartbeat: Callable[[], None] | None) -> None:
+    if heartbeat is None:
+        return
+    try:
+        heartbeat()
+    except Exception:
+        return
+
+
+def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat: Callable[[], None] | None = None) -> dict[str, Any]:
+    category = VENUE_TO_CATEGORY[venue]
+    now_ts = db.now_ts()
+
+    disabled = _purge_expired_disabled_symbols(venue, now_ts)
+    symbols2 = _normalize_symbols(symbols, disabled, now_ts)
+    stats: dict[str, Any] = {
+        "venue": venue,
+        "symbols_total": len(symbols2),
+        "tickers_written": 0,
+        "funding_written": 0,
+        "ohlcv_written": 0,
+        "api_tf_fetches": {},
+        "derived_tf_writes": {},
+    }
+
+    ticker_rows, funding_rows, _missing_symbols = _fetch_ticker_payloads(conn, client, venue, category, symbols2, disabled, now_ts)
+    if ticker_rows:
+        db.insert_tickers(conn, ticker_rows, commit=False)
+        stats["tickers_written"] = len(ticker_rows)
+    if funding_rows:
+        db.upsert_funding_rate(conn, funding_rows, commit=False)
+        stats["funding_written"] = len(funding_rows)
+    _heartbeat(heartbeat)
+
+    ohlcv_rows: list[dict[str, Any]] = []
+    api_fetch_counts: dict[int, int] = {}
+    derived_write_counts: dict[int, int] = {}
+
+    for sym in symbols2:
+        if int(disabled.get(sym, 0) or 0) > now_ts:
+            continue
+        # REST-backed TFs: 1m, 1h, 1d
+        for tf_sec in _API_FETCH_TFS:
+            if not _should_fetch_api_tf(conn, venue, sym, tf_sec, now_ts):
+                continue
+            key = (venue, sym, tf_sec)
+            _LAST_TF_FETCH_ATTEMPT_TS[key] = now_ts
+            try:
+                rows_raw = _fetch_api_kline_rows(client, category, sym, tf_sec, db.get_latest_ohlcv_ts(conn, venue, sym, tf_sec))
+                appended = 0
+                for row in rows_raw:
+                    payload = _sanitize_ohlcv_row(venue, sym, tf_sec, row)
+                    if payload is None:
+                        continue
+                    ohlcv_rows.append(payload)
+                    appended += 1
+                if appended > 0:
+                    api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
             except Exception as e:
                 if _is_not_supported_symbol(e):
-                    retry_at = _disable_symbol(venue, sym, ts)
-                    db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": venue, "symbol": sym, "reason": str(e), "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC, "retry_at": retry_at})
+                    retry_at = _disable_symbol(venue, sym, now_ts)
+                    disabled[sym] = retry_at
+                    db.log_decision(
+                        conn,
+                        "SYMBOL_DISABLED",
+                        None,
+                        None,
+                        {
+                            "venue": venue,
+                            "symbol": sym,
+                            "reason": str(e),
+                            "field": f"kline_{tf_sec}",
+                            "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                            "retry_at": retry_at,
+                        },
+                    )
                     break
-                # Transient error (rate limit, timeout) — continue with next interval
-                # only break for symbol-level errors (_is_not_supported_symbol handles those above)
-                db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "err": str(e)})
-                continue  # try next interval; don't abandon all intervals for this symbol
+                db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": sym, "field": f"kline_{tf_sec}", "err": str(e)})
+                continue
+        _heartbeat(heartbeat)
 
     if ohlcv_rows:
-        db.upsert_ohlcv(conn, ohlcv_rows)
+        db.upsert_ohlcv(conn, ohlcv_rows, commit=False)
+        stats["ohlcv_written"] += len(ohlcv_rows)
+
+    # Maintain derived TFs locally after primary source TFs are written.
+    for target_tf_sec, source_tf_sec in _DERIVED_TF_SOURCES.items():
+        for sym in symbols2:
+            if int(disabled.get(sym, 0) or 0) > now_ts:
+                continue
+            derived_rows = _derive_local_tf_rows(conn, venue, sym, source_tf_sec, target_tf_sec)
+            if not derived_rows:
+                continue
+            db.upsert_ohlcv(conn, derived_rows, commit=False)
+            stats["ohlcv_written"] += len(derived_rows)
+            derived_write_counts[target_tf_sec] = derived_write_counts.get(target_tf_sec, 0) + len(derived_rows)
+        _heartbeat(heartbeat)
+
+    conn.commit()
+    stats["api_tf_fetches"] = {str(tf): cnt for tf, cnt in sorted(api_fetch_counts.items())}
+    stats["derived_tf_writes"] = {str(tf): cnt for tf, cnt in sorted(derived_write_counts.items())}
+    return stats
 
 
-def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
-    """Collect funding rate + open interest for all linear symbols.
-    Called once per collect cycle, only for futures venue.
+
+def collect_futures_once(conn, client, symbols_linear: list[str], heartbeat: Callable[[], None] | None = None) -> dict[str, Any]:
+    """Collect open interest for all linear symbols.
+    Funding rate is refreshed from the linear ticker batch inside collect_once().
     Errors are logged per-symbol and never abort the cycle.
     """
     ts_now = db.now_ts()
-    funding_rows: list[dict] = []
-
     disabled = _purge_expired_disabled_symbols("linear", ts_now)
 
-    for sym in [str(s).upper() for s in symbols_linear]:
+    oi_written = 0
+    oi_symbols = 0
+    for sym in _normalize_symbols(symbols_linear, disabled, ts_now):
         if int(disabled.get(sym, 0) or 0) > ts_now:
             continue
-        # Funding rate — reuse linear tickers (already fetched in collect_once,
-        # but fundingRate is in the ticker payload, so we grab it separately here
-        # to keep concerns separated and allow different call frequencies)
         try:
-            fr = client.get_funding_rate(sym)
-            if fr:
-                funding_rate = _to_float(fr.get("funding_rate"))
-                next_funding_ts = None
-                try:
-                    raw_next_funding_ts = fr.get("next_funding_ts")
-                    if raw_next_funding_ts not in (None, ""):
-                        next_funding_ts = int(raw_next_funding_ts)
-                except Exception:
-                    next_funding_ts = None
-                if funding_rate is not None:
-                    funding_rows.append({
-                        "symbol": sym,
-                        "ts": ts_now,
-                        "funding_rate": funding_rate,
-                        "next_funding_ts": next_funding_ts,
-                    })
-        except Exception as e:
-            if _is_not_supported_symbol(e):
-                retry_at = _disable_symbol("linear", sym, ts_now)
-                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": sym, "reason": str(e), "field": "funding_rate", "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC, "retry_at": retry_at})
-                continue
-            db.log_decision(conn, "COLLECT_ERROR", None, None,
-                            {"venue": "linear", "symbol": sym, "field": "funding_rate", "err": str(e)})
-
-        # Open interest — 48 × 1h candles
-        try:
-            oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=48)
+            last_oi_ts = db.get_latest_open_interest_ts(conn, sym)
+            limit = 72 if last_oi_ts is None else 6
+            oi_rows_raw = client.get_open_interest(sym, interval="1h", limit=limit)
             oi_rows = []
             for row in oi_rows_raw or []:
                 try:
@@ -223,14 +508,31 @@ def collect_futures_once(conn, client, symbols_linear: list[str]) -> None:
                     continue
                 oi_rows.append({"ts": ts, "oi": oi})
             if oi_rows:
-                db.upsert_open_interest(conn, sym, oi_rows)
+                db.upsert_open_interest(conn, sym, oi_rows, commit=False)
+                oi_written += len(oi_rows)
+                oi_symbols += 1
         except Exception as e:
             if _is_not_supported_symbol(e):
                 retry_at = _disable_symbol("linear", sym, ts_now)
-                db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": sym, "reason": str(e), "field": "open_interest", "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC, "retry_at": retry_at})
+                disabled[sym] = retry_at
+                db.log_decision(
+                    conn,
+                    "SYMBOL_DISABLED",
+                    None,
+                    None,
+                    {
+                        "venue": "linear",
+                        "symbol": sym,
+                        "reason": str(e),
+                        "field": "open_interest",
+                        "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                        "retry_at": retry_at,
+                    },
+                )
                 continue
-            db.log_decision(conn, "COLLECT_ERROR", None, None,
-                            {"venue": "linear", "symbol": sym, "field": "open_interest", "err": str(e)})
+            db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": sym, "field": "open_interest", "err": str(e)})
+        finally:
+            _heartbeat(heartbeat)
 
-    if funding_rows:
-        db.upsert_funding_rate(conn, funding_rows)
+    conn.commit()
+    return {"venue": "linear", "open_interest_symbols": oi_symbols, "open_interest_written": oi_written}

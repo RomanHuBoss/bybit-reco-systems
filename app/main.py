@@ -768,27 +768,42 @@ def _collector_thread():
     client = BybitPublicClient(settings.bybit_base_url)
     _last_futures_collect = 0.0
     lock_key = "runtime:collector"
-    lock_ttl = max(60, settings.collect_interval_sec * 4)
+    lock_ttl = max(120, settings.collect_interval_sec * 20)
     next_run = _interval_loop_start(settings.collect_interval_sec)
     try:
         while True:
             with closing(_get_conn()) as conn:
                 has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
             if has_lock:
+                cycle_started = time.time()
+                cycle_stats: dict[str, Any] = {
+                    "started_ts": int(cycle_started),
+                    "owner": RUNTIME_OWNER,
+                    "venues": [],
+                    "futures_meta": {},
+                    "duration_ms": 0,
+                }
                 with closing(_get_conn()) as conn:
+                    heartbeat = lambda: db.heartbeat_runtime_lock(conn, lock_key, RUNTIME_OWNER)
                     for venue in settings.venues:
                         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
                         try:
-                            collect_once(conn, client, venue, symbols)
+                            cycle_stats["venues"].append(collect_once(conn, client, venue, symbols, heartbeat=heartbeat))
                         except Exception as e:
                             db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
+                        heartbeat()
                 if time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
                     with closing(_get_conn()) as conn:
                         try:
-                            collect_futures_once(conn, client, settings.symbols_linear)
+                            heartbeat = lambda: db.heartbeat_runtime_lock(conn, lock_key, RUNTIME_OWNER)
+                            cycle_stats["futures_meta"] = collect_futures_once(conn, client, settings.symbols_linear, heartbeat=heartbeat)
+                            heartbeat()
                             _last_futures_collect = time.time()
                         except Exception as e:
                             db.log_decision(conn, "COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
+                cycle_stats["duration_ms"] = int((time.time() - cycle_started) * 1000)
+                with closing(_get_conn()) as conn:
+                    db.set_app_config_json(conn, "collector_last_cycle", cycle_stats)
             next_run = _interval_loop_wait(next_run, settings.collect_interval_sec)
     finally:
         client.close()
@@ -902,6 +917,7 @@ def api_status() -> dict[str, Any]:
         from .sentiment_features import compute_sentiment_agg
 
         llm_async_status = db.get_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, default={}) or {}
+        collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
 
         global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
         calib_fitted = bool(global_model and global_model.fitted)
@@ -1074,6 +1090,7 @@ def api_status() -> dict[str, Any]:
                 "keep_alive": str(getattr(settings, "llm_reviewer_keep_alive", "90s") or "90s"),
                 "worker": llm_async_status,
             },
+            "collector": collector_last_cycle,
         }
 
 
