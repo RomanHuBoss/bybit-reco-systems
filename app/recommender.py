@@ -29,6 +29,12 @@ MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
+LLM_REVIEWER_DEFAULT_CANDLES_PER_TF = 32
+LLM_REVIEWER_DEFAULT_MAX_CANDIDATES = 24
+LLM_REVIEWER_DEFAULT_MAX_WORKERS = 2
+LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE = 0.65
+LLM_REVIEWER_DEFAULT_CADENCE_SEC = 300
+
 
 def _fmt_tf(tf_sec: int) -> str:
     if tf_sec % 86400 == 0:
@@ -81,7 +87,7 @@ def _llm_reviewer_context_signature(settings) -> str:
         if tf_i > 0:
             tf_secs.append(tf_i)
     tf_secs = sorted(set(tf_secs))
-    candles_per_tf = max(1, int(getattr(settings, "llm_reviewer_candles_per_tf", 32) or 32))
+    candles_per_tf = max(1, int(getattr(settings, "llm_reviewer_candles_per_tf", LLM_REVIEWER_DEFAULT_CANDLES_PER_TF) or LLM_REVIEWER_DEFAULT_CANDLES_PER_TF))
     return f"tf={','.join(str(tf) for tf in tf_secs)}|candles={candles_per_tf}"
 
 
@@ -373,11 +379,11 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
     if mode not in {"advisory", "gate"}:
         mode = "advisory"
-    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
-    min_conf = float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65)
+    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
+    min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
-    max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4))
+    max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", LLM_REVIEWER_DEFAULT_MAX_CANDIDATES) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES))
     candidates = [r for r in recs if str(r.get("status") or "") == "recommended"]
     candidates.sort(key=_llm_candidate_sort_key, reverse=True)
     queued_ids = {str(r.get("rec_id")) for r in candidates[:max_candidates]}
@@ -452,58 +458,69 @@ def _should_enqueue_llm_review(rec: dict[str, Any]) -> bool:
 
 def _llm_review_recent_sec(settings) -> int:
     ttl_sec = _recommendation_ttl_sec(settings)
-    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
     return max(int(ttl_sec), cadence_sec * 4, 3600)
+
+
+def _llm_pending_sort_key(rec: dict[str, Any]) -> tuple[int, float, float]:
+    return (int(rec.get("ts") or 0), float(rec.get("confidence") or 0.0), float(rec.get("score") or 0.0))
+
+
+
+def _llm_pending_first_seen_ts(rec: dict[str, Any]) -> int:
+    llm_review = ((rec.get("reasons") or {}).get("llm_review") if isinstance(rec.get("reasons"), dict) else None) or {}
+    queued_ts = llm_review.get("queued_ts") if isinstance(llm_review, dict) else None
+    try:
+        queued_val = int(queued_ts)
+    except Exception:
+        queued_val = 0
+    if queued_val > 0:
+        return queued_val
+    return int(rec.get("ts") or 0)
+
 
 
 def _recent_pending_llm_candidates(conn, settings, max_candidates: int, *, snapshot_ts: int | None = None) -> list[dict[str, Any]]:
     recent_sec = _llm_review_recent_sec(settings)
     limit = max(max_candidates * 12, max_candidates)
-    snapshot_pool = db.get_recent_llm_review_candidates(
+    if snapshot_ts is not None:
+        limit = max(limit * 6, 200)
+    recent_pool = db.get_recent_llm_review_candidates(
         conn,
         recent_sec=recent_sec,
         limit=limit,
-        snapshot_ts=snapshot_ts,
+        snapshot_ts=None,
     )
-    pending_snapshot = [r for r in snapshot_pool if _should_enqueue_llm_review(r)]
-    pending_snapshot.sort(key=lambda r: (int(r.get("ts") or 0), float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
-
-    selected_keys: list[str] = []
-    selected_set: set[str] = set()
-    max_unique = max(1, int(max_candidates))
-    for rec in pending_snapshot:
-        cache_key = _llm_cache_key(rec)
-        if cache_key in selected_set:
-            continue
-        selected_keys.append(cache_key)
-        selected_set.add(cache_key)
-        if len(selected_keys) >= max_unique:
-            break
-    if not selected_set:
+    pending = [r for r in recent_pool if _should_enqueue_llm_review(r)]
+    if not pending:
         return []
 
-    if snapshot_ts is None:
-        pending = pending_snapshot
-    else:
-        recent_pool = db.get_recent_llm_review_candidates(
-            conn,
-            recent_sec=recent_sec,
-            limit=max(limit * 6, 200),
-            snapshot_ts=None,
-        )
-        pending = [r for r in recent_pool if _should_enqueue_llm_review(r)]
-        pending.sort(key=lambda r: (int(r.get("ts") or 0), float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
+    grouped_pending: dict[str, list[dict[str, Any]]] = {}
+    for rec in pending:
+        grouped_pending.setdefault(_llm_cache_key(rec), []).append(rec)
 
-    return [rec for rec in pending if _llm_cache_key(rec) in selected_set]
+    ordered_groups: list[tuple[int, list[dict[str, Any]]]] = []
+    for peers in grouped_pending.values():
+        peers.sort(key=_llm_pending_sort_key, reverse=True)
+        first_seen_ts = min(_llm_pending_first_seen_ts(peer) for peer in peers)
+        ordered_groups.append((first_seen_ts, peers))
+    ordered_groups.sort(key=lambda item: (item[0], -_llm_pending_sort_key(item[1][0])[0], -_llm_pending_sort_key(item[1][0])[1], -_llm_pending_sort_key(item[1][0])[2]))
+
+    selected: list[dict[str, Any]] = []
+    for _, peers in ordered_groups[:max(1, int(max_candidates))]:
+        selected.extend(peers)
+    return selected
+
 
 
 def _count_recent_pending_llm_candidates(conn, settings, *, snapshot_ts: int | None = None) -> int:
     recent_sec = _llm_review_recent_sec(settings)
+    limit = 2000 if snapshot_ts is None else 4000
     pool = db.get_recent_llm_review_candidates(
         conn,
         recent_sec=recent_sec,
-        limit=2000,
-        snapshot_ts=snapshot_ts,
+        limit=limit,
+        snapshot_ts=None,
     )
     return sum(1 for r in pool if _should_enqueue_llm_review(r))
 
@@ -523,8 +540,8 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
         "pending_before": 0,
         "pending_after": 0,
         "duration_ms": 0,
-        "max_workers": int(getattr(settings, "llm_reviewer_max_workers", 8) or 8),
-        "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4),
+        "max_workers": int(getattr(settings, "llm_reviewer_max_workers", LLM_REVIEWER_DEFAULT_MAX_WORKERS) or LLM_REVIEWER_DEFAULT_MAX_WORKERS),
+        "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", LLM_REVIEWER_DEFAULT_MAX_CANDIDATES) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES),
     }
     if not stats["enabled"]:
         return stats
@@ -545,8 +562,8 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
         return stats
 
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
-    min_conf = float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65)
-    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+    min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
+    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     cache_dirty = False
@@ -597,7 +614,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
         grouped_candidates.setdefault(cache_key, []).append(rec)
 
     tf_secs = list(getattr(settings, "llm_reviewer_tf_secs", []) or [])
-    candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", 48) or 48)
+    candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", LLM_REVIEWER_DEFAULT_CANDLES_PER_TF) or LLM_REVIEWER_DEFAULT_CANDLES_PER_TF)
     jobs: list[tuple[str, dict[str, Any], list[dict[str, Any]], dict[str, Any]]] = []
     for cache_key, peers in grouped_candidates.items():
         if len(jobs) >= int(stats["max_candidates"]):
@@ -628,7 +645,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
         db.log_decision(conn, "LLM_REVIEW_SWEEP", None, None, stats)
         return stats
 
-    max_workers = max(1, min(int(getattr(settings, "llm_reviewer_max_workers", 8) or 8), len(jobs)))
+    max_workers = max(1, min(int(getattr(settings, "llm_reviewer_max_workers", LLM_REVIEWER_DEFAULT_MAX_WORKERS) or LLM_REVIEWER_DEFAULT_MAX_WORKERS), len(jobs)))
     stats["max_workers"] = max_workers
     futures = {}
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="llm-review") as pool:
@@ -820,9 +837,9 @@ def _apply_llm_reviewer(
     if reviewer is None:
         return stats
 
-    max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", 4) or 4))
-    min_conf = float(getattr(settings, "llm_reviewer_min_confidence", 0.65) or 0.65)
-    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300))
+    max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", LLM_REVIEWER_DEFAULT_MAX_CANDIDATES) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES))
+    min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
+    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     cache_dirty = False
@@ -1994,7 +2011,7 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     symbol_ticker_map: dict[tuple[str,str], Any] = {}  # stores trow per (venue,sym)
     symbol_llm_candle_map: dict[tuple[str, str], dict[int, list[list[float | int]]]] = {}
     llm_tf_set = set(getattr(settings, "llm_reviewer_tf_secs", []) or []) if bool(getattr(settings, "llm_reviewer_enabled", False)) else set()
-    llm_candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", 48) or 48)
+    llm_candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", LLM_REVIEWER_DEFAULT_CANDLES_PER_TF) or LLM_REVIEWER_DEFAULT_CANDLES_PER_TF)
 
     ts_now = db.now_ts()  # set here for stale gate use inside feature loop
 

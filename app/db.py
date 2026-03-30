@@ -1477,13 +1477,20 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
 
 # ── Symbol health ─────────────────────────────────────────────────────────────
 
-def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols_linear: list[str], stale_sec: int = 300) -> list[dict]:
+def get_symbol_health(
+    conn: sqlite3.Connection,
+    symbols_spot: list[str],
+    symbols_linear: list[str],
+    stale_sec: int = 300,
+    *,
+    active_venues: list[str] | None = None,
+) -> list[dict]:
     """
-    Returns health status for each configured symbol:
+    Returns health status for each configured symbol on active venues:
       last_candle_ts: newest 1m candle timestamp
       last_ticker_ts: newest ticker timestamp
       age_sec:        seconds since last candle
-      status:         'ok' | 'stale' | 'missing'
+      status:         'ok' | 'stale' | 'missing' | 'disabled'
       error_count_10m: COLLECT_ERRORs for this symbol in last 10 min
       disabled:       True if SYMBOL_DISABLED in last 24h
     """
@@ -1538,7 +1545,14 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
         except Exception:
             logger.debug("health: disabled_syms parse error", exc_info=True)
 
-    for venue, symbols in [("spot", symbols_spot), ("linear", symbols_linear)]:
+    active_set = {str(v or "").strip().lower() for v in (active_venues or ["spot", "linear"])}
+    venue_symbols: list[tuple[str, list[str]]] = []
+    if "spot" in active_set:
+        venue_symbols.append(("spot", symbols_spot))
+    if "linear" in active_set:
+        venue_symbols.append(("linear", symbols_linear))
+
+    for venue, symbols in venue_symbols:
         for sym in symbols:
             # last 1m candle
             cur2 = conn.execute(
@@ -1554,8 +1568,11 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
             rt = cur3.fetchone()
             last_ticker_ts = int(rt["m"]) if rt and rt["m"] else None
             age_sec = (now - last_ts) if last_ts else None
+            is_disabled = (venue, sym) in disabled_syms
 
-            if last_ts is None:
+            if is_disabled and (last_ts is None or age_sec is None or age_sec > stale_sec):
+                status = "disabled"
+            elif last_ts is None:
                 status = "missing"
             elif age_sec > stale_sec:
                 status = "stale"
@@ -1571,10 +1588,11 @@ def get_symbol_health(conn: sqlite3.Connection, symbols_spot: list[str], symbols
                 "status":          status,
                 "error_count_10m": error_counts.get((venue, sym), 0),
                 "stale_skips_1h":  stale_counts.get((venue, sym), 0),
-                "disabled":        (venue, sym) in disabled_syms,
+                "disabled":        is_disabled,
             })
 
-    return sorted(result, key=lambda x: (x["status"] != "missing", x["status"] != "stale", x["symbol"]))
+    status_rank = {"disabled": 0, "missing": 1, "stale": 2, "ok": 3}
+    return sorted(result, key=lambda x: (status_rank.get(str(x.get("status") or ""), 9), x["symbol"]))
 
 def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, int]:
     """Prune old rows from high-growth tables. Call periodically (e.g. once per hour).

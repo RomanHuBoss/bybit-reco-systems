@@ -130,9 +130,20 @@ class Settings:
 
 def load_settings() -> Settings:
     _maybe_load_dotenv()
-    venues = [v.strip() for v in _env("VENUES", "spot,linear").split(",") if v.strip()]
-    symbols_spot = [s.strip().upper() for s in _env("SYMBOLS_SPOT", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
-    symbols_linear = [s.strip().upper() for s in _env("SYMBOLS_LINEAR", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
+    supported_venues = {"spot", "linear"}
+    venues: list[str] = []
+    for raw_venue in _env("VENUES", "spot,linear").split(","):
+        venue = str(raw_venue or "").strip().lower()
+        if not venue or venue not in supported_venues or venue in venues:
+            continue
+        venues.append(venue)
+    if not venues:
+        venues = ["spot", "linear"]
+
+    symbols_spot_default = "BTCUSDT,ETHUSDT" if "spot" in venues else ""
+    symbols_linear_default = "BTCUSDT,ETHUSDT" if "linear" in venues else ""
+    symbols_spot = [s.strip().upper() for s in _env("SYMBOLS_SPOT", symbols_spot_default).split(",") if s.strip()] if "spot" in venues else []
+    symbols_linear = [s.strip().upper() for s in _env("SYMBOLS_LINEAR", symbols_linear_default).split(",") if s.strip()] if "linear" in venues else []
 
     risk_limits = _env_json_dict(
         "RISK_LIMITS_JSON",

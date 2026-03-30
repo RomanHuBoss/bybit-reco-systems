@@ -438,6 +438,47 @@ def test_env_example_llm_reviewer_defaults_match_runtime_defaults():
     assert env_map['LLM_REVIEWER_KEEP_ALIVE'] == '90s'
 
 
+def test_load_settings_ignores_inactive_venue_symbol_defaults(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('VENUES', 'linear')
+    monkeypatch.delenv('SYMBOLS_SPOT', raising=False)
+    monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT,ETHUSDT')
+
+    from app.settings import load_settings
+
+    settings = load_settings()
+
+    assert settings.venues == ['linear']
+    assert settings.symbols_spot == []
+    assert settings.symbols_linear == ['BTCUSDT', 'ETHUSDT']
+
+
+def test_api_health_only_reports_active_venues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / 'api.db'
+    monkeypatch.setenv('DB_PATH', str(db_path))
+    monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
+    monkeypatch.setenv('VENUES', 'linear')
+    monkeypatch.delenv('SYMBOLS_SPOT', raising=False)
+    monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
+
+    sys.modules.pop('app.main', None)
+    app_main = importlib.import_module('app.main')
+    app_main.app.router.on_startup.clear()
+
+    conn = db.connect(str(db_path))
+    client = TestClient(app_main.app)
+    try:
+        resp = client.get('/api/v1/health/symbols')
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body['venues'] == ['linear']
+        assert body['summary']['disabled'] == 0
+        assert {item['venue'] for item in body['symbols']} == {'linear'}
+    finally:
+        client.close()
+        conn.close()
+        sys.modules.pop('app.main', None)
+
+
 def test_api_recommendations_counts_missing_llm_review_as_none_and_not_pending(client_and_conn):
     client, conn = client_and_conn
     ts_now = int(time.time())

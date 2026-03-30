@@ -670,7 +670,7 @@ def test_async_llm_sweep_processes_pending_backlog_across_recent_snapshots(conn,
     rec_new = db.get_recommendation_by_id(conn, "R-async-backlog-2")
 
     assert reviewer.calls == 1
-    assert stats["pending_before"] == 1
+    assert stats["pending_before"] == 2
     assert stats["pending_after"] == 0
     assert stats["completed"] == 2
     assert stats["inherited"] == 1
@@ -790,6 +790,17 @@ def test_async_llm_sweep_does_not_let_cached_top_keys_starve_uncached_pending_sy
     assert rec_ddd["reasons"]["llm_review"]["status"] == "ok"
     assert rec_ccc["reasons"]["llm_review"]["source"] == "async_live"
     assert rec_ddd["reasons"]["llm_review"]["source"] == "async_live"
+
+def test_get_symbol_health_marks_disabled_symbols_separately(conn):
+    db.log_decision(conn, "SYMBOL_DISABLED", None, None, {"venue": "linear", "symbol": "BADUSDT"})
+
+    items = db.get_symbol_health(conn, [], ["BADUSDT"], active_venues=["linear"])
+
+    assert len(items) == 1
+    assert items[0]["symbol"] == "BADUSDT"
+    assert items[0]["status"] == "disabled"
+    assert items[0]["disabled"] is True
+
 
 def test_recent_pending_llm_candidates_prioritizes_unique_cache_keys(conn):
     ts_now = int(time.time())
@@ -1897,7 +1908,7 @@ def test_mark_llm_reviews_async_defers_overflow_candidates_without_final_skip(co
     assert recs[1]["reasons"]["llm_review"]["gate_decision"] == "pending"
 
 
-def test_run_llm_review_sweep_only_counts_latest_snapshot_pending(conn, monkeypatch):
+def test_run_llm_review_sweep_processes_recent_pending_backlog(conn, monkeypatch):
     class FakeReviewer:
         provider = "ollama"
         model = "fake-llm"
@@ -1974,12 +1985,16 @@ def test_run_llm_review_sweep_only_counts_latest_snapshot_pending(conn, monkeypa
     monkeypatch.setattr(recommender_module, "_make_llm_reviewer", lambda settings: reviewer)
 
     stats = run_llm_review_sweep_once(conn, settings)
+    saved_old = db.get_recommendation_by_id(conn, "R-old-pending")
 
     assert stats["snapshot_ts"] == ts_now
-    assert stats["pending_before"] == 0
+    assert stats["pending_before"] == 1
     assert stats["pending_after"] == 0
-    assert stats["queued"] == 0
-    assert reviewer.calls == 0
+    assert stats["queued"] == 1
+    assert stats["completed"] == 1
+    assert reviewer.calls == 1
+    assert saved_old is not None
+    assert saved_old["reasons"]["llm_review"]["status"] == "ok"
 
 
 

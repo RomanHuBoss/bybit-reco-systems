@@ -961,7 +961,13 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
 
 function renderHealthStatus(status) {
   const value = String(status || "missing").toLowerCase();
-  const cls = value === "ok" ? "health-status-ok" : value === "stale" ? "health-status-stale" : "health-status-missing";
+  const cls = value === "ok"
+    ? "health-status-ok"
+    : value === "stale"
+      ? "health-status-stale"
+      : value === "disabled"
+        ? "health-status-stale"
+        : "health-status-missing";
   return `<span class="health-status ${cls}">${escapeHtml(value)}</span>`;
 }
 
@@ -1285,7 +1291,7 @@ async function loadHealth() {
     ? llm.tf_secs.map(tf => tf >= 3600 ? `${Math.round(tf / 3600)}h` : `${Math.round(tf / 60)}m`).join(", ")
     : "—";
   const symbols = [...(data.symbols || [])].sort((a, b) => {
-    const rank = { missing: 0, stale: 1, ok: 2 };
+    const rank = { disabled: 0, missing: 1, stale: 2, ok: 3 };
     const ra = rank[a.status] ?? 9;
     const rb = rank[b.status] ?? 9;
     if (ra !== rb) return ra - rb;
@@ -1299,6 +1305,7 @@ async function loadHealth() {
       { label: "OK", value: Number(sum.ok || 0) },
       { label: "Stale", value: Number(sum.stale || 0) },
       { label: "Missing", value: Number(sum.missing || 0) },
+      { label: "Disabled", value: Number(sum.disabled || 0) },
       { label: "Ошибки / 10 мин", value: Number(sum.errors_10m || 0) },
       { label: "LLM reviewer", html: renderLlmStatusBadge(llm.enabled ? (llm.mode || "enabled") : "disabled") },
       { label: "Модель", value: llm.model || "—" },

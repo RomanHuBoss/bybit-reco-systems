@@ -690,14 +690,23 @@ def api_outcomes_stats() -> dict[str, Any]:
 @app.get("/api/v1/health/symbols")
 def api_symbol_health() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
-        items = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
+        active_venues = list(getattr(settings, "venues", []) or [])
+        items = db.get_symbol_health(
+            conn,
+            settings.symbols_spot,
+            settings.symbols_linear,
+            stale_sec=settings.stale_data_max_sec,
+            active_venues=active_venues,
+        )
         n_ok = sum(1 for i in items if i["status"] == "ok")
         n_stale = sum(1 for i in items if i["status"] == "stale")
         n_missing = sum(1 for i in items if i["status"] == "missing")
+        n_disabled = sum(1 for i in items if i["status"] == "disabled")
         n_errors = sum(i["error_count_10m"] for i in items)
         return {
             "ts": int(time.time()),
-            "summary": {"ok": n_ok, "stale": n_stale, "missing": n_missing, "errors_10m": n_errors},
+            "summary": {"ok": n_ok, "stale": n_stale, "missing": n_missing, "disabled": n_disabled, "errors_10m": n_errors},
+            "venues": active_venues,
             "llm_reviewer": {
                 "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
                 "mode": getattr(settings, "llm_reviewer_mode", "advisory"),
