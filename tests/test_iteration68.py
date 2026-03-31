@@ -184,8 +184,6 @@ def test_make_runtime_lock_heartbeat_fails_closed_on_db_error(tmp_path: Path, mo
         db.init_db(conn)
         conn.close()
 
-        hb_conn = db.connect(str(db_path))
-
         def boom(*args, **kwargs):
             raise RuntimeError("heartbeat db error")
 
@@ -194,7 +192,6 @@ def test_make_runtime_lock_heartbeat_fails_closed_on_db_error(tmp_path: Path, mo
 
         with pytest.raises(collector.RuntimeLockLostError):
             collector._heartbeat(heartbeat)
-        hb_conn.close()
     finally:
         sys.modules.pop("app.main", None)
 

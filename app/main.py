@@ -44,10 +44,6 @@ def _get_conn():
     return db.connect(settings.db_path)
 
 
-def _get_lock_conn():
-    return db.connect_runtime_locks(settings.db_path)
-
-
 def _interval_loop_start(interval_sec: int) -> float:
     return time.monotonic() + max(1, int(interval_sec))
 
@@ -94,8 +90,6 @@ def _bootstrap_db() -> None:
                     "deleted_calibrators": int(deleted_calibrators or 0),
                 },
             )
-    with closing(_get_lock_conn()) as lock_conn:
-        db.init_runtime_lock_db(lock_conn)
 
 
 _bootstrap_db()
@@ -218,10 +212,10 @@ def _log_decision_fresh(action: str, rec_id: str | None, operator: str | None, d
         db.log_decision(log_conn, action, rec_id, operator, details)
 
 
-def _make_runtime_lock_heartbeat(lock_key: str, lock_conn_factory=_get_lock_conn):
+def _make_runtime_lock_heartbeat(lock_key: str):
     def _heartbeat() -> bool:
         try:
-            with closing(lock_conn_factory()) as lock_conn:
+            with closing(_get_conn()) as lock_conn:
                 return bool(db.heartbeat_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER))
         except Exception:
             logger.warning("runtime lock heartbeat failed", exc_info=True)
@@ -229,16 +223,33 @@ def _make_runtime_lock_heartbeat(lock_key: str, lock_conn_factory=_get_lock_conn
     return _heartbeat
 
 
-def _require_runtime_heartbeat(heartbeat, err_msg: str) -> None:
-    if heartbeat is None:
-        return
-    ok = False
-    try:
-        ok = bool(heartbeat())
-    except Exception:
-        ok = False
-    if not ok:
-        raise RuntimeLockLostError(err_msg)
+def _collector_warmup_status(conn) -> dict[str, Any]:
+    status = db.get_recommender_warmup_status(
+        conn,
+        settings.symbols_spot,
+        settings.symbols_linear,
+        stale_sec=int(settings.stale_data_max_sec),
+        min_rows_per_tf=80,
+        required_tfs=(60, 900, 1800, 3600, 14400, 86400),
+        active_venues=list(settings.venues),
+    )
+    min_ratio = max(0.0, min(1.0, float(getattr(settings, "reco_warmup_min_ready_ratio", 0.85) or 0.85)))
+    min_symbols = max(1, int(getattr(settings, "reco_warmup_min_ready_symbols", 1) or 1))
+    venue_summaries = status.get("venues") if isinstance(status.get("venues"), list) else []
+    ready = True
+    for item in venue_summaries:
+        total = int(item.get("symbols_total") or 0)
+        ready_symbols = int(item.get("ready_symbols") or 0)
+        if total <= 0:
+            continue
+        required_ready = max(min_symbols, int(math.ceil(total * min_ratio)))
+        if ready_symbols < min(required_ready, total):
+            ready = False
+            break
+    status["ready"] = bool(ready)
+    status["min_ready_ratio"] = min_ratio
+    status["min_ready_symbols"] = min_symbols
+    return status
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -832,10 +843,10 @@ def _collector_thread():
     _last_futures_collect = 0.0
     lock_key = "runtime:collector"
     lock_ttl = max(120, settings.collect_interval_sec * 20)
-    next_run = _interval_loop_start(settings.collect_interval_sec)
+    next_run = time.monotonic()
     try:
         while True:
-            with closing(_get_lock_conn()) as conn:
+            with closing(_get_conn()) as conn:
                 has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
             if has_lock:
                 cycle_started = time.time()
@@ -874,7 +885,11 @@ def _collector_thread():
                         except Exception as e:
                             _rollback_quietly(conn)
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
-                        _require_runtime_heartbeat(heartbeat, "collector heartbeat lost")
+                        if not heartbeat():
+                            lock_lost = True
+                            cycle_stats["lock_lost"] = True
+                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": "collector runtime lock lost"})
+                            break
                 if (not lock_lost) and time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
                     with closing(_get_conn()) as conn:
                         heartbeat = _make_runtime_lock_heartbeat(lock_key)
@@ -886,7 +901,8 @@ def _collector_thread():
                                 heartbeat=heartbeat,
                                 max_workers=int(getattr(settings, "futures_collect_max_workers", getattr(settings, "collector_max_workers", 1)) or 1),
                             )
-                            _require_runtime_heartbeat(heartbeat, "collector heartbeat lost")
+                            if not heartbeat():
+                                raise RuntimeLockLostError("collector runtime lock lost")
                             _last_futures_collect = time.time()
                         except RuntimeLockLostError as e:
                             lock_lost = True
@@ -899,6 +915,10 @@ def _collector_thread():
                 cycle_stats["duration_ms"] = int((time.time() - cycle_started) * 1000)
                 with closing(_get_conn()) as conn:
                     db.set_app_config_json(conn, "collector_last_cycle", cycle_stats)
+                    try:
+                        db.set_app_config_json(conn, "collector_warmup", _collector_warmup_status(conn))
+                    except Exception:
+                        logger.warning("collector warmup status update failed", exc_info=True)
             next_run = _interval_loop_wait(next_run, settings.collect_interval_sec)
     finally:
         client.close()
@@ -909,99 +929,115 @@ def _sentiment_thread():
     lock_ttl = max(60, settings.sentiment_interval_sec * 4)
     next_run = _interval_loop_start(settings.sentiment_interval_sec)
     while True:
-        with closing(_get_lock_conn()) as conn:
+        with closing(_get_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
+            heartbeat = _make_runtime_lock_heartbeat(lock_key)
             with closing(_get_conn()) as conn:
-                heartbeat = _make_runtime_lock_heartbeat(lock_key)
                 try:
+                    if not heartbeat():
+                        raise RuntimeError("sentiment runtime lock lost")
                     pts = collect_sentiment_once()
-                    _require_runtime_heartbeat(heartbeat, "sentiment heartbeat lost")
-                    db.insert_sentiment_points(conn, pts, commit=False)
-                    db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)}, commit=False)
-                    conn.commit()
-                except RuntimeLockLostError as e:
-                    _rollback_quietly(conn)
-                    _log_decision_fresh("SENTIMENT_ERROR", None, None, {"field": "runtime_lock", "err": str(e)})
+                    if not heartbeat():
+                        raise RuntimeError("sentiment runtime lock lost")
+                    db.insert_sentiment_points(conn, pts)
+                    db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)})
                 except Exception as e:
                     _rollback_quietly(conn)
-                    _log_decision_fresh("SENTIMENT_ERROR", None, None, {"err": str(e)})
+                    details = {"err": str(e)}
+                    if "runtime lock lost" in str(e).lower():
+                        details = {"field": "runtime_lock", "err": str(e)}
+                    _log_decision_fresh("SENTIMENT_ERROR", None, None, details)
         next_run = _interval_loop_wait(next_run, settings.sentiment_interval_sec)
 
 
 def _reco_thread():
     _last_prune = 0.0
     _last_outcomes = 0.0
+    _last_warmup_log = 0.0
     PRUNE_INTERVAL = 3600
     lock_key = "runtime:reco"
     lock_ttl = max(60, settings.reco_interval_sec * 4)
-    next_run = _interval_loop_start(settings.reco_interval_sec)
+    next_run = time.monotonic()
     while True:
         result = {}
-        with closing(_get_lock_conn()) as conn:
+        with closing(_get_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
+            warmup_ready = True
+            warmup_status: dict[str, Any] = {}
             with closing(_get_conn()) as conn:
+                try:
+                    warmup_status = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
+                except Exception:
+                    warmup_status = {}
+                if not warmup_status:
+                    try:
+                        warmup_status = _collector_warmup_status(conn)
+                    except Exception:
+                        warmup_status = {}
+                warmup_ready = bool(warmup_status.get("ready", False)) if isinstance(warmup_status, dict) else False
+                if not warmup_ready:
+                    now_ts = time.time()
+                    cooldown = max(30, int(getattr(settings, "reco_warmup_log_cooldown_sec", 120) or 120))
+                    if now_ts - _last_warmup_log >= cooldown:
+                        _last_warmup_log = now_ts
+                        _log_decision_fresh("RECO_WARMUP_SKIP", None, None, warmup_status if isinstance(warmup_status, dict) else {"ready": False})
+            if warmup_ready:
                 heartbeat = _make_runtime_lock_heartbeat(lock_key)
-                try:
-                    result = run_recommender_once(conn, settings)
-                    _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
-                    if time.time() - _last_outcomes >= int(getattr(settings, "outcomes_interval_sec", 60) or 60):
-                        compute_outcomes_once(
-                            conn,
-                            horizon_sec=settings.outcome_horizon_fallback_sec,
-                            max_to_process=int(getattr(settings, "outcomes_max_to_process", 200) or 200),
-                        )
-                        _last_outcomes = time.time()
-                    _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
-                except RuntimeLockLostError as e:
-                    _rollback_quietly(conn)
-                    _log_decision_fresh("RECO_ERROR", None, None, {"field": "runtime_lock", "err": str(e)})
-                    next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
-                    continue
-                except Exception as e:
-                    _rollback_quietly(conn)
-                    _log_decision_fresh("RECO_ERROR", None, None, {"err": str(e)})
-
-            try:
-                _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
+                leadership_ok = True
                 with closing(_get_conn()) as conn:
-                    db.expire_stale_recommendations(conn)
-            except RuntimeLockLostError:
-                next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
-                continue
-            except Exception:
-                logger.debug("expire_stale_recommendations error", exc_info=True)
+                    try:
+                        if not heartbeat():
+                            raise RuntimeError("reco runtime lock lost")
+                        result = run_recommender_once(conn, settings)
+                        if not heartbeat():
+                            raise RuntimeError("reco runtime lock lost")
+                        if time.time() - _last_outcomes >= int(getattr(settings, "outcomes_interval_sec", 60) or 60):
+                            compute_outcomes_once(
+                                conn,
+                                horizon_sec=settings.outcome_horizon_fallback_sec,
+                                max_to_process=int(getattr(settings, "outcomes_max_to_process", 200) or 200),
+                            )
+                            _last_outcomes = time.time()
+                    except Exception as e:
+                        leadership_ok = False if "runtime lock lost" in str(e).lower() else leadership_ok
+                        _rollback_quietly(conn)
+                        details = {"err": str(e)}
+                        if leadership_ok is False:
+                            details = {"field": "runtime_lock", "err": str(e)}
+                        _log_decision_fresh("RECO_ERROR", None, None, details)
 
-            if time.time() - _last_prune >= PRUNE_INTERVAL:
-                try:
-                    _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
+                if leadership_ok and heartbeat():
                     with closing(_get_conn()) as conn:
-                        deleted = db.prune_old_data(conn, retain_days=7)
-                        db.log_decision(conn, "DB_PRUNE", None, None, deleted)
-                        _last_prune = time.time()
-                except RuntimeLockLostError:
-                    next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
-                    continue
-                except Exception:
-                    logger.debug("prune_old_data error", exc_info=True)
+                        try:
+                            db.expire_stale_recommendations(conn)
+                        except Exception:
+                            logger.debug("expire_stale_recommendations error", exc_info=True)
 
-            if settings.telegram_token:
-                try:
-                    _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
+                if leadership_ok and heartbeat() and time.time() - _last_prune >= PRUNE_INTERVAL:
                     with closing(_get_conn()) as conn:
-                        health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
-                        err_cur = conn.execute(
-                            """SELECT COUNT(*) as c FROM decision_log
-                               WHERE action='COLLECT_ERROR' AND ts >= ?""",
-                            (int(time.time()) - 600,),
-                        )
-                        err_count = int(err_cur.fetchone()["c"])
-                    check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
-                except RuntimeLockLostError:
-                    pass
-                except Exception:
-                    logger.debug("telegram alert error", exc_info=True)
+                        try:
+                            deleted = db.prune_old_data(conn, retain_days=7)
+                            db.log_decision(conn, "DB_PRUNE", None, None, deleted)
+                            _last_prune = time.time()
+                        except Exception:
+                            _rollback_quietly(conn)
+                            logger.debug("prune_old_data error", exc_info=True)
+
+                if leadership_ok and heartbeat() and settings.telegram_token:
+                    try:
+                        with closing(_get_conn()) as conn:
+                            health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
+                            err_cur = conn.execute(
+                                """SELECT COUNT(*) as c FROM decision_log
+                                   WHERE action='COLLECT_ERROR' AND ts >= ?""",
+                                (int(time.time()) - 600,),
+                            )
+                            err_count = int(err_cur.fetchone()["c"])
+                        check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
+                    except Exception:
+                        logger.debug("telegram alert error", exc_info=True)
 
         next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
 
@@ -1017,24 +1053,27 @@ def _llm_reviewer_thread():
     next_run = time.monotonic()
     interval_sec = eager_interval
     while True:
-        with closing(_get_lock_conn()) as conn:
+        with closing(_get_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
+            heartbeat = _make_runtime_lock_heartbeat(lock_key)
             with closing(_get_conn()) as conn:
-                heartbeat = _make_runtime_lock_heartbeat(lock_key)
                 try:
+                    if not heartbeat():
+                        raise RuntimeError("llm reviewer runtime lock lost")
                     stats = run_llm_review_sweep_once(conn, settings)
-                    _require_runtime_heartbeat(heartbeat, "llm reviewer heartbeat lost")
+                    if not heartbeat():
+                        raise RuntimeError("llm reviewer runtime lock lost")
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
                     interval_sec = eager_interval if int(stats.get("pending_after", 0) or 0) > 0 else base_interval
-                except RuntimeLockLostError:
-                    interval_sec = base_interval
-                    _rollback_quietly(conn)
                 except Exception as e:
                     interval_sec = base_interval
                     _rollback_quietly(conn)
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {"enabled": True, "error": str(e), "updated_ts": int(time.time())})
-                    _log_decision_fresh("LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(e)})
+                    details = {"err": str(e)}
+                    if "runtime lock lost" in str(e).lower():
+                        details = {"field": "runtime_lock", "err": str(e)}
+                    _log_decision_fresh("LLM_REVIEW_SWEEP_ERROR", None, None, details)
         next_run = _interval_loop_wait(next_run, interval_sec)
 
 
@@ -1043,6 +1082,7 @@ def metrics() -> str:
     with closing(_get_conn()) as conn:
         health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
         collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
+        collector_warmup = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
         status_counts = {"ok": 0, "stale": 0, "missing": 0, "disabled": 0}
         for item in health:
             status = str(item.get("status") or "missing")
@@ -1075,6 +1115,12 @@ def metrics() -> str:
             f"bybit_reco_collector_max_workers {int(getattr(settings, 'collector_max_workers', 1) or 1)}",
             "# TYPE bybit_reco_futures_collect_max_workers gauge",
             f"bybit_reco_futures_collect_max_workers {int(getattr(settings, 'futures_collect_max_workers', 1) or 1)}",
+            "# TYPE bybit_reco_warmup_ready gauge",
+            f"bybit_reco_warmup_ready {1 if collector_warmup.get('ready') else 0}",
+            "# TYPE bybit_reco_warmup_ready_symbols gauge",
+            f"bybit_reco_warmup_ready_symbols {int(collector_warmup.get('ready_symbols') or 0)}",
+            "# TYPE bybit_reco_warmup_symbols_total gauge",
+            f"bybit_reco_warmup_symbols_total {int(collector_warmup.get('symbols_total') or 0)}",
         ]
         return "\n".join(lines) + "\n"
 
@@ -1087,6 +1133,7 @@ def api_status() -> dict[str, Any]:
 
         llm_async_status = db.get_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, default={}) or {}
         collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
+        collector_warmup = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
 
         global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
         calib_fitted = bool(global_model and global_model.fitted)
@@ -1263,6 +1310,7 @@ def api_status() -> dict[str, Any]:
                 **collector_last_cycle,
                 "max_workers": int(getattr(settings, "collector_max_workers", 1) or 1),
                 "futures_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
+                "warmup": collector_warmup,
             },
         }
 

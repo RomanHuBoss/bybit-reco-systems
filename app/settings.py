@@ -126,8 +126,11 @@ class Settings:
     reco_ttl_sec: int | None = None
     outcomes_interval_sec: int = 60
     outcomes_max_to_process: int = 200
-    collector_max_workers: int = 4
-    futures_collect_max_workers: int = 4
+    collector_max_workers: int = 8
+    futures_collect_max_workers: int = 8
+    reco_warmup_min_ready_ratio: float = 0.85
+    reco_warmup_min_ready_symbols: int = 1
+    reco_warmup_log_cooldown_sec: int = 120
 
 
 def load_settings() -> Settings:
@@ -183,6 +186,9 @@ def load_settings() -> Settings:
     reco_ttl_sec = None if reco_ttl_raw in (None, "") else _env_int("RECO_TTL_SEC", 180, minimum=180, maximum=7 * 24 * 3600)
     outcomes_interval_sec = _env_int("OUTCOMES_INTERVAL_SEC", 60, minimum=20, maximum=3600)
     outcomes_max_to_process = _env_int("OUTCOMES_MAX_TO_PROCESS", 200, minimum=10, maximum=2000)
+    reco_warmup_min_ready_ratio = _env_float("RECO_WARMUP_MIN_READY_RATIO", 0.85, minimum=0.1, maximum=1.0)
+    reco_warmup_min_ready_symbols = _env_int("RECO_WARMUP_MIN_READY_SYMBOLS", 1, minimum=1, maximum=10_000)
+    reco_warmup_log_cooldown_sec = _env_int("RECO_WARMUP_LOG_COOLDOWN_SEC", 120, minimum=10, maximum=3600)
 
     return Settings(
         require_conf_gate=require_conf_gate,
@@ -191,8 +197,8 @@ def load_settings() -> Settings:
         collect_interval_sec=_env_int("COLLECT_INTERVAL_SEC", 20, minimum=5, maximum=3600),
         stale_data_max_sec=_env_int("STALE_DATA_MAX_SEC", 300, minimum=60, maximum=24 * 3600),
         reco_interval_sec=_env_int("RECO_INTERVAL_SEC", 20, minimum=5, maximum=3600),
-        collector_max_workers=_env_int("COLLECTOR_MAX_WORKERS", 4, minimum=1, maximum=16),
-        futures_collect_max_workers=_env_int("FUTURES_COLLECT_MAX_WORKERS", 4, minimum=1, maximum=16),
+        collector_max_workers=_env_int("COLLECTOR_MAX_WORKERS", 8, minimum=1, maximum=16),
+        futures_collect_max_workers=_env_int("FUTURES_COLLECT_MAX_WORKERS", 8, minimum=1, maximum=16),
         top_n=_env_int("TOP_N", 20, minimum=1, maximum=500),
         venues=venues,
         symbols_spot=symbols_spot,
@@ -226,4 +232,7 @@ def load_settings() -> Settings:
         reco_ttl_sec=reco_ttl_sec,
         outcomes_interval_sec=outcomes_interval_sec,
         outcomes_max_to_process=outcomes_max_to_process,
+        reco_warmup_min_ready_ratio=reco_warmup_min_ready_ratio,
+        reco_warmup_min_ready_symbols=reco_warmup_min_ready_symbols,
+        reco_warmup_log_cooldown_sec=reco_warmup_log_cooldown_sec,
     )

@@ -33,28 +33,6 @@ def connect(db_path: str) -> sqlite3.Connection:
         logger.debug("PRAGMA setup error", exc_info=True)
     return conn
 
-
-def runtime_lock_db_path(db_path: str) -> str:
-    path = Path(db_path)
-    suffix = ''.join(path.suffixes)
-    if suffix:
-        return str(path.with_name(f"{path.name}.runtime_locks.sqlite"))
-    return str(path.with_name(f"{path.name}.runtime_locks.sqlite"))
-
-
-def connect_runtime_locks(db_path: str) -> sqlite3.Connection:
-    return connect(runtime_lock_db_path(db_path))
-
-
-def init_runtime_lock_db(conn: sqlite3.Connection) -> None:
-    conn.execute("""CREATE TABLE IF NOT EXISTS runtime_locks (
-      lock_key TEXT PRIMARY KEY,
-      owner TEXT NOT NULL,
-      heartbeat_ts INTEGER NOT NULL
-    )""")
-    conn.commit()
-
-
 def init_db(conn: sqlite3.Connection) -> None:
     sql = MIGRATION_INIT_SQL.read_text(encoding="utf-8")
     conn.executescript(sql)
@@ -783,31 +761,11 @@ def update_recommendation_review(
 
 
 
-def _is_lock_retryable_error(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return "database is locked" in msg or "database table is locked" in msg or "database is busy" in msg
-
-
-def _execute_lock_write_with_retry(op, *, retries: int = 5, sleep_sec: float = 0.05):
-    last_exc = None
-    for attempt in range(max(1, int(retries))):
-        try:
-            return op()
-        except sqlite3.OperationalError as exc:
-            last_exc = exc
-            if not _is_lock_retryable_error(exc) or attempt >= max(1, int(retries)) - 1:
-                raise
-            time.sleep(max(0.0, float(sleep_sec)) * (attempt + 1))
-    if last_exc is not None:
-        raise last_exc
-    raise sqlite3.OperationalError("runtime lock write failed")
-
-
 def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, ttl_sec: int = 90) -> bool:
     """Cross-process best-effort leader lock backed by SQLite."""
     now = now_ts()
     try:
-        _execute_lock_write_with_retry(lambda: conn.execute("BEGIN IMMEDIATE"))
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT owner, heartbeat_ts FROM runtime_locks WHERE lock_key=?",
             (lock_key,),
@@ -822,11 +780,9 @@ def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, tt
                 should_claim = True
 
         if should_claim:
-            _execute_lock_write_with_retry(
-                lambda: conn.execute(
-                    "INSERT OR REPLACE INTO runtime_locks(lock_key, owner, heartbeat_ts) VALUES(?,?,?)",
-                    (lock_key, owner, now),
-                )
+            conn.execute(
+                "INSERT OR REPLACE INTO runtime_locks(lock_key, owner, heartbeat_ts) VALUES(?,?,?)",
+                (lock_key, owner, now),
             )
             conn.commit()
             return True
@@ -841,21 +797,17 @@ def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, tt
 
 
 def release_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) -> None:
-    _execute_lock_write_with_retry(
-        lambda: conn.execute(
-            "DELETE FROM runtime_locks WHERE lock_key=? AND owner=?",
-            (lock_key, owner),
-        )
+    conn.execute(
+        "DELETE FROM runtime_locks WHERE lock_key=? AND owner=?",
+        (lock_key, owner),
     )
     conn.commit()
 
 
 def heartbeat_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) -> bool:
-    cur = _execute_lock_write_with_retry(
-        lambda: conn.execute(
-            "UPDATE runtime_locks SET heartbeat_ts=? WHERE lock_key=? AND owner=?",
-            (now_ts(), lock_key, owner),
-        )
+    cur = conn.execute(
+        "UPDATE runtime_locks SET heartbeat_ts=? WHERE lock_key=? AND owner=?",
+        (now_ts(), lock_key, owner),
     )
     conn.commit()
     return int(cur.rowcount or 0) > 0
@@ -883,7 +835,7 @@ def insert_sentiment_point(conn: sqlite3.Connection, scope: str, key: str, ts: i
     conn.commit()
 
 
-def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
+def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     conn.executemany(
@@ -903,8 +855,7 @@ def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]
             for row in rows
         ],
     )
-    if commit:
-        conn.commit()
+    conn.commit()
 
 def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: int = 120) -> list[dict[str, Any]]:
     cur = conn.execute(
@@ -1161,6 +1112,120 @@ def get_recommendation_status_counts(
     for row in cur.fetchall():
         counts[str(row["status"])] = int(row["c"] or 0)
     return counts
+
+
+
+def get_recommender_warmup_status(
+    conn: sqlite3.Connection,
+    symbols_spot: list[str],
+    symbols_linear: list[str],
+    *,
+    stale_sec: int = 300,
+    min_rows_per_tf: int = 80,
+    required_tfs: Iterable[int] | None = None,
+    active_venues: list[str] | None = None,
+) -> dict[str, Any]:
+    """Warm-up/readiness summary for recommendation publishing.
+
+    A symbol is considered ready when:
+      - ticker snapshot is fresh enough;
+      - latest closed 1m candle is fresh enough;
+      - each required timeframe has at least `min_rows_per_tf` valid candles.
+
+    Slow timeframes are checked for history depth only, not freshness, because a
+    closed daily candle can be <24h old and still be fully valid.
+    """
+    now = now_ts()
+    min_rows_per_tf = max(1, int(min_rows_per_tf or 1))
+    tf_list = tuple(dict.fromkeys(int(tf) for tf in (required_tfs or (60, 900, 1800, 3600, 14400, 86400)) if int(tf) > 0))
+    active = {str(v or '').strip().lower() for v in (active_venues or ['spot', 'linear']) if str(v or '').strip()}
+
+    def _iter_symbols(items: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in items:
+            sym = str(raw or '').strip().upper()
+            if not sym or sym in seen:
+                continue
+            out.append(sym)
+            seen.add(sym)
+        return out
+
+    per_venue: list[dict[str, Any]] = []
+    for venue, raw_symbols in (("spot", symbols_spot), ("linear", symbols_linear)):
+        if venue not in active:
+            continue
+        symbols = _iter_symbols(raw_symbols)
+        reasons_count: dict[str, int] = {}
+        ready_symbols = 0
+        samples: list[dict[str, Any]] = []
+        for sym in symbols:
+            reasons: list[str] = []
+            ticker_ts = get_latest_ticker_ts(conn, venue, sym)
+            ticker_age_sec = None if ticker_ts is None else max(0, now - int(ticker_ts))
+            if ticker_age_sec is None:
+                reasons.append('ticker_missing')
+            elif ticker_age_sec > stale_sec:
+                reasons.append('ticker_stale')
+
+            rows_1m = get_latest_ohlcv(conn, venue, sym, 60, limit=min_rows_per_tf)
+            last_1m_ts = int(rows_1m[0]['ts']) if rows_1m else None
+            candle_age_sec = None if last_1m_ts is None else max(0, now - last_1m_ts)
+            if candle_age_sec is None:
+                reasons.append('candle_missing')
+            elif candle_age_sec > stale_sec:
+                reasons.append('candle_stale')
+            if len(rows_1m) < min_rows_per_tf:
+                reasons.append('tf_60_short')
+
+            for tf_sec in tf_list:
+                if tf_sec == 60:
+                    continue
+                rows = get_latest_ohlcv(conn, venue, sym, tf_sec, limit=min_rows_per_tf)
+                if len(rows) < min_rows_per_tf:
+                    reasons.append(f'tf_{int(tf_sec)}_short')
+
+            if not reasons:
+                ready_symbols += 1
+            else:
+                for reason in reasons:
+                    reasons_count[reason] = reasons_count.get(reason, 0) + 1
+                if len(samples) < 8:
+                    samples.append({
+                        'symbol': sym,
+                        'reasons': reasons,
+                        'ticker_age_sec': ticker_age_sec,
+                        'candle_age_sec': candle_age_sec,
+                    })
+
+        total_symbols = len(symbols)
+        ready_ratio = float(ready_symbols / total_symbols) if total_symbols else 1.0
+        per_venue.append({
+            'venue': venue,
+            'symbols_total': total_symbols,
+            'ready_symbols': ready_symbols,
+            'ready_ratio': round(ready_ratio, 4),
+            'not_ready_symbols': max(0, total_symbols - ready_symbols),
+            'reason_counts': reasons_count,
+            'sample_not_ready': samples,
+            'required_tfs': list(tf_list),
+            'min_rows_per_tf': int(min_rows_per_tf),
+            'stale_sec': int(stale_sec),
+        })
+
+    overall_total = sum(int(item['symbols_total']) for item in per_venue)
+    overall_ready = sum(int(item['ready_symbols']) for item in per_venue)
+    overall_ratio = float(overall_ready / overall_total) if overall_total else 1.0
+    return {
+        'ts': now,
+        'venues': per_venue,
+        'symbols_total': overall_total,
+        'ready_symbols': overall_ready,
+        'ready_ratio': round(overall_ratio, 4),
+        'required_tfs': list(tf_list),
+        'min_rows_per_tf': int(min_rows_per_tf),
+        'stale_sec': int(stale_sec),
+    }
 
 
 # ── funding rate ──────────────────────────────────────────────────────────────

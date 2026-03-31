@@ -586,68 +586,71 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         conn.commit()
     _heartbeat(heartbeat)
 
-    ohlcv_rows: list[dict[str, Any]] = []
     api_fetch_counts: dict[int, int] = {}
     derived_bootstrap_fetch_counts: dict[int, int] = {}
     derived_write_counts: dict[int, int] = {}
-    api_log_events: list[tuple[str, dict[str, Any]]] = []
-
-    api_tasks: list[tuple[str, int, int | None]] = []
-    for sym in symbols2:
-        if int(disabled.get(sym, 0) or 0) > now_ts:
-            continue
-        for tf_sec in _API_FETCH_TFS:
-            if not _should_fetch_api_tf(conn, venue, sym, tf_sec, now_ts):
-                continue
-            key = (venue, sym, tf_sec)
-            _LAST_TF_FETCH_ATTEMPT_TS[key] = now_ts
-            api_tasks.append((sym, tf_sec, db.get_latest_ohlcv_ts(conn, venue, sym, tf_sec)))
 
     def _api_task_worker(task: tuple[str, int, int | None]) -> tuple[str, int, list[list[Any]]]:
         sym, tf_sec, last_local_ts = task
         rows_raw = _fetch_api_kline_rows(client, category, sym, tf_sec, last_local_ts, now_ts)
         return sym, tf_sec, rows_raw
 
-    for idx, (task, result, err) in enumerate(_run_tasks_bounded(api_tasks, _api_task_worker, max_workers), start=1):
-        sym, tf_sec, _last_local_ts = task
-        if err is not None:
-            if _is_not_supported_symbol(err):
-                retry_at = _disable_symbol(venue, sym, now_ts)
-                disabled[sym] = retry_at
-                api_log_events.append((
-                    "SYMBOL_DISABLED",
-                    {
-                        "venue": venue,
-                        "symbol": sym,
-                        "reason": str(err),
-                        "field": f"kline_{tf_sec}",
-                        "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
-                        "retry_at": retry_at,
-                    },
-                ))
+    # Keep 1m in the hot path. A fresh DB used to interleave 1m/1h/1d fetches across the
+    # whole universe, which delayed the first usable 1m layer and made the recommender hit
+    # stale-data skips during cold start. Fetch TF groups in priority order instead.
+    for tf_sec in _API_FETCH_TFS:
+        ohlcv_rows: list[dict[str, Any]] = []
+        api_log_events: list[tuple[str, dict[str, Any]]] = []
+        api_tasks: list[tuple[str, int, int | None]] = []
+        for sym in symbols2:
+            if int(disabled.get(sym, 0) or 0) > now_ts:
+                continue
+            if not _should_fetch_api_tf(conn, venue, sym, tf_sec, now_ts):
+                continue
+            key = (venue, sym, tf_sec)
+            _LAST_TF_FETCH_ATTEMPT_TS[key] = now_ts
+            api_tasks.append((sym, tf_sec, db.get_latest_ohlcv_ts(conn, venue, sym, tf_sec)))
+
+        for idx, (task, result, err) in enumerate(_run_tasks_bounded(api_tasks, _api_task_worker, max_workers), start=1):
+            sym, _tf_task, _last_local_ts = task
+            if err is not None:
+                if _is_not_supported_symbol(err):
+                    retry_at = _disable_symbol(venue, sym, now_ts)
+                    disabled[sym] = retry_at
+                    api_log_events.append((
+                        "SYMBOL_DISABLED",
+                        {
+                            "venue": venue,
+                            "symbol": sym,
+                            "reason": str(err),
+                            "field": f"kline_{tf_sec}",
+                            "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                            "retry_at": retry_at,
+                        },
+                    ))
+                else:
+                    api_log_events.append(("COLLECT_ERROR", {"venue": venue, "symbol": sym, "field": f"kline_{tf_sec}", "err": str(err)}))
             else:
-                api_log_events.append(("COLLECT_ERROR", {"venue": venue, "symbol": sym, "field": f"kline_{tf_sec}", "err": str(err)}))
-        else:
-            _sym_out, _tf_out, rows_raw = result
-            appended = 0
-            for row in rows_raw:
-                payload = _sanitize_ohlcv_row(venue, sym, tf_sec, row)
-                if payload is None:
-                    continue
-                ohlcv_rows.append(payload)
-                appended += 1
-            if appended > 0:
-                api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
-        if idx % max(1, max_workers) == 0:
-            _heartbeat(heartbeat)
-    if ohlcv_rows:
-        db.upsert_ohlcv(conn, ohlcv_rows, commit=False)
-        stats["ohlcv_written"] += len(ohlcv_rows)
-    for action, details in api_log_events:
-        db.log_decision(conn, action, None, None, details, commit=False)
-    if ohlcv_rows or api_log_events:
-        conn.commit()
-    _heartbeat(heartbeat)
+                _sym_out, _tf_out, rows_raw = result
+                appended = 0
+                for row in rows_raw:
+                    payload = _sanitize_ohlcv_row(venue, sym, tf_sec, row)
+                    if payload is None:
+                        continue
+                    ohlcv_rows.append(payload)
+                    appended += 1
+                if appended > 0:
+                    api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
+            if idx % max(1, max_workers) == 0:
+                _heartbeat(heartbeat)
+        if ohlcv_rows:
+            db.upsert_ohlcv(conn, ohlcv_rows, commit=False)
+            stats["ohlcv_written"] += len(ohlcv_rows)
+        for action, details in api_log_events:
+            db.log_decision(conn, action, None, None, details, commit=False)
+        if ohlcv_rows or api_log_events:
+            conn.commit()
+        _heartbeat(heartbeat)
 
     # One-off cold bootstrap for derived TFs so a fresh DB has enough history for
     # the recommender's multi-timeframe gates immediately after startup.

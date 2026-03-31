@@ -1030,12 +1030,14 @@ def test_metrics_endpoint_reports_core_gauges_and_status_collector_workers(clien
     assert 'bybit_reco_collect_errors_10m 1' in body
     assert 'bybit_reco_recommendations_active 1' in body
     assert 'bybit_reco_collector_cycle_duration_ms 4321' in body
-    assert 'bybit_reco_collector_max_workers 4' in body
-    assert 'bybit_reco_futures_collect_max_workers 4' in body
+    assert 'bybit_reco_warmup_ready 0' in body
+    assert 'bybit_reco_warmup_symbols_total 0' in body
+    assert 'bybit_reco_collector_max_workers 8' in body
+    assert 'bybit_reco_futures_collect_max_workers 8' in body
 
     status_resp = client.get('/api/v1/status')
     assert status_resp.status_code == 200
     collector_meta = status_resp.json()['collector']
     assert collector_meta['duration_ms'] == 4321
-    assert collector_meta['max_workers'] == 4
-    assert collector_meta['futures_max_workers'] == 4
+    assert collector_meta['max_workers'] == 8
+    assert collector_meta['futures_max_workers'] == 8

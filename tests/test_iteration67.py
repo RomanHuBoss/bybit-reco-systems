@@ -189,7 +189,7 @@ def test_collect_once_falls_back_to_per_symbol_tickers_when_batch_fetch_fails(tm
 
 
 
-def test_collector_thread_heartbeat_uses_fresh_lock_connections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_collector_thread_uses_dedicated_heartbeat_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "collector_hb_conn.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
@@ -198,7 +198,7 @@ def test_collector_thread_heartbeat_uses_fresh_lock_connections(tmp_path: Path, 
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:
-        seen = {"calls": 0}
+        seen = {"separate": False}
 
         class DummyClient:
             def __init__(self, *args, **kwargs):
@@ -208,9 +208,9 @@ def test_collector_thread_heartbeat_uses_fresh_lock_connections(tmp_path: Path, 
 
         def fake_collect_once(conn, client, venue, symbols, heartbeat=None, *, max_workers=1):
             assert heartbeat is not None
-            assert heartbeat() is True
-            assert heartbeat() is True
-            seen["calls"] += 2
+            closure_cells = getattr(heartbeat, "__closure__", None) or []
+            captured_conns = [cell.cell_contents for cell in closure_cells if hasattr(cell.cell_contents, "execute") and hasattr(cell.cell_contents, "commit")]
+            seen["separate"] = not captured_conns and heartbeat() is True and heartbeat() is True
             return {"venue": venue, "tickers_written": 0, "funding_written": 0, "ohlcv_written": 0}
 
         def stop_after_first_wait(*args, **kwargs):
@@ -223,6 +223,6 @@ def test_collector_thread_heartbeat_uses_fresh_lock_connections(tmp_path: Path, 
         with pytest.raises(StopIteration):
             app_main._collector_thread()
 
-        assert seen["calls"] == 2
+        assert seen["separate"] is True
     finally:
         sys.modules.pop("app.main", None)
