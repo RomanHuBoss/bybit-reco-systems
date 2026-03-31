@@ -226,3 +226,8 @@ python -m py_compile app/*.py tests/*.py main.py
 - делайте резервные копии SQLite;
 - не храните реальные секреты в `.env` внутри репозитория;
 - если нужен полноценный execution layer, его нужно строить отдельно от recommendation engine.
+
+
+## Runtime lock storage
+
+Runtime leadership locks are stored in a separate SQLite sidecar database. By default the path is derived from `DB_PATH` (for example `app.db` -> `app.locks.db`). You can override it with `RUNTIME_LOCK_DB_PATH`. This isolates heartbeat writes from long-running market-data transactions in the main database and avoids false leadership loss caused by `database is locked` on the primary DB file.

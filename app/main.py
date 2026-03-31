@@ -44,6 +44,10 @@ def _get_conn():
     return db.connect(settings.db_path)
 
 
+def _get_lock_conn():
+    return db.connect(settings.runtime_lock_db_path)
+
+
 def _interval_loop_start(interval_sec: int) -> float:
     return time.monotonic() + max(1, int(interval_sec))
 
@@ -93,7 +97,10 @@ def _bootstrap_db() -> None:
 
 
 _bootstrap_db()
+with closing(_get_lock_conn()) as lock_conn:
+    db.init_runtime_lock_db(lock_conn)
 logger.info("db_path=%s", Path(settings.db_path).resolve())
+logger.info("runtime_lock_db_path=%s", Path(settings.runtime_lock_db_path).resolve())
 
 
 def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
@@ -215,7 +222,7 @@ def _log_decision_fresh(action: str, rec_id: str | None, operator: str | None, d
 def _make_runtime_lock_heartbeat(lock_key: str):
     def _heartbeat() -> bool:
         try:
-            with closing(_get_conn()) as lock_conn:
+            with closing(_get_lock_conn()) as lock_conn:
                 return bool(db.heartbeat_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER))
         except Exception:
             logger.warning("runtime lock heartbeat failed", exc_info=True)
@@ -846,8 +853,8 @@ def _collector_thread():
     next_run = time.monotonic()
     try:
         while True:
-            with closing(_get_conn()) as conn:
-                has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+            with closing(_get_lock_conn()) as lock_conn:
+                has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
             if has_lock:
                 cycle_started = time.time()
                 cycle_stats: dict[str, Any] = {
@@ -929,8 +936,8 @@ def _sentiment_thread():
     lock_ttl = max(60, settings.sentiment_interval_sec * 4)
     next_run = _interval_loop_start(settings.sentiment_interval_sec)
     while True:
-        with closing(_get_conn()) as conn:
-            has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+        with closing(_get_lock_conn()) as lock_conn:
+            has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
             heartbeat = _make_runtime_lock_heartbeat(lock_key)
             with closing(_get_conn()) as conn:
@@ -961,8 +968,8 @@ def _reco_thread():
     next_run = time.monotonic()
     while True:
         result = {}
-        with closing(_get_conn()) as conn:
-            has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+        with closing(_get_lock_conn()) as lock_conn:
+            has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
             warmup_ready = True
             warmup_status: dict[str, Any] = {}
@@ -1053,8 +1060,8 @@ def _llm_reviewer_thread():
     next_run = time.monotonic()
     interval_sec = eager_interval
     while True:
-        with closing(_get_conn()) as conn:
-            has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+        with closing(_get_lock_conn()) as lock_conn:
+            has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
             heartbeat = _make_runtime_lock_heartbeat(lock_key)
             with closing(_get_conn()) as conn:

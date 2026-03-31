@@ -88,21 +88,41 @@ def test_make_runtime_lock_heartbeat_uses_fresh_connection_each_call(tmp_path: P
     try:
         conn = db.connect(str(db_path))
         db.init_db(conn)
-        db.acquire_runtime_lock(conn, "runtime:test", app_main.RUNTIME_OWNER, ttl_sec=120)
         conn.close()
+        lock_conn = db.connect(str(app_main.settings.runtime_lock_db_path))
+        db.init_runtime_lock_db(lock_conn)
+        db.acquire_runtime_lock(lock_conn, "runtime:test", app_main.RUNTIME_OWNER, ttl_sec=120)
+        lock_conn.close()
 
         opened: list[int] = []
-        original_get_conn = app_main._get_conn
+        original_get_lock_conn = app_main._get_lock_conn
 
-        def traced_get_conn():
+        def traced_get_lock_conn():
             opened.append(1)
-            return original_get_conn()
+            return original_get_lock_conn()
 
-        monkeypatch.setattr(app_main, "_get_conn", traced_get_conn)
+        monkeypatch.setattr(app_main, "_get_lock_conn", traced_get_lock_conn)
         heartbeat = app_main._make_runtime_lock_heartbeat("runtime:test")
         assert heartbeat() is True
         assert heartbeat() is True
         assert len(opened) == 2
+    finally:
+        sys.modules.pop("app.main", None)
+
+
+def test_runtime_lock_uses_sidecar_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / "main.db"
+    lock_db_path = tmp_path / "locks.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    monkeypatch.setenv("RUNTIME_LOCK_DB_PATH", str(lock_db_path))
+    sys.modules.pop("app.main", None)
+    app_main = importlib.import_module("app.main")
+    try:
+        assert Path(app_main.settings.runtime_lock_db_path) == lock_db_path
+        with app_main._get_lock_conn() as conn:
+            db.init_runtime_lock_db(conn)
+            assert db.acquire_runtime_lock(conn, "runtime:test", app_main.RUNTIME_OWNER, ttl_sec=120) is True
+        assert lock_db_path.exists()
     finally:
         sys.modules.pop("app.main", None)
 

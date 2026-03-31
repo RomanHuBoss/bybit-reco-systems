@@ -52,6 +52,12 @@ def _resolve_project_path(raw: str) -> str:
     return str(candidate)
 
 
+def _default_runtime_lock_db_path(db_path: str) -> str:
+    base = Path(str(db_path)).expanduser()
+    suffix = base.suffix if base.suffix else ".db"
+    return str(base.with_name(f"{base.stem}.locks{suffix}"))
+
+
 def _env_int(key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
     raw = os.getenv(key)
     try:
@@ -108,6 +114,7 @@ class Settings:
     futures_collect_interval_sec: int
     telegram_token: str | None
     telegram_chat_id: str | None
+    runtime_lock_db_path: str = ""
 
     require_conf_gate: bool = False
     llm_reviewer_enabled: bool = False
@@ -190,9 +197,13 @@ def load_settings() -> Settings:
     reco_warmup_min_ready_symbols = _env_int("RECO_WARMUP_MIN_READY_SYMBOLS", 1, minimum=1, maximum=10_000)
     reco_warmup_log_cooldown_sec = _env_int("RECO_WARMUP_LOG_COOLDOWN_SEC", 120, minimum=10, maximum=3600)
 
+    db_path = _resolve_project_path(_env("DB_PATH", "./data/app.db"))
+    runtime_lock_db_path = _resolve_project_path(os.getenv("RUNTIME_LOCK_DB_PATH") or _default_runtime_lock_db_path(db_path))
+
     return Settings(
         require_conf_gate=require_conf_gate,
-        db_path=_resolve_project_path(_env("DB_PATH", "./data/app.db")),
+        db_path=db_path,
+        runtime_lock_db_path=runtime_lock_db_path,
         bybit_base_url=_env("BYBIT_BASE_URL", "https://api.bybit.com"),
         collect_interval_sec=_env_int("COLLECT_INTERVAL_SEC", 20, minimum=5, maximum=3600),
         stale_data_max_sec=_env_int("STALE_DATA_MAX_SEC", 300, minimum=60, maximum=24 * 3600),

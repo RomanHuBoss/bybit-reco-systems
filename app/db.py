@@ -43,6 +43,34 @@ def init_db(conn: sqlite3.Connection) -> None:
     )""")
     conn.commit()
 
+def init_runtime_lock_db(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS runtime_locks (
+      lock_key TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      heartbeat_ts INTEGER NOT NULL
+    )""")
+    conn.commit()
+
+
+def _is_lock_retryable_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database table is locked" in msg or "busy" in msg
+
+
+def _execute_lock_write_with_retry(op, *, attempts: int = 6, sleep_sec: float = 0.05):
+    last_exc = None
+    for attempt in range(max(1, int(attempts))):
+        try:
+            return op()
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if not _is_lock_retryable_error(exc) or attempt + 1 >= max(1, int(attempts)):
+                raise
+            time.sleep(float(sleep_sec) * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+
+
 def now_ts() -> int:
     return int(time.time())
 
@@ -764,7 +792,8 @@ def update_recommendation_review(
 def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, ttl_sec: int = 90) -> bool:
     """Cross-process best-effort leader lock backed by SQLite."""
     now = now_ts()
-    try:
+
+    def _op() -> bool:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT owner, heartbeat_ts FROM runtime_locks WHERE lock_key=?",
@@ -788,6 +817,9 @@ def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, tt
             return True
         conn.commit()
         return False
+
+    try:
+        return bool(_execute_lock_write_with_retry(_op))
     except sqlite3.OperationalError:
         try:
             conn.rollback()
@@ -797,17 +829,21 @@ def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, tt
 
 
 def release_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) -> None:
-    conn.execute(
-        "DELETE FROM runtime_locks WHERE lock_key=? AND owner=?",
-        (lock_key, owner),
+    _execute_lock_write_with_retry(
+        lambda: conn.execute(
+            "DELETE FROM runtime_locks WHERE lock_key=? AND owner=?",
+            (lock_key, owner),
+        )
     )
     conn.commit()
 
 
 def heartbeat_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) -> bool:
-    cur = conn.execute(
-        "UPDATE runtime_locks SET heartbeat_ts=? WHERE lock_key=? AND owner=?",
-        (now_ts(), lock_key, owner),
+    cur = _execute_lock_write_with_retry(
+        lambda: conn.execute(
+            "UPDATE runtime_locks SET heartbeat_ts=? WHERE lock_key=? AND owner=?",
+            (now_ts(), lock_key, owner),
+        )
     )
     conn.commit()
     return int(cur.rowcount or 0) > 0
