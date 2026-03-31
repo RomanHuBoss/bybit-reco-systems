@@ -82,6 +82,7 @@ _DERIVED_TF_BOOTSTRAP_RETRY_SEC = 6 * 60 * 60
 # In-memory throttle for slow REST paths. This is intentionally process-local: it protects the
 # active leader from hammering Bybit, while warm DB state still survives process restarts.
 _LAST_TF_FETCH_ATTEMPT_TS: dict[tuple[str, str, int], int] = {}
+_BACKFILL_ROUND_ROBIN_CURSOR: dict[tuple[str, str, int], int] = {}
 
 
 def _to_float(x: Any, *, minimum: float | None = None) -> float | None:
@@ -96,6 +97,21 @@ def _to_float(x: Any, *, minimum: float | None = None) -> float | None:
     if minimum is not None and num < float(minimum):
         return None
     return num
+
+
+def _round_robin_take(items: list[Any], budget: int | None, cursor_key: tuple[str, str, int]) -> list[Any]:
+    if budget is None:
+        return list(items)
+    try:
+        limit = max(0, int(budget))
+    except Exception:
+        limit = 0
+    if limit <= 0 or len(items) <= limit:
+        return list(items)
+    start = int(_BACKFILL_ROUND_ROBIN_CURSOR.get(cursor_key, 0) or 0) % len(items)
+    out = [items[(start + idx) % len(items)] for idx in range(limit)]
+    _BACKFILL_ROUND_ROBIN_CURSOR[cursor_key] = (start + limit) % len(items)
+    return out
 
 
 def _sanitize_ticker_payload(t: dict[str, Any]) -> dict[str, Any]:
@@ -569,7 +585,7 @@ def _heartbeat(heartbeat: Callable[[], Any] | None) -> None:
         raise RuntimeLockLostError("collector runtime lock lost")
 
 
-def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat: Callable[[], Any] | None = None, *, max_workers: int = 1) -> dict[str, Any]:
+def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat: Callable[[], Any] | None = None, *, max_workers: int = 1, api_fetch_tfs: tuple[int, ...] | None = None, allow_derived_bootstrap: bool = True) -> dict[str, Any]:
     category = VENUE_TO_CATEGORY[venue]
     now_ts = db.now_ts()
 
@@ -609,6 +625,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         conn.commit()
     _heartbeat(heartbeat)
 
+    active_api_fetch_tfs = tuple(api_fetch_tfs or _API_FETCH_TFS)
     api_fetch_counts: dict[int, int] = {}
     derived_bootstrap_fetch_counts: dict[int, int] = {}
     derived_write_counts: dict[int, int] = {}
@@ -621,7 +638,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     # Keep 1m in the hot path. A fresh DB used to interleave 1m/1h/1d fetches across the
     # whole universe, which delayed the first usable 1m layer and made the recommender hit
     # stale-data skips during cold start. Fetch TF groups in priority order instead.
-    for tf_sec in _API_FETCH_TFS:
+    for tf_sec in active_api_fetch_tfs:
         ohlcv_rows: list[dict[str, Any]] = []
         api_log_events: list[tuple[str, dict[str, Any]]] = []
         api_tasks: list[tuple[str, int, int | None]] = []
@@ -677,17 +694,187 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
 
     # One-off cold bootstrap for derived TFs so a fresh DB has enough history for
     # the recommender's multi-timeframe gates immediately after startup.
+    if allow_derived_bootstrap:
+        bootstrap_log_events: list[tuple[str, dict[str, Any]]] = []
+        bootstrap_tasks: list[tuple[str, int]] = []
+        for target_tf_sec in _DERIVED_TF_SOURCES:
+            for sym in symbols2:
+                if int(disabled.get(sym, 0) or 0) > now_ts:
+                    continue
+                if not _should_bootstrap_derived_tf(conn, venue, sym, target_tf_sec, now_ts):
+                    continue
+                key = (venue, sym, target_tf_sec)
+                _LAST_TF_FETCH_ATTEMPT_TS[key] = now_ts
+                bootstrap_tasks.append((sym, target_tf_sec))
+
+        def _bootstrap_task_worker(task: tuple[str, int]) -> tuple[str, int, list[dict[str, Any]]]:
+            sym, target_tf_sec = task
+            rows = _bootstrap_derived_tf_from_api(client, venue, category, sym, target_tf_sec)
+            return sym, target_tf_sec, rows
+
+        for idx, (task, result, err) in enumerate(_run_tasks_bounded(bootstrap_tasks, _bootstrap_task_worker, max_workers), start=1):
+            sym, target_tf_sec = task
+            if err is not None:
+                if _is_not_supported_symbol(err):
+                    retry_at = _disable_symbol(venue, sym, now_ts)
+                    disabled[sym] = retry_at
+                    bootstrap_log_events.append((
+                        "SYMBOL_DISABLED",
+                        {
+                            "venue": venue,
+                            "symbol": sym,
+                            "reason": str(err),
+                            "field": f"derived_bootstrap_{target_tf_sec}",
+                            "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                            "retry_at": retry_at,
+                        },
+                    ))
+                else:
+                    bootstrap_log_events.append(("COLLECT_ERROR", {"venue": venue, "symbol": sym, "field": f"derived_bootstrap_{target_tf_sec}", "err": str(err)}))
+            else:
+                _sym_out, _target_out, bootstrap_rows = result
+                if bootstrap_rows:
+                    db.upsert_ohlcv(conn, bootstrap_rows, commit=False)
+                    stats["ohlcv_written"] += len(bootstrap_rows)
+                    derived_bootstrap_fetch_counts[target_tf_sec] = derived_bootstrap_fetch_counts.get(target_tf_sec, 0) + 1
+            if idx % max(1, max_workers) == 0:
+                _heartbeat(heartbeat)
+        for action, details in bootstrap_log_events:
+            db.log_decision(conn, action, None, None, details, commit=False)
+        if bootstrap_tasks or bootstrap_log_events:
+            conn.commit()
+        _heartbeat(heartbeat)
+
+    # Maintain derived TFs locally after primary source TFs are written.
+    for target_tf_sec, source_tf_sec in _DERIVED_TF_SOURCES.items():
+        for sym in symbols2:
+            if int(disabled.get(sym, 0) or 0) > now_ts:
+                continue
+            derived_rows = _derive_local_tf_rows(conn, venue, sym, source_tf_sec, target_tf_sec)
+            if not derived_rows:
+                continue
+            db.upsert_ohlcv(conn, derived_rows, commit=False)
+            stats["ohlcv_written"] += len(derived_rows)
+            derived_write_counts[target_tf_sec] = derived_write_counts.get(target_tf_sec, 0) + len(derived_rows)
+        if derived_write_counts.get(target_tf_sec, 0):
+            conn.commit()
+        _heartbeat(heartbeat)
+
+    conn.commit()
+    stats["api_tf_fetches"] = {str(tf): cnt for tf, cnt in sorted(api_fetch_counts.items())}
+    stats["derived_tf_bootstrap_fetches"] = {str(tf): cnt for tf, cnt in sorted(derived_bootstrap_fetch_counts.items())}
+    stats["derived_tf_writes"] = {str(tf): cnt for tf, cnt in sorted(derived_write_counts.items())}
+    return stats
+
+
+
+def collect_backfill_once(
+    conn,
+    client: BybitPublicClient,
+    venue: str,
+    symbols: list[str],
+    heartbeat: Callable[[], Any] | None = None,
+    *,
+    max_workers: int = 1,
+    per_tf_budget: int | None = None,
+) -> dict[str, Any]:
+    category = VENUE_TO_CATEGORY[venue]
+    now_ts = db.now_ts()
+
+    disabled = _purge_expired_disabled_symbols(venue, now_ts)
+    symbols2 = _normalize_symbols(symbols, disabled, now_ts)
+    budget = per_tf_budget if per_tf_budget is not None else max(1, int(max_workers or 1) * 2)
+    stats: dict[str, Any] = {
+        "venue": venue,
+        "symbols_total": len(symbols2),
+        "budget_per_tf": int(budget),
+        "ohlcv_written": 0,
+        "api_tf_fetches": {},
+        "derived_tf_bootstrap_fetches": {},
+        "derived_tf_writes": {},
+    }
+
+    api_fetch_counts: dict[int, int] = {}
+    derived_bootstrap_fetch_counts: dict[int, int] = {}
+    derived_write_counts: dict[int, int] = {}
+    touched_by_source_tf: dict[int, set[str]] = {}
+
+    def _api_task_worker(task: tuple[str, int, int | None]) -> tuple[str, int, list[list[Any]]]:
+        sym, tf_sec, last_local_ts = task
+        rows_raw = _fetch_api_kline_rows(client, category, sym, tf_sec, last_local_ts, now_ts)
+        return sym, tf_sec, rows_raw
+
+    for tf_sec in tuple(tf for tf in _API_FETCH_TFS if tf != 60):
+        api_tasks: list[tuple[str, int, int | None]] = []
+        for sym in symbols2:
+            if int(disabled.get(sym, 0) or 0) > now_ts:
+                continue
+            if not _should_fetch_api_tf(conn, venue, sym, tf_sec, now_ts):
+                continue
+            api_tasks.append((sym, tf_sec, db.get_latest_ohlcv_ts(conn, venue, sym, tf_sec)))
+        api_tasks = _round_robin_take(api_tasks, budget, ("api", venue, tf_sec))
+        if not api_tasks:
+            continue
+        ohlcv_rows: list[dict[str, Any]] = []
+        api_log_events: list[tuple[str, dict[str, Any]]] = []
+        for sym, _, _ in api_tasks:
+            _LAST_TF_FETCH_ATTEMPT_TS[(venue, sym, tf_sec)] = now_ts
+        for idx, (task, result, err) in enumerate(_run_tasks_bounded(api_tasks, _api_task_worker, max_workers), start=1):
+            sym, _tf_task, _last_local_ts = task
+            if err is not None:
+                if _is_not_supported_symbol(err):
+                    retry_at = _disable_symbol(venue, sym, now_ts)
+                    disabled[sym] = retry_at
+                    api_log_events.append((
+                        "SYMBOL_DISABLED",
+                        {
+                            "venue": venue,
+                            "symbol": sym,
+                            "reason": str(err),
+                            "field": f"kline_{tf_sec}",
+                            "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                            "retry_at": retry_at,
+                        },
+                    ))
+                else:
+                    api_log_events.append(("COLLECT_ERROR", {"venue": venue, "symbol": sym, "field": f"kline_{tf_sec}", "err": str(err)}))
+            else:
+                _sym_out, _tf_out, rows_raw = result
+                appended = 0
+                for row in rows_raw:
+                    payload = _sanitize_ohlcv_row(venue, sym, tf_sec, row)
+                    if payload is None:
+                        continue
+                    ohlcv_rows.append(payload)
+                    appended += 1
+                if appended > 0:
+                    api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
+                    touched_by_source_tf.setdefault(tf_sec, set()).add(sym)
+            if idx % max(1, max_workers) == 0:
+                _heartbeat(heartbeat)
+        if ohlcv_rows:
+            db.upsert_ohlcv(conn, ohlcv_rows, commit=False)
+            stats["ohlcv_written"] += len(ohlcv_rows)
+        for action, details in api_log_events:
+            db.log_decision(conn, action, None, None, details, commit=False)
+        if ohlcv_rows or api_log_events:
+            conn.commit()
+        _heartbeat(heartbeat)
+
     bootstrap_log_events: list[tuple[str, dict[str, Any]]] = []
     bootstrap_tasks: list[tuple[str, int]] = []
     for target_tf_sec in _DERIVED_TF_SOURCES:
+        candidates: list[tuple[str, int]] = []
         for sym in symbols2:
             if int(disabled.get(sym, 0) or 0) > now_ts:
                 continue
             if not _should_bootstrap_derived_tf(conn, venue, sym, target_tf_sec, now_ts):
                 continue
-            key = (venue, sym, target_tf_sec)
-            _LAST_TF_FETCH_ATTEMPT_TS[key] = now_ts
-            bootstrap_tasks.append((sym, target_tf_sec))
+            candidates.append((sym, target_tf_sec))
+        selected = _round_robin_take(candidates, budget, ("bootstrap", venue, target_tf_sec))
+        for sym, _target_tf in selected:
+            _LAST_TF_FETCH_ATTEMPT_TS[(venue, sym, target_tf_sec)] = now_ts
+        bootstrap_tasks.extend(selected)
 
     def _bootstrap_task_worker(task: tuple[str, int]) -> tuple[str, int, list[dict[str, Any]]]:
         sym, target_tf_sec = task
@@ -719,6 +906,9 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                 db.upsert_ohlcv(conn, bootstrap_rows, commit=False)
                 stats["ohlcv_written"] += len(bootstrap_rows)
                 derived_bootstrap_fetch_counts[target_tf_sec] = derived_bootstrap_fetch_counts.get(target_tf_sec, 0) + 1
+                source_tf = _DERIVED_TF_SOURCES.get(target_tf_sec)
+                if source_tf is not None:
+                    touched_by_source_tf.setdefault(source_tf, set()).add(sym)
         if idx % max(1, max_workers) == 0:
             _heartbeat(heartbeat)
     for action, details in bootstrap_log_events:
@@ -727,9 +917,11 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         conn.commit()
     _heartbeat(heartbeat)
 
-    # Maintain derived TFs locally after primary source TFs are written.
     for target_tf_sec, source_tf_sec in _DERIVED_TF_SOURCES.items():
-        for sym in symbols2:
+        target_symbols = sorted(touched_by_source_tf.get(source_tf_sec, set()))
+        if not target_symbols:
+            continue
+        for sym in target_symbols:
             if int(disabled.get(sym, 0) or 0) > now_ts:
                 continue
             derived_rows = _derive_local_tf_rows(conn, venue, sym, source_tf_sec, target_tf_sec)

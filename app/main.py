@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from .settings import load_settings
 from .shock_guard import APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .bybit_client import BybitPublicClient
-from .collector import collect_once, collect_futures_once, RuntimeLockLostError
+from .collector import collect_once, collect_backfill_once, collect_futures_once, RuntimeLockLostError
 from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import compute_outcomes_once
@@ -44,6 +44,7 @@ BACKGROUND_THREAD_ERROR_ACTIONS = {
     "reco": "RECO_ERROR",
     "sentiment": "SENTIMENT_ERROR",
     "llm_reviewer": "LLM_REVIEW_SWEEP_ERROR",
+    "backfill": "COLLECT_ERROR",
 }
 _instrument_meta_cache: dict[tuple[str, str], tuple[float, dict[str, Any], bool]] = {}
 _instrument_meta_lock = threading.Lock()
@@ -355,6 +356,47 @@ def _make_runtime_lock_heartbeat(lock_key: str, lock_conn_factory=None):
     return _heartbeat
 
 
+def _collect_hot_once(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat, max_workers: int) -> dict[str, Any]:
+    try:
+        return collect_once(
+            conn,
+            client,
+            venue,
+            symbols,
+            heartbeat=heartbeat,
+            max_workers=max_workers,
+            api_fetch_tfs=(60,),
+            allow_derived_bootstrap=False,
+        )
+    except TypeError as exc:
+        msg = str(exc)
+        if "api_fetch_tfs" not in msg and "allow_derived_bootstrap" not in msg:
+            raise
+        return collect_once(
+            conn,
+            client,
+            venue,
+            symbols,
+            heartbeat=heartbeat,
+            max_workers=max_workers,
+        )
+
+
+def _collect_backfill_cycle(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat, max_workers: int) -> dict[str, Any]:
+    try:
+        return collect_backfill_once(
+            conn,
+            client,
+            venue,
+            symbols,
+            heartbeat=heartbeat,
+            max_workers=max_workers,
+        )
+    except TypeError:
+        # Test doubles may still expose the legacy collector signature.
+        return {"venue": venue, "symbols_total": len(symbols), "legacy_stub": True}
+
+
 def _collector_warmup_status(conn) -> dict[str, Any]:
     status = db.get_recommender_warmup_status(
         conn,
@@ -418,7 +460,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.6", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.7", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -998,7 +1040,6 @@ def api_sentiment_get(scope: str = "global", key: str = "crypto", limit: int = 1
 
 def _collector_thread():
     client = BybitPublicClient(settings.bybit_base_url)
-    _last_futures_collect = 0.0
     lock_key = "runtime:collector"
     lock_ttl = max(120, settings.collect_interval_sec * 20)
     next_run = time.monotonic()
@@ -1025,13 +1066,13 @@ def _collector_thread():
                         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
                         try:
                             cycle_stats["venues"].append(
-                                collect_once(
+                                _collect_hot_once(
                                     conn,
                                     client,
                                     venue,
                                     symbols,
-                                    heartbeat=heartbeat,
-                                    max_workers=int(getattr(settings, "collector_max_workers", 1) or 1),
+                                    heartbeat,
+                                    int(getattr(settings, "collector_max_workers", 1) or 1),
                                 )
                             )
                         except RuntimeLockLostError as e:
@@ -1048,7 +1089,71 @@ def _collector_thread():
                             cycle_stats["lock_lost"] = True
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": "collector runtime lock lost"})
                             break
-                if (not lock_lost) and time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
+                cycle_stats["duration_ms"] = int((time.time() - cycle_started) * 1000)
+                with closing(_get_conn()) as conn:
+                    db.set_app_config_json(conn, "collector_last_cycle", cycle_stats)
+                    try:
+                        db.set_app_config_json(conn, "collector_warmup", _collector_warmup_status(conn))
+                    except Exception:
+                        logger.warning("collector warmup status update failed", exc_info=True)
+            next_run = _interval_loop_wait(next_run, settings.collect_interval_sec)
+    finally:
+        client.close()
+
+
+def _backfill_thread():
+    client = BybitPublicClient(settings.bybit_base_url)
+    _last_futures_collect = 0.0
+    lock_key = "runtime:backfill"
+    lock_ttl = max(120, settings.collect_interval_sec * 20)
+    next_run = time.monotonic()
+    try:
+        while True:
+            with closing(_get_lock_conn()) as lock_conn:
+                has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+            if has_lock:
+                cycle_started = time.time()
+                cycle_stats: dict[str, Any] = {
+                    "started_ts": int(cycle_started),
+                    "owner": RUNTIME_OWNER,
+                    "venues": [],
+                    "futures_meta": {},
+                    "duration_ms": 0,
+                    "lock_lost": False,
+                    "collector_max_workers": int(getattr(settings, "collector_max_workers", 1) or 1),
+                    "futures_collect_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
+                }
+                lock_lost = False
+                with closing(_get_conn()) as conn:
+                    heartbeat = _make_runtime_lock_heartbeat(lock_key)
+                    for venue in settings.venues:
+                        symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
+                        try:
+                            cycle_stats["venues"].append(
+                                _collect_backfill_cycle(
+                                    conn,
+                                    client,
+                                    venue,
+                                    symbols,
+                                    heartbeat,
+                                    int(getattr(settings, "collector_max_workers", 1) or 1),
+                                )
+                            )
+                        except RuntimeLockLostError as e:
+                            lock_lost = True
+                            cycle_stats["lock_lost"] = True
+                            _rollback_quietly(conn)
+                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
+                            break
+                        except Exception as e:
+                            _rollback_quietly(conn)
+                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "backfill", "err": str(e)})
+                        if not heartbeat():
+                            lock_lost = True
+                            cycle_stats["lock_lost"] = True
+                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": "backfill runtime lock lost"})
+                            break
+                if (not lock_lost) and settings.symbols_linear and time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
                     with closing(_get_conn()) as conn:
                         heartbeat = _make_runtime_lock_heartbeat(lock_key)
                         try:
@@ -1060,7 +1165,7 @@ def _collector_thread():
                                 max_workers=int(getattr(settings, "futures_collect_max_workers", getattr(settings, "collector_max_workers", 1)) or 1),
                             )
                             if not heartbeat():
-                                raise RuntimeLockLostError("collector runtime lock lost")
+                                raise RuntimeLockLostError("backfill runtime lock lost")
                             _last_futures_collect = time.time()
                         except RuntimeLockLostError as e:
                             lock_lost = True
@@ -1072,7 +1177,7 @@ def _collector_thread():
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": "linear", "symbol": "UNKNOWN", "field": "futures_meta", "err": str(e)})
                 cycle_stats["duration_ms"] = int((time.time() - cycle_started) * 1000)
                 with closing(_get_conn()) as conn:
-                    db.set_app_config_json(conn, "collector_last_cycle", cycle_stats)
+                    db.set_app_config_json(conn, "backfill_last_cycle", cycle_stats)
                     try:
                         db.set_app_config_json(conn, "collector_warmup", _collector_warmup_status(conn))
                     except Exception:
@@ -1240,6 +1345,7 @@ def metrics() -> str:
     with closing(_get_conn()) as conn:
         health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
         collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
+        backfill_last_cycle = db.get_app_config_json(conn, "backfill_last_cycle", default={}) or {}
         collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         status_counts = {"ok": 0, "stale": 0, "missing": 0, "disabled": 0}
         for item in health:
@@ -1291,15 +1397,17 @@ def api_status() -> dict[str, Any]:
 
         llm_async_status = db.get_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, default={}) or {}
         collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
+        backfill_last_cycle = db.get_app_config_json(conn, "backfill_last_cycle", default={}) or {}
         collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         background_threads = {
             name: _get_background_thread_state(conn, name)
-            for name in ("collector", "sentiment", "reco", "llm_reviewer")
+            for name in ("collector", "backfill", "sentiment", "reco", "llm_reviewer")
         }
         now_ts_int = db.now_ts()
         collector_cycle_started_ts = int(collector_last_cycle.get("started_ts") or 0)
         collector_cycle_age_sec = None if collector_cycle_started_ts <= 0 else max(0, now_ts_int - collector_cycle_started_ts)
         collector_thread_state = background_threads.get("collector") or {}
+        backfill_thread_state = background_threads.get("backfill") or {}
         collector_runtime_state = "unknown"
         if str(collector_thread_state.get("state") or "").lower() == "error":
             collector_runtime_state = "error"
@@ -1490,6 +1598,10 @@ def api_status() -> dict[str, Any]:
                 "thread": collector_thread_state,
                 "cycle_age_sec": collector_cycle_age_sec,
                 "state": collector_runtime_state,
+            },
+            "backfill": {
+                **backfill_last_cycle,
+                "thread": backfill_thread_state,
             },
             "background_threads": background_threads,
         }
