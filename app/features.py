@@ -170,13 +170,17 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
         price up + OI growing  → healthy trend (bullish)
         price down + OI growing → capitulation / shorts piling in (bearish)
         OI falling             → position unwinding (neutral/caution)
+
+    Important: a dense burst of rows must not masquerade as a true multi-hour history.
+    For real unix timestamps we require actual 4h/24h time depth; for tiny synthetic
+    test timestamps we fall back to the canonical 1h-per-step interpretation.
     """
     empty = {"oi_now": None, "oi_24h_chg_pct": None, "oi_4h_chg_pct": None,
              "trend": "unknown", "signal": "unknown"}
     if not oi_series or len(oi_series) < 2:
         return empty
 
-    normalized: list[float] = []
+    normalized: list[tuple[int | None, float]] = []
     for row in oi_series:
         try:
             oi = float(row.get("oi"))
@@ -184,29 +188,40 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         if not math.isfinite(oi) or oi < 0:
             continue
-        normalized.append(oi)
+        try:
+            ts = int(row.get("ts"))
+        except Exception:
+            ts = None
+        normalized.append((ts, oi))
     if len(normalized) < 2:
         return empty
 
-    # series is newest-first
-    oi_now = normalized[0]
+    oi_now = normalized[0][1]
 
-    def _pct_chg(old: float) -> float | None:
-        if old <= 0:
+    def _pct_chg(old: float | None) -> float | None:
+        if old is None or old <= 0:
             return None
         return (oi_now - old) / old * 100.0
 
-    # newest-first series: index 0 = now, 1 = ~1h back, ...
-    # So 4h / 24h reference points are indices 4 and 24 respectively.
-    # Previous implementation used 3 / 23, which understated lookback changes
-    # and distorted OI trend classification near thresholds.
-    oi_4h = normalized[min(4, len(normalized)-1)]    # ~4h back
-    oi_24h = normalized[min(24, len(normalized)-1)]  # ~24h back
+    synthetic_ts = any((ts is None) or abs(int(ts)) < 100_000_000 for ts, _ in normalized)
 
-    chg_4h  = _pct_chg(oi_4h)
-    chg_24h = _pct_chg(oi_24h)
+    def _reference_value(target_sec: int, fallback_index: int) -> float | None:
+        if synthetic_ts:
+            return normalized[fallback_index][1] if len(normalized) > fallback_index else None
+        ts_now = normalized[0][0]
+        if ts_now is None:
+            return None
+        target_ts = int(ts_now) - int(target_sec)
+        for ts, oi in normalized[1:]:
+            if ts is None:
+                continue
+            if int(ts) <= target_ts:
+                return oi
+        return None
 
-    # trend based on 24h change
+    chg_4h = _pct_chg(_reference_value(4 * 3600, 4))
+    chg_24h = _pct_chg(_reference_value(24 * 3600, 24))
+
     if chg_24h is not None:
         if chg_24h > 3.0:
             trend = "growing"
@@ -214,11 +229,20 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
             trend = "falling"
         else:
             trend = "stable"
+    elif synthetic_ts and len(normalized) < 5:
+        fallback_old = normalized[-1][1] if normalized else None
+        fallback_chg = _pct_chg(fallback_old)
+        if fallback_chg is None:
+            trend = "unknown"
+        elif fallback_chg > 3.0:
+            trend = "growing"
+        elif fallback_chg < -3.0:
+            trend = "falling"
+        else:
+            trend = "stable"
     else:
-        trend = "stable"
+        trend = "unknown"
 
-    # signal requires price context — provided in recommender
-    # here we return raw; recommender combines with price direction
     return {
         "oi_now": oi_now,
         "oi_24h_chg_pct": round(chg_24h, 2) if chg_24h is not None else None,

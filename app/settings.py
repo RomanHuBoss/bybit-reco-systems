@@ -54,8 +54,7 @@ def _resolve_project_path(raw: str) -> str:
 
 def _default_runtime_lock_db_path(db_path: str) -> str:
     base = Path(str(db_path)).expanduser()
-    suffix = base.suffix if base.suffix else ".db"
-    return str(base.with_name(f"{base.stem}.locks{suffix}"))
+    return str(base.with_name(f"{base.stem}.runtime_locks.sqlite"))
 
 
 def _env_int(key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
@@ -133,6 +132,7 @@ class Settings:
     reco_ttl_sec: int | None = None
     outcomes_interval_sec: int = 60
     outcomes_max_to_process: int = 200
+    reco_republish_cooldown_sec: int = 3600
     collector_max_workers: int = 8
     futures_collect_max_workers: int = 8
     reco_warmup_min_ready_ratio: float = 0.85
@@ -193,6 +193,7 @@ def load_settings() -> Settings:
     reco_ttl_sec = None if reco_ttl_raw in (None, "") else _env_int("RECO_TTL_SEC", 180, minimum=180, maximum=7 * 24 * 3600)
     outcomes_interval_sec = _env_int("OUTCOMES_INTERVAL_SEC", 60, minimum=20, maximum=3600)
     outcomes_max_to_process = _env_int("OUTCOMES_MAX_TO_PROCESS", 200, minimum=10, maximum=2000)
+    reco_republish_cooldown_sec = _env_int("RECO_REPUBLISH_COOLDOWN_SEC", 3600, minimum=0, maximum=24 * 3600)
     reco_warmup_min_ready_ratio = _env_float("RECO_WARMUP_MIN_READY_RATIO", 0.85, minimum=0.1, maximum=1.0)
     reco_warmup_min_ready_symbols = _env_int("RECO_WARMUP_MIN_READY_SYMBOLS", 1, minimum=1, maximum=10_000)
     reco_warmup_log_cooldown_sec = _env_int("RECO_WARMUP_LOG_COOLDOWN_SEC", 120, minimum=10, maximum=3600)
@@ -243,6 +244,7 @@ def load_settings() -> Settings:
         reco_ttl_sec=reco_ttl_sec,
         outcomes_interval_sec=outcomes_interval_sec,
         outcomes_max_to_process=outcomes_max_to_process,
+        reco_republish_cooldown_sec=reco_republish_cooldown_sec,
         reco_warmup_min_ready_ratio=reco_warmup_min_ready_ratio,
         reco_warmup_min_ready_symbols=reco_warmup_min_ready_symbols,
         reco_warmup_log_cooldown_sec=reco_warmup_log_cooldown_sec,

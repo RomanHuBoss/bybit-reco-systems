@@ -214,15 +214,23 @@ def _rollback_quietly(conn) -> None:
         logger.debug("rollback error", exc_info=True)
 
 
+def _is_runtime_lock_lost_error(exc: Exception) -> bool:
+    if isinstance(exc, RuntimeLockLostError):
+        return True
+    msg = str(exc).lower()
+    return "runtime lock lost" in msg or "lost reco leadership" in msg or "lost llm leadership" in msg or "lost collector leadership" in msg
+
+
 def _log_decision_fresh(action: str, rec_id: str | None, operator: str | None, details: dict[str, Any]) -> None:
     with closing(_get_conn()) as log_conn:
         db.log_decision(log_conn, action, rec_id, operator, details)
 
 
-def _make_runtime_lock_heartbeat(lock_key: str):
+def _make_runtime_lock_heartbeat(lock_key: str, lock_conn_factory=None):
     def _heartbeat() -> bool:
+        factory = lock_conn_factory or _get_lock_conn
         try:
-            with closing(_get_lock_conn()) as lock_conn:
+            with closing(factory()) as lock_conn:
                 return bool(db.heartbeat_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER))
         except Exception:
             logger.warning("runtime lock heartbeat failed", exc_info=True)
@@ -943,16 +951,19 @@ def _sentiment_thread():
             with closing(_get_conn()) as conn:
                 try:
                     if not heartbeat():
-                        raise RuntimeError("sentiment runtime lock lost")
+                        raise RuntimeLockLostError("sentiment runtime lock lost")
                     pts = collect_sentiment_once()
                     if not heartbeat():
-                        raise RuntimeError("sentiment runtime lock lost")
-                    db.insert_sentiment_points(conn, pts)
-                    db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)})
+                        raise RuntimeLockLostError("sentiment runtime lock lost")
+                    db.insert_sentiment_points(conn, pts, commit=False)
+                    db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)}, commit=False)
+                    if not heartbeat():
+                        raise RuntimeLockLostError("sentiment runtime lock lost")
+                    conn.commit()
                 except Exception as e:
                     _rollback_quietly(conn)
                     details = {"err": str(e)}
-                    if "runtime lock lost" in str(e).lower():
+                    if _is_runtime_lock_lost_error(e):
                         details = {"field": "runtime_lock", "err": str(e)}
                     _log_decision_fresh("SENTIMENT_ERROR", None, None, details)
         next_run = _interval_loop_wait(next_run, settings.sentiment_interval_sec)
@@ -978,12 +989,7 @@ def _reco_thread():
                     warmup_status = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
                 except Exception:
                     warmup_status = {}
-                if not warmup_status:
-                    try:
-                        warmup_status = _collector_warmup_status(conn)
-                    except Exception:
-                        warmup_status = {}
-                warmup_ready = bool(warmup_status.get("ready", False)) if isinstance(warmup_status, dict) else False
+                warmup_ready = bool(warmup_status.get("ready", False)) if isinstance(warmup_status, dict) and warmup_status else True
                 if not warmup_ready:
                     now_ts = time.time()
                     cooldown = max(30, int(getattr(settings, "reco_warmup_log_cooldown_sec", 120) or 120))
@@ -996,10 +1002,10 @@ def _reco_thread():
                 with closing(_get_conn()) as conn:
                     try:
                         if not heartbeat():
-                            raise RuntimeError("reco runtime lock lost")
-                        result = run_recommender_once(conn, settings)
+                            raise RuntimeLockLostError("reco runtime lock lost")
+                        result = run_recommender_once(conn, settings, heartbeat=heartbeat)
                         if not heartbeat():
-                            raise RuntimeError("reco runtime lock lost")
+                            raise RuntimeLockLostError("reco runtime lock lost")
                         if time.time() - _last_outcomes >= int(getattr(settings, "outcomes_interval_sec", 60) or 60):
                             compute_outcomes_once(
                                 conn,
@@ -1008,7 +1014,7 @@ def _reco_thread():
                             )
                             _last_outcomes = time.time()
                     except Exception as e:
-                        leadership_ok = False if "runtime lock lost" in str(e).lower() else leadership_ok
+                        leadership_ok = False if _is_runtime_lock_lost_error(e) else leadership_ok
                         _rollback_quietly(conn)
                         details = {"err": str(e)}
                         if leadership_ok is False:
@@ -1067,19 +1073,21 @@ def _llm_reviewer_thread():
             with closing(_get_conn()) as conn:
                 try:
                     if not heartbeat():
-                        raise RuntimeError("llm reviewer runtime lock lost")
-                    stats = run_llm_review_sweep_once(conn, settings)
+                        raise RuntimeLockLostError("llm reviewer runtime lock lost")
+                    stats = run_llm_review_sweep_once(conn, settings, heartbeat=heartbeat)
                     if not heartbeat():
-                        raise RuntimeError("llm reviewer runtime lock lost")
+                        raise RuntimeLockLostError("llm reviewer runtime lock lost")
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
                     interval_sec = eager_interval if int(stats.get("pending_after", 0) or 0) > 0 else base_interval
                 except Exception as e:
                     interval_sec = base_interval
                     _rollback_quietly(conn)
-                    db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {"enabled": True, "error": str(e), "updated_ts": int(time.time())})
-                    details = {"err": str(e)}
-                    if "runtime lock lost" in str(e).lower():
+                    if _is_runtime_lock_lost_error(e):
+                        db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {"enabled": True, "updated_ts": int(time.time())})
                         details = {"field": "runtime_lock", "err": str(e)}
+                    else:
+                        db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {"enabled": True, "error": str(e), "updated_ts": int(time.time())})
+                        details = {"err": str(e)}
                     _log_decision_fresh("LLM_REVIEW_SWEEP_ERROR", None, None, details)
         next_run = _interval_loop_wait(next_run, interval_sec)
 

@@ -20,6 +20,13 @@
 - Добавлен отдельный endpoint `/metrics` с ключевыми gauge-метриками: здоровье символов, число активных рекомендаций, недавние ошибки сбора, длительность последнего collector cycle и настройки worker-параллелизма.
 - Внутренние записи в `decision_log` внутри collector больше не коммитят данные посреди случайных веток ошибок. Ошибки API-stage теперь сначала буферизуются в памяти и сбрасываются в БД только на явной stage-boundary, а не через побочный `commit` из произвольной точки цикла.
 - Heartbeat runtime lock теперь действительно идёт через отдельное SQLite-соединение, а не через тот же connection, что пишет collector-stage. Это убирает скрытый partial-commit риск и делает stage-boundary commit честным: потеря лидерства больше не может «случайно» зафиксировать чужую незавершённую запись через heartbeat.
+- Runtime lock вынесен в отдельную sidecar-БД `*.runtime_locks.sqlite`, а не в основной `app.db`. Heartbeat больше не конкурирует с длинной write-транзакцией основного контура за один и тот же файл SQLite.
+- Freshness ticker-layer теперь считается только по **валидной сырой** ticker snapshot. Санированная fallback-строка (например, с crossed quotes `ask < bid`) ещё может использоваться как безопасный справочный payload, но больше не маскирует отсутствие полноценно пригодного quote-layer.
+- Async LLM sweep теперь считает backlog консистентно: latest snapshot приоритетен, но backlog по той же идее/cache-key дочищается вместе с ним; старые несвязанные `pending`-кандидаты не искажают `pending_before/pending_after`.
+- Publish-stage больше не создаёт преждевременные `LLM_REVIEW_*` commits при одном лишь cache-hit annotation. До реальной публикации это остаётся частью общей транзакции recommendation-cycle.
+- Sentiment collector переведён на честную транзакцию с финальным heartbeat перед commit: потеря лидерства после записи, но до фиксации, теперь корректно откатывает пачку и не оставляет полузаписанный sentiment-layer.
+- Добавлен cooldown-дедуп повторной публикации схожих live-идей (`RECO_REPUBLISH_COOLDOWN_SEC`): почти идентичный сигнал по тому же `(venue, symbol, bot_type, direction)` теперь подавляется, если это не material upgrade по confidence/score/RR/entry.
+- `oi_trend()` больше не путает плотную пачку свежих точек с реальной 4h/24h историей: для реальных unix timestamps требуется фактическая временная глубина, а не только число строк.
 - REST-fetch для OHLCV и open interest теперь поддерживает bounded parallelism через `COLLECTOR_MAX_WORKERS` и `FUTURES_COLLECT_MAX_WORKERS`, так что full-universe режим больше не остаётся строго однопоточным.
 - Исправлен cold-start разрыв целостности для derived TF: `15m` / `30m` получают одноразовый REST bootstrap, если локально ещё нет достаточной истории для multi-timeframe logic. Для `4h` bootstrap теперь **не выполняется**, если уже есть достаточная `1h` история для локальной сборки. Это убирает лишние REST-вызовы и ложные bootstrap-ошибки при полностью достаточном source TF.
 - Сбор `open interest` и OHLCV теперь действительно gap-aware после простоев: длинные разрывы восстанавливаются адаптивными окнами, а open interest дополнительно дочитывается через cursor pagination, если разрыв больше одного API-page. Слой БД жёстче фильтрует невалидные `OI`/`funding` записи и не позволяет «битым» историческим строкам отравлять latest-ts и downstream сигналы.
@@ -66,6 +73,7 @@
 
 ### Дополнительные усиления в этой ревизии
 - `DB_PATH` теперь нормализуется к абсолютному пути относительно корня проекта. Перезапуск из другой shell-директории больше не уводит сервис в случайный `./data/app.db`.
+- `RUNTIME_LOCK_DB_PATH` по умолчанию разворачивается в sidecar-файл `*.runtime_locks.sqlite`; блокировки лидерства больше не делят файл с основными write-paths.
 - Панель «Детали» в UI теперь корректно сбрасывает устаревший `rec_id` после `404` и перестаёт бесконечно запрашивать несуществующую запись.
 - История OHLCV валидируется строже: отбрасываются не только `NaN/inf`, но и логически невозможные бары (`high < open/close/low`, `low > open/close/high`).
 - При чтении OHLCV используется overfetch перед фильтрацией, поэтому пачка битых последних баров не лишает движок достаточной истории для features / direction / LLM payload.
@@ -125,16 +133,18 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `121 passed`
-- покрытие `app/*` — `74%`
+- `150 passed`
+- покрытие `app/*` — `76%`
 - регрессионные тесты покрывают collector / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths
 
 ## Ключевые env
-- `DB_PATH` — путь к SQLite. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
+- `DB_PATH` — путь к основной SQLite БД. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
+- `RUNTIME_LOCK_DB_PATH` — путь к отдельной sidecar-БД runtime lock; по умолчанию это `*.runtime_locks.sqlite` рядом с основной БД;
 - `SYMBOLS_SPOT`, `SYMBOLS_LINEAR` — списки символов;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
 - `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
+- `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
 - `ADMIN_API_KEY` — ключ для mutating endpoints;
 - `COLLECTOR_MAX_WORKERS`, `FUTURES_COLLECT_MAX_WORKERS` — bounded parallelism for collector REST fetches;
@@ -230,4 +240,4 @@ python -m py_compile app/*.py tests/*.py main.py
 
 ## Runtime lock storage
 
-Runtime leadership locks are stored in a separate SQLite sidecar database. By default the path is derived from `DB_PATH` (for example `app.db` -> `app.locks.db`). You can override it with `RUNTIME_LOCK_DB_PATH`. This isolates heartbeat writes from long-running market-data transactions in the main database and avoids false leadership loss caused by `database is locked` on the primary DB file.
+Runtime leadership locks are stored in a separate SQLite sidecar database. By default the path is derived from `DB_PATH` (for example `app.db` -> `app.runtime_locks.sqlite`). You can override it with `RUNTIME_LOCK_DB_PATH`. This isolates heartbeat writes from long-running market-data transactions in the main database and avoids false leadership loss caused by `database is locked` on the primary DB file.

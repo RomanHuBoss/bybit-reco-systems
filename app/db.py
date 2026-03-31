@@ -17,6 +17,11 @@ LATEST_ROW_SCAN_LIMIT = 1024
 
 MIGRATION_INIT_SQL = Path(__file__).resolve().parent.parent / "migrations" / "init.sql"
 
+def runtime_lock_db_path(db_path: str) -> str:
+    base = Path(str(db_path)).expanduser()
+    return str(base.with_name(f"{base.stem}.runtime_locks.sqlite"))
+
+
 def connect(db_path: str) -> sqlite3.Connection:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     # Multiple background threads write concurrently (collector/sentiment/recommender/outcomes).
@@ -32,6 +37,10 @@ def connect(db_path: str) -> sqlite3.Connection:
     except Exception:
         logger.debug("PRAGMA setup error", exc_info=True)
     return conn
+
+
+def connect_runtime_locks(db_path: str) -> sqlite3.Connection:
+    return connect(runtime_lock_db_path(db_path))
 
 def init_db(conn: sqlite3.Connection) -> None:
     sql = MIGRATION_INIT_SQL.read_text(encoding="utf-8")
@@ -361,13 +370,18 @@ def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> dict
 
 
 def get_latest_ticker_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
-    row = get_latest_ticker(conn, venue, symbol)
-    if not row:
-        return None
-    try:
-        return int(row["ts"])
-    except Exception:
-        return None
+    cur = conn.execute(
+        """SELECT * FROM ticker_snap WHERE venue=? AND symbol=? ORDER BY ts DESC LIMIT ?""",
+        (venue, symbol, LATEST_ROW_SCAN_LIMIT),
+    )
+    for row in cur.fetchall():
+        payload = dict(row)
+        if _is_valid_ticker_row(payload):
+            try:
+                return int(payload["ts"])
+            except Exception:
+                return None
+    return None
 
 def get_latest_features_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
     cur = conn.execute(
@@ -871,7 +885,7 @@ def insert_sentiment_point(conn: sqlite3.Connection, scope: str, key: str, ts: i
     conn.commit()
 
 
-def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
     if not rows:
         return
     conn.executemany(
@@ -891,7 +905,8 @@ def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]
             for row in rows
         ],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: int = 120) -> list[dict[str, Any]]:
     cur = conn.execute(
