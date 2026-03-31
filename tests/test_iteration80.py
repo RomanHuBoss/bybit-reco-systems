@@ -106,6 +106,7 @@ def test_lifespan_starts_backfill_thread(tmp_path: Path, monkeypatch: pytest.Mon
         asyncio.run(_run())
         assert "collector" in started
         assert "backfill" in started
+        assert "futures_meta" in started
         assert "reco" in started
     finally:
         sys.modules.pop("app.main", None)

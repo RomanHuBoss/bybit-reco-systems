@@ -249,3 +249,8 @@ python -m py_compile app/*.py tests/*.py main.py
 ## Runtime lock storage
 
 Runtime leadership locks are stored in a separate SQLite sidecar database. By default the path is derived from `DB_PATH` (for example `app.db` -> `app.runtime_locks.sqlite`). You can override it with `RUNTIME_LOCK_DB_PATH`. This isolates heartbeat writes from long-running market-data transactions in the main database and avoids false leadership loss caused by `database is locked` on the primary DB file.
+
+
+## Runtime loops
+
+Background work is split into `collector`, `backfill`, `futures_meta`, `sentiment`, `reco` and `llm_reviewer`. During warm-up the backfill loop can sweep the full active symbol set per timeframe, while futures metadata stays on its own cadence so open-interest collection cannot stall readiness progress.

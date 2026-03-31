@@ -111,8 +111,11 @@ class Settings:
     admin_api_key: str | None
     sentiment_interval_sec: int
     futures_collect_interval_sec: int
-    telegram_token: str | None
-    telegram_chat_id: str | None
+    backfill_full_sweep_on_warmup: bool = True
+    backfill_per_tf_budget: int = 0
+    futures_meta_during_warmup: bool = False
+    telegram_token: str | None = None
+    telegram_chat_id: str | None = None
     runtime_lock_db_path: str = ""
 
     require_conf_gate: bool = False
@@ -189,6 +192,9 @@ def load_settings() -> Settings:
     llm_reviewer_min_confidence = _env_float("LLM_REVIEWER_MIN_CONFIDENCE", 0.65, minimum=0.0, maximum=1.0)
     llm_reviewer_cadence_sec = _env_int("LLM_REVIEWER_CADENCE_SEC", 300, minimum=5, maximum=3600)
     llm_reviewer_keep_alive = _env("LLM_REVIEWER_KEEP_ALIVE", "90s").strip() or "90s"
+    backfill_full_sweep_on_warmup = _env("BACKFILL_FULL_SWEEP_ON_WARMUP", "1").strip().lower() in ("1", "true", "yes", "y")
+    backfill_per_tf_budget = _env_int("BACKFILL_PER_TF_BUDGET", 0, minimum=0, maximum=10000)
+    futures_meta_during_warmup = _env("FUTURES_META_DURING_WARMUP", "0").strip().lower() in ("1", "true", "yes", "y")
     reco_ttl_raw = os.getenv("RECO_TTL_SEC")
     reco_ttl_sec = None if reco_ttl_raw in (None, "") else _env_int("RECO_TTL_SEC", 180, minimum=180, maximum=7 * 24 * 3600)
     outcomes_interval_sec = _env_int("OUTCOMES_INTERVAL_SEC", 60, minimum=20, maximum=3600)
@@ -224,6 +230,9 @@ def load_settings() -> Settings:
         admin_api_key=admin_api_key,
         sentiment_interval_sec=_env_int("SENTIMENT_INTERVAL_SEC", 60, minimum=10, maximum=3600),
         futures_collect_interval_sec=_env_int("FUTURES_COLLECT_INTERVAL_SEC", 900, minimum=60, maximum=24 * 3600),
+        backfill_full_sweep_on_warmup=backfill_full_sweep_on_warmup,
+        backfill_per_tf_budget=backfill_per_tf_budget,
+        futures_meta_during_warmup=futures_meta_during_warmup,
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
         outcome_horizon_fallback_sec=outcome_horizon_fallback_sec,

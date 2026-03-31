@@ -121,7 +121,7 @@ def test_collector_thread_hot_loop_does_not_run_futures_meta(tmp_path: Path, mon
 
 
 
-def test_backfill_thread_runs_futures_meta_outside_hot_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_futures_meta_thread_runs_outside_hot_and_backfill_loops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "backfill_thread.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("VENUES", "linear")
@@ -149,9 +149,10 @@ def test_backfill_thread_runs_futures_meta_outside_hot_loop(tmp_path: Path, monk
 
         monkeypatch.setattr(app_main, "collect_futures_once", fake_futures)
         monkeypatch.setattr(app_main, "_interval_loop_wait", lambda *_args, **_kwargs: (_ for _ in ()).throw(StopIteration))
+        monkeypatch.setattr(app_main, "_warmup_status_payload", lambda _conn: {"ready": True})
 
         with pytest.raises(StopIteration):
-            app_main._backfill_thread()
+            app_main._futures_meta_thread()
 
         assert futures_calls["count"] == 1
     finally:
