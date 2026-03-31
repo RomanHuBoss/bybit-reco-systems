@@ -9,6 +9,8 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- Исправлен критический lifecycle-разрыв: `backfill`-thread теперь реально стартует в `lifespan()` вместе с `collector` / `sentiment` / `reco` / `llm_reviewer`, а не существует только как недостижимый код. Именно это закрывает режим, в котором `health` видит свежие `ticker + 1m`, но `ready_symbols` застывает и рекомендации не публикуются.
+- `/api/v1/health/symbols` и модалка `Здоровье символов` теперь отдают и показывают не только freshness hot-layer, но и `warmup/readiness` recommender-а. Это убирает ложную интерпретацию вида «всё OK, почему нет рекомендаций?», когда фактически свежесть уже есть, а multi-TF history ещё не добрана.
 - Background loop supervisor теперь переживает фатальные unhandled exceptions в `collector` / `reco` / `sentiment` / `llm_reviewer`: crash фиксируется в `decision_log`, состояние потока сохраняется в `app_config`, а loop автоматически перезапускается вместо тихой смерти daemon-thread. В `/api/v1/status` появились `background_threads`, `collector.thread`, `collector.state`, `collector.cycle_age_sec`.
 - Heavy cold-start/history work больше не душит hot market-data loop: быстрый collector теперь обслуживает только `ticker + 1m + local derived TF maintenance`, а отдельный `backfill`-thread дозированно догружает `1h/1d`, bootstrap для `15m/30m` и `open interest`. Это убирает сценарий, когда первые свежие данные появляются, а затем через 5–6 минут весь universe проваливается в `stale` из-за одного слишком длинного collector-cycle. В `/api/v1/status` добавлен блок `backfill` и состояние потока `background_threads.backfill`.
 - `reco` больше не считает отсутствие cached `collector_warmup` признаком готовности. Если snapshot warm-up ещё не записан или потерян, используется live fallback-расчёт по БД; cold start и частичная деградация больше не обходят warm-up guard просто потому, что ключ `collector_warmup` пуст.
@@ -246,20 +248,3 @@ python -m py_compile app/*.py tests/*.py main.py
 ## Runtime lock storage
 
 Runtime leadership locks are stored in a separate SQLite sidecar database. By default the path is derived from `DB_PATH` (for example `app.db` -> `app.runtime_locks.sqlite`). You can override it with `RUNTIME_LOCK_DB_PATH`. This isolates heartbeat writes from long-running market-data transactions in the main database and avoids false leadership loss caused by `database is locked` on the primary DB file.
-
-
-## Warmup и здоровье символов
-
-Раздел `Здоровье символов` показывает свежесть hot market-data слоя (`ticker` + `1m`).
-Это не то же самое, что warmup/readiness recommender-а.
-
-Для публикации рекомендаций система дополнительно требует историческую глубину по обязательным
-таймфреймам (`1m`, `15m`, `30m`, `1h`, `4h`, `1d`). Поэтому возможен режим:
-
-- здоровье символов = `OK`
-- warmup = `false`
-- рекомендаций ещё нет
-
-Такое состояние нормально только на коротком этапе cold start, пока backfill добирает историю.
-Если `health=OK`, а `warmup=false` держится слишком долго, нужно смотреть состояние потока `backfill`
-в `/api/v1/status`.
