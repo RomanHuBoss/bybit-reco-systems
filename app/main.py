@@ -454,6 +454,7 @@ def _load_collector_warmup_status(conn, *, recompute_if_missing: bool = False) -
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     threading.Thread(target=partial(_run_supervised_background_target, "collector", _collector_thread), name="collector", daemon=True).start()
+    threading.Thread(target=partial(_run_supervised_background_target, "backfill", _backfill_thread), name="backfill", daemon=True).start()
     threading.Thread(target=partial(_run_supervised_background_target, "sentiment", _sentiment_thread), name="sentiment", daemon=True).start()
     threading.Thread(target=partial(_run_supervised_background_target, "reco", _reco_thread), name="reco", daemon=True).start()
     threading.Thread(target=partial(_run_supervised_background_target, "llm_reviewer", _llm_reviewer_thread), name="llm_reviewer", daemon=True).start()
@@ -972,6 +973,7 @@ def api_symbol_health() -> dict[str, Any]:
             stale_sec=settings.stale_data_max_sec,
             active_venues=active_venues,
         )
+        warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         n_ok = sum(1 for i in items if i["status"] == "ok")
         n_stale = sum(1 for i in items if i["status"] == "stale")
         n_missing = sum(1 for i in items if i["status"] == "missing")
@@ -980,6 +982,7 @@ def api_symbol_health() -> dict[str, Any]:
         return {
             "ts": int(time.time()),
             "summary": {"ok": n_ok, "stale": n_stale, "missing": n_missing, "disabled": n_disabled, "errors_10m": n_errors},
+            "warmup": warmup,
             "venues": active_venues,
             "llm_reviewer": {
                 "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),

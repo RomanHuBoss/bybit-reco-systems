@@ -246,3 +246,20 @@ python -m py_compile app/*.py tests/*.py main.py
 ## Runtime lock storage
 
 Runtime leadership locks are stored in a separate SQLite sidecar database. By default the path is derived from `DB_PATH` (for example `app.db` -> `app.runtime_locks.sqlite`). You can override it with `RUNTIME_LOCK_DB_PATH`. This isolates heartbeat writes from long-running market-data transactions in the main database and avoids false leadership loss caused by `database is locked` on the primary DB file.
+
+
+## Warmup и здоровье символов
+
+Раздел `Здоровье символов` показывает свежесть hot market-data слоя (`ticker` + `1m`).
+Это не то же самое, что warmup/readiness recommender-а.
+
+Для публикации рекомендаций система дополнительно требует историческую глубину по обязательным
+таймфреймам (`1m`, `15m`, `30m`, `1h`, `4h`, `1d`). Поэтому возможен режим:
+
+- здоровье символов = `OK`
+- warmup = `false`
+- рекомендаций ещё нет
+
+Такое состояние нормально только на коротком этапе cold start, пока backfill добирает историю.
+Если `health=OK`, а `warmup=false` держится слишком долго, нужно смотреть состояние потока `backfill`
+в `/api/v1/status`.
