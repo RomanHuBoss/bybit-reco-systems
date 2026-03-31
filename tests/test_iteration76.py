@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from contextlib import closing
 import sys
 from pathlib import Path
 
@@ -119,7 +120,7 @@ def test_runtime_lock_uses_sidecar_db_path(tmp_path: Path, monkeypatch: pytest.M
     app_main = importlib.import_module("app.main")
     try:
         assert Path(app_main.settings.runtime_lock_db_path) == lock_db_path
-        with app_main._get_lock_conn() as conn:
+        with closing(app_main._get_lock_conn()) as conn:
             db.init_runtime_lock_db(conn)
             assert db.acquire_runtime_lock(conn, "runtime:test", app_main.RUNTIME_OWNER, ttl_sec=120) is True
         assert lock_db_path.exists()

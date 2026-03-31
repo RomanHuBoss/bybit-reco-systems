@@ -1678,7 +1678,7 @@ def _load_prev_recommended(conn) -> dict[tuple, dict[str, int]]:
     return out
 
 
-def _save_prev_recommended(conn, state: dict[tuple, dict[str, int]], fresh_gap: int) -> None:
+def _save_prev_recommended(conn, state: dict[tuple, dict[str, int]], fresh_gap: int, *, commit: bool = True) -> None:
     now = int(time.time())
     payload: dict[str, dict[str, int]] = {}
     ttl = max(int(fresh_gap) * 3, 600)
@@ -1690,7 +1690,7 @@ def _save_prev_recommended(conn, state: dict[tuple, dict[str, int]], fresh_gap: 
         if ts <= 0 or count <= 0 or now - ts > ttl:
             continue
         payload["|".join(str(x) for x in key)] = {"ts": ts, "count": count}
-    db.set_app_config_json(conn, PERSISTENCE_STATE_APP_KEY, payload)
+    db.set_app_config_json(conn, PERSISTENCE_STATE_APP_KEY, payload, commit=commit)
 
 
 def _advance_persistence_gate(venue: str, sym: str, bot_type: str, direction: str, now_ts: int, fresh_gap: int) -> int:
@@ -1785,7 +1785,7 @@ def _load_direction_state(conn) -> dict[tuple[str, str], dict[str, Any]]:
     return out
 
 
-def _save_direction_state(conn, state: dict[tuple[str, str], dict[str, Any]], fresh_gap: int) -> None:
+def _save_direction_state(conn, state: dict[tuple[str, str], dict[str, Any]], fresh_gap: int, *, commit: bool = True) -> None:
     now = int(time.time())
     ttl = max(int(fresh_gap) * 8, 1800)
     payload: dict[str, dict[str, Any]] = {}
@@ -1803,7 +1803,7 @@ def _save_direction_state(conn, state: dict[tuple[str, str], dict[str, Any]], fr
             "trendiness": float(meta.get("trendiness", 0.0) or 0.0),
             "coherence": float(meta.get("coherence", 0.0) or 0.0),
         }
-    db.set_app_config_json(conn, DIRECTION_STATE_APP_KEY, payload)
+    db.set_app_config_json(conn, DIRECTION_STATE_APP_KEY, payload, commit=commit)
 
 
 def _stabilize_direction_agg(
@@ -2278,7 +2278,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     db.insert_regime(conn, db.now_ts(), regime)
 
     market_shock = compute_market_shock(conn, settings, sent_agg, symbol_feature_map, ts_now)
-    db.set_app_config_json(conn, MARKET_SHOCK_APP_KEY, market_shock)
+    db.set_app_config_json(conn, MARKET_SHOCK_APP_KEY, market_shock, commit=False)
 
     limits = db.get_active_risk_limits(conn) or settings.risk_limits
     model_version = "bybit-taxonomy-v2"
@@ -2775,15 +2775,15 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
 
         _apply_recent_publication_dedupe(conn, recs, settings, ts_now)
         _check_heartbeat()
-        _save_prev_recommended(conn, _prev_recommended, _fresh_gap)
-        _save_direction_state(conn, _direction_state_cache, _fresh_gap)
+        _save_prev_recommended(conn, _prev_recommended, _fresh_gap, commit=False)
+        _save_direction_state(conn, _direction_state_cache, _fresh_gap, commit=False)
 
         llm_reviewer = None
         if bool(getattr(settings, "llm_reviewer_enabled", False)):
             try:
                 llm_reviewer = _make_llm_reviewer(settings)
             except Exception as exc:
-                db.log_decision(conn, "LLM_REVIEW_ERROR", None, None, {"err": str(exc), "stage": "pending_annotation"})
+                db.log_decision(conn, "LLM_REVIEW_ERROR", None, None, {"err": str(exc), "stage": "pending_annotation"}, commit=False)
         llm_review_stats = _mark_llm_reviews_async(conn, recs, settings, reviewer=llm_reviewer)
 
         for r in recs:
@@ -2791,7 +2791,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             st = str(r.get("status") or "")
             if st in status_counts:
                 status_counts[st] += 1
-        db.insert_recommendations(conn, recs)
+        db.insert_recommendations(conn, recs, commit=False)
         db.log_decision(
             conn,
             "PUBLISH",
@@ -2818,7 +2818,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     **llm_review_stats,
                 },
             },
+            commit=False,
         )
+        conn.commit()
 
     return {
         "regime": regime,

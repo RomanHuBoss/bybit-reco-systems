@@ -126,12 +126,13 @@ def _require_finite_float(name: str, value: Any, *, minimum: float | None = None
     return num
 
 
-def set_app_config_json(conn: sqlite3.Connection, key: str, value: Any) -> None:
+def set_app_config_json(conn: sqlite3.Connection, key: str, value: Any, *, commit: bool = True) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO app_config(key, value_json, updated_ts) VALUES(?,?,?)",
         (str(key), json.dumps(value, ensure_ascii=False), now_ts()),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_app_config_json(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
@@ -182,7 +183,7 @@ def insert_regime(conn: sqlite3.Connection, ts: int, regime: dict[str, Any]) -> 
     )
     conn.commit()
 
-def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
     conn.executemany(
         """INSERT OR REPLACE INTO recommendations(
             rec_id,ts,venue,symbol,bot_type,direction,account_mode,margin_mode,
@@ -198,7 +199,8 @@ def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]])
             r["status"], r["ttl_sec"], r["model_version"], r["features_ref_ts"]
         ) for r in rows],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def log_decision(
     conn: sqlite3.Connection,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from contextlib import closing
 import sqlite3
 import sys
 from pathlib import Path
@@ -16,7 +17,7 @@ def test_make_runtime_lock_heartbeat_survives_closed_outer_connection(tmp_path: 
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:
-        with db.connect_runtime_locks(str(db_path)) as conn:
+        with closing(db.connect_runtime_locks(str(db_path))) as conn:
             db.init_runtime_lock_db(conn)
             assert db.acquire_runtime_lock(conn, "runtime:test", app_main.RUNTIME_OWNER, ttl_sec=90)
 
@@ -54,7 +55,7 @@ def test_make_runtime_lock_heartbeat_opens_new_connection_each_call(tmp_path: Pa
             created.append(wrapped)
             return wrapped
 
-        with db.connect_runtime_locks(str(db_path)) as conn:
+        with closing(db.connect_runtime_locks(str(db_path))) as conn:
             db.init_runtime_lock_db(conn)
             assert db.acquire_runtime_lock(conn, "runtime:test", app_main.RUNTIME_OWNER, ttl_sec=90)
 

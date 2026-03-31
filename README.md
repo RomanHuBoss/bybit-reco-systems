@@ -31,6 +31,7 @@
 - Freshness ticker-layer теперь считается только по **валидной сырой** ticker snapshot. Санированная fallback-строка (например, с crossed quotes `ask < bid`) ещё может использоваться как безопасный справочный payload, но больше не маскирует отсутствие полноценно пригодного quote-layer.
 - Async LLM sweep теперь считает backlog консистентно: latest snapshot приоритетен, но backlog по той же идее/cache-key дочищается вместе с ним; старые несвязанные `pending`-кандидаты не искажают `pending_before/pending_after`.
 - Publish-stage больше не создаёт преждевременные `LLM_REVIEW_*` commits при одном лишь cache-hit annotation. До реальной публикации это остаётся частью общей транзакции recommendation-cycle.
+- Publish-stage recommender-а теперь фиксируется атомарно: `recommendations`, `PUBLISH` audit-log, persistence gate, direction-stability и `market_shock` либо коммитятся вместе, либо целиком откатываются при сбое/потере leadership в конце цикла. Это убирает ложное состояние, когда внутренний state уже продвинулся, а самой публикации в БД ещё нет.
 - Sentiment collector переведён на честную транзакцию с финальным heartbeat перед commit: потеря лидерства после записи, но до фиксации, теперь корректно откатывает пачку и не оставляет полузаписанный sentiment-layer.
 - Добавлен cooldown-дедуп повторной публикации схожих live-идей (`RECO_REPUBLISH_COOLDOWN_SEC`): почти идентичный сигнал по тому же `(venue, symbol, bot_type, direction)` теперь подавляется, если это не material upgrade по confidence/score/RR/entry.
 - `oi_trend()` больше не путает плотную пачку свежих точек с реальной 4h/24h историей: для реальных unix timestamps требуется фактическая временная глубина, а не только число строк.
@@ -140,9 +141,10 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `150 passed`
+- `167 passed`
 - покрытие `app/*` — `76%`
-- регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths
+- регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback.
+- smoke/coverage прогоны очищены от известных `ResourceWarning: unclosed database` в тестовом harness; верифицировано, что остаётся только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`.
 
 ## Ключевые env
 - `DB_PATH` — путь к основной SQLite БД. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;

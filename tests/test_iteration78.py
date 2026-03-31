@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from contextlib import closing
 import sys
 from pathlib import Path
 
@@ -35,7 +36,7 @@ def test_background_supervisor_records_collector_crash_and_restart_state(tmp_pat
         )
 
         assert calls["count"] == 2
-        with db.connect(str(db_path)) as conn:
+        with closing(db.connect(str(db_path))) as conn:
             state = db.get_app_config_json(conn, app_main._background_thread_state_key("collector"), default={}) or {}
             assert state["state"] == "stopped"
             assert int(state.get("restart_count") or 0) == 1
