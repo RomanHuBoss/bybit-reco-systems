@@ -131,6 +131,9 @@ def test_reco_thread_skips_followup_work_after_runtime_lock_loss(tmp_path: Path,
         def stop_after_first_wait(*args, **kwargs):
             raise StopIteration
 
+        with db.connect(str(db_path)) as conn:
+            db.set_app_config_json(conn, "collector_warmup", {"ready": True, "symbols_total": 1, "ready_symbols": 1})
+
         monkeypatch.setattr(app_main, "run_recommender_once", fake_run_recommender_once)
         monkeypatch.setattr(app_main.db, "expire_stale_recommendations", fake_expire)
         monkeypatch.setattr(app_main.db, "prune_old_data", fake_prune)

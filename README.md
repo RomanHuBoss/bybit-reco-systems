@@ -9,6 +9,9 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- Background loop supervisor теперь переживает фатальные unhandled exceptions в `collector` / `reco` / `sentiment` / `llm_reviewer`: crash фиксируется в `decision_log`, состояние потока сохраняется в `app_config`, а loop автоматически перезапускается вместо тихой смерти daemon-thread. В `/api/v1/status` появились `background_threads`, `collector.thread`, `collector.state`, `collector.cycle_age_sec`.
+- `reco` больше не считает отсутствие cached `collector_warmup` признаком готовности. Если snapshot warm-up ещё не записан или потерян, используется live fallback-расчёт по БД; cold start и частичная деградация больше не обходят warm-up guard просто потому, что ключ `collector_warmup` пуст.
+- Collector теперь делает throttled telemetry для символов с пустым ticker payload (`COLLECT_ERROR` / `field=ticker_missing`) и показывает их в cycle stats (`ticker_missing_symbols`, `sample_ticker_missing_symbols`). Это убирает «немые» missing-symbols, которые раньше неделями висели без явной причины в health/status.
 - Recommender больше не стартует «вслепую» на пустой/холодной БД. После запуска collector публикует `collector_warmup`-статус, а `reco` ждёт, пока по активным venues не появится достаточная доля символов с **свежими ticker + 1m** и полноценной multi-timeframe history (`15m/30m/1h/4h/1d`). До готовности движок пишет `RECO_WARMUP_SKIP`, а не засыпает журнал валом `STALE_DATA_SKIP`.
 - Collector hot-path теперь действительно приоритизирует `1m`: на холодном старте REST-fetch идёт группами `1m -> 1h -> 1d`, а не вперемешку по всем ТФ сразу. Это сокращает время до первого пригодного candle-layer для full-universe режима.
 - Collector запускается сразу после старта процесса, без первого лишнего ожидания `COLLECT_INTERVAL_SEC`; в `/metrics` и `/api/v1/status` появился warm-up state (`collector_warmup`, `bybit_reco_warmup_*`).

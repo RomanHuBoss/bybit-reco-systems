@@ -1031,7 +1031,7 @@ def test_metrics_endpoint_reports_core_gauges_and_status_collector_workers(clien
     assert 'bybit_reco_recommendations_active 1' in body
     assert 'bybit_reco_collector_cycle_duration_ms 4321' in body
     assert 'bybit_reco_warmup_ready 0' in body
-    assert 'bybit_reco_warmup_symbols_total 0' in body
+    assert 'bybit_reco_warmup_symbols_total 2' in body
     assert 'bybit_reco_collector_max_workers 8' in body
     assert 'bybit_reco_futures_collect_max_workers 8' in body
 

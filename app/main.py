@@ -7,6 +7,7 @@ import secrets
 import threading
 import socket
 import time
+from functools import partial
 from contextlib import closing, asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,14 @@ RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 OUTCOME_LABEL_VERSION = "grid_label_v2"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
+BACKGROUND_THREAD_STATE_APP_KEY_PREFIX = "runtime_thread_state:"
+BACKGROUND_THREAD_RESTART_DELAY_SEC = 5.0
+BACKGROUND_THREAD_ERROR_ACTIONS = {
+    "collector": "COLLECT_ERROR",
+    "reco": "RECO_ERROR",
+    "sentiment": "SENTIMENT_ERROR",
+    "llm_reviewer": "LLM_REVIEW_SWEEP_ERROR",
+}
 _instrument_meta_cache: dict[tuple[str, str], tuple[float, dict[str, Any], bool]] = {}
 _instrument_meta_lock = threading.Lock()
 
@@ -226,6 +235,114 @@ def _log_decision_fresh(action: str, rec_id: str | None, operator: str | None, d
         db.log_decision(log_conn, action, rec_id, operator, details)
 
 
+def _background_thread_state_key(name: str) -> str:
+    return f"{BACKGROUND_THREAD_STATE_APP_KEY_PREFIX}{str(name or '').strip().lower()}"
+
+
+def _set_background_thread_state(name: str, state: str, **fields: Any) -> None:
+    payload = {
+        "name": str(name or "").strip().lower(),
+        "state": str(state or "unknown"),
+        "updated_ts": int(time.time()),
+        **fields,
+    }
+    try:
+        with closing(_get_conn()) as conn:
+            db.set_app_config_json(conn, _background_thread_state_key(name), payload)
+    except Exception:
+        logger.warning("background thread state persist failed for %s", name, exc_info=True)
+
+
+def _get_background_thread_state(conn, name: str) -> dict[str, Any]:
+    payload = db.get_app_config_json(conn, _background_thread_state_key(name), default={}) or {}
+    if not isinstance(payload, dict):
+        return {}
+    out = dict(payload)
+    updated_ts = int(out.get("updated_ts") or 0)
+    out["age_sec"] = None if updated_ts <= 0 else max(0, int(time.time()) - updated_ts)
+    return out
+
+
+def _log_background_thread_error(name: str, exc: Exception) -> None:
+    action = BACKGROUND_THREAD_ERROR_ACTIONS.get(str(name or "").strip().lower())
+    if not action:
+        return
+    details: dict[str, Any] = {
+        "component": str(name or "").strip().lower(),
+        "stage": "background_supervisor",
+        "err": str(exc),
+        "err_type": exc.__class__.__name__,
+    }
+    if action == "COLLECT_ERROR":
+        details = {
+            "venue": "*",
+            "symbol": "UNKNOWN",
+            "field": "background_thread",
+            **details,
+        }
+    try:
+        _log_decision_fresh(action, None, None, details)
+    except Exception:
+        logger.warning("background thread error log failed for %s", name, exc_info=True)
+
+
+def _run_supervised_background_target(
+    name: str,
+    target,
+    *,
+    restart_delay_sec: float = BACKGROUND_THREAD_RESTART_DELAY_SEC,
+    max_restarts: int | None = None,
+    sleep_fn=time.sleep,
+    treat_return_as_error: bool = True,
+) -> None:
+    restart_count = 0
+    consecutive_failures = 0
+    while True:
+        start_ts = int(time.time())
+        _set_background_thread_state(
+            name,
+            "running",
+            last_start_ts=start_ts,
+            restart_count=int(restart_count),
+            consecutive_failures=int(consecutive_failures),
+            owner=RUNTIME_OWNER,
+        )
+        try:
+            target()
+            if treat_return_as_error:
+                raise RuntimeError(f"{name} background loop returned unexpectedly")
+            _set_background_thread_state(
+                name,
+                "stopped",
+                last_stop_ts=int(time.time()),
+                restart_count=int(restart_count),
+                consecutive_failures=0,
+                owner=RUNTIME_OWNER,
+            )
+            return
+        except Exception as exc:
+            restart_count += 1
+            consecutive_failures += 1
+            logger.exception("background thread crashed: %s", name)
+            _set_background_thread_state(
+                name,
+                "error",
+                last_error_ts=int(time.time()),
+                restart_count=int(restart_count),
+                consecutive_failures=int(consecutive_failures),
+                error=str(exc),
+                error_type=exc.__class__.__name__,
+                owner=RUNTIME_OWNER,
+            )
+            _log_background_thread_error(name, exc)
+            if max_restarts is not None and restart_count > int(max_restarts):
+                return
+            try:
+                sleep_fn(max(0.0, float(restart_delay_sec)))
+            except Exception:
+                return
+
+
 def _make_runtime_lock_heartbeat(lock_key: str, lock_conn_factory=None):
     def _heartbeat() -> bool:
         factory = lock_conn_factory or _get_lock_conn
@@ -266,12 +383,38 @@ def _collector_warmup_status(conn) -> dict[str, Any]:
     status["min_ready_symbols"] = min_symbols
     return status
 
+
+def _load_collector_warmup_status(conn, *, recompute_if_missing: bool = False) -> dict[str, Any]:
+    status = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
+    if isinstance(status, dict) and status:
+        return dict(status)
+    if not recompute_if_missing:
+        return {}
+    try:
+        computed = _collector_warmup_status(conn)
+    except Exception:
+        logger.warning("collector warmup fallback compute failed", exc_info=True)
+        return {
+            "ready": False,
+            "reason": "collector_warmup_unavailable",
+            "derived_on_read": True,
+        }
+    if isinstance(computed, dict):
+        computed = dict(computed)
+        computed["derived_on_read"] = True
+        return computed
+    return {
+        "ready": False,
+        "reason": "collector_warmup_unavailable",
+        "derived_on_read": True,
+    }
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    threading.Thread(target=_collector_thread, daemon=True).start()
-    threading.Thread(target=_sentiment_thread, daemon=True).start()
-    threading.Thread(target=_reco_thread, daemon=True).start()
-    threading.Thread(target=_llm_reviewer_thread, daemon=True).start()
+    threading.Thread(target=partial(_run_supervised_background_target, "collector", _collector_thread), name="collector", daemon=True).start()
+    threading.Thread(target=partial(_run_supervised_background_target, "sentiment", _sentiment_thread), name="sentiment", daemon=True).start()
+    threading.Thread(target=partial(_run_supervised_background_target, "reco", _reco_thread), name="reco", daemon=True).start()
+    threading.Thread(target=partial(_run_supervised_background_target, "llm_reviewer", _llm_reviewer_thread), name="llm_reviewer", daemon=True).start()
     yield
 
 
@@ -986,10 +1129,10 @@ def _reco_thread():
             warmup_status: dict[str, Any] = {}
             with closing(_get_conn()) as conn:
                 try:
-                    warmup_status = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
+                    warmup_status = _load_collector_warmup_status(conn, recompute_if_missing=True)
                 except Exception:
-                    warmup_status = {}
-                warmup_ready = bool(warmup_status.get("ready", False)) if isinstance(warmup_status, dict) and warmup_status else True
+                    warmup_status = {"ready": False, "reason": "collector_warmup_unavailable"}
+                warmup_ready = bool(warmup_status.get("ready", False)) if isinstance(warmup_status, dict) else False
                 if not warmup_ready:
                     now_ts = time.time()
                     cooldown = max(30, int(getattr(settings, "reco_warmup_log_cooldown_sec", 120) or 120))
@@ -1097,7 +1240,7 @@ def metrics() -> str:
     with closing(_get_conn()) as conn:
         health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
         collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
-        collector_warmup = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
+        collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         status_counts = {"ok": 0, "stale": 0, "missing": 0, "disabled": 0}
         for item in health:
             status = str(item.get("status") or "missing")
@@ -1148,7 +1291,24 @@ def api_status() -> dict[str, Any]:
 
         llm_async_status = db.get_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, default={}) or {}
         collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
-        collector_warmup = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
+        collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
+        background_threads = {
+            name: _get_background_thread_state(conn, name)
+            for name in ("collector", "sentiment", "reco", "llm_reviewer")
+        }
+        now_ts_int = db.now_ts()
+        collector_cycle_started_ts = int(collector_last_cycle.get("started_ts") or 0)
+        collector_cycle_age_sec = None if collector_cycle_started_ts <= 0 else max(0, now_ts_int - collector_cycle_started_ts)
+        collector_thread_state = background_threads.get("collector") or {}
+        collector_runtime_state = "unknown"
+        if str(collector_thread_state.get("state") or "").lower() == "error":
+            collector_runtime_state = "error"
+        elif collector_cycle_age_sec is not None and collector_cycle_age_sec > max(int(settings.collect_interval_sec) * 6, int(settings.stale_data_max_sec)):
+            collector_runtime_state = "stalled"
+        elif collector_last_cycle:
+            collector_runtime_state = "ok"
+        elif str(collector_thread_state.get("state") or "").lower() == "running":
+            collector_runtime_state = "starting"
 
         global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
         calib_fitted = bool(global_model and global_model.fitted)
@@ -1320,13 +1480,18 @@ def api_status() -> dict[str, Any]:
                 "cadence_sec": int(getattr(settings, "llm_reviewer_cadence_sec", 300) or 300),
                 "keep_alive": str(getattr(settings, "llm_reviewer_keep_alive", "90s") or "90s"),
                 "worker": llm_async_status,
+                "thread": background_threads.get("llm_reviewer") or {},
             },
             "collector": {
                 **collector_last_cycle,
                 "max_workers": int(getattr(settings, "collector_max_workers", 1) or 1),
                 "futures_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
                 "warmup": collector_warmup,
+                "thread": collector_thread_state,
+                "cycle_age_sec": collector_cycle_age_sec,
+                "state": collector_runtime_state,
             },
+            "background_threads": background_threads,
         }
 
 

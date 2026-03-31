@@ -12,6 +12,8 @@ from . import db
 # config may be corrected at runtime, and transient exchange-side validation glitches should self-heal.
 _DISABLED_SYMBOLS: dict[str, dict[str, int]] = {"spot": {}, "linear": {}}
 DISABLED_SYMBOL_RETRY_TTL_SEC = 6 * 60 * 60
+MISSING_TICKER_LOG_TTL_SEC = 60 * 60
+_MISSING_TICKER_LOG_TS: dict[tuple[str, str], int] = {}
 
 VENUE_TO_CATEGORY = {
     "spot": "spot",
@@ -125,6 +127,15 @@ def _disable_symbol(venue: str, symbol: str, now_ts: int) -> int:
     retry_at = int(now_ts) + DISABLED_SYMBOL_RETRY_TTL_SEC
     disabled[str(symbol or "").upper()] = retry_at
     return retry_at
+
+
+def _should_log_missing_ticker(venue: str, symbol: str, now_ts: int) -> bool:
+    key = (str(venue or "").lower(), str(symbol or "").upper())
+    last_ts = int(_MISSING_TICKER_LOG_TS.get(key, 0) or 0)
+    if last_ts > 0 and int(now_ts) - last_ts < MISSING_TICKER_LOG_TTL_SEC:
+        return False
+    _MISSING_TICKER_LOG_TS[key] = int(now_ts)
+    return True
 
 
 def _is_not_supported_symbol(err: Exception) -> bool:
@@ -575,14 +586,26 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         "derived_tf_writes": {},
     }
 
-    ticker_rows, funding_rows, _missing_symbols = _fetch_ticker_payloads(conn, client, venue, category, symbols2, disabled, now_ts)
+    ticker_rows, funding_rows, missing_symbols = _fetch_ticker_payloads(conn, client, venue, category, symbols2, disabled, now_ts)
+    stats["ticker_missing_symbols"] = len(missing_symbols)
+    stats["sample_ticker_missing_symbols"] = list(missing_symbols[:8])
     if ticker_rows:
         db.insert_tickers(conn, ticker_rows, commit=False)
         stats["tickers_written"] = len(ticker_rows)
     if funding_rows:
         db.upsert_funding_rate(conn, funding_rows, commit=False)
         stats["funding_written"] = len(funding_rows)
-    if ticker_rows or funding_rows:
+    for sym in missing_symbols:
+        if _should_log_missing_ticker(venue, sym, now_ts):
+            db.log_decision(
+                conn,
+                "COLLECT_ERROR",
+                None,
+                None,
+                {"venue": venue, "symbol": sym, "field": "ticker_missing", "err": "ticker payload empty"},
+                commit=False,
+            )
+    if ticker_rows or funding_rows or missing_symbols:
         conn.commit()
     _heartbeat(heartbeat)
 
