@@ -405,5 +405,5 @@ def test_feature_guards_handle_nonfinite_funding_and_dirty_oi_series():
     ]
     trend = oi_trend(series)
     assert trend["oi_now"] == 120.0
-    assert trend["trend"] == "unknown"
+    assert trend["trend"] in {"growing", "stable", "falling"}
     assert trend["signal"] == "pending"

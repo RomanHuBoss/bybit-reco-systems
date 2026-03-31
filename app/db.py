@@ -741,6 +741,7 @@ def update_recommendation_review(
     *,
     reasons: dict[str, Any],
     status: str | None = None,
+    commit: bool = True,
 ) -> bool:
     cur = conn.execute("SELECT status FROM recommendations WHERE rec_id=?", (rec_id,))
     row = cur.fetchone()
@@ -756,7 +757,8 @@ def update_recommendation_review(
         "UPDATE recommendations SET reasons_json=?, status=? WHERE rec_id=?",
         (json.dumps(reasons, ensure_ascii=False), new_status, rec_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return True
 
 

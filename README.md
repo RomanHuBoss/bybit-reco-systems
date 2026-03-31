@@ -24,10 +24,10 @@
 - Derived bootstrap stage теперь тоже коммитится на явной stage-boundary. Раньше он мог успешно собрать `15m/30m`, а затем потерять leadership на следующем heartbeat и откатить уже рассчитанный bootstrap, хотя README обещал обратное.
 - Если batch `get_tickers(category=...)` временно падает, collector больше не теряет весь venue-цикл целиком: фиксируется один batch-error и включается per-symbol fallback-path.
 - Добавлены новые регрессионные тесты на длинный kline catch-up после downtime, open-interest cursor pagination, rollback при потере runtime lock, buffered error handling внутри collector-stage, poisoned historical rows, DB-level валидацию `funding/open interest`, пропуск лишнего `4h` bootstrap и защиту feature-layer от грязных значений.
-- Collector thread теперь валидирует heartbeat не только внутри `collect_once()`, но и **после** завершения venue-stage. Потеря лидерства между концом stage и переходом к следующему шагу больше не позволяет тихо продолжить цикл или зайти в futures-meta фазу под протухшим lock.
-- Recommender loop теперь тоже использует runtime-lock heartbeat и прекращает follow-up работу (`expire`, `prune`, alerts) при потере лидерства. Это закрывает split-brain сценарий, где основной расчёт уже потерял lock, но поток всё ещё модифицировал housekeeping-состояние.
-- `/metrics` и внутренний telegram health-path теперь считают только **активные venues** из текущего `VENUES`, а не все исторически настроенные списки символов. Это убирает расхождение между `/api/v1/health/symbols` и Prometheus/alerting картиной.
-- `oi_trend()` больше не изображает полноценный `24h` OI-trend по короткому хвосту после рестарта. Для `24h` классификации теперь требуется реальная глубина истории, иначе сигнал помечается как `unknown` вместо искусственно уверенного `growing/falling/stable`.
+- Runtime-lock heartbeat теперь применяется не только к collector, но и к `reco` / `llm_reviewer` потокам: длительный цикл больше не может тихо пережить истечение TTL и продолжить публиковать рекомендации или review-решения после потери лидерства. Follow-up фазы (`outcomes`, `expire`, `prune`, async LLM sweep status updates) теперь пропускаются, если лидерство потеряно.
+- Pending backlog async LLM-review теперь считается и выбирается **строго в рамках latest recommendation snapshot**, а не как смесь нескольких недавних snapshot. Это убирает противоречие между `snapshot_ts` в status/API и реальным sweep-target.
+- Publish-annotation через `_mark_llm_reviews_async()` больше не делает преждевременные commit в `decision_log` до `insert_recommendations()`. Если публикация рекомендации откатывается, phantom `LLM_REVIEW_OK/VETO` записи тоже не остаются в БД.
+- Добавлены новые регрессионные тесты на потерю лидерства в `reco` / `llm_reviewer`, snapshot-scoped pending backlog и отсутствие раннего commit у publish-аннотации LLM-review.
 
 ## Что делает система
 - собирает `spot` / `linear` тикеры и OHLCV по нескольким таймфреймам;
@@ -57,6 +57,7 @@
 - Свежий review переиспользуется между соседними рекомендациями одного `(venue, symbol, bot_type, direction-signature)`.
 - Кэш LLM теперь инвалидируется не только по `model/provider/prompt_version`, но и по **контексту ревью**: набору ТФ и числу свечей на ТФ. Это исключает тихое наследование старого review после изменения входного LLM-контекста.
 - Свежие cache-hit ключи больше не съедают весь live candidate budget: sweep теперь сканирует весь pending-срез последнего snapshot и применяет live cap уже после cache-resolution. Это устраняет starvation, при котором часть символов могла висеть `pending` практически бесконечно.
+- Async sweep больше не смешивает backlog из старых recommendation snapshots с latest snapshot: `pending_before/pending_after`, queued set и interval adaptation теперь считаются по одному и тому же актуальному snapshot, который видит UI/API.
 - Нефинитные значения confidence (`NaN`, `inf`) из LLM больше не превращаются в ложный `1.0`; они безопасно нормализуются к `0.0`.
 
 ### Защита от плохих market-data рядов
@@ -125,9 +126,9 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `125 passed`
+- `121 passed`
 - покрытие `app/*` — `74%`
-- регрессионные тесты покрывают collector / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / post-stage heartbeat lock loss / recommender lock-loss housekeeping skip / active-venue metrics semantics / true-lookback OI trend semantics
+- регрессионные тесты покрывают collector / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths
 
 ## Ключевые env
 - `DB_PATH` — путь к SQLite. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
@@ -198,6 +199,7 @@ python -m py_compile app/*.py tests/*.py main.py
 ## Stability notes
 - background loops используют SQLite runtime lock, поэтому активным сборщиком/рекомендером остаётся только один лидер;
 - collector работает с явными stage-boundary commit, а не с одной гигантской write-транзакцией через весь цикл: это осознанный компромисс ради корректного heartbeat и отсутствия скрытого split-brain under SQLite;
+- recommender и async LLM-reviewer тоже не считаются «вечными лидерами»: их heartbeat обновляется во время длинных циклов, а потеря лидерства считается штатной причиной прервать publish/review follow-up.
 - SQLite работает в `WAL`-режиме с увеличенным `busy_timeout`;
 - ошибки одного символа не должны ронять весь collect/recommend loop;
 - corrupted JSON в критичных местах читается через safe fallback;

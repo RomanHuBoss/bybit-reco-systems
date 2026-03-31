@@ -14,9 +14,9 @@ from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .outcomes import BOT_HORIZONS
-from .collector import RuntimeLockLostError
 from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
+from .collector import RuntimeLockLostError
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
@@ -78,7 +78,7 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
     return num
 
 
-def _run_heartbeat(heartbeat) -> None:
+def _heartbeat_or_raise(heartbeat) -> None:
     if heartbeat is None:
         return
     try:
@@ -86,9 +86,9 @@ def _run_heartbeat(heartbeat) -> None:
     except RuntimeLockLostError:
         raise
     except Exception as exc:
-        raise RuntimeLockLostError(f"recommender runtime lock heartbeat failed: {exc}") from exc
+        raise RuntimeLockLostError(f"runtime lock heartbeat failed: {exc}") from exc
     if result is False:
-        raise RuntimeLockLostError("recommender runtime lock lost")
+        raise RuntimeLockLostError("runtime lock lost")
 
 
 def _llm_reviewer_context_signature(settings) -> str:
@@ -386,7 +386,7 @@ def _sanitize_llm_review_dict(rec: dict[str, Any], review_dict: dict[str, Any]) 
     return out
 
 
-def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer: OllamaCandleReviewer | None = None) -> dict[str, int]:
+def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer: OllamaCandleReviewer | None = None, *, heartbeat=None) -> dict[str, int]:
     stats = {"queued": 0, "skipped": 0, "deferred": 0, "reviewed": 0, "cached": 0, "vetoed": 0, "errors": 0, "inherited": 0}
     if not bool(getattr(settings, "llm_reviewer_enabled", False)):
         return stats
@@ -401,7 +401,9 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
     candidates = [r for r in recs if str(r.get("status") or "") == "recommended"]
     candidates.sort(key=_llm_candidate_sort_key, reverse=True)
     queued_ids = {str(r.get("rec_id")) for r in candidates[:max_candidates]}
-    for rec in recs:
+    for idx, rec in enumerate(recs, start=1):
+        if idx == 1 or idx % 16 == 0:
+            _heartbeat_or_raise(heartbeat)
         if str(rec.get("status") or "") != "recommended":
             _sync_recommendation_metadata(rec)
             continue
@@ -427,6 +429,7 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
                 min_conf=min_conf,
                 source="cache_inherited",
                 diagnostics={"cache_key": cache_key, "phase": "publish_annotation"},
+                commit=False,
             )
             if vetoed:
                 stats["vetoed"] += 1
@@ -503,7 +506,7 @@ def _recent_pending_llm_candidates(conn, settings, max_candidates: int, *, snaps
         conn,
         recent_sec=recent_sec,
         limit=limit,
-        snapshot_ts=None,
+        snapshot_ts=snapshot_ts,
     )
     pending = [r for r in recent_pool if _should_enqueue_llm_review(r)]
     if not pending:
@@ -534,12 +537,12 @@ def _count_recent_pending_llm_candidates(conn, settings, *, snapshot_ts: int | N
         conn,
         recent_sec=recent_sec,
         limit=limit,
-        snapshot_ts=None,
+        snapshot_ts=snapshot_ts,
     )
     return sum(1 for r in pool if _should_enqueue_llm_review(r))
 
 
-def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
+def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     stats: dict[str, Any] = {
         "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
         "queued": 0,
@@ -560,12 +563,13 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
     if not stats["enabled"]:
         return stats
     t0 = time.time()
+    _heartbeat_or_raise(heartbeat)
     try:
         reviewer = _make_llm_reviewer(settings)
     except Exception as exc:
         stats["errors"] += 1
         stats["error"] = str(exc)
-        db.log_decision(conn, "LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(exc), "stage": "reviewer_init"})
+        db.log_decision(conn, "LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(exc), "stage": "reviewer_init"}, commit=False)
         return stats
     if reviewer is None:
         return stats
@@ -595,7 +599,9 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
         return stats
 
     grouped_candidates: dict[str, list[dict[str, Any]]] = {}
-    for rec in candidates:
+    for idx, rec in enumerate(candidates, start=1):
+        if idx == 1 or idx % 16 == 0:
+            _heartbeat_or_raise(heartbeat)
         cache_key = _llm_cache_key(rec)
         cache_meta = llm_cache.get(cache_key) or {}
         cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec, context_signature=context_signature)
@@ -616,9 +622,10 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
                 min_conf=min_conf,
                 source="async_cache",
                 diagnostics={"cache_key": cache_key, "phase": "sweep"},
+                commit=False,
             )
             _sync_recommendation_metadata(rec)
-            db.update_recommendation_review(conn, rec["rec_id"], reasons=reasons, status=rec.get("status") if vetoed else None)
+            db.update_recommendation_review(conn, rec["rec_id"], reasons=reasons, status=rec.get("status") if vetoed else None, commit=False)
             stats["cached"] += 1
             if vetoed:
                 stats["vetoed"] += 1
@@ -626,6 +633,9 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
                 stats["errors"] += 1
             continue
         grouped_candidates.setdefault(cache_key, []).append(rec)
+
+    conn.commit()
+    _heartbeat_or_raise(heartbeat)
 
     tf_secs = list(getattr(settings, "llm_reviewer_tf_secs", []) or [])
     candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", LLM_REVIEWER_DEFAULT_CANDLES_PER_TF) or LLM_REVIEWER_DEFAULT_CANDLES_PER_TF)
@@ -665,7 +675,9 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="llm-review") as pool:
         for cache_key, rec, peers, payload in jobs:
             futures[pool.submit(reviewer.review, payload)] = (cache_key, rec, peers)
-        for fut in as_completed(futures):
+        for idx, fut in enumerate(as_completed(futures), start=1):
+            if idx == 1 or idx % max(1, max_workers) == 0:
+                _heartbeat_or_raise(heartbeat)
             cache_key, rec, peers = futures[fut]
             try:
                 result = fut.result()
@@ -683,9 +695,11 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
                     }
                     reasons["llm_review"] = review_dict
                     _sync_recommendation_metadata(peer)
-                    db.update_recommendation_review(conn, peer["rec_id"], reasons=reasons, status=None)
-                    db.log_decision(conn, "LLM_REVIEW_ERROR", peer.get("rec_id"), None, {"err": str(exc), "source": "async_sweep_exception", "cache_key": cache_key})
+                    db.update_recommendation_review(conn, peer["rec_id"], reasons=reasons, status=None, commit=False)
+                    db.log_decision(conn, "LLM_REVIEW_ERROR", peer.get("rec_id"), None, {"err": str(exc), "source": "async_sweep_exception", "cache_key": cache_key}, commit=False)
                 stats["errors"] += len(peers)
+                conn.commit()
+                _heartbeat_or_raise(heartbeat)
                 continue
 
             review_ts = int(time.time())
@@ -712,6 +726,7 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
                         source="async_live",
                         latency_ms=getattr(result, "latency_ms", None),
                         diagnostics=getattr(result, "diagnostics", {}),
+                        commit=False,
                     )
                 else:
                     review_dict = _build_cached_review_dict(
@@ -730,15 +745,18 @@ def run_llm_review_sweep_once(conn, settings) -> dict[str, Any]:
                         min_conf=min_conf,
                         source="async_inherited",
                         diagnostics={"cache_key": cache_key, "parent_rec_id": rec.get("rec_id")},
+                        commit=False,
                     )
                     stats["inherited"] += 1
                 _sync_recommendation_metadata(peer)
-                db.update_recommendation_review(conn, peer["rec_id"], reasons=reasons, status=peer.get("status") if vetoed else None)
+                db.update_recommendation_review(conn, peer["rec_id"], reasons=reasons, status=peer.get("status") if vetoed else None, commit=False)
                 stats["completed"] += 1
                 if vetoed:
                     stats["vetoed"] += 1
                 if errored:
                     stats["errors"] += 1
+            conn.commit()
+            _heartbeat_or_raise(heartbeat)
     if cache_dirty:
         _save_llm_review_cache(conn, llm_cache, cadence_sec)
     stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
@@ -757,6 +775,7 @@ def _apply_llm_review_decision(
     source: str,
     latency_ms: int | None = None,
     diagnostics: dict[str, Any] | None = None,
+    commit: bool = True,
 ) -> tuple[bool, bool]:
     mode = str(review_dict.get("mode") or "advisory")
     venue = str(rec.get("venue") or "")
@@ -774,7 +793,7 @@ def _apply_llm_review_decision(
             "error": review_dict.get("error"),
             "latency_ms": latency_ms,
             "diagnostics": diagnostics or {},
-        })
+        }, commit=commit)
         return False, True
 
     llm_confidence = _finite_float(review_dict.get("confidence") or 0.0, 0.0)
@@ -797,7 +816,7 @@ def _apply_llm_review_decision(
             "source": source,
             "latency_ms": latency_ms,
             "diagnostics": diagnostics or {},
-        })
+        }, commit=commit)
         return True, False
 
     db.log_decision(conn, "LLM_REVIEW_OK", rec.get("rec_id"), None, {
@@ -816,7 +835,7 @@ def _apply_llm_review_decision(
         "cache_age_sec": review_dict.get("cache_age_sec"),
         "latency_ms": latency_ms,
         "diagnostics": diagnostics or {},
-    })
+    }, commit=commit)
     return False, False
 
 
@@ -845,7 +864,7 @@ def _apply_llm_reviewer(
             "stage": "reviewer_init",
             "provider": getattr(settings, "llm_reviewer_provider", None),
             "model": getattr(settings, "llm_reviewer_model", None),
-        })
+        }, commit=False)
         stats["errors"] += 1
         return stats
     if reviewer is None:
@@ -2001,7 +2020,7 @@ def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     return scaler
 
 
-def run_recommender_once(conn, settings, heartbeat=None) -> dict[str, Any]:
+def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     global _prev_recommended, _direction_state_cache
     _fresh_gap = _persistence_fresh_gap(settings)
     _prev_recommended = _load_prev_recommended(conn)
@@ -2028,8 +2047,7 @@ def run_recommender_once(conn, settings, heartbeat=None) -> dict[str, Any]:
     llm_candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", LLM_REVIEWER_DEFAULT_CANDLES_PER_TF) or LLM_REVIEWER_DEFAULT_CANDLES_PER_TF)
 
     ts_now = db.now_ts()  # set here for stale gate use inside feature loop
-    feature_symbols_seen = 0
-    reco_candidates_seen = 0
+    _heartbeat_or_raise(heartbeat)
 
     # Load BTC 1h closes once — used for beta/correlation calculation per symbol
     btc_1h_rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", tf_sec=3600, limit=50)
@@ -2042,7 +2060,9 @@ def run_recommender_once(conn, settings, heartbeat=None) -> dict[str, Any]:
 
     for venue in settings.venues:
         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
-        for sym in symbols:
+        for idx_sym, sym in enumerate(symbols, start=1):
+            if idx_sym == 1 or idx_sym % 8 == 0:
+                _heartbeat_or_raise(heartbeat)
             rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=60, limit=220)
             rows = _drop_open_candle(rows, tf_sec=60, ts_now=ts_now)
             if not rows or len(rows) < 80:
@@ -2152,17 +2172,14 @@ def run_recommender_once(conn, settings, heartbeat=None) -> dict[str, Any]:
             symbol_ticker_map[(venue, sym)] = trow  # save for reco loop
             if llm_candles:
                 symbol_llm_candle_map[(venue, sym)] = llm_candles
-            feature_symbols_seen += 1
-            if feature_symbols_seen % 8 == 0:
-                _run_heartbeat(heartbeat)
 
-    _run_heartbeat(heartbeat)
     regime = classify_regime(features_all)
     db.insert_regime(conn, db.now_ts(), regime)
+    _heartbeat_or_raise(heartbeat)
 
     market_shock = compute_market_shock(conn, settings, sent_agg, symbol_feature_map, ts_now)
     db.set_app_config_json(conn, MARKET_SHOCK_APP_KEY, market_shock)
-    _run_heartbeat(heartbeat)
+    _heartbeat_or_raise(heartbeat)
 
     limits = db.get_active_risk_limits(conn) or settings.risk_limits
     model_version = "bybit-taxonomy-v2"
@@ -2574,11 +2591,7 @@ def run_recommender_once(conn, settings, heartbeat=None) -> dict[str, Any]:
                 "model_version": model_version,
                 "features_ref_ts": int(f["ts_last"]),
             })
-            reco_candidates_seen += 1
-            if reco_candidates_seen % 16 == 0:
-                _run_heartbeat(heartbeat)
 
-    _run_heartbeat(heartbeat)
     status_counts = {"recommended": 0, "blocked": 0, "no_trade": 0, "suppressed": 0}
     llm_review_stats = {"reviewed": 0, "vetoed": 0, "errors": 0, "skipped": 0}
 
@@ -2669,8 +2682,9 @@ def run_recommender_once(conn, settings, heartbeat=None) -> dict[str, Any]:
             try:
                 llm_reviewer = _make_llm_reviewer(settings)
             except Exception as exc:
-                db.log_decision(conn, "LLM_REVIEW_ERROR", None, None, {"err": str(exc), "stage": "pending_annotation"})
-        llm_review_stats = _mark_llm_reviews_async(conn, recs, settings, reviewer=llm_reviewer)
+                db.log_decision(conn, "LLM_REVIEW_ERROR", None, None, {"err": str(exc), "stage": "pending_annotation"}, commit=False)
+        llm_review_stats = _mark_llm_reviews_async(conn, recs, settings, reviewer=llm_reviewer, heartbeat=heartbeat)
+        _heartbeat_or_raise(heartbeat)
 
         for r in recs:
             _sync_recommendation_metadata(r)
@@ -2678,6 +2692,7 @@ def run_recommender_once(conn, settings, heartbeat=None) -> dict[str, Any]:
             if st in status_counts:
                 status_counts[st] += 1
         db.insert_recommendations(conn, recs)
+        _heartbeat_or_raise(heartbeat)
         db.log_decision(
             conn,
             "PUBLISH",

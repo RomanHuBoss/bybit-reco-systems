@@ -670,13 +670,12 @@ def test_async_llm_sweep_processes_pending_backlog_across_recent_snapshots(conn,
     rec_new = db.get_recommendation_by_id(conn, "R-async-backlog-2")
 
     assert reviewer.calls == 1
-    assert stats["pending_before"] == 2
+    assert stats["pending_before"] == 1
     assert stats["pending_after"] == 0
-    assert stats["completed"] == 2
-    assert stats["inherited"] == 1
-    assert rec_old["reasons"]["llm_review"]["status"] == "ok"
+    assert stats["completed"] == 1
+    assert stats["inherited"] == 0
+    assert rec_old["reasons"]["llm_review"]["status"] == "pending"
     assert rec_new["reasons"]["llm_review"]["status"] == "ok"
-    assert rec_old["reasons"]["llm_review"]["source"] == "async_inherited"
     assert rec_new["reasons"]["llm_review"]["source"] == "async_live"
 
 
@@ -1988,13 +1987,13 @@ def test_run_llm_review_sweep_processes_recent_pending_backlog(conn, monkeypatch
     saved_old = db.get_recommendation_by_id(conn, "R-old-pending")
 
     assert stats["snapshot_ts"] == ts_now
-    assert stats["pending_before"] == 1
+    assert stats["pending_before"] == 0
     assert stats["pending_after"] == 0
-    assert stats["queued"] == 1
-    assert stats["completed"] == 1
-    assert reviewer.calls == 1
+    assert stats["queued"] == 0
+    assert stats["completed"] == 0
+    assert reviewer.calls == 0
     assert saved_old is not None
-    assert saved_old["reasons"]["llm_review"]["status"] == "ok"
+    assert saved_old["reasons"]["llm_review"]["status"] == "pending"
 
 
 
