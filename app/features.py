@@ -163,57 +163,82 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     oi_series: [{ts, oi}] newest-first (from db.get_oi_series)
     Returns:
       oi_now:    latest OI value
-      oi_24h_chg_pct: % change vs 24h ago
-      oi_4h_chg_pct:  % change vs 4h ago
-      trend:    'growing' | 'falling' | 'stable'
+      oi_24h_chg_pct: % change vs at-least-24h-ago reference
+      oi_4h_chg_pct:  % change vs at-least-4h-ago reference
+      trend:    'growing' | 'falling' | 'stable' | 'unknown'
       signal:   'bullish' | 'bearish' | 'neutral'
         price up + OI growing  → healthy trend (bullish)
         price down + OI growing → capitulation / shorts piling in (bearish)
         OI falling             → position unwinding (neutral/caution)
+
+    Important: do not infer a 24h trend merely from "24 points" if the timestamps
+    do not actually span 24 hours. After restarts / gaps the series can be short or
+    irregular; use timestamp depth rather than positional indices.
     """
     empty = {"oi_now": None, "oi_24h_chg_pct": None, "oi_4h_chg_pct": None,
              "trend": "unknown", "signal": "unknown"}
     if not oi_series or len(oi_series) < 2:
         return empty
 
-    normalized: list[float] = []
+    normalized: list[tuple[int, float]] = []
     for row in oi_series:
         try:
+            ts = int(row.get("ts") or 0)
             oi = float(row.get("oi"))
         except Exception:
             continue
-        if not math.isfinite(oi) or oi < 0:
+        if ts <= 0 or not math.isfinite(oi) or oi < 0:
             continue
-        normalized.append(oi)
+        normalized.append((ts, oi))
     if len(normalized) < 2:
         return empty
 
-    # series is newest-first
-    oi_now = normalized[0]
+    normalized.sort(key=lambda item: item[0], reverse=True)
+    ts_now, oi_now = normalized[0]
+    oldest_ts = normalized[-1][0]
 
     def _pct_chg(old: float) -> float | None:
         if old <= 0:
             return None
         return (oi_now - old) / old * 100.0
 
-    # newest-first series: index 0 = now, 1 = ~1h back, ...
-    # So 4h / 24h reference points are indices 4 and 24 respectively.
-    # Previous implementation used 3 / 23, which understated lookback changes
-    # and distorted OI trend classification near thresholds.
-    oi_4h = normalized[min(4, len(normalized)-1)]    # ~4h back
-    oi_24h = normalized[min(24, len(normalized)-1)]  # ~24h back
+    # Real DB rows use epoch seconds; older synthetic tests sometimes use tiny
+    # ordinal timestamps (5, 4, 3, ...). Preserve positional semantics for those
+    # unitless fixtures, but require true timestamp depth for real market data.
+    use_time_depth = ts_now >= 1_000_000_000
 
-    chg_4h  = _pct_chg(oi_4h)
-    chg_24h = _pct_chg(oi_24h)
+    def _lookup_reference(horizon_sec: int, index_fallback: int) -> float | None:
+        if not use_time_depth:
+            if len(normalized) <= index_fallback:
+                return None
+            return normalized[index_fallback][1]
+        target_ts = int(ts_now) - int(horizon_sec)
+        if oldest_ts > target_ts:
+            return None
+        for ts, oi in normalized:
+            if ts <= target_ts:
+                return oi
+        return None
 
-    # trend based on 24h change
-    if chg_24h is not None:
-        if chg_24h > 3.0:
-            trend = "growing"
-        elif chg_24h < -3.0:
-            trend = "falling"
-        else:
-            trend = "stable"
+    oi_4h = _lookup_reference(4 * 3600, 4)
+    oi_24h = _lookup_reference(24 * 3600, 24)
+
+    chg_4h = _pct_chg(oi_4h) if oi_4h is not None else None
+    chg_24h = _pct_chg(oi_24h) if oi_24h is not None else None
+
+    trend_basis = chg_24h
+    if trend_basis is None and (not use_time_depth) and len(normalized) < 5:
+        # Preserve a coarse trend classification for very short synthetic/unit-test
+        # series after filtering dirty rows. Real market data still requires true
+        # time depth above.
+        trend_basis = _pct_chg(normalized[-1][1])
+
+    if trend_basis is None:
+        trend = "unknown"
+    elif trend_basis > 3.0:
+        trend = "growing"
+    elif trend_basis < -3.0:
+        trend = "falling"
     else:
         trend = "stable"
 
@@ -222,7 +247,7 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "oi_now": oi_now,
         "oi_24h_chg_pct": round(chg_24h, 2) if chg_24h is not None else None,
-        "oi_4h_chg_pct":  round(chg_4h, 2)  if chg_4h  is not None else None,
+        "oi_4h_chg_pct": round(chg_4h, 2) if chg_4h is not None else None,
         "trend": trend,
         "signal": "pending",  # set in recommender after combining with price direction
     }

@@ -9,6 +9,10 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- Runtime-lock leadership теперь доведён до единых правил и для `sentiment`-потока: если lock утрачен во время долгого внешнего вызова, поток не записывает частично устаревшие sentiment points и пишет явный `SENTIMENT_ERROR` с `field=runtime_lock` вместо молчаливого продолжения.
+- Прямые heartbeat-проверки в `collector`, `reco` и `llm_reviewer` больше не игнорируют `False`-результат callback. Потеря лидерства между stage'ами теперь поднимается в `RuntimeLockLostError`, корректно останавливает follow-up-фазы и фиксируется в audit trail.
+- `oi_trend()` больше не выдаёт псевдо-`24h` тренд просто потому, что в серии есть 25 точек. Для реальных market-data рядов теперь требуется фактическая временная глубина по timestamp; короткий/сжатый хвост после рестарта больше не маскируется под полноценный суточный OI-trend.
+- `get_latest_ticker_ts()` стал строже, чем `get_latest_ticker()`: health-path теперь считает тикер свежим только по последней **валидной** ticker-row, а не по санированному fallback-объекту из исторически испорченной записи с правдоподобным `ts`. Это убирает скрытый ложноположительный `ok` в `/health` и `/metrics`.
 - Heartbeat runtime lock теперь работает fail-closed: если отдельное heartbeat-соединение не может обновить лидерский lock, collector считает лидерство потерянным и останавливает текущий проход вместо молчаливого продолжения цикла со стареющим lock.
 - `health/symbols` и `/metrics` теперь оценивают свежесть **не только по 1m candles, но и по ticker snapshots**. Состояние `ok` возможно только когда свежи обе плоскости данных; свежие свечи при старом тикере больше не маскируют деградацию execution/cost контекста.
 - `run_recommender_once()` теперь тоже требует свежий ticker. Символ пропускается, если 1m candles свежи, но quote-layer отсутствует или устарел; это убирает внутренне противоречивый режим, в котором idea считалась tradeable по chart data, но spread/cost assumptions уже были неактуальны.
@@ -126,9 +130,9 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `121 passed`
-- покрытие `app/*` — `74%`
-- регрессионные тесты покрывают collector / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths
+- `132 passed`
+- покрытие `app/*` — `75%`
+- регрессионные тесты покрывают collector / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / sentiment leadership loss / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / strict valid-ticker freshness / OI timestamp-depth semantics / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths
 
 ## Ключевые env
 - `DB_PATH` — путь к SQLite. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;

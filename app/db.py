@@ -333,13 +333,18 @@ def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> dict
 
 
 def get_latest_ticker_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
-    row = get_latest_ticker(conn, venue, symbol)
-    if not row:
-        return None
-    try:
-        return int(row["ts"])
-    except Exception:
-        return None
+    cur = conn.execute(
+        """SELECT * FROM ticker_snap WHERE venue=? AND symbol=? ORDER BY ts DESC LIMIT ?""",
+        (venue, symbol, LATEST_ROW_SCAN_LIMIT),
+    )
+    for row in cur.fetchall():
+        payload = dict(row)
+        if _is_valid_ticker_row(payload):
+            try:
+                return int(payload["ts"])
+            except Exception:
+                return None
+    return None
 
 def get_latest_features_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
     cur = conn.execute(
