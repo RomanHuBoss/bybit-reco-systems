@@ -6,3 +6,4 @@ __pycache__
 /data/app.db-shm
 /data/app.db
 /tmp_smoke.db
+/data/app.runtime_locks.sqlite
