@@ -973,17 +973,17 @@ def api_symbol_health() -> dict[str, Any]:
             stale_sec=settings.stale_data_max_sec,
             active_venues=active_venues,
         )
-        warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         n_ok = sum(1 for i in items if i["status"] == "ok")
         n_stale = sum(1 for i in items if i["status"] == "stale")
         n_missing = sum(1 for i in items if i["status"] == "missing")
         n_disabled = sum(1 for i in items if i["status"] == "disabled")
         n_errors = sum(i["error_count_10m"] for i in items)
+        warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         return {
             "ts": int(time.time()),
             "summary": {"ok": n_ok, "stale": n_stale, "missing": n_missing, "disabled": n_disabled, "errors_10m": n_errors},
-            "warmup": warmup,
             "venues": active_venues,
+            "warmup": warmup,
             "llm_reviewer": {
                 "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
                 "mode": getattr(settings, "llm_reviewer_mode", "advisory"),

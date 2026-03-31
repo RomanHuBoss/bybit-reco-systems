@@ -1291,6 +1291,10 @@ async function loadHealth() {
   const llmTfText = Array.isArray(llm.tf_secs) && llm.tf_secs.length
     ? llm.tf_secs.map(tf => tf >= 3600 ? `${Math.round(tf / 3600)}h` : `${Math.round(tf / 60)}m`).join(", ")
     : "—";
+  const warmupRatio = Number(warmup.ready_ratio || 0);
+  const warmupMinRatio = Number(warmup.min_ready_ratio || 0);
+  const warmupReadySymbols = Number(warmup.ready_symbols || 0);
+  const warmupSymbolsTotal = Number(warmup.symbols_total || 0);
   const symbols = [...(data.symbols || [])].sort((a, b) => {
     const rank = { disabled: 0, missing: 1, stale: 2, ok: 3 };
     const ra = rank[a.status] ?? 9;
@@ -1307,28 +1311,29 @@ async function loadHealth() {
       { label: "Stale", value: Number(sum.stale || 0) },
       { label: "Missing", value: Number(sum.missing || 0) },
       { label: "Disabled", value: Number(sum.disabled || 0) },
+      { label: "Ready symbols", value: `${warmupReadySymbols}/${warmupSymbolsTotal}` },
+      { label: "Ready ratio", value: warmupSymbolsTotal > 0 ? warmupRatio.toFixed(4) : "—" },
+      { label: "Min ready ratio", value: warmupMinRatio > 0 ? warmupMinRatio.toFixed(4) : "—" },
       { label: "Ошибки / 10 мин", value: Number(sum.errors_10m || 0) },
-      { label: "Warmup", html: renderLlmStatusBadge(warmup.ready ? "ok" : "warming_up") },
-      { label: "Ready symbols", value: `${Number(warmup.ready_symbols || 0)} / ${Number(warmup.symbols_total || 0)}` },
       { label: "LLM reviewer", html: renderLlmStatusBadge(llm.enabled ? (llm.mode || "enabled") : "disabled") },
       { label: "Модель", value: llm.model || "—" },
     ])}
-    <p class="modal-note">Возраст считается по последней 1m-свече. Warmup считается отдельно: для публикации рекомендаций мало иметь свежие 1m/ticker, нужна ещё историческая глубина по обязательным таймфреймам.</p>
+    <p class="modal-note">OK в этом окне означает свежие ticker + 1m. Готовность recommender считается отдельно по warmup/readiness и требует достаточной multi-timeframe history.</p>
     <div class="modal-section">
-      <div class="modal-section-title">Warmup / readiness</div>
+      <div class="modal-section-title">Warm-up / readiness</div>
       ${buildModalTable([
         { label: "Параметр", render: row => escapeHtml(row.name) },
         { label: "Значение", render: row => row.html !== undefined ? row.html : `<span class="wrap">${escapeHtml(row.value ?? "—")}</span>` },
       ], [
         { name: "Ready", html: renderLlmStatusBadge(warmup.ready ? "ok" : "warming_up") },
-        { name: "Ready symbols", value: `${Number(warmup.ready_symbols || 0)} / ${Number(warmup.symbols_total || 0)}` },
-        { name: "Ready ratio", value: warmup.ready_ratio == null ? "—" : String(warmup.ready_ratio) },
-        { name: "Min ready ratio", value: warmup.min_ready_ratio == null ? "—" : String(warmup.min_ready_ratio) },
-        { name: "Min ready symbols", value: warmup.min_ready_symbols == null ? "—" : String(warmup.min_ready_symbols) },
-        { name: "Required TFs", value: Array.isArray(warmup.required_tfs) && warmup.required_tfs.length ? warmup.required_tfs.join(", ") : "—" },
+        { name: "Ready symbols", value: `${warmupReadySymbols}/${warmupSymbolsTotal}` },
+        { name: "Ready ratio", value: warmupSymbolsTotal > 0 ? warmupRatio.toFixed(4) : "—" },
+        { name: "Min ready ratio", value: warmupMinRatio > 0 ? warmupMinRatio.toFixed(4) : "—" },
+        { name: "Min ready symbols", value: warmup.min_ready_symbols ?? "—" },
+        { name: "Required TFs", value: Array.isArray(warmup.required_tfs) ? warmup.required_tfs.join(", ") : "—" },
         { name: "Min rows / TF", value: warmup.min_rows_per_tf ?? "—" },
         { name: "Derived on read", value: warmup.derived_on_read ? "yes" : "no" },
-      ], { emptyText: "Warmup-статус недоступен." })}
+      ], { emptyText: "Warm-up status недоступен." })}
     </div>
     <div class="modal-section">
       <div class="modal-section-title">Конфигурация LLM reviewer</div>

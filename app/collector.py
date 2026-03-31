@@ -359,21 +359,55 @@ def _fetch_ticker_payloads(
     return ticker_rows, funding_rows, missing_symbols
 
 
-def _should_fetch_api_tf(conn, venue: str, symbol: str, tf_sec: int, now_ts: int) -> bool:
+def _api_tf_fetch_state(
+    conn,
+    venue: str,
+    symbol: str,
+    tf_sec: int,
+    now_ts: int,
+    *,
+    min_rows_required: int | None = None,
+) -> tuple[bool, int | None]:
+    """Return whether a REST TF should be fetched and which local anchor to use.
+
+    The returned anchor is normally the latest local candle timestamp. When the
+    local series is too short for warm-up requirements, the anchor is forced to
+    ``None`` so the caller performs a cold fetch instead of a tiny delta refresh.
+    This prevents a fresh-but-short 1h/1d series from getting stuck below the
+    recommender's minimum history depth forever.
+    """
     policy = _API_TF_POLICY[tf_sec]
     last_local_ts = db.get_latest_ohlcv_ts(conn, venue, symbol, tf_sec)
+    rows_required = max(0, int(min_rows_required or 0))
+    if rows_required > 0:
+        rows = db.get_latest_ohlcv(conn, venue, symbol, tf_sec, limit=rows_required)
+        if len(rows) < rows_required:
+            return True, None
     if last_local_ts is None:
-        return True
+        return True, None
     refresh_sec = policy.get("refresh_sec")
     if refresh_sec in (None, 0):
-        return True
+        return True, last_local_ts
     key = (venue, symbol, tf_sec)
     last_attempt_ts = int(_LAST_TF_FETCH_ATTEMPT_TS.get(key, 0) or 0)
     if now_ts - last_local_ts >= tf_sec:
-        return True
+        return True, last_local_ts
     if last_attempt_ts <= 0:
-        return now_ts - last_local_ts >= int(refresh_sec)
-    return now_ts - last_attempt_ts >= int(refresh_sec)
+        return (now_ts - last_local_ts >= int(refresh_sec), last_local_ts)
+    return (now_ts - last_attempt_ts >= int(refresh_sec), last_local_ts)
+
+
+
+def _should_fetch_api_tf(conn, venue: str, symbol: str, tf_sec: int, now_ts: int, *, min_rows_required: int | None = None) -> bool:
+    should_fetch, _ = _api_tf_fetch_state(
+        conn,
+        venue,
+        symbol,
+        tf_sec,
+        now_ts,
+        min_rows_required=min_rows_required,
+    )
+    return should_fetch
 
 
 
@@ -777,6 +811,7 @@ def collect_backfill_once(
     *,
     max_workers: int = 1,
     per_tf_budget: int | None = None,
+    min_rows_per_tf: int = 80,
 ) -> dict[str, Any]:
     category = VENUE_TO_CATEGORY[venue]
     now_ts = db.now_ts()
@@ -788,6 +823,7 @@ def collect_backfill_once(
         "venue": venue,
         "symbols_total": len(symbols2),
         "budget_per_tf": int(budget),
+        "min_rows_per_tf": max(1, int(min_rows_per_tf or 1)),
         "ohlcv_written": 0,
         "api_tf_fetches": {},
         "derived_tf_bootstrap_fetches": {},
@@ -809,9 +845,17 @@ def collect_backfill_once(
         for sym in symbols2:
             if int(disabled.get(sym, 0) or 0) > now_ts:
                 continue
-            if not _should_fetch_api_tf(conn, venue, sym, tf_sec, now_ts):
+            should_fetch, fetch_anchor_ts = _api_tf_fetch_state(
+                conn,
+                venue,
+                sym,
+                tf_sec,
+                now_ts,
+                min_rows_required=min_rows_per_tf,
+            )
+            if not should_fetch:
                 continue
-            api_tasks.append((sym, tf_sec, db.get_latest_ohlcv_ts(conn, venue, sym, tf_sec)))
+            api_tasks.append((sym, tf_sec, fetch_anchor_ts))
         api_tasks = _round_robin_take(api_tasks, budget, ("api", venue, tf_sec))
         if not api_tasks:
             continue

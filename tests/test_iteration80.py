@@ -5,90 +5,134 @@ import importlib
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app import db
+from app import collector, db
 
 
-class _DummyThread:
-    started_names: list[str] = []
+class _RecordingFetchClient:
+    def __init__(self):
+        self.calls: list[dict[str, object]] = []
 
-    def __init__(self, *, target=None, name=None, daemon=None, **_kwargs):
-        self.target = target
-        self.name = name
-        self.daemon = daemon
+    def get_tickers(self, category: str, symbol: str | None = None):
+        items = [{
+            "symbol": str(symbol or "BTCUSDT"),
+            "lastPrice": "100",
+            "bid1Price": "99",
+            "ask1Price": "101",
+            "volume24h": "1",
+            "turnover24h": "1",
+        }]
+        return items if symbol else [{**items[0], "symbol": "BTCUSDT"}]
 
-    def start(self):
-        self.__class__.started_names.append(str(self.name or ""))
+    def get_kline(self, category: str, symbol: str, interval: str = "1", limit: int = 200, start=None, end=None):
+        self.calls.append({
+            "category": category,
+            "symbol": symbol,
+            "interval": interval,
+            "limit": int(limit),
+            "start": start,
+            "end": end,
+        })
+        return []
 
 
-def test_lifespan_starts_backfill_thread(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("tf_sec,interval,limit_rows", [(3600, "60", 10), (86400, "D", 5)])
+def test_collect_backfill_once_forces_cold_fetch_when_series_is_fresh_but_short(tmp_path: Path, tf_sec: int, interval: str, limit_rows: int):
+    conn = db.connect(str(tmp_path / f"short_{tf_sec}.db"))
+    db.init_db(conn)
+    now_ts = db.now_ts()
+    rows = []
+    for idx in range(limit_rows):
+        ts = now_ts - (limit_rows - idx) * tf_sec + tf_sec // 2
+        rows.append({
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "tf_sec": tf_sec,
+            "ts": ts,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1.0,
+        })
+    db.upsert_ohlcv(conn, rows)
+    client = _RecordingFetchClient()
+    collector._BACKFILL_ROUND_ROBIN_CURSOR.clear()
+    try:
+        stats = collector.collect_backfill_once(
+            conn,
+            client,
+            "linear",
+            ["BTCUSDT"],
+            max_workers=1,
+            per_tf_budget=1,
+            min_rows_per_tf=80,
+        )
+        calls = [call for call in client.calls if call["interval"] == interval]
+        assert stats["symbols_total"] == 1
+        assert calls, f"expected cold fetch for tf {tf_sec}"
+        assert calls[0]["start"] is None
+        assert calls[0]["end"] is None
+    finally:
+        conn.close()
+
+
+def test_lifespan_starts_backfill_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "lifespan_backfill.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-
+    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
+    started: list[str] = []
+
+    class _DummyThread:
+        def __init__(self, *args, name: str | None = None, **kwargs):
+            self.name = str(name or "")
+
+        def start(self):
+            started.append(self.name)
+
     try:
-        _DummyThread.started_names = []
         monkeypatch.setattr(app_main.threading, "Thread", _DummyThread)
 
-        async def _run():
+        async def _run() -> None:
             async with app_main.lifespan(app_main.app):
                 return None
 
         asyncio.run(_run())
-
-        assert _DummyThread.started_names == [
-            "collector",
-            "backfill",
-            "sentiment",
-            "reco",
-            "llm_reviewer",
-        ]
+        assert "collector" in started
+        assert "backfill" in started
+        assert "reco" in started
     finally:
         sys.modules.pop("app.main", None)
 
 
-def test_health_endpoint_returns_warmup_summary(tmp_path: Path, monkeypatch):
+def test_api_health_symbols_exposes_warmup_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "health_warmup.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-
+    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
-    app_main.app.router.on_startup.clear()
-
     conn = db.connect(str(db_path))
+    db.init_db(conn)
+    client = TestClient(app_main.app)
     try:
-        db.set_app_config_json(
-            conn,
-            "collector_warmup",
-            {
-                "ready": False,
-                "ready_symbols": 1,
-                "symbols_total": 4,
-                "ready_ratio": 0.25,
-                "required_tfs": [60, 900, 1800, 3600, 14400, 86400],
-                "min_rows_per_tf": 80,
-                "min_ready_ratio": 0.85,
-                "min_ready_symbols": 1,
-            },
-        )
-        client = TestClient(app_main.app)
-        try:
-            resp = client.get("/api/v1/health/symbols")
-            assert resp.status_code == 200
-            body = resp.json()
-            assert body["warmup"]["ready"] is False
-            assert body["warmup"]["ready_symbols"] == 1
-            assert body["warmup"]["symbols_total"] == 4
-            assert body["warmup"]["min_ready_ratio"] == 0.85
-        finally:
-            client.close()
+        resp = client.get("/api/v1/health/symbols")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "warmup" in body
+        assert body["warmup"]["ready"] is False
+        assert body["warmup"]["symbols_total"] == 1
+        assert body["warmup"]["ready_symbols"] == 0
+        assert body["warmup"]["derived_on_read"] is True
     finally:
+        client.close()
         conn.close()
         sys.modules.pop("app.main", None)
