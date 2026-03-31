@@ -842,7 +842,7 @@ def insert_sentiment_point(conn: sqlite3.Connection, scope: str, key: str, ts: i
     conn.commit()
 
 
-def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
     if not rows:
         return
     conn.executemany(
@@ -862,7 +862,8 @@ def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]
             for row in rows
         ],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: int = 120) -> list[dict[str, Any]]:
     cur = conn.execute(
