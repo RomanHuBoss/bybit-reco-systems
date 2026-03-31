@@ -14,6 +14,7 @@ from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .outcomes import BOT_HORIZONS
+from .collector import RuntimeLockLostError
 from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
 from .calibration import (
@@ -75,6 +76,19 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
     if not math.isfinite(num):
         return float(default)
     return num
+
+
+def _run_heartbeat(heartbeat) -> None:
+    if heartbeat is None:
+        return
+    try:
+        result = heartbeat()
+    except RuntimeLockLostError:
+        raise
+    except Exception as exc:
+        raise RuntimeLockLostError(f"recommender runtime lock heartbeat failed: {exc}") from exc
+    if result is False:
+        raise RuntimeLockLostError("recommender runtime lock lost")
 
 
 def _llm_reviewer_context_signature(settings) -> str:
@@ -1987,7 +2001,7 @@ def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     return scaler
 
 
-def run_recommender_once(conn, settings) -> dict[str, Any]:
+def run_recommender_once(conn, settings, heartbeat=None) -> dict[str, Any]:
     global _prev_recommended, _direction_state_cache
     _fresh_gap = _persistence_fresh_gap(settings)
     _prev_recommended = _load_prev_recommended(conn)
@@ -2014,6 +2028,8 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
     llm_candle_limit = int(getattr(settings, "llm_reviewer_candles_per_tf", LLM_REVIEWER_DEFAULT_CANDLES_PER_TF) or LLM_REVIEWER_DEFAULT_CANDLES_PER_TF)
 
     ts_now = db.now_ts()  # set here for stale gate use inside feature loop
+    feature_symbols_seen = 0
+    reco_candidates_seen = 0
 
     # Load BTC 1h closes once — used for beta/correlation calculation per symbol
     btc_1h_rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", tf_sec=3600, limit=50)
@@ -2136,12 +2152,17 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
             symbol_ticker_map[(venue, sym)] = trow  # save for reco loop
             if llm_candles:
                 symbol_llm_candle_map[(venue, sym)] = llm_candles
+            feature_symbols_seen += 1
+            if feature_symbols_seen % 8 == 0:
+                _run_heartbeat(heartbeat)
 
+    _run_heartbeat(heartbeat)
     regime = classify_regime(features_all)
     db.insert_regime(conn, db.now_ts(), regime)
 
     market_shock = compute_market_shock(conn, settings, sent_agg, symbol_feature_map, ts_now)
     db.set_app_config_json(conn, MARKET_SHOCK_APP_KEY, market_shock)
+    _run_heartbeat(heartbeat)
 
     limits = db.get_active_risk_limits(conn) or settings.risk_limits
     model_version = "bybit-taxonomy-v2"
@@ -2553,7 +2574,11 @@ def run_recommender_once(conn, settings) -> dict[str, Any]:
                 "model_version": model_version,
                 "features_ref_ts": int(f["ts_last"]),
             })
+            reco_candidates_seen += 1
+            if reco_candidates_seen % 16 == 0:
+                _run_heartbeat(heartbeat)
 
+    _run_heartbeat(heartbeat)
     status_counts = {"recommended": 0, "blocked": 0, "no_trade": 0, "suppressed": 0}
     llm_review_stats = {"reviewed": 0, "vetoed": 0, "errors": 0, "skipped": 0}
 

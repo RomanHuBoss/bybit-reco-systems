@@ -163,13 +163,19 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     oi_series: [{ts, oi}] newest-first (from db.get_oi_series)
     Returns:
       oi_now:    latest OI value
-      oi_24h_chg_pct: % change vs 24h ago
-      oi_4h_chg_pct:  % change vs 4h ago
-      trend:    'growing' | 'falling' | 'stable'
-      signal:   'bullish' | 'bearish' | 'neutral'
+      oi_24h_chg_pct: % change vs 24h ago when >=25 hourly points exist
+      oi_4h_chg_pct:  % change vs 4h ago when >=5 hourly points exist
+      trend:    'growing' | 'falling' | 'stable' | 'unknown'
+      signal:   'bullish' | 'bearish' | 'neutral' | 'unknown'
         price up + OI growing  → healthy trend (bullish)
         price down + OI growing → capitulation / shorts piling in (bearish)
         OI falling             → position unwinding (neutral/caution)
+
+    Important: do not pretend a 24h OI trend exists when the series only contains
+    a few fresh points after restart. Under-sized histories used to map the newest
+    value against whatever row happened to be present (for example 1-4h back) while
+    still labeling the result as a 24h trend, which is logically wrong and could
+    overstate conviction right after collector warm-up.
     """
     empty = {"oi_now": None, "oi_24h_chg_pct": None, "oi_4h_chg_pct": None,
              "trend": "unknown", "signal": "unknown"}
@@ -196,17 +202,16 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
             return None
         return (oi_now - old) / old * 100.0
 
-    # newest-first series: index 0 = now, 1 = ~1h back, ...
-    # So 4h / 24h reference points are indices 4 and 24 respectively.
-    # Previous implementation used 3 / 23, which understated lookback changes
-    # and distorted OI trend classification near thresholds.
-    oi_4h = normalized[min(4, len(normalized)-1)]    # ~4h back
-    oi_24h = normalized[min(24, len(normalized)-1)]  # ~24h back
+    chg_4h = None
+    if len(normalized) >= 5:
+        chg_4h = _pct_chg(normalized[4])
 
-    chg_4h  = _pct_chg(oi_4h)
-    chg_24h = _pct_chg(oi_24h)
+    chg_24h = None
+    if len(normalized) >= 25:
+        chg_24h = _pct_chg(normalized[24])
 
-    # trend based on 24h change
+    # trend classification must only use a true ~24h reference point. With shorter
+    # history we simply do not know yet whether OI is genuinely expanding or fading.
     if chg_24h is not None:
         if chg_24h > 3.0:
             trend = "growing"
@@ -215,7 +220,7 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
         else:
             trend = "stable"
     else:
-        trend = "stable"
+        trend = "unknown"
 
     # signal requires price context — provided in recommender
     # here we return raw; recommender combines with price direction

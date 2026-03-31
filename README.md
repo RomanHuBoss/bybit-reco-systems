@@ -24,6 +24,10 @@
 - Derived bootstrap stage теперь тоже коммитится на явной stage-boundary. Раньше он мог успешно собрать `15m/30m`, а затем потерять leadership на следующем heartbeat и откатить уже рассчитанный bootstrap, хотя README обещал обратное.
 - Если batch `get_tickers(category=...)` временно падает, collector больше не теряет весь venue-цикл целиком: фиксируется один batch-error и включается per-symbol fallback-path.
 - Добавлены новые регрессионные тесты на длинный kline catch-up после downtime, open-interest cursor pagination, rollback при потере runtime lock, buffered error handling внутри collector-stage, poisoned historical rows, DB-level валидацию `funding/open interest`, пропуск лишнего `4h` bootstrap и защиту feature-layer от грязных значений.
+- Collector thread теперь валидирует heartbeat не только внутри `collect_once()`, но и **после** завершения venue-stage. Потеря лидерства между концом stage и переходом к следующему шагу больше не позволяет тихо продолжить цикл или зайти в futures-meta фазу под протухшим lock.
+- Recommender loop теперь тоже использует runtime-lock heartbeat и прекращает follow-up работу (`expire`, `prune`, alerts) при потере лидерства. Это закрывает split-brain сценарий, где основной расчёт уже потерял lock, но поток всё ещё модифицировал housekeeping-состояние.
+- `/metrics` и внутренний telegram health-path теперь считают только **активные venues** из текущего `VENUES`, а не все исторически настроенные списки символов. Это убирает расхождение между `/api/v1/health/symbols` и Prometheus/alerting картиной.
+- `oi_trend()` больше не изображает полноценный `24h` OI-trend по короткому хвосту после рестарта. Для `24h` классификации теперь требуется реальная глубина истории, иначе сигнал помечается как `unknown` вместо искусственно уверенного `growing/falling/stable`.
 
 ## Что делает система
 - собирает `spot` / `linear` тикеры и OHLCV по нескольким таймфреймам;
@@ -121,9 +125,9 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `121 passed`
+- `125 passed`
 - покрытие `app/*` — `74%`
-- регрессионные тесты покрывают collector / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths
+- регрессионные тесты покрывают collector / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / post-stage heartbeat lock loss / recommender lock-loss housekeeping skip / active-venue metrics semantics / true-lookback OI trend semantics
 
 ## Ключевые env
 - `DB_PATH` — путь к SQLite. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
