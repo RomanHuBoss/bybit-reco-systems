@@ -44,6 +44,10 @@ def _get_conn():
     return db.connect(settings.db_path)
 
 
+def _get_lock_conn():
+    return db.connect_runtime_locks(settings.db_path)
+
+
 def _interval_loop_start(interval_sec: int) -> float:
     return time.monotonic() + max(1, int(interval_sec))
 
@@ -90,6 +94,8 @@ def _bootstrap_db() -> None:
                     "deleted_calibrators": int(deleted_calibrators or 0),
                 },
             )
+    with closing(_get_lock_conn()) as lock_conn:
+        db.init_runtime_lock_db(lock_conn)
 
 
 _bootstrap_db()
@@ -212,31 +218,27 @@ def _log_decision_fresh(action: str, rec_id: str | None, operator: str | None, d
         db.log_decision(log_conn, action, rec_id, operator, details)
 
 
-def _make_runtime_lock_heartbeat(lock_conn, lock_key: str):
+def _make_runtime_lock_heartbeat(lock_key: str, lock_conn_factory=_get_lock_conn):
     def _heartbeat() -> bool:
         try:
-            return bool(db.heartbeat_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER))
+            with closing(lock_conn_factory()) as lock_conn:
+                return bool(db.heartbeat_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER))
         except Exception:
             logger.warning("runtime lock heartbeat failed", exc_info=True)
             return False
     return _heartbeat
 
 
-def _require_runtime_heartbeat(heartbeat, *, stage: str | None = None) -> None:
+def _require_runtime_heartbeat(heartbeat, err_msg: str) -> None:
     if heartbeat is None:
         return
+    ok = False
     try:
-        result = heartbeat()
-    except RuntimeLockLostError:
-        raise
-    except Exception as exc:
-        if stage:
-            raise RuntimeLockLostError(f"{stage} heartbeat failed: {exc}") from exc
-        raise RuntimeLockLostError(f"runtime lock heartbeat failed: {exc}") from exc
-    if result is False:
-        if stage:
-            raise RuntimeLockLostError(f"{stage} heartbeat lost")
-        raise RuntimeLockLostError("runtime lock lost")
+        ok = bool(heartbeat())
+    except Exception:
+        ok = False
+    if not ok:
+        raise RuntimeLockLostError(err_msg)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -833,7 +835,7 @@ def _collector_thread():
     next_run = _interval_loop_start(settings.collect_interval_sec)
     try:
         while True:
-            with closing(_get_conn()) as conn:
+            with closing(_get_lock_conn()) as conn:
                 has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
             if has_lock:
                 cycle_started = time.time()
@@ -848,8 +850,8 @@ def _collector_thread():
                     "futures_collect_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
                 }
                 lock_lost = False
-                with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
-                    heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
+                with closing(_get_conn()) as conn:
+                    heartbeat = _make_runtime_lock_heartbeat(lock_key)
                     for venue in settings.venues:
                         symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
                         try:
@@ -863,7 +865,6 @@ def _collector_thread():
                                     max_workers=int(getattr(settings, "collector_max_workers", 1) or 1),
                                 )
                             )
-                            _require_runtime_heartbeat(heartbeat, stage=f"collector:{venue}")
                         except RuntimeLockLostError as e:
                             lock_lost = True
                             cycle_stats["lock_lost"] = True
@@ -873,9 +874,10 @@ def _collector_thread():
                         except Exception as e:
                             _rollback_quietly(conn)
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
+                        _require_runtime_heartbeat(heartbeat, "collector heartbeat lost")
                 if (not lock_lost) and time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
-                    with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
-                        heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
+                    with closing(_get_conn()) as conn:
+                        heartbeat = _make_runtime_lock_heartbeat(lock_key)
                         try:
                             cycle_stats["futures_meta"] = collect_futures_once(
                                 conn,
@@ -884,7 +886,7 @@ def _collector_thread():
                                 heartbeat=heartbeat,
                                 max_workers=int(getattr(settings, "futures_collect_max_workers", getattr(settings, "collector_max_workers", 1)) or 1),
                             )
-                            _require_runtime_heartbeat(heartbeat, stage="collector:futures_meta")
+                            _require_runtime_heartbeat(heartbeat, "collector heartbeat lost")
                             _last_futures_collect = time.time()
                         except RuntimeLockLostError as e:
                             lock_lost = True
@@ -907,25 +909,23 @@ def _sentiment_thread():
     lock_ttl = max(60, settings.sentiment_interval_sec * 4)
     next_run = _interval_loop_start(settings.sentiment_interval_sec)
     while True:
-        with closing(_get_conn()) as conn:
+        with closing(_get_lock_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
-            with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
-                heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
+            with closing(_get_conn()) as conn:
+                heartbeat = _make_runtime_lock_heartbeat(lock_key)
                 try:
-                    _require_runtime_heartbeat(heartbeat, stage="sentiment")
                     pts = collect_sentiment_once()
-                    _require_runtime_heartbeat(heartbeat, stage="sentiment")
+                    _require_runtime_heartbeat(heartbeat, "sentiment heartbeat lost")
                     db.insert_sentiment_points(conn, pts, commit=False)
                     db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)}, commit=False)
-                    _require_runtime_heartbeat(heartbeat, stage="sentiment")
                     conn.commit()
+                except RuntimeLockLostError as e:
+                    _rollback_quietly(conn)
+                    _log_decision_fresh("SENTIMENT_ERROR", None, None, {"field": "runtime_lock", "err": str(e)})
                 except Exception as e:
                     _rollback_quietly(conn)
-                    details = {"err": str(e)}
-                    if isinstance(e, RuntimeLockLostError):
-                        details = {"field": "runtime_lock", "err": str(e)}
-                    _log_decision_fresh("SENTIMENT_ERROR", None, None, details)
+                    _log_decision_fresh("SENTIMENT_ERROR", None, None, {"err": str(e)})
         next_run = _interval_loop_wait(next_run, settings.sentiment_interval_sec)
 
 
@@ -938,93 +938,65 @@ def _reco_thread():
     next_run = _interval_loop_start(settings.reco_interval_sec)
     while True:
         result = {}
-        with closing(_get_conn()) as conn:
+        with closing(_get_lock_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
-            leadership_lost = False
-            with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
-                heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
+            with closing(_get_conn()) as conn:
+                heartbeat = _make_runtime_lock_heartbeat(lock_key)
                 try:
-                    _require_runtime_heartbeat(heartbeat)
-                    result = run_recommender_once(conn, settings, heartbeat=heartbeat)
-                    _require_runtime_heartbeat(heartbeat)
+                    result = run_recommender_once(conn, settings)
+                    _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
                     if time.time() - _last_outcomes >= int(getattr(settings, "outcomes_interval_sec", 60) or 60):
                         compute_outcomes_once(
                             conn,
                             horizon_sec=settings.outcome_horizon_fallback_sec,
                             max_to_process=int(getattr(settings, "outcomes_max_to_process", 200) or 200),
                         )
-                        _require_runtime_heartbeat(heartbeat)
                         _last_outcomes = time.time()
+                    _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
                 except RuntimeLockLostError as e:
-                    leadership_lost = True
                     _rollback_quietly(conn)
                     _log_decision_fresh("RECO_ERROR", None, None, {"field": "runtime_lock", "err": str(e)})
+                    next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
+                    continue
                 except Exception as e:
                     _rollback_quietly(conn)
                     _log_decision_fresh("RECO_ERROR", None, None, {"err": str(e)})
 
-            if leadership_lost:
-                next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
-                continue
-
-            with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
-                heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
-                try:
-                    _require_runtime_heartbeat(heartbeat)
+            try:
+                _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
+                with closing(_get_conn()) as conn:
                     db.expire_stale_recommendations(conn)
-                    _require_runtime_heartbeat(heartbeat)
-                except RuntimeLockLostError as e:
-                    leadership_lost = True
-                    _rollback_quietly(conn)
-                    _log_decision_fresh("RECO_ERROR", None, None, {"field": "runtime_lock", "stage": "expire", "err": str(e)})
-                except Exception:
-                    logger.debug("expire_stale_recommendations error", exc_info=True)
-
-            if leadership_lost:
+            except RuntimeLockLostError:
                 next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
                 continue
+            except Exception:
+                logger.debug("expire_stale_recommendations error", exc_info=True)
 
             if time.time() - _last_prune >= PRUNE_INTERVAL:
-                with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
-                    heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
-                    try:
-                        _require_runtime_heartbeat(heartbeat)
+                try:
+                    _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
+                    with closing(_get_conn()) as conn:
                         deleted = db.prune_old_data(conn, retain_days=7)
                         db.log_decision(conn, "DB_PRUNE", None, None, deleted)
-                        _require_runtime_heartbeat(heartbeat)
                         _last_prune = time.time()
-                    except RuntimeLockLostError as e:
-                        leadership_lost = True
-                        _rollback_quietly(conn)
-                        _log_decision_fresh("RECO_ERROR", None, None, {"field": "runtime_lock", "stage": "prune", "err": str(e)})
-                    except Exception:
-                        _rollback_quietly(conn)
-                        logger.debug("prune_old_data error", exc_info=True)
-
-            if leadership_lost:
-                next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
-                continue
+                except RuntimeLockLostError:
+                    next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
+                    continue
+                except Exception:
+                    logger.debug("prune_old_data error", exc_info=True)
 
             if settings.telegram_token:
                 try:
-                    with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
-                        heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
-                        _require_runtime_heartbeat(heartbeat)
-                        health = db.get_symbol_health(
-                            conn,
-                            settings.symbols_spot,
-                            settings.symbols_linear,
-                            stale_sec=settings.stale_data_max_sec,
-                            active_venues=list(getattr(settings, "venues", []) or []),
-                        )
+                    _require_runtime_heartbeat(heartbeat, "reco heartbeat lost")
+                    with closing(_get_conn()) as conn:
+                        health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
                         err_cur = conn.execute(
                             """SELECT COUNT(*) as c FROM decision_log
                                WHERE action='COLLECT_ERROR' AND ts >= ?""",
                             (int(time.time()) - 600,),
                         )
                         err_count = int(err_cur.fetchone()["c"])
-                        _require_runtime_heartbeat(heartbeat)
                     check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
                 except RuntimeLockLostError:
                     pass
@@ -1045,21 +1017,19 @@ def _llm_reviewer_thread():
     next_run = time.monotonic()
     interval_sec = eager_interval
     while True:
-        with closing(_get_conn()) as conn:
+        with closing(_get_lock_conn()) as conn:
             has_lock = db.acquire_runtime_lock(conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
-            with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
-                heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
+            with closing(_get_conn()) as conn:
+                heartbeat = _make_runtime_lock_heartbeat(lock_key)
                 try:
-                    _require_runtime_heartbeat(heartbeat)
-                    stats = run_llm_review_sweep_once(conn, settings, heartbeat=heartbeat)
-                    _require_runtime_heartbeat(heartbeat)
+                    stats = run_llm_review_sweep_once(conn, settings)
+                    _require_runtime_heartbeat(heartbeat, "llm reviewer heartbeat lost")
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
                     interval_sec = eager_interval if int(stats.get("pending_after", 0) or 0) > 0 else base_interval
-                except RuntimeLockLostError as e:
+                except RuntimeLockLostError:
                     interval_sec = base_interval
                     _rollback_quietly(conn)
-                    _log_decision_fresh("LLM_REVIEW_SWEEP_ERROR", None, None, {"field": "runtime_lock", "err": str(e)})
                 except Exception as e:
                     interval_sec = base_interval
                     _rollback_quietly(conn)
@@ -1071,13 +1041,7 @@ def _llm_reviewer_thread():
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics() -> str:
     with closing(_get_conn()) as conn:
-        health = db.get_symbol_health(
-            conn,
-            settings.symbols_spot,
-            settings.symbols_linear,
-            stale_sec=settings.stale_data_max_sec,
-            active_venues=list(getattr(settings, "venues", []) or []),
-        )
+        health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
         collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
         status_counts = {"ok": 0, "stale": 0, "missing": 0, "disabled": 0}
         for item in health:

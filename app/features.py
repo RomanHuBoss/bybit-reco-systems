@@ -161,95 +161,70 @@ def funding_signal(funding_rate: float | None) -> dict[str, Any]:
 def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     """
     oi_series: [{ts, oi}] newest-first (from db.get_oi_series)
-
-    4h / 24h changes must reflect *real lookback depth*, not merely the row count.
-    After restarts or partial catch-up we may have a dense but short series; treating the
-    oldest available point as "24h ago" creates false long-horizon trend labels.
-    We therefore infer the dominant cadence from the series timestamps and require at
-    least ~4 / ~24 cadence units of elapsed time before emitting those horizons.
+    Returns:
+      oi_now:    latest OI value
+      oi_24h_chg_pct: % change vs 24h ago
+      oi_4h_chg_pct:  % change vs 4h ago
+      trend:    'growing' | 'falling' | 'stable'
+      signal:   'bullish' | 'bearish' | 'neutral'
+        price up + OI growing  → healthy trend (bullish)
+        price down + OI growing → capitulation / shorts piling in (bearish)
+        OI falling             → position unwinding (neutral/caution)
     """
-    empty = {
-        "oi_now": None,
-        "oi_24h_chg_pct": None,
-        "oi_4h_chg_pct": None,
-        "trend": "unknown",
-        "signal": "unknown",
-        "cadence_sec": None,
-        "time_depth_sec": None,
-    }
+    empty = {"oi_now": None, "oi_24h_chg_pct": None, "oi_4h_chg_pct": None,
+             "trend": "unknown", "signal": "unknown"}
     if not oi_series or len(oi_series) < 2:
         return empty
 
-    normalized: list[tuple[int, float]] = []
+    normalized: list[float] = []
     for row in oi_series:
         try:
-            ts = int(row.get("ts") or 0)
             oi = float(row.get("oi"))
         except Exception:
             continue
-        if ts <= 0 or not math.isfinite(oi) or oi < 0:
+        if not math.isfinite(oi) or oi < 0:
             continue
-        normalized.append((ts, oi))
+        normalized.append(oi)
     if len(normalized) < 2:
         return empty
 
-    normalized.sort(key=lambda item: item[0], reverse=True)
-    oi_now_ts, oi_now = normalized[0]
+    # series is newest-first
+    oi_now = normalized[0]
 
-    positive_deltas = [
-        max(1, normalized[idx][0] - normalized[idx + 1][0])
-        for idx in range(len(normalized) - 1)
-        if normalized[idx][0] > normalized[idx + 1][0]
-    ]
-    if positive_deltas:
-        cadence_sec = int(sorted(positive_deltas)[len(positive_deltas) // 2])
-    else:
-        cadence_sec = 1
-    time_depth_sec = max(0, oi_now_ts - normalized[-1][0])
-
-    def _pct_chg(old: float | None) -> float | None:
-        if old is None or old <= 0:
+    def _pct_chg(old: float) -> float | None:
+        if old <= 0:
             return None
         return (oi_now - old) / old * 100.0
 
-    def _reference_oi(required_steps: int) -> float | None:
-        if len(normalized) <= required_steps:
-            return None
-        required_elapsed = max(1, int(required_steps)) * max(1, cadence_sec)
-        target_ts = oi_now_ts - required_elapsed
-        for ts, oi in normalized[1:]:
-            if ts <= target_ts:
-                return oi
-        return None
+    # newest-first series: index 0 = now, 1 = ~1h back, ...
+    # So 4h / 24h reference points are indices 4 and 24 respectively.
+    # Previous implementation used 3 / 23, which understated lookback changes
+    # and distorted OI trend classification near thresholds.
+    oi_4h = normalized[min(4, len(normalized)-1)]    # ~4h back
+    oi_24h = normalized[min(24, len(normalized)-1)]  # ~24h back
 
-    chg_4h = _pct_chg(_reference_oi(4))
-    chg_24h = _pct_chg(_reference_oi(24))
-    short_span_chg = _pct_chg(normalized[-1][1]) if len(normalized) >= 2 else None
+    chg_4h  = _pct_chg(oi_4h)
+    chg_24h = _pct_chg(oi_24h)
 
-    if chg_24h is None and chg_4h is None and short_span_chg is not None:
-        if short_span_chg > 3.0:
+    # trend based on 24h change
+    if chg_24h is not None:
+        if chg_24h > 3.0:
             trend = "growing"
-        elif short_span_chg < -3.0:
+        elif chg_24h < -3.0:
             trend = "falling"
         else:
             trend = "stable"
-    elif chg_24h is None:
-        trend = "unknown"
-    elif chg_24h > 3.0:
-        trend = "growing"
-    elif chg_24h < -3.0:
-        trend = "falling"
     else:
         trend = "stable"
 
+    # signal requires price context — provided in recommender
+    # here we return raw; recommender combines with price direction
     return {
         "oi_now": oi_now,
         "oi_24h_chg_pct": round(chg_24h, 2) if chg_24h is not None else None,
-        "oi_4h_chg_pct": round(chg_4h, 2) if chg_4h is not None else None,
+        "oi_4h_chg_pct":  round(chg_4h, 2)  if chg_4h  is not None else None,
         "trend": trend,
-        "signal": "pending",
-        "cadence_sec": int(cadence_sec),
-        "time_depth_sec": int(time_depth_sec),
+        "signal": "pending",  # set in recommender after combining with price direction
     }
 
 

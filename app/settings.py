@@ -128,7 +128,6 @@ class Settings:
     outcomes_max_to_process: int = 200
     collector_max_workers: int = 4
     futures_collect_max_workers: int = 4
-    reco_republish_cooldown_sec: int = 3600
 
 
 def load_settings() -> Settings:
@@ -184,7 +183,6 @@ def load_settings() -> Settings:
     reco_ttl_sec = None if reco_ttl_raw in (None, "") else _env_int("RECO_TTL_SEC", 180, minimum=180, maximum=7 * 24 * 3600)
     outcomes_interval_sec = _env_int("OUTCOMES_INTERVAL_SEC", 60, minimum=20, maximum=3600)
     outcomes_max_to_process = _env_int("OUTCOMES_MAX_TO_PROCESS", 200, minimum=10, maximum=2000)
-    reco_republish_cooldown_sec = _env_int("RECO_REPUBLISH_COOLDOWN_SEC", 3600, minimum=300, maximum=24 * 3600)
 
     return Settings(
         require_conf_gate=require_conf_gate,
@@ -228,5 +226,4 @@ def load_settings() -> Settings:
         reco_ttl_sec=reco_ttl_sec,
         outcomes_interval_sec=outcomes_interval_sec,
         outcomes_max_to_process=outcomes_max_to_process,
-        reco_republish_cooldown_sec=reco_republish_cooldown_sec,
     )

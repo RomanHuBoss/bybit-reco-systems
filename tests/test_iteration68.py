@@ -190,7 +190,7 @@ def test_make_runtime_lock_heartbeat_fails_closed_on_db_error(tmp_path: Path, mo
             raise RuntimeError("heartbeat db error")
 
         monkeypatch.setattr(app_main.db, "heartbeat_runtime_lock", boom)
-        heartbeat = app_main._make_runtime_lock_heartbeat(hb_conn, "runtime:test")
+        heartbeat = app_main._make_runtime_lock_heartbeat("runtime:test")
 
         with pytest.raises(collector.RuntimeLockLostError):
             collector._heartbeat(heartbeat)

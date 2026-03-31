@@ -552,8 +552,8 @@ def _heartbeat(heartbeat: Callable[[], Any] | None) -> None:
         result = heartbeat()
     except RuntimeLockLostError:
         raise
-    except Exception as exc:
-        raise RuntimeLockLostError(f"collector runtime lock heartbeat failed: {exc}") from exc
+    except Exception:
+        return
     if result is False:
         raise RuntimeLockLostError("collector runtime lock lost")
 

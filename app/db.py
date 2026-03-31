@@ -33,6 +33,28 @@ def connect(db_path: str) -> sqlite3.Connection:
         logger.debug("PRAGMA setup error", exc_info=True)
     return conn
 
+
+def runtime_lock_db_path(db_path: str) -> str:
+    path = Path(db_path)
+    suffix = ''.join(path.suffixes)
+    if suffix:
+        return str(path.with_name(f"{path.name}.runtime_locks.sqlite"))
+    return str(path.with_name(f"{path.name}.runtime_locks.sqlite"))
+
+
+def connect_runtime_locks(db_path: str) -> sqlite3.Connection:
+    return connect(runtime_lock_db_path(db_path))
+
+
+def init_runtime_lock_db(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS runtime_locks (
+      lock_key TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      heartbeat_ts INTEGER NOT NULL
+    )""")
+    conn.commit()
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     sql = MIGRATION_INIT_SQL.read_text(encoding="utf-8")
     conn.executescript(sql)
@@ -333,18 +355,13 @@ def get_latest_ticker(conn: sqlite3.Connection, venue: str, symbol: str) -> dict
 
 
 def get_latest_ticker_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
-    cur = conn.execute(
-        """SELECT * FROM ticker_snap WHERE venue=? AND symbol=? ORDER BY ts DESC LIMIT ?""",
-        (venue, symbol, LATEST_ROW_SCAN_LIMIT),
-    )
-    for row in cur.fetchall():
-        payload = dict(row)
-        if _is_valid_ticker_row(payload):
-            try:
-                return int(payload["ts"])
-            except Exception:
-                return None
-    return None
+    row = get_latest_ticker(conn, venue, symbol)
+    if not row:
+        return None
+    try:
+        return int(row["ts"])
+    except Exception:
+        return None
 
 def get_latest_features_ts(conn: sqlite3.Connection, venue: str, symbol: str) -> int | None:
     cur = conn.execute(
@@ -740,60 +757,12 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str,
     }
 
 
-def get_recent_recommendation_for_key(
-    conn: sqlite3.Connection,
-    venue: str,
-    symbol: str,
-    bot_type: str,
-    direction: str,
-    *,
-    since_ts: int,
-    statuses: tuple[str, ...] = ("recommended",),
-) -> dict[str, Any] | None:
-    if not statuses:
-        return None
-    placeholders = ",".join("?" for _ in statuses)
-    params: list[Any] = [venue, symbol, bot_type, direction, int(since_ts), *statuses]
-    cur = conn.execute(
-        f"""SELECT * FROM recommendations
-              WHERE venue=? AND symbol=? AND bot_type=? AND direction=?
-                AND ts>=? AND status IN ({placeholders})
-              ORDER BY ts DESC LIMIT 1""",
-        params,
-    )
-    r = cur.fetchone()
-    if not r or not is_supported_bot_type(r["bot_type"]):
-        return None
-    return {
-        "rec_id": r["rec_id"],
-        "ts": r["ts"],
-        "venue": r["venue"],
-        "symbol": r["symbol"],
-        "bot_type": r["bot_type"],
-        "direction": r["direction"],
-        "account_mode": r["account_mode"],
-        "margin_mode": r["margin_mode"],
-        "score": r["score"],
-        "confidence": r["confidence"],
-        "expected_rr": r["expected_rr"],
-        "risk_score": r["risk_score"],
-        "params": _json_loads_or_default(r["params_json"], {}),
-        "reasons": _json_loads_or_default(r["reasons_json"], {}),
-        "blocks": _json_loads_or_default(r["blocks_json"], []),
-        "status": r["status"],
-        "ttl_sec": r["ttl_sec"],
-        "model_version": r["model_version"],
-        "features_ref_ts": r["features_ref_ts"],
-    }
-
-
 def update_recommendation_review(
     conn: sqlite3.Connection,
     rec_id: str,
     *,
     reasons: dict[str, Any],
     status: str | None = None,
-    commit: bool = True,
 ) -> bool:
     cur = conn.execute("SELECT status FROM recommendations WHERE rec_id=?", (rec_id,))
     row = cur.fetchone()
@@ -809,17 +778,36 @@ def update_recommendation_review(
         "UPDATE recommendations SET reasons_json=?, status=? WHERE rec_id=?",
         (json.dumps(reasons, ensure_ascii=False), new_status, rec_id),
     )
-    if commit:
-        conn.commit()
+    conn.commit()
     return True
 
+
+
+def _is_lock_retryable_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database table is locked" in msg or "database is busy" in msg
+
+
+def _execute_lock_write_with_retry(op, *, retries: int = 5, sleep_sec: float = 0.05):
+    last_exc = None
+    for attempt in range(max(1, int(retries))):
+        try:
+            return op()
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if not _is_lock_retryable_error(exc) or attempt >= max(1, int(retries)) - 1:
+                raise
+            time.sleep(max(0.0, float(sleep_sec)) * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+    raise sqlite3.OperationalError("runtime lock write failed")
 
 
 def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, ttl_sec: int = 90) -> bool:
     """Cross-process best-effort leader lock backed by SQLite."""
     now = now_ts()
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        _execute_lock_write_with_retry(lambda: conn.execute("BEGIN IMMEDIATE"))
         row = conn.execute(
             "SELECT owner, heartbeat_ts FROM runtime_locks WHERE lock_key=?",
             (lock_key,),
@@ -834,9 +822,11 @@ def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, tt
                 should_claim = True
 
         if should_claim:
-            conn.execute(
-                "INSERT OR REPLACE INTO runtime_locks(lock_key, owner, heartbeat_ts) VALUES(?,?,?)",
-                (lock_key, owner, now),
+            _execute_lock_write_with_retry(
+                lambda: conn.execute(
+                    "INSERT OR REPLACE INTO runtime_locks(lock_key, owner, heartbeat_ts) VALUES(?,?,?)",
+                    (lock_key, owner, now),
+                )
             )
             conn.commit()
             return True
@@ -851,17 +841,21 @@ def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, tt
 
 
 def release_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) -> None:
-    conn.execute(
-        "DELETE FROM runtime_locks WHERE lock_key=? AND owner=?",
-        (lock_key, owner),
+    _execute_lock_write_with_retry(
+        lambda: conn.execute(
+            "DELETE FROM runtime_locks WHERE lock_key=? AND owner=?",
+            (lock_key, owner),
+        )
     )
     conn.commit()
 
 
 def heartbeat_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) -> bool:
-    cur = conn.execute(
-        "UPDATE runtime_locks SET heartbeat_ts=? WHERE lock_key=? AND owner=?",
-        (now_ts(), lock_key, owner),
+    cur = _execute_lock_write_with_retry(
+        lambda: conn.execute(
+            "UPDATE runtime_locks SET heartbeat_ts=? WHERE lock_key=? AND owner=?",
+            (now_ts(), lock_key, owner),
+        )
     )
     conn.commit()
     return int(cur.rowcount or 0) > 0
