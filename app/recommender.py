@@ -1711,6 +1711,86 @@ def _persistence_fresh_gap(settings) -> int:
     return max(180, min(600, reco_interval * 15))
 
 
+def _recent_publication_cooldown_sec(settings) -> int:
+    explicit = getattr(settings, "reco_republish_cooldown_sec", None)
+    if explicit is not None:
+        try:
+            return max(300, int(explicit))
+        except Exception:
+            pass
+    return max(3600, _recommendation_ttl_sec(settings))
+
+
+def _is_material_signal_upgrade(previous: dict[str, Any] | None, current: dict[str, Any]) -> bool:
+    if not previous:
+        return True
+    try:
+        conf_delta = float(current.get("confidence") or 0.0) - float(previous.get("confidence") or 0.0)
+        score_delta = float(current.get("score") or 0.0) - float(previous.get("score") or 0.0)
+        rr_delta = float(current.get("expected_rr") or 0.0) - float(previous.get("expected_rr") or 0.0)
+        risk_delta = float(previous.get("risk_score") or 0.0) - float(current.get("risk_score") or 0.0)
+    except Exception:
+        return False
+    current_params = current.get("params") if isinstance(current.get("params"), dict) else {}
+    previous_params = previous.get("params") if isinstance(previous.get("params"), dict) else {}
+    current_tp = current_params.get("trade_plan") if isinstance(current_params.get("trade_plan"), dict) else {}
+    previous_tp = previous_params.get("trade_plan") if isinstance(previous_params.get("trade_plan"), dict) else {}
+    entry_delta = None
+    try:
+        curr_entry = float(current_tp.get("entry_price") or 0.0)
+        prev_entry = float(previous_tp.get("entry_price") or 0.0)
+        if curr_entry > 0 and prev_entry > 0:
+            entry_delta = abs(curr_entry - prev_entry) / prev_entry
+    except Exception:
+        entry_delta = None
+    return (
+        conf_delta >= 0.08
+        or score_delta >= 0.10
+        or rr_delta >= 0.10
+        or risk_delta >= 0.10
+        or (entry_delta is not None and entry_delta >= 0.015)
+    )
+
+
+def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings, ts_now: int) -> None:
+    cooldown_sec = _recent_publication_cooldown_sec(settings)
+    if cooldown_sec <= 0:
+        return
+    for rec in recs:
+        if str(rec.get("status") or "") != "recommended":
+            continue
+        prev = db.get_recent_recommendation_for_key(
+            conn,
+            str(rec.get("venue") or ""),
+            str(rec.get("symbol") or ""),
+            str(rec.get("bot_type") or ""),
+            str(rec.get("direction") or "neutral"),
+            since_ts=int(ts_now) - cooldown_sec,
+            statuses=("recommended", "executed"),
+        )
+        reasons = rec.setdefault("reasons", {})
+        if prev is None:
+            reasons["publication_dedupe"] = {
+                "mode": "none",
+                "cooldown_sec": int(cooldown_sec),
+                "suppressed": False,
+                "material_upgrade": True,
+            }
+            continue
+        material_upgrade = _is_material_signal_upgrade(prev, rec)
+        reasons["publication_dedupe"] = {
+            "mode": "recent_same_signal",
+            "cooldown_sec": int(cooldown_sec),
+            "previous_rec_id": prev.get("rec_id"),
+            "previous_ts": int(prev.get("ts") or 0),
+            "previous_status": prev.get("status"),
+            "suppressed": not material_upgrade,
+            "material_upgrade": bool(material_upgrade),
+        }
+        if not material_upgrade:
+            rec["status"] = "suppressed"
+
+
 def _recommendation_ttl_sec(settings) -> int:
     explicit_ttl = getattr(settings, "reco_ttl_sec", None)
     if explicit_ttl is not None:
@@ -2069,13 +2149,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 continue
             trow = db.get_latest_ticker(conn, venue, sym)
             ticker = dict(trow) if trow else None
-            ticker_ts = None
-            if ticker is not None:
-                try:
-                    ticker_ts = int(ticker.get("ts") or 0)
-                except Exception:
-                    ticker_ts = None
-            ticker_age_sec = None if not ticker_ts else max(0, ts_now - ticker_ts)
+            ticker_ts = db.get_latest_ticker_ts(conn, venue, sym)
+            ticker_age_sec = None if not ticker_ts else max(0, ts_now - int(ticker_ts))
             # get_latest_ohlcv returns newest-first (ORDER BY ts DESC).
             # compute_features_from_ohlcv and all indicator functions
             # (ma_slope, EMA, RSI, MACD, BB) require oldest-first order.
@@ -2674,6 +2749,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     str(r.get("bot_type") or ""),
                 )
 
+        _apply_recent_publication_dedupe(conn, recs, settings, ts_now)
         _save_prev_recommended(conn, _prev_recommended, _fresh_gap)
         _save_direction_state(conn, _direction_state_cache, _fresh_gap)
 

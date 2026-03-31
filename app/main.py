@@ -222,12 +222,21 @@ def _make_runtime_lock_heartbeat(lock_conn, lock_key: str):
     return _heartbeat
 
 
-def _require_runtime_heartbeat(heartbeat, *, role: str) -> None:
+def _require_runtime_heartbeat(heartbeat, *, stage: str | None = None) -> None:
     if heartbeat is None:
         return
-    ok = bool(heartbeat())
-    if not ok:
-        raise RuntimeLockLostError(f"{role} heartbeat lost")
+    try:
+        result = heartbeat()
+    except RuntimeLockLostError:
+        raise
+    except Exception as exc:
+        if stage:
+            raise RuntimeLockLostError(f"{stage} heartbeat failed: {exc}") from exc
+        raise RuntimeLockLostError(f"runtime lock heartbeat failed: {exc}") from exc
+    if result is False:
+        if stage:
+            raise RuntimeLockLostError(f"{stage} heartbeat lost")
+        raise RuntimeLockLostError("runtime lock lost")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -854,6 +863,7 @@ def _collector_thread():
                                     max_workers=int(getattr(settings, "collector_max_workers", 1) or 1),
                                 )
                             )
+                            _require_runtime_heartbeat(heartbeat, stage=f"collector:{venue}")
                         except RuntimeLockLostError as e:
                             lock_lost = True
                             cycle_stats["lock_lost"] = True
@@ -863,14 +873,6 @@ def _collector_thread():
                         except Exception as e:
                             _rollback_quietly(conn)
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
-                        try:
-                            _require_runtime_heartbeat(heartbeat, role="collector")
-                        except RuntimeLockLostError as e:
-                            lock_lost = True
-                            cycle_stats["lock_lost"] = True
-                            _rollback_quietly(conn)
-                            _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
-                            break
                 if (not lock_lost) and time.time() - _last_futures_collect >= settings.futures_collect_interval_sec:
                     with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
                         heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
@@ -882,7 +884,7 @@ def _collector_thread():
                                 heartbeat=heartbeat,
                                 max_workers=int(getattr(settings, "futures_collect_max_workers", getattr(settings, "collector_max_workers", 1)) or 1),
                             )
-                            _require_runtime_heartbeat(heartbeat, role="collector")
+                            _require_runtime_heartbeat(heartbeat, stage="collector:futures_meta")
                             _last_futures_collect = time.time()
                         except RuntimeLockLostError as e:
                             lock_lost = True
@@ -911,19 +913,19 @@ def _sentiment_thread():
             with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
                 heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
                 try:
-                    _require_runtime_heartbeat(heartbeat, role="sentiment")
+                    _require_runtime_heartbeat(heartbeat, stage="sentiment")
                     pts = collect_sentiment_once()
-                    _require_runtime_heartbeat(heartbeat, role="sentiment")
+                    _require_runtime_heartbeat(heartbeat, stage="sentiment")
                     db.insert_sentiment_points(conn, pts, commit=False)
                     db.log_decision(conn, "SENTIMENT_COLLECT", None, None, {"count": len(pts)}, commit=False)
-                    _require_runtime_heartbeat(heartbeat, role="sentiment")
+                    _require_runtime_heartbeat(heartbeat, stage="sentiment")
                     conn.commit()
-                except RuntimeLockLostError as e:
-                    _rollback_quietly(conn)
-                    _log_decision_fresh("SENTIMENT_ERROR", None, None, {"field": "runtime_lock", "err": str(e)})
                 except Exception as e:
                     _rollback_quietly(conn)
-                    _log_decision_fresh("SENTIMENT_ERROR", None, None, {"err": str(e)})
+                    details = {"err": str(e)}
+                    if isinstance(e, RuntimeLockLostError):
+                        details = {"field": "runtime_lock", "err": str(e)}
+                    _log_decision_fresh("SENTIMENT_ERROR", None, None, details)
         next_run = _interval_loop_wait(next_run, settings.sentiment_interval_sec)
 
 
@@ -943,16 +945,16 @@ def _reco_thread():
             with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
                 heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
                 try:
-                    _require_runtime_heartbeat(heartbeat, role="reco")
+                    _require_runtime_heartbeat(heartbeat)
                     result = run_recommender_once(conn, settings, heartbeat=heartbeat)
-                    _require_runtime_heartbeat(heartbeat, role="reco")
+                    _require_runtime_heartbeat(heartbeat)
                     if time.time() - _last_outcomes >= int(getattr(settings, "outcomes_interval_sec", 60) or 60):
                         compute_outcomes_once(
                             conn,
                             horizon_sec=settings.outcome_horizon_fallback_sec,
                             max_to_process=int(getattr(settings, "outcomes_max_to_process", 200) or 200),
                         )
-                        _require_runtime_heartbeat(heartbeat, role="reco")
+                        _require_runtime_heartbeat(heartbeat)
                         _last_outcomes = time.time()
                 except RuntimeLockLostError as e:
                     leadership_lost = True
@@ -969,9 +971,9 @@ def _reco_thread():
             with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
                 heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
                 try:
-                    _require_runtime_heartbeat(heartbeat, role="reco")
+                    _require_runtime_heartbeat(heartbeat)
                     db.expire_stale_recommendations(conn)
-                    _require_runtime_heartbeat(heartbeat, role="reco")
+                    _require_runtime_heartbeat(heartbeat)
                 except RuntimeLockLostError as e:
                     leadership_lost = True
                     _rollback_quietly(conn)
@@ -987,10 +989,10 @@ def _reco_thread():
                 with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
                     heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
                     try:
-                        _require_runtime_heartbeat(heartbeat, role="reco")
+                        _require_runtime_heartbeat(heartbeat)
                         deleted = db.prune_old_data(conn, retain_days=7)
                         db.log_decision(conn, "DB_PRUNE", None, None, deleted)
-                        _require_runtime_heartbeat(heartbeat, role="reco")
+                        _require_runtime_heartbeat(heartbeat)
                         _last_prune = time.time()
                     except RuntimeLockLostError as e:
                         leadership_lost = True
@@ -1008,15 +1010,21 @@ def _reco_thread():
                 try:
                     with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
                         heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
-                        _require_runtime_heartbeat(heartbeat, role="reco")
-                        health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec, active_venues=list(getattr(settings, "venues", []) or []))
+                        _require_runtime_heartbeat(heartbeat)
+                        health = db.get_symbol_health(
+                            conn,
+                            settings.symbols_spot,
+                            settings.symbols_linear,
+                            stale_sec=settings.stale_data_max_sec,
+                            active_venues=list(getattr(settings, "venues", []) or []),
+                        )
                         err_cur = conn.execute(
                             """SELECT COUNT(*) as c FROM decision_log
                                WHERE action='COLLECT_ERROR' AND ts >= ?""",
                             (int(time.time()) - 600,),
                         )
                         err_count = int(err_cur.fetchone()["c"])
-                        _require_runtime_heartbeat(heartbeat, role="reco")
+                        _require_runtime_heartbeat(heartbeat)
                     check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
                 except RuntimeLockLostError:
                     pass
@@ -1043,9 +1051,9 @@ def _llm_reviewer_thread():
             with closing(_get_conn()) as conn, closing(_get_conn()) as hb_conn:
                 heartbeat = _make_runtime_lock_heartbeat(hb_conn, lock_key)
                 try:
-                    _require_runtime_heartbeat(heartbeat, role="llm_reviewer")
+                    _require_runtime_heartbeat(heartbeat)
                     stats = run_llm_review_sweep_once(conn, settings, heartbeat=heartbeat)
-                    _require_runtime_heartbeat(heartbeat, role="llm_reviewer")
+                    _require_runtime_heartbeat(heartbeat)
                     db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
                     interval_sec = eager_interval if int(stats.get("pending_after", 0) or 0) > 0 else base_interval
                 except RuntimeLockLostError as e:

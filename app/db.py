@@ -740,6 +740,53 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str,
     }
 
 
+def get_recent_recommendation_for_key(
+    conn: sqlite3.Connection,
+    venue: str,
+    symbol: str,
+    bot_type: str,
+    direction: str,
+    *,
+    since_ts: int,
+    statuses: tuple[str, ...] = ("recommended",),
+) -> dict[str, Any] | None:
+    if not statuses:
+        return None
+    placeholders = ",".join("?" for _ in statuses)
+    params: list[Any] = [venue, symbol, bot_type, direction, int(since_ts), *statuses]
+    cur = conn.execute(
+        f"""SELECT * FROM recommendations
+              WHERE venue=? AND symbol=? AND bot_type=? AND direction=?
+                AND ts>=? AND status IN ({placeholders})
+              ORDER BY ts DESC LIMIT 1""",
+        params,
+    )
+    r = cur.fetchone()
+    if not r or not is_supported_bot_type(r["bot_type"]):
+        return None
+    return {
+        "rec_id": r["rec_id"],
+        "ts": r["ts"],
+        "venue": r["venue"],
+        "symbol": r["symbol"],
+        "bot_type": r["bot_type"],
+        "direction": r["direction"],
+        "account_mode": r["account_mode"],
+        "margin_mode": r["margin_mode"],
+        "score": r["score"],
+        "confidence": r["confidence"],
+        "expected_rr": r["expected_rr"],
+        "risk_score": r["risk_score"],
+        "params": _json_loads_or_default(r["params_json"], {}),
+        "reasons": _json_loads_or_default(r["reasons_json"], {}),
+        "blocks": _json_loads_or_default(r["blocks_json"], []),
+        "status": r["status"],
+        "ttl_sec": r["ttl_sec"],
+        "model_version": r["model_version"],
+        "features_ref_ts": r["features_ref_ts"],
+    }
+
+
 def update_recommendation_review(
     conn: sqlite3.Connection,
     rec_id: str,
