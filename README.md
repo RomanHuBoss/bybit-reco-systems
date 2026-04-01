@@ -179,7 +179,7 @@ python -m py_compile app/*.py tests/*.py main.py
 - `gate` — уверенное расхождение LLM с `execution_direction` может перевести идею в `no_trade`.
 
 Важно:
-- LLM-reviewer работает асинхронно и не должен блокировать публикацию core-сигналов.
+- LLM-reviewer работает асинхронно и не должен блокировать публикацию core-сигналов. Reviewer применяется к новым `recommended` и к повторно актуальным `active`, но не тратит циклы на `pending`/`suppressed`.
 - В shipped-профиле reviewer настроен консервативно для локальных GPU уровня RTX 3060: короткий keep-alive, сниженный parallelism и ограниченное число live-кандидатов на sweep.
 - UI и API умеют показывать `pending`, `ok`, `error`, `cache_inherited`, `async_live` и другие состояния reviewer.
 - После изменения `LLM_REVIEWER_TFS` или `LLM_REVIEWER_CANDLES_PER_TF` старый кэш reviewer больше не переиспользуется автоматически.

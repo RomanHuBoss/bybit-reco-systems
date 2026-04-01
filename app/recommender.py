@@ -340,6 +340,13 @@ def _is_fresh_llm_cache_entry(
         return False, cache_age
     return True, cache_age
 
+LLM_REVIEW_ELIGIBLE_STATUSES = frozenset({"recommended", "active"})
+
+
+def _is_llm_review_eligible_status(status: Any) -> bool:
+    return str(status or "").strip().lower() in LLM_REVIEW_ELIGIBLE_STATUSES
+
+
 def _llm_candidate_sort_key(rec: dict[str, Any]) -> tuple[float, float]:
     return (float(rec.get("confidence") or 0.0), float(rec.get("score") or 0.0))
 
@@ -385,11 +392,11 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", LLM_REVIEWER_DEFAULT_MAX_CANDIDATES) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES))
-    candidates = [r for r in recs if str(r.get("status") or "") == "recommended"]
+    candidates = [r for r in recs if _is_llm_review_eligible_status(r.get("status"))]
     candidates.sort(key=_llm_candidate_sort_key, reverse=True)
     queued_ids = {str(r.get("rec_id")) for r in candidates[:max_candidates]}
     for rec in recs:
-        if str(rec.get("status") or "") != "recommended":
+        if not _is_llm_review_eligible_status(rec.get("status")):
             _sync_recommendation_metadata(rec)
             continue
         reasons = rec.setdefault("reasons", {})
@@ -449,7 +456,7 @@ def _load_llm_candles_for_symbol(conn, venue: str, symbol: str, tf_secs: list[in
 
 
 def _should_enqueue_llm_review(rec: dict[str, Any]) -> bool:
-    if str(rec.get("status") or "") != "recommended":
+    if not _is_llm_review_eligible_status(rec.get("status")):
         return False
     llm_review = ((rec.get("reasons") or {}).get("llm_review") if isinstance(rec.get("reasons"), dict) else None) or {}
     llm_status = str(llm_review.get("status") or "").lower()
@@ -887,7 +894,7 @@ def _apply_llm_reviewer(
     cache_dirty = False
     live_calls = 0
 
-    candidates = [r for r in recs if str(r.get("status") or "") == "recommended"]
+    candidates = [r for r in recs if _is_llm_review_eligible_status(r.get("status"))]
     candidates.sort(key=lambda r: (float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
 
     for rec in candidates:
@@ -2104,7 +2111,7 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
     if cooldown_sec <= 0:
         return
     for rec in recs:
-        if str(rec.get("status") or "") != "recommended":
+        if not _is_llm_review_eligible_status(rec.get("status")):
             continue
         prev = _find_recent_publication(conn, rec, ts_now, cooldown_sec)
         if prev is None:
