@@ -34,6 +34,7 @@ import logging
 logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
+PROCESS_STARTED_TS = int(time.time())
 OUTCOME_LABEL_VERSION = "grid_label_v2"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
@@ -466,6 +467,56 @@ def _load_collector_warmup_status(conn, *, recompute_if_missing: bool = False) -
         "ready": False,
         "reason": "collector_warmup_unavailable",
         "derived_on_read": True,
+    }
+
+
+def _symbol_health_boot_grace_sec() -> int:
+    return max(int(settings.stale_data_max_sec), int(settings.collect_interval_sec) * 3)
+
+
+def _collector_completed_cycle_this_process(collector_last_cycle: dict[str, Any] | None) -> bool:
+    if not isinstance(collector_last_cycle, dict):
+        return False
+    try:
+        started_ts = int(collector_last_cycle.get("started_ts") or 0)
+    except Exception:
+        started_ts = 0
+    return started_ts >= PROCESS_STARTED_TS
+
+
+def _load_symbol_health(conn) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    active_venues = list(getattr(settings, "venues", []) or [])
+    warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
+    collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
+    items = db.get_symbol_health(
+        conn,
+        settings.symbols_spot,
+        settings.symbols_linear,
+        stale_sec=settings.stale_data_max_sec,
+        active_venues=active_venues,
+    )
+    boot_grace_sec = _symbol_health_boot_grace_sec()
+    boot_grace_active = (
+        int(time.time()) < PROCESS_STARTED_TS + boot_grace_sec
+        and not _collector_completed_cycle_this_process(collector_last_cycle)
+    )
+    if boot_grace_active:
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            row = dict(item)
+            if row.get("status") == "stale" and row.get("last_candle_ts") and row.get("last_ticker_ts"):
+                row["raw_status"] = "stale"
+                row["status"] = "ok"
+                row["status_reason"] = "boot_grace"
+            normalized.append(row)
+        items = normalized
+    return items, {
+        "venues": active_venues,
+        "warmup": warmup,
+        "collector_last_cycle": collector_last_cycle,
+        "boot_grace_active": bool(boot_grace_active),
+        "boot_grace_sec": int(boot_grace_sec),
+        "process_started_ts": int(PROCESS_STARTED_TS),
     }
 
 @asynccontextmanager
@@ -986,25 +1037,22 @@ def api_outcomes_stats() -> dict[str, Any]:
 @app.get("/api/v1/health/symbols")
 def api_symbol_health() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
-        active_venues = list(getattr(settings, "venues", []) or [])
-        items = db.get_symbol_health(
-            conn,
-            settings.symbols_spot,
-            settings.symbols_linear,
-            stale_sec=settings.stale_data_max_sec,
-            active_venues=active_venues,
-        )
+        items, meta = _load_symbol_health(conn)
         n_ok = sum(1 for i in items if i["status"] == "ok")
         n_stale = sum(1 for i in items if i["status"] == "stale")
         n_missing = sum(1 for i in items if i["status"] == "missing")
         n_disabled = sum(1 for i in items if i["status"] == "disabled")
         n_errors = sum(i["error_count_10m"] for i in items)
-        warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         return {
             "ts": int(time.time()),
             "summary": {"ok": n_ok, "stale": n_stale, "missing": n_missing, "disabled": n_disabled, "errors_10m": n_errors},
-            "venues": active_venues,
-            "warmup": warmup,
+            "venues": meta["venues"],
+            "warmup": meta["warmup"],
+            "boot_grace": {
+                "active": meta["boot_grace_active"],
+                "grace_sec": meta["boot_grace_sec"],
+                "process_started_ts": meta["process_started_ts"],
+            },
             "llm_reviewer": {
                 "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
                 "mode": getattr(settings, "llm_reviewer_mode", "advisory"),
@@ -1347,7 +1395,7 @@ def _reco_thread():
                 if leadership_ok and heartbeat() and settings.telegram_token:
                     try:
                         with closing(_get_conn()) as conn:
-                            health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
+                            health, _ = _load_symbol_health(conn)
                             err_cur = conn.execute(
                                 """SELECT COUNT(*) as c FROM decision_log
                                    WHERE action='COLLECT_ERROR' AND ts >= ?""",
@@ -1401,7 +1449,7 @@ def _llm_reviewer_thread():
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics() -> str:
     with closing(_get_conn()) as conn:
-        health = db.get_symbol_health(conn, settings.symbols_spot, settings.symbols_linear, stale_sec=settings.stale_data_max_sec)
+        health, _ = _load_symbol_health(conn)
         collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
         backfill_last_cycle = db.get_app_config_json(conn, "backfill_last_cycle", default={}) or {}
         futures_meta_last_cycle = db.get_app_config_json(conn, "futures_meta_last_cycle", default={}) or {}
