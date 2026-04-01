@@ -721,6 +721,11 @@ body {
   border-color: rgba(51,209,122,0.50);
   color: var(--good);
 }
+.filter-pill input:checked ~ .fpill.fpill-pending {
+  background: rgba(255,176,32,0.10);
+  border-color: rgba(255,176,32,0.45);
+  color: var(--warn);
+}
 .filter-pill input:checked ~ .fpill.fpill-blocked {
   background: rgba(255,90,122,0.10);
   border-color: rgba(255,90,122,0.45);

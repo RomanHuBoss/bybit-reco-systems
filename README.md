@@ -208,12 +208,21 @@ python -m py_compile app/*.py tests/*.py main.py
 - `POST /api/v1/sentiment`
 
 ## Жизненный цикл исполнения
-1. recommendation публикуется со статусом `recommended`;
-2. оператор вызывает `/recommendations/{rec_id}/action` с `executed`;
-3. создаётся `bot_instance`, recommendation переводится в `executed`;
-4. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
-5. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
-6. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
+1. recommendation публикуется со статусом `recommended`, если это новый actionable выпуск;
+2. если сигнал повторился в окне republish-cooldown без material upgrade, он сохраняется как `active` — рекомендация остаётся актуальной, но не считается новой публикацией;
+3. если сигнал для persistence-ботов требует подтверждения ещё одним циклом, он получает статус `pending`;
+4. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
+5. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
+6. создаётся `bot_instance`, recommendation переводится в `executed`;
+7. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
+8. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
+9. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
+
+### Семантика статусов recommendation
+- `recommended` — новый actionable сигнал, готовый к исполнению;
+- `active` — повторно актуальный сигнал внутри cooldown без material upgrade; исполним, но не считается новым выпуском;
+- `pending` — кандидат ждёт подтверждения persistence-gate и ещё не исполним;
+- `suppressed` — скрытая альтернатива, проигравшая dedupe/selector и сохранённая только для аудита.
 
 ## Stability notes
 - background loops используют SQLite runtime lock, поэтому активным сборщиком/рекомендером остаётся только один лидер;

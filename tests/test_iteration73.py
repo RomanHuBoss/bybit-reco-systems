@@ -133,7 +133,7 @@ def _insert_recent_reco(conn, rec_id: str, ts: int, *, confidence: float = 0.60,
     )
 
 
-def test_recent_publication_dedupe_suppresses_duplicate_signal(tmp_path: Path):
+def test_recent_publication_dedupe_marks_duplicate_signal_active(tmp_path: Path):
     conn = db.connect(str(tmp_path / "reco_dedupe.db"))
     db.init_db(conn)
     try:
@@ -164,10 +164,11 @@ def test_recent_publication_dedupe_suppresses_duplicate_signal(tmp_path: Path):
 
         recommender_module._apply_recent_publication_dedupe(conn, recs, settings, ts_now)
 
-        assert recs[0]["status"] == "suppressed"
+        assert recs[0]["status"] == "active"
         dedupe = recs[0]["reasons"].get("publication_dedupe") or {}
         assert dedupe.get("previous_rec_id") == "R-prev"
-        assert dedupe.get("suppressed") is True
+        assert dedupe.get("active_reuse") is True
+        assert dedupe.get("decision") == "reuse_active"
     finally:
         conn.close()
 

@@ -1447,7 +1447,7 @@ def test_run_recommender_once_smoke_generates_recommendations_without_runtime_na
     result = run_recommender_once(conn, settings)
 
     assert result["count"] >= 1
-    assert result["count_recommended"] + result["count_blocked"] + result["count_no_trade"] + result["count_suppressed"] == result["count"]
+    assert result["count_actionable"] + result["count_pending"] + result["count_blocked"] + result["count_no_trade"] + result["count_suppressed"] == result["count"]
     rows = conn.execute("SELECT rec_id, status, params_json FROM recommendations ORDER BY ts DESC").fetchall()
     assert rows
     params = json.loads(rows[0]["params_json"])

@@ -15,6 +15,20 @@ logger = logging.getLogger(__name__)
 MARKET_DATA_MAX_FUTURE_SKEW_SEC = 300
 LATEST_ROW_SCAN_LIMIT = 1024
 
+ACTIONABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active"})
+VISIBLE_RECOMMENDATION_STATUSES: frozenset[str] = ACTIONABLE_RECOMMENDATION_STATUSES
+ACTIVE_PUBLICATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "executed"})
+EXPIRABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "pending"})
+
+
+def is_actionable_recommendation_status(status: Any) -> bool:
+    return str(status or "").strip().lower() in ACTIONABLE_RECOMMENDATION_STATUSES
+
+
+def is_expirable_recommendation_status(status: Any) -> bool:
+    return str(status or "").strip().lower() in EXPIRABLE_RECOMMENDATION_STATUSES
+
+
 MIGRATION_INIT_SQL = Path(__file__).resolve().parent.parent / "migrations" / "init.sql"
 
 def runtime_lock_db_path(db_path: str) -> str:
@@ -671,7 +685,7 @@ def get_bot_trade_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, An
 
 
 def _recommended_row_passes_conf_filter(row: sqlite3.Row, min_conf: float, strict_min_conf: bool = False) -> bool:
-    if str(row["status"] or "") != "recommended":
+    if not is_actionable_recommendation_status(row["status"]):
         return True
     conf = float(row["confidence"] or 0.0)
     if strict_min_conf:
@@ -720,7 +734,7 @@ def get_recommendations(
         placeholders = ",".join("?" for _ in statuses)
         q += f" AND status IN ({placeholders})"
         params.extend(statuses)
-    q += " ORDER BY CASE status WHEN 'recommended' THEN 0 WHEN 'executed' THEN 1 WHEN 'ignored' THEN 2 WHEN 'blocked' THEN 3 WHEN 'no_trade' THEN 4 WHEN 'suppressed' THEN 5 ELSE 6 END, confidence DESC, score DESC, ts DESC"
+    q += " ORDER BY CASE status WHEN 'recommended' THEN 0 WHEN 'active' THEN 1 WHEN 'executed' THEN 2 WHEN 'ignored' THEN 3 WHEN 'pending' THEN 4 WHEN 'blocked' THEN 5 WHEN 'no_trade' THEN 6 WHEN 'suppressed' THEN 7 ELSE 8 END, confidence DESC, score DESC, ts DESC"
     cur = conn.execute(q, params)
     rows = []
     for r in cur.fetchall():
@@ -1161,7 +1175,7 @@ def get_recommendation_status_counts(
         params.append(venue)
     q += " GROUP BY status"
     cur = conn.execute(q, params)
-    counts = {k: 0 for k in ("recommended", "blocked", "no_trade", "suppressed", "expired", "executed", "ignored")}
+    counts = {k: 0 for k in ("recommended", "active", "pending", "blocked", "no_trade", "suppressed", "expired", "executed", "ignored")}
     for row in cur.fetchall():
         counts[str(row["status"])] = int(row["c"] or 0)
     return counts
@@ -1399,12 +1413,14 @@ def get_latest_open_interest_ts(conn: sqlite3.Connection, symbol: str) -> int | 
 
 # ── Operator actions ──────────────────────────────────────────────────────────
 
-OPERATOR_STATUSES = {"executed", "ignored", "recommended", "blocked", "no_trade", "suppressed", "expired"}
+OPERATOR_STATUSES = {"executed", "ignored", "recommended", "active", "pending", "blocked", "no_trade", "suppressed", "expired"}
 TERMINAL_RECOMMENDATION_STATUSES = {"executed", "ignored", "expired", "blocked", "no_trade", "suppressed"}
 _ALLOWED_STATUS_TRANSITIONS = {
-    # recommendation engine / async reviewers may still downgrade a recommended idea
+    # recommendation engine / async reviewers may still downgrade a fresh idea
     # before an operator explicitly acts on it.
-    "recommended": {"recommended", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
+    "recommended": {"recommended", "active", "pending", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
+    "active": {"active", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
+    "pending": {"pending", "ignored", "blocked", "no_trade", "suppressed", "expired"},
     "executed": {"executed"},
     "ignored": {"ignored"},
     "expired": {"expired"},
@@ -1449,17 +1465,18 @@ def update_recommendation_status(
 # ── TTL expiry ────────────────────────────────────────────────────────────────
 
 def expire_stale_recommendations(conn: sqlite3.Connection) -> int:
-    """Mark recommended recs as expired if ts + ttl_sec < now.
-    Only expires status='recommended' — operator-set statuses are preserved.
+    """Mark transient recs as expired if ts + ttl_sec < now.
+    Only expires statuses 'recommended', 'active', 'pending' — operator-set statuses are preserved.
     Returns count of expired rows.
     """
     ts_now = now_ts()
+    placeholders = ",".join("?" for _ in EXPIRABLE_RECOMMENDATION_STATUSES)
     cur = conn.execute(
-        """UPDATE recommendations
+        f"""UPDATE recommendations
            SET status='expired'
-           WHERE status='recommended'
+           WHERE status IN ({placeholders})
              AND (ts + ttl_sec) < ?""",
-        (ts_now,),
+        [*EXPIRABLE_RECOMMENDATION_STATUSES, ts_now],
     )
     conn.commit()
     expired = cur.rowcount
@@ -2044,12 +2061,13 @@ def count_visible_recommendations(
     strict_min_conf: bool = False,
 ) -> int:
     _supported_sql, _supported_params = sql_in_clause("bot_type")
+    placeholders = ",".join("?" for _ in ACTIONABLE_RECOMMENDATION_STATUSES)
     if snapshot_ts is not None:
-        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts = ? AND {_supported_sql} AND status='recommended'"""
-        params: list[Any] = [snapshot_ts, *_supported_params]
+        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts = ? AND {_supported_sql} AND status IN ({placeholders})"""
+        params: list[Any] = [snapshot_ts, *_supported_params, *ACTIONABLE_RECOMMENDATION_STATUSES]
     else:
-        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts > ? AND {_supported_sql} AND status='recommended'"""
-        params = [now_ts() - 86400, *_supported_params]
+        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts > ? AND {_supported_sql} AND status IN ({placeholders})"""
+        params = [now_ts() - 86400, *_supported_params, *ACTIONABLE_RECOMMENDATION_STATUSES]
     if venue:
         q += " AND venue=?"
         params.append(venue)

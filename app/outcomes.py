@@ -358,7 +358,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.ts <= ? AND o.rec_id IS NULL
-           AND r.status NOT IN ('blocked', 'no_trade', 'suppressed')
+           AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'pending')
            ORDER BY r.ts ASC LIMIT ?""",
         (db.now_ts() - min_horizon, fetch_limit),
     )

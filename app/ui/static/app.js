@@ -249,9 +249,9 @@ function symbolLinksHtml(it, compact = false) {
 
 function statusBadgeHtml(status) {
   let cls = "badge-inline badge-muted";
-  if (status === "recommended") cls = "badge-inline badge-good";
+  if (status === "recommended" || status === "active") cls = "badge-inline badge-good";
   else if (status === "blocked") cls = "badge-inline badge-bad";
-  else if (status === "no_trade") cls = "badge-inline badge-warn";
+  else if (status === "no_trade" || status === "pending") cls = "badge-inline badge-warn";
   return `<span class="${cls}">${escapeHtml(status || "—")}</span>`;
 }
 
@@ -653,7 +653,7 @@ function buildDetailsHtml(it) {
 
 function pillStatus(status) {
   let cls = "pill";
-  if (status === "recommended") cls += " good";
+  if (status === "recommended" || status === "active") cls += " good";
   else if (status === "blocked") cls += " bad";
   else cls += " warn";
   return `<span class="${cls}">${status}</span>`;
@@ -1104,6 +1104,7 @@ async function loadRecommendations() {
 
   const qs = new URLSearchParams();
   const showRecommended = $("showRecommended")?.checked ?? true;
+  const showPending    = $("showPending")?.checked ?? false;
   const showBlocked     = $("showBlocked")?.checked ?? false;
   const showNoTrade     = $("showNoTrade")?.checked ?? false;
   const showSuppressed  = $("showSuppressed")?.checked ?? false;
@@ -1112,6 +1113,7 @@ async function loadRecommendations() {
   qs.set("top_n", String(topN));
   qs.set("min_conf", String(minConf));
   qs.set("show_recommended", String(showRecommended));
+  qs.set("show_pending", String(showPending));
   qs.set("show_blocked", String(showBlocked));
   qs.set("show_no_trade", String(showNoTrade));
   qs.set("show_suppressed", String(showSuppressed));
@@ -1140,8 +1142,8 @@ async function loadRecommendations() {
   updateCalibrationUi(items);
 
   const banner = $("noTrade");
-  const hasRecommended = items.some(it => it.status === "recommended");
-  if (!hasRecommended) banner.classList.remove("hidden");
+  const hasActionable = items.some(it => it.status === "recommended" || it.status === "active");
+  if (!hasActionable) banner.classList.remove("hidden");
   else banner.classList.add("hidden");
 }
 
@@ -1180,14 +1182,14 @@ function renderRecoTable(items) {
   updateSortHeaders();
   const body = $("recoBody");
   body.innerHTML = "";
-  let hasRecommended = false;
+  let hasActionable = false;
   sorted.forEach((it, i) => {
-    if (it.status === "recommended") hasRecommended = true;
+    if (it.status === "recommended" || it.status === "active") hasActionable = true;
     const dirAgg = (it.reasons || {}).direction_agg || {};
     const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
     const scoreUi = ensureUiScoreMeta(it, items);
     const tr = document.createElement("tr");
-    if (it.status === "recommended") tr.classList.add("row-recommended");
+    if (it.status === "recommended" || it.status === "active") tr.classList.add("row-recommended");
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td>${botTypePillHtml(it.bot_type)}</td>
@@ -1208,12 +1210,12 @@ function renderRecoTable(items) {
     body.appendChild(tr);
   });
   const banner = $("noTrade");
-  if (!hasRecommended) {
+  if (!hasActionable) {
     const shock = (statusPayload || {}).market_shock || {};
     if (shock && shock.state && shock.state !== "normal") {
       banner.innerHTML = `NO-TRADE: <b>${escapeHtml(shock.title || "Guard")}</b>. ${escapeHtml(shock.operator_note || "Новые входы заблокированы.")}`;
     } else {
-      banner.innerHTML = 'NO-TRADE: нет рекомендаций со статусом <b>recommended</b> по текущим фильтрам/гейтам.';
+      banner.innerHTML = 'NO-TRADE: нет актуальных рекомендаций со статусом <b>recommended</b> или <b>active</b> по текущим фильтрам/гейтам.';
     }
     banner.classList.remove("hidden");
   } else {
@@ -1632,7 +1634,7 @@ $("collectErrJournal").addEventListener("click", (e) => { e.preventDefault(); lo
   });
 });
 
-["showRecommended", "showBlocked", "showNoTrade", "showSuppressed"].forEach(id => {
+["showRecommended", "showPending", "showBlocked", "showNoTrade", "showSuppressed"].forEach(id => {
   const el = $(id);
   if (el) el.addEventListener("change", refreshAll);
 });

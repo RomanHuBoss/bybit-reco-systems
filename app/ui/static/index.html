@@ -71,14 +71,15 @@
 
   <div class="filter-bar">
     <span class="filter-label">Показ:</span>
-    <label class="filter-pill"><input type="checkbox" id="showRecommended" checked><span class="fpill fpill-recommended">recommended</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showRecommended" checked><span class="fpill fpill-recommended">recommended+active</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showPending"><span class="fpill fpill-pending">pending</span></label>
     <label class="filter-pill"><input type="checkbox" id="showBlocked"><span class="fpill fpill-blocked">blocked</span></label>
     <label class="filter-pill"><input type="checkbox" id="showNoTrade"><span class="fpill fpill-notrade">no_trade</span></label>
     <label class="filter-pill"><input type="checkbox" id="showSuppressed"><span class="fpill fpill-suppressed">suppressed</span></label>
   </div>
 
   <main class="main">
-    <div id="noTrade" class="banner hidden">NO-TRADE: нет рекомендаций со статусом <b>recommended</b> по текущим фильтрам/гейтам.</div>
+    <div id="noTrade" class="banner hidden">NO-TRADE: нет актуальных рекомендаций со статусом <b>recommended</b> или <b>active</b> по текущим фильтрам/гейтам.</div>
 
     <div class="grid">
       <div class="panel panel-flex">

@@ -567,7 +567,7 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         db.update_recommendation_status(conn, rec_id, "expired", operator)
         raise HTTPException(status_code=409, detail="recommendation already expired")
 
-    if rec["status"] in {"blocked", "no_trade", "suppressed", "expired", "ignored"}:
+    if rec["status"] in {"blocked", "no_trade", "suppressed", "pending", "expired", "ignored"}:
         raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
     if not _is_supported_execution_direction(str(rec.get("bot_type") or ""), str(rec.get("venue") or ""), str(rec.get("direction") or "")):
         raise HTTPException(status_code=409, detail="recommendation direction is not executable for this bot_type/venue")
@@ -667,7 +667,7 @@ def _resolve_recommendation_snapshot_ts(conn, venue: str | None, snapshot: str, 
                 conn,
                 venue=venue,
                 min_conf=min_conf,
-                statuses=["recommended"],
+                statuses=["recommended", "active"],
                 snapshot_ts=ts,
                 strict_min_conf=strict_min_conf,
             )
@@ -689,6 +689,7 @@ def api_recommendations(
     top_n: int = 20,
     min_conf: float | None = None,
     show_recommended: bool = True,
+    show_pending: bool = False,
     show_blocked: bool = False,
     show_no_trade: bool = False,
     show_suppressed: bool = False,
@@ -698,7 +699,9 @@ def api_recommendations(
     with closing(_get_conn()) as conn:
         statuses: list[str] = []
         if show_recommended:
-            statuses.append("recommended")
+            statuses.extend(["recommended", "active"])
+        if show_pending:
+            statuses.append("pending")
         if show_blocked:
             statuses.append("blocked")
         if show_no_trade:
@@ -1351,7 +1354,7 @@ def _reco_thread():
                                 (int(time.time()) - 600,),
                             )
                             err_count = int(err_cur.fetchone()["c"])
-                        check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_recommended", 0)))
+                        check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_actionable", result.get("count_recommended", 0))))
                     except Exception:
                         logger.debug("telegram alert error", exc_info=True)
 
@@ -1408,7 +1411,7 @@ def metrics() -> str:
             status = str(item.get("status") or "missing")
             status_counts[status] = status_counts.get(status, 0) + 1
         active_recommendations = int(conn.execute(
-            "SELECT COUNT(*) AS c FROM recommendations WHERE status='recommended'"
+            "SELECT COUNT(*) AS c FROM recommendations WHERE status IN ('recommended','active')"
         ).fetchone()["c"])
         collect_errors_10m = int(conn.execute(
             "SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?",

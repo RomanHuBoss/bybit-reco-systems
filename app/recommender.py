@@ -2074,7 +2074,7 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
     cur = conn.execute(
         """SELECT * FROM recommendations
            WHERE venue=? AND symbol=? AND bot_type=? AND direction=?
-             AND status IN ('recommended','executed') AND ts >= ? AND ts < ?
+             AND status IN ('recommended','active','executed') AND ts >= ? AND ts < ?
            ORDER BY ts DESC LIMIT 1""",
         (
             str(rec.get("venue") or ""),
@@ -2116,12 +2116,14 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
             "previous_rec_id": prev.get("rec_id"),
             "previous_ts": prev.get("ts"),
             "previous_status": prev.get("status"),
-            "suppressed": not material_upgrade,
+            "decision": "publish_new" if material_upgrade else "reuse_active",
+            "active_reuse": not material_upgrade,
+            "suppressed": False,
             "material_upgrade": bool(material_upgrade),
             **diagnostics,
         }
         if not material_upgrade:
-            rec["status"] = "suppressed"
+            rec["status"] = "active"
 
 
 def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
@@ -2691,13 +2693,13 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "features_ref_ts": int(f["ts_last"]),
             })
 
-    status_counts = {"recommended": 0, "blocked": 0, "no_trade": 0, "suppressed": 0}
+    status_counts = {"recommended": 0, "active": 0, "pending": 0, "blocked": 0, "no_trade": 0, "suppressed": 0}
     llm_review_stats = {"reviewed": 0, "vetoed": 0, "errors": 0, "skipped": 0}
 
     if recs:
         # Publish only one best recommendation per (venue, symbol).
-        # Others are stored as 'suppressed' for audit/debug.
-        STATUS_PRIORITY = {"recommended": 0, "blocked": 1, "no_trade": 2, "suppressed": 3}
+        # Non-winning actionable ideas are preserved as suppressed alternatives with an explicit reason.
+        STATUS_PRIORITY = {"recommended": 0, "active": 1, "pending": 2, "blocked": 3, "no_trade": 4, "suppressed": 5}
         best_map: dict[tuple[str, str], dict[str, Any]] = {}
         for r in recs:
             key = (r["venue"], r["symbol"])
@@ -2718,8 +2720,18 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
         for r in recs:
             key = (r["venue"], r["symbol"])
             if best_map.get(key, {}).get("rec_id") != r["rec_id"]:
-                # Only suppress 'recommended' recs — preserve 'blocked'/'no_trade' for audit
-                if r["status"] == "recommended":
+                # Only suppress live candidates — preserve 'blocked'/'no_trade' for audit
+                if r["status"] in {"recommended", "active", "pending"}:
+                    winner = best_map.get(key, {})
+                    reasons = r.setdefault("reasons", {})
+                    reasons["suppression"] = {
+                        "reason": "cross_bot_competition",
+                        "winner_rec_id": winner.get("rec_id"),
+                        "winner_bot_type": winner.get("bot_type"),
+                        "winner_status": winner.get("status"),
+                        "winner_confidence": float(winner.get("confidence") or 0.0),
+                        "winner_score": float(winner.get("score") or 0.0),
+                    }
                     r["status"] = "suppressed"
 
         # Apply persistence gate only to FINAL published recommendations.
@@ -2735,6 +2747,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "fresh_gap_sec": int(_fresh_gap),
                     "bypassed": False,
                     "passed": bool(r.get("status") == "recommended"),
+                    "decision": "publish" if r.get("status") == "recommended" else "not_recommended",
                 }
                 continue
             if r.get("status") == "recommended":
@@ -2755,9 +2768,10 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "fresh_gap_sec": int(_fresh_gap),
                     "bypassed": bool(required_hits == 1 and gate_mode != "two_cycle_confirmation"),
                     "passed": bool(passed),
+                    "decision": "publish" if passed else "pending_confirmation",
                 }
                 if not passed:
-                    r["status"] = "suppressed"
+                    r["status"] = "pending"
             else:
                 reasons["publication_gate"] = {
                     "mode": "not_recommended",
@@ -2766,6 +2780,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "fresh_gap_sec": int(_fresh_gap),
                     "bypassed": False,
                     "passed": False,
+                    "decision": "not_recommended",
                 }
                 _reset_persistence_gate(
                     str(r.get("venue") or ""),
@@ -2801,6 +2816,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "count_all": len(recs),
                 "count_best": len(best_map),
                 "count_recommended": status_counts["recommended"],
+                "count_active": status_counts["active"],
+                "count_pending": status_counts["pending"],
+                "count_actionable": status_counts["recommended"] + status_counts["active"],
                 "count_blocked": status_counts["blocked"],
                 "count_no_trade": status_counts["no_trade"],
                 "count_suppressed": status_counts["suppressed"],
@@ -2826,6 +2844,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
         "regime": regime,
         "count": len(recs),
         "count_recommended": status_counts["recommended"],
+        "count_active": status_counts["active"],
+        "count_pending": status_counts["pending"],
+        "count_actionable": status_counts["recommended"] + status_counts["active"],
         "count_blocked": status_counts["blocked"],
         "count_no_trade": status_counts["no_trade"],
         "count_suppressed": status_counts["suppressed"],
