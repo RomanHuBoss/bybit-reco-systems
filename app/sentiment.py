@@ -130,6 +130,16 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, num))
 
 
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        num = float(value)
+    except Exception:
+        return float(default)
+    if not math.isfinite(num):
+        return float(default)
+    return float(num)
+
+
 def _keyword_match(text: str, token_set: set[str], keyword: str) -> bool:
     kw_tokens = re.findall(r"[a-z0-9']+", (keyword or "").lower())
     if not kw_tokens:
@@ -255,7 +265,7 @@ def fetch_reddit_sentiment(client: httpx.Client) -> dict[str, dict[str, Any]]:
                 title = pd.get("title", "")
                 text  = pd.get("selftext", "")
                 # Reddit-native sentiment proxy: upvote_ratio ∈ [0,1] → [-1,1]
-                upvote_ratio = float(pd.get("upvote_ratio", 0.5))
+                upvote_ratio = _clamp(_safe_float(pd.get("upvote_ratio", 0.5), 0.5), 0.0, 1.0)
                 native_sent  = (upvote_ratio - 0.5) * 2.0
                 # Text sentiment
                 text_sent = _score_text(title + " " + text)
@@ -355,29 +365,33 @@ def fetch_coingecko_momentum(client: httpx.Client) -> dict[str, dict[str, Any]]:
             )
             r.raise_for_status()
             for coin in r.json():
-                cid = coin.get("id")
-                sym = id_to_sym.get(cid)
-                if not sym:
+                try:
+                    cid = coin.get("id")
+                    sym = id_to_sym.get(cid)
+                    if not sym:
+                        continue
+                    ch24 = _safe_float(coin.get("price_change_percentage_24h"), 0.0)
+                    ch7d = _safe_float(coin.get("price_change_percentage_7d_in_currency"), 0.0)
+                    vol = max(1, int(_safe_float(coin.get("total_volume"), 1.0)))
+                    # 10% move in 24h ≈ ±1.0; 20% move in 7d ≈ ±1.0
+                    sent = 0.6 * _clamp(ch24 / 10.0, -1.0, 1.0) + \
+                           0.4 * _clamp(ch7d / 20.0, -1.0, 1.0)
+                    result[sym] = {
+                        "scope": "symbol",
+                        "key": sym,
+                        "ts": _now_ts(),
+                        "sentiment": _clamp(float(sent), -1.0, 1.0),
+                        "velocity": _clamp(ch24 / 10.0, -1.0, 1.0),
+                        "volume": vol,
+                        "sources": {
+                            "coingecko_id": cid,
+                            "change_24h_pct": round(ch24, 2),
+                            "change_7d_pct": round(ch7d, 2),
+                        },
+                        "tags": ["coingecko_momentum", "per_symbol"],
+                    }
+                except Exception:
                     continue
-                ch24 = coin.get("price_change_percentage_24h") or 0.0
-                ch7d = coin.get("price_change_percentage_7d_in_currency") or 0.0
-                # 10% move in 24h ≈ ±1.0; 20% move in 7d ≈ ±1.0
-                sent = 0.6 * _clamp(ch24 / 10.0, -1.0, 1.0) + \
-                       0.4 * _clamp(ch7d / 20.0, -1.0, 1.0)
-                result[sym] = {
-                    "scope": "symbol",
-                    "key": sym,
-                    "ts": _now_ts(),
-                    "sentiment": _clamp(float(sent), -1.0, 1.0),
-                    "velocity": _clamp(ch24 / 10.0, -1.0, 1.0),
-                    "volume": int(coin.get("total_volume") or 1),
-                    "sources": {
-                        "coingecko_id": cid,
-                        "change_24h_pct": round(ch24, 2),
-                        "change_7d_pct": round(ch7d, 2),
-                    },
-                    "tags": ["coingecko_momentum", "per_symbol"],
-                }
         except Exception:
             continue
     return result
@@ -398,8 +412,8 @@ def global_market_momentum_point(momentum_map: dict[str, dict[str, Any]]) -> dic
     used = 0
     for sym, point in momentum_map.items():
         try:
-            sent = float(point.get("sentiment") or 0.0)
-            vol = max(1.0, float(point.get("volume") or 1.0))
+            sent = _safe_float(point.get("sentiment"), 0.0)
+            vol = max(1.0, _safe_float(point.get("volume"), 1.0))
         except Exception:
             continue
         weight = _clamp(math.sqrt(min(vol, 5_000_000_000.0)) / 5000.0, 0.8, 6.0)

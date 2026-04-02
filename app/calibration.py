@@ -323,12 +323,37 @@ def fit_logreg(
     - If n >= logreg_min_samples: full LogReg + Platt.
     - If logreg_min_samples > n >= min_samples: Platt on score only.
     - If n < min_samples or degenerate WR: unfitted.
+
+    The historical joins used for calibration should be robust to dirty rows in SQLite.
+    A single malformed `score`, `success` or timestamp must not crash the whole fit and
+    silently disable recalibration for every symbol/bot in the current cycle.
     """
-    xs_score = [float(r["score"]) for r in rows]
-    ys       = [int(r["success"]) for r in rows]
-    tss      = [int(r.get("ts") or 0) for r in rows]
-    n        = len(rows)
-    balance  = label_balance_stats(ys)
+    sanitized_rows: list[dict[str, Any]] = []
+    xs_score: list[float] = []
+    ys: list[int] = []
+    tss: list[int] = []
+    for row in rows:
+        try:
+            score = _safe_float(row.get("score"), None)
+            success_raw = row.get("success")
+            ts = int(row.get("ts") or 0)
+        except Exception:
+            continue
+        if score is None:
+            continue
+        try:
+            success = int(success_raw)
+        except Exception:
+            continue
+        if success not in (0, 1):
+            continue
+        sanitized_rows.append(row)
+        xs_score.append(float(score))
+        ys.append(success)
+        tss.append(ts)
+
+    n = len(sanitized_rows)
+    balance = label_balance_stats(ys)
 
     if int(balance["effective_samples"]) < int(min_samples):
         return LogRegScaler(fitted=False)
@@ -352,7 +377,7 @@ def fit_logreg(
 
     # Build feature matrix
     X, y_used, w_used, ts_used = [], [], [], []
-    for r, w in zip(rows, ws):
+    for r, w in zip(sanitized_rows, ws):
         fv = extract_features(r)
         if fv is not None:
             X.append(fv)

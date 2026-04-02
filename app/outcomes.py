@@ -64,10 +64,12 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
 
 
 def _is_supported_direction(bot_type: str, venue: str, direction: str) -> bool:
+    venue_norm = str(venue or "").strip().lower()
+    direction_norm = str(direction or "").strip().lower()
     if bot_type == "spot_grid":
-        return direction in ("neutral", "long")
+        return venue_norm == "spot" and direction_norm in ("neutral", "long")
     if bot_type == "futures_grid":
-        return direction in ("neutral", "long", "short")
+        return venue_norm == "linear" and direction_norm in ("neutral", "long", "short")
     return False
 
 
