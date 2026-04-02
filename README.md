@@ -42,6 +42,7 @@
 - Добавлена дополнительная защита логики признаков: `funding_signal()` и `oi_trend()` теперь безопасно обрабатывают `NaN/inf` и грязные ряды вместо молчаливого протаскивания нефинитных значений.
 - Derived bootstrap stage теперь тоже коммитится на явной stage-boundary. Раньше он мог успешно собрать `15m/30m`, а затем потерять leadership на следующем heartbeat и откатить уже рассчитанный bootstrap, хотя README обещал обратное.
 - Если batch `get_tickers(category=...)` временно падает, collector больше не теряет весь venue-цикл целиком: фиксируется один batch-error и включается per-symbol fallback-path.
+- Telegram alerting больше не шлёт ложный `no_recos` в режиме cold-start / degraded data layer: alert об отсутствии идей теперь отправляется только когда есть хотя бы часть здорового market-data слоя; dedup cooldown дополнительно изолирован по `chat_id`/`bot_name`, чтобы соседние инстансы не глушили друг друга.
 - Добавлены новые регрессионные тесты на длинный kline catch-up после downtime, open-interest cursor pagination, rollback при потере runtime lock, buffered error handling внутри collector-stage, poisoned historical rows, DB-level валидацию `funding/open interest`, пропуск лишнего `4h` bootstrap и защиту feature-layer от грязных значений.
 
 ## Что делает система
@@ -141,7 +142,7 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `167 passed`
+- `177 passed`
 - покрытие `app/*` — `76%`
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback.
 - smoke/coverage прогоны очищены от известных `ResourceWarning: unclosed database` в тестовом harness; верифицировано, что остаётся только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`.
