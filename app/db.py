@@ -140,13 +140,47 @@ def _require_finite_float(name: str, value: Any, *, minimum: float | None = None
     return num
 
 
+def _commit_write_with_retry(
+    conn: sqlite3.Connection,
+    op,
+    *,
+    attempts: int = 6,
+    sleep_sec: float = 0.05,
+):
+    last_exc = None
+    for attempt in range(max(1, int(attempts))):
+        try:
+            result = op()
+            conn.commit()
+            return result
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if not _is_lock_retryable_error(exc) or attempt + 1 >= max(1, int(attempts)):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                logger.debug("rollback error", exc_info=True)
+            time.sleep(float(sleep_sec) * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+
+
 def set_app_config_json(conn: sqlite3.Connection, key: str, value: Any, *, commit: bool = True) -> None:
+    params = (str(key), json.dumps(value, ensure_ascii=False), now_ts())
+    if commit:
+        _commit_write_with_retry(
+            conn,
+            lambda: conn.execute(
+                "INSERT OR REPLACE INTO app_config(key, value_json, updated_ts) VALUES(?,?,?)",
+                params,
+            ),
+        )
+        return
     conn.execute(
         "INSERT OR REPLACE INTO app_config(key, value_json, updated_ts) VALUES(?,?,?)",
-        (str(key), json.dumps(value, ensure_ascii=False), now_ts()),
+        params,
     )
-    if commit:
-        conn.commit()
 
 
 def get_app_config_json(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
@@ -225,12 +259,20 @@ def log_decision(
     *,
     commit: bool = True,
 ) -> None:
+    params = (now_ts(), action, rec_id, operator, json.dumps(details, ensure_ascii=False))
+    if commit:
+        _commit_write_with_retry(
+            conn,
+            lambda: conn.execute(
+                """INSERT INTO decision_log(ts, action, rec_id, operator, details_json) VALUES(?,?,?,?,?)""",
+                params,
+            ),
+        )
+        return
     conn.execute(
         """INSERT INTO decision_log(ts, action, rec_id, operator, details_json) VALUES(?,?,?,?,?)""",
-        (now_ts(), action, rec_id, operator, json.dumps(details, ensure_ascii=False)),
+        params,
     )
-    if commit:
-        conn.commit()
 
 
 
