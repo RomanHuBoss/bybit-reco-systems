@@ -920,27 +920,41 @@ def heartbeat_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) 
     conn.commit()
     return int(cur.rowcount or 0) > 0
 
-def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str, Any], is_active: bool = True) -> None:
+def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str, Any], is_active: bool = True, *, commit: bool = True) -> None:
     if is_active:
         conn.execute("""UPDATE risk_limits SET is_active=0""")
     conn.execute(
         """INSERT INTO risk_limits(version, limits_json, is_active, created_ts) VALUES(?,?,?,?)""",
         (version, json.dumps(limits, ensure_ascii=False), 1 if is_active else 0, now_ts()),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def get_active_risk_limits(conn: sqlite3.Connection) -> dict[str, Any] | None:
     cur = conn.execute("""SELECT limits_json FROM risk_limits WHERE is_active=1 ORDER BY created_ts DESC LIMIT 1""")
     row = cur.fetchone()
     return _json_loads_or_default(row["limits_json"], None) if row else None
 
-def insert_sentiment_point(conn: sqlite3.Connection, scope: str, key: str, ts: int, sentiment: float, velocity: float, volume: int, sources: dict, tags: list[str]) -> None:
+def insert_sentiment_point(
+    conn: sqlite3.Connection,
+    scope: str,
+    key: str,
+    ts: int,
+    sentiment: float,
+    velocity: float,
+    volume: int,
+    sources: dict,
+    tags: list[str],
+    *,
+    commit: bool = True,
+) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO sentiment(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)
            VALUES(?,?,?,?,?,?,?,?)""",
         (scope, key, ts, float(sentiment), float(velocity), int(volume), json.dumps(sources, ensure_ascii=False), json.dumps(tags, ensure_ascii=False)),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:

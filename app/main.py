@@ -410,7 +410,19 @@ def _collect_backfill_cycle(conn, client: BybitPublicClient, venue: str, symbols
             symbols,
             **kwargs,
         )
-    except TypeError:
+    except TypeError as exc:
+        msg = str(exc)
+        legacy_arg_markers = (
+            "unexpected keyword argument 'heartbeat'",
+            'unexpected keyword argument "heartbeat"',
+            "unexpected keyword argument 'max_workers'",
+            'unexpected keyword argument "max_workers"',
+            "unexpected keyword argument 'per_tf_budget'",
+            'unexpected keyword argument "per_tf_budget"',
+            "positional arguments but",
+        )
+        if not any(marker in msg for marker in legacy_arg_markers):
+            raise
         # Test doubles may still expose the legacy collector signature.
         return {"venue": venue, "symbols_total": len(symbols), "legacy_stub": True}
 
@@ -858,8 +870,13 @@ def api_risk_status() -> dict[str, Any]:
 def api_update_risk_limits(req: UpdateRiskLimitsRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
     with closing(_get_conn()) as conn:
-        db.upsert_risk_limits(conn, version=req.version, limits=req.limits, is_active=True)
-        db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": req.version, "limits": req.limits})
+        try:
+            db.upsert_risk_limits(conn, version=req.version, limits=req.limits, is_active=True, commit=False)
+            db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": req.version, "limits": req.limits}, commit=False)
+            conn.commit()
+        except Exception:
+            _rollback_quietly(conn)
+            raise
         return {"ok": True, "version": req.version}
 
 
@@ -1097,8 +1114,13 @@ def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header
     _require_admin_key(x_api_key)
     with closing(_get_conn()) as conn:
         ts = req.ts or int(time.time())
-        db.insert_sentiment_point(conn, req.scope, req.key, ts, req.sentiment, req.velocity, req.volume, req.sources, req.tags)
-        db.log_decision(conn, "SENTIMENT_PUT", None, None, {"scope": req.scope, "key": req.key, "ts": ts, "sentiment": req.sentiment})
+        try:
+            db.insert_sentiment_point(conn, req.scope, req.key, ts, req.sentiment, req.velocity, req.volume, req.sources, req.tags, commit=False)
+            db.log_decision(conn, "SENTIMENT_PUT", None, None, {"scope": req.scope, "key": req.key, "ts": ts, "sentiment": req.sentiment}, commit=False)
+            conn.commit()
+        except Exception:
+            _rollback_quietly(conn)
+            raise
         return {"ok": True, "ts": ts}
 
 
