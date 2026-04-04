@@ -3,6 +3,7 @@ from __future__ import annotations
 from . import db
 from .bot_types import GRID_BOT_TYPES, SUPPORTED_BOT_TYPES
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,22 @@ def _iter_1m_candles(conn, venue: str, symbol: str, ts_start: int, ts_end_exclus
     return cur.fetchall()
 
 
+def _finite_or_default(value: object, default: float) -> float:
+    """Безопасно приводит стоимость к finite float.
+
+    Outcome-labeling не должен получать NaN/inf из legacy params или ручных
+    правок JSON: иначе и ret, и calibration diagnostics могут тихо стать
+    нечисловыми и сломать downstream-агрегации.
+    """
+    try:
+        num = float(value)
+    except Exception:
+        return float(default)
+    if not math.isfinite(num):
+        return float(default)
+    return float(num)
+
+
 def _extract_cost_components(params: dict | None, fallback_execution_bps: float = 15.0) -> tuple[float, float]:
     execution_bps = None
     funding_bps = None
@@ -150,17 +167,19 @@ def _extract_cost_components(params: dict | None, fallback_execution_bps: float 
                 for key in ("execution_cost_bps", "total_cost_bps", "net_cost_bps"):
                     if block.get(key) is not None:
                         try:
-                            execution_bps = float(block.get(key))
+                            execution_bps = _finite_or_default(block.get(key), float(fallback_execution_bps))
                             break
                         except Exception:
                             logger.debug("cost block parse error", exc_info=True)
 
             if funding_bps is None and block.get("expected_funding_bps") is not None:
                 try:
-                    funding_bps = float(block.get("expected_funding_bps"))
+                    funding_bps = _finite_or_default(block.get("expected_funding_bps"), 0.0)
                 except Exception:
                     logger.debug("funding block parse error", exc_info=True)
-    return float(execution_bps if execution_bps is not None else fallback_execution_bps), float(funding_bps or 0.0)
+    execution_bps_out = _finite_or_default(execution_bps if execution_bps is not None else fallback_execution_bps, float(fallback_execution_bps))
+    funding_bps_out = _finite_or_default(funding_bps if funding_bps is not None else 0.0, 0.0)
+    return float(execution_bps_out), float(funding_bps_out)
 
 
 def _extract_total_cost_bps(params: dict | None, fallback: float = 15.0) -> float:

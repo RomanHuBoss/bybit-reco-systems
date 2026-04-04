@@ -38,6 +38,18 @@ def send_telegram(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
+def _health_status(row: Any) -> str:
+    """Нормализует статус health-строки для alerting-контура.
+
+    Alerting не должен ронять весь recommender-цикл из-за частично битой
+    диагностической записи. В худшем случае такая запись считается "неok"
+    и участвует только в stale/missing-сводке.
+    """
+    if isinstance(row, dict):
+        return str(row.get("status") or "").strip().lower()
+    return ""
+
+
 def check_and_alert(
     token: str | None,
     chat_id: str | None,
@@ -67,9 +79,12 @@ def check_and_alert(
             _mark_sent(collect_errors_key)
 
     # 2. Majority of symbols stale/missing
-    n_bad = sum(1 for s in symbol_health if s["status"] in ("stale", "missing"))
-    n_total = len(symbol_health)
-    has_healthy_symbol = any(str(s.get("status") or "") == "ok" for s in symbol_health)
+    # Symbol health может содержать частично деградировавшие/legacy строки.
+    # Alerting обязан оставаться fail-safe и не превращаться в источник падения.
+    statuses = [_health_status(s) for s in symbol_health]
+    n_bad = sum(1 for status in statuses if status in ("stale", "missing"))
+    n_total = len(statuses)
+    has_healthy_symbol = any(status == "ok" for status in statuses)
     if n_total > 0 and n_bad / n_total >= 0.5 and _can_send(symbols_stale_key):
         if send_telegram(token, chat_id,
             f"🔴 <b>{bot_name}</b>\n"
