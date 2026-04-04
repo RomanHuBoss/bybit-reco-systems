@@ -70,13 +70,17 @@ CREATE TABLE IF NOT EXISTS recommendations (
   status TEXT NOT NULL,
   ttl_sec INTEGER NOT NULL,
   model_version TEXT NOT NULL,
-  features_ref_ts INTEGER NOT NULL
+  features_ref_ts INTEGER NOT NULL,
+  publication_root_rec_id TEXT,
+  is_outcome_label_root INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_reco_ts ON recommendations(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_symbol ON recommendations(venue, symbol, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_status_ts ON recommendations(status, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_venue_status_ts ON recommendations(venue, status, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reco_publication_root_ts ON recommendations(publication_root_rec_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reco_outcome_root_ts ON recommendations(is_outcome_label_root, ts DESC);
 
 CREATE TABLE IF NOT EXISTS decision_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1388,6 +1388,7 @@ async function loadOutcomes() {
   const html = `
     ${renderModalSummaryCards([
       { label: "Всего исходов", value: Number(s.total || 0) },
+      { label: "Сырых строк", value: Number(s.raw_total || s.total || 0) },
       { label: "Побед", value: Number(s.wins || 0) },
       { label: "Поражений", value: Number(s.losses || 0) },
       { label: "Win-rate", value: s.win_rate !== null && s.win_rate !== undefined ? `${(Number(s.win_rate) * 100).toFixed(1)}%` : "—" },
@@ -1399,7 +1400,7 @@ async function loadOutcomes() {
       { label: "LLM disagree", value: Number(llmSummary.disagree_total || 0) },
       { label: "LLM errors", value: Number(llmSummary.error_total || 0) },
     ])}
-    <p class="modal-note">Это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок. Ниже отдельно показаны raw_direction и execution_direction, чтобы neutral не смешивал истинный neutral с bearish-thesis на споте. Дополнительно показано, что говорил LLM-reviewer и совпадал ли он с алгоритмическим verdict.</p>
+    <p class="modal-note">Это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок. Карточка «Всего исходов» считает только корневые публикации одной идеи; повторные active-подтверждения той же publication-chain вынесены в «Сырые строки» и не раздувают win-rate / calibration. Ниже отдельно показаны raw_direction и execution_direction, чтобы neutral не смешивал истинный neutral с bearish-thesis на споте. Дополнительно показано, что говорил LLM-reviewer и совпадал ли он с алгоритмическим verdict.</p>
     <div class="modal-section">
       <div class="modal-section-title">LLM reviewer поверх алгоритма</div>
       ${buildModalTable([

@@ -56,6 +56,73 @@ def connect(db_path: str) -> sqlite3.Connection:
 def connect_runtime_locks(db_path: str) -> sqlite3.Connection:
     return connect(runtime_lock_db_path(db_path))
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    return {str(row["name"]) for row in cur.fetchall()}
+
+
+def _ensure_recommendation_publication_columns(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "recommendations")
+    if "publication_root_rec_id" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN publication_root_rec_id TEXT")
+    if "is_outcome_label_root" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN is_outcome_label_root INTEGER NOT NULL DEFAULT 1")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reco_publication_root_ts ON recommendations(publication_root_rec_id, ts DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reco_outcome_root_ts ON recommendations(is_outcome_label_root, ts DESC)")
+
+
+def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int:
+    cols = _table_columns(conn, "recommendations")
+    if "publication_root_rec_id" not in cols or "is_outcome_label_root" not in cols:
+        return 0
+
+    cur = conn.execute(
+        """SELECT rec_id, ts, reasons_json, publication_root_rec_id, is_outcome_label_root
+               FROM recommendations
+               ORDER BY ts ASC, rec_id ASC"""
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return 0
+
+    lineage_by_rec_id: dict[str, str] = {}
+    updates: list[tuple[str, int, str]] = []
+
+    for row in rows:
+        rec_id = str(row["rec_id"] or "")
+        reasons = _json_loads_or_default(row["reasons_json"], {})
+        dedupe = reasons.get("publication_dedupe") if isinstance(reasons, dict) else {}
+        if not isinstance(dedupe, dict):
+            dedupe = {}
+        previous_rec_id = str(dedupe.get("previous_rec_id") or "").strip()
+        active_reuse = bool(dedupe.get("active_reuse")) or str(dedupe.get("decision") or "").strip().lower() == "reuse_active"
+
+        root_rec_id = rec_id
+        is_label_root = 1
+        if active_reuse and previous_rec_id:
+            root_rec_id = lineage_by_rec_id.get(previous_rec_id, previous_rec_id)
+            is_label_root = 0
+
+        lineage_by_rec_id[rec_id] = root_rec_id
+
+        current_root = str(row["publication_root_rec_id"] or "").strip()
+        try:
+            current_label_root = int(row["is_outcome_label_root"] or 0)
+        except Exception:
+            current_label_root = 0
+        if current_root != root_rec_id or current_label_root != is_label_root:
+            updates.append((root_rec_id, is_label_root, rec_id))
+
+    if not updates:
+        return 0
+
+    conn.executemany(
+        "UPDATE recommendations SET publication_root_rec_id=?, is_outcome_label_root=? WHERE rec_id=?",
+        updates,
+    )
+    return len(updates)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     sql = MIGRATION_INIT_SQL.read_text(encoding="utf-8")
     conn.executescript(sql)
@@ -64,6 +131,8 @@ def init_db(conn: sqlite3.Connection) -> None:
       owner TEXT NOT NULL,
       heartbeat_ts INTEGER NOT NULL
     )""")
+    _ensure_recommendation_publication_columns(conn)
+    backfill_recommendation_publication_lineage(conn)
     conn.commit()
 
 def init_runtime_lock_db(conn: sqlite3.Connection) -> None:
@@ -232,20 +301,28 @@ def insert_regime(conn: sqlite3.Connection, ts: int, regime: dict[str, Any]) -> 
     conn.commit()
 
 def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
-    conn.executemany(
-        """INSERT OR REPLACE INTO recommendations(
-            rec_id,ts,venue,symbol,bot_type,direction,account_mode,margin_mode,
-            score,confidence,expected_rr,risk_score,
-            params_json,reasons_json,blocks_json,status,ttl_sec,model_version,features_ref_ts
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        [(
+    payload = []
+    for r in rows:
+        publication_root_rec_id = str(r.get("publication_root_rec_id") or r["rec_id"]).strip() or str(r["rec_id"])
+        is_outcome_label_root = 1 if bool(r.get("is_outcome_label_root", publication_root_rec_id == str(r["rec_id"]))) else 0
+        payload.append((
             r["rec_id"], r["ts"], r["venue"], r["symbol"], r["bot_type"], r["direction"], r["account_mode"], r["margin_mode"],
             r["score"], r["confidence"], r["expected_rr"], r["risk_score"],
             json.dumps(r["params"], ensure_ascii=False),
             json.dumps(r["reasons"], ensure_ascii=False),
             json.dumps(r["blocks"], ensure_ascii=False),
-            r["status"], r["ttl_sec"], r["model_version"], r["features_ref_ts"]
-        ) for r in rows],
+            r["status"], r["ttl_sec"], r["model_version"], r["features_ref_ts"],
+            publication_root_rec_id,
+            is_outcome_label_root,
+        ))
+    conn.executemany(
+        """INSERT OR REPLACE INTO recommendations(
+            rec_id,ts,venue,symbol,bot_type,direction,account_mode,margin_mode,
+            score,confidence,expected_rr,risk_score,
+            params_json,reasons_json,blocks_json,status,ttl_sec,model_version,features_ref_ts,
+            publication_root_rec_id,is_outcome_label_root
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        payload,
     )
     if commit:
         conn.commit()
@@ -802,6 +879,8 @@ def get_recommendations(
             "ttl_sec": r["ttl_sec"],
             "model_version": r["model_version"],
             "features_ref_ts": r["features_ref_ts"],
+            "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+            "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
         })
         if len(rows) >= int(top_n):
             break
@@ -832,6 +911,8 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str,
         "ttl_sec": r["ttl_sec"],
         "model_version": r["model_version"],
         "features_ref_ts": r["features_ref_ts"],
+        "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+        "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
     }
 
 
@@ -1050,9 +1131,10 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000) -> list[
     cur = conn.execute(
         """SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                   o.success, o.ret,
-                  r.score, r.reasons_json
+                  r.score, r.reasons_json, r.publication_root_rec_id, r.is_outcome_label_root
            FROM reco_outcomes o
            JOIN recommendations r ON r.rec_id = o.rec_id
+           WHERE COALESCE(r.is_outcome_label_root, 1) = 1
            ORDER BY o.ts DESC LIMIT ?""",
         (limit,),
     )
@@ -1073,6 +1155,8 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000) -> list[
             "ret":       float(row["ret"]),
             "score":     float(row["score"]),
             "reasons":   reasons,
+            "publication_root_rec_id": str(row["publication_root_rec_id"] or row["rec_id"]),
+            "is_outcome_label_root": bool(int(row["is_outcome_label_root"] or 0)),
         })
     return out
 
@@ -1172,6 +1256,8 @@ def get_recent_llm_review_candidates(
             "ttl_sec": r["ttl_sec"],
             "model_version": r["model_version"],
             "features_ref_ts": r["features_ref_ts"],
+            "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+            "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
         })
     return out
 
@@ -1697,7 +1783,7 @@ def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200) -> 
                      r.score, r.confidence, r.expected_rr, r.reasons_json
               FROM reco_outcomes o
               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
-              WHERE {_supported_sql}
+              WHERE {_supported_sql} AND COALESCE(r.is_outcome_label_root, 1) = 1
               ORDER BY o.ts DESC
               LIMIT ?""",
         [*_supported_params, int(limit)],
@@ -1739,13 +1825,25 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
     The UI needs both axes to avoid mixing them together.
     """
     _supported_sql, _supported_params = sql_in_clause("o.bot_type")
+    raw_total = 0
+    cur_raw_total = conn.execute(
+        f"""SELECT COUNT(*) AS c
+               FROM reco_outcomes o
+               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
+               WHERE {_supported_sql}""",
+        _supported_params,
+    )
+    row_raw_total = cur_raw_total.fetchone()
+    if row_raw_total and row_raw_total["c"] is not None:
+        raw_total = int(row_raw_total["c"] or 0)
+
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                      o.ret, o.success,
                      r.direction AS reco_direction, r.reasons_json
               FROM reco_outcomes o
               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
-              WHERE {_supported_sql}
+              WHERE {_supported_sql} AND COALESCE(r.is_outcome_label_root, 1) = 1
               ORDER BY o.ts DESC""",
         _supported_params,
     )
@@ -1828,6 +1926,8 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
     wins = int(summary_bucket["wins"])
     summary = {
         "total": total,
+        "raw_total": int(raw_total),
+        "deduped_duplicates": max(0, int(raw_total) - total),
         "wins": wins,
         "losses": max(0, total - wins),
         "win_rate": round(wins / total, 3) if total else None,

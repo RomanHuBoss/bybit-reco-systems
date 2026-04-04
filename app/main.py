@@ -1559,10 +1559,11 @@ def api_status() -> dict[str, Any]:
 
         _supported_sql, _supported_params = sql_in_clause("bot_type")
         cur = conn.execute(
-            f"""SELECT bot_type, COUNT(*) AS total, COALESCE(SUM(success), 0) AS wins
-                   FROM reco_outcomes
-                   WHERE {_supported_sql}
-                   GROUP BY bot_type""",
+            f"""SELECT o.bot_type, COUNT(*) AS total, COALESCE(SUM(o.success), 0) AS wins
+                   FROM reco_outcomes o
+                   JOIN recommendations r ON r.rec_id = o.rec_id
+                   WHERE {_supported_sql.replace('bot_type', 'o.bot_type')} AND COALESCE(r.is_outcome_label_root, 1) = 1
+                   GROUP BY o.bot_type""",
             _supported_params,
         )
         outcome_stats_by_bot: dict[str, dict[str, Any]] = {}
@@ -1604,10 +1605,11 @@ def api_status() -> dict[str, Any]:
             return True, "pending_refit"
 
         cur = conn.execute(
-            f"""SELECT bot_type, COUNT(*) AS total, COALESCE(SUM(success), 0) AS wins
-                   FROM reco_outcomes
-                   WHERE ts >= ? AND {_supported_sql}
-                   GROUP BY bot_type""",
+            f"""SELECT o.bot_type, COUNT(*) AS total, COALESCE(SUM(o.success), 0) AS wins
+                   FROM reco_outcomes o
+                   JOIN recommendations r ON r.rec_id = o.rec_id
+                   WHERE o.ts >= ? AND {_supported_sql.replace('bot_type', 'o.bot_type')} AND COALESCE(r.is_outcome_label_root, 1) = 1
+                   GROUP BY o.bot_type""",
             [db.now_ts() - 7 * 86400, *_supported_params],
         )
         outcome_stats_7d_by_bot: dict[str, dict[str, int]] = {}

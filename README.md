@@ -14,6 +14,7 @@
 - `POST /api/v1/sentiment` тоже переведён на атомарную транзакцию: `sentiment`-точка больше не может сохраниться без audit trail при падении журналирования.
 - Добавлены регрессионные тесты на оба класса дефектов: silent TypeError masking в backfill и partial commit в mutating API.
 - `backfill` теперь реально стартует в `lifespan()` вместе с `collector` / `sentiment` / `reco` / `llm_reviewer`, а не существует только как отдельная функция в коде. Это убирает ложный режим, когда UI показывает свежие `ticker + 1m`, но readiness recommender-а не растёт из-за отсутствия живого history-backfill контура.
+- Введена **publication lineage** для рекомендаций: каждая запись теперь несёт `publication_root_rec_id` и флаг `is_outcome_label_root`. Повторные `active` внутри одной и той же chain остаются в audit trail, но больше не раздувают `reco_outcomes`, calibration и headline-статистику `/api/v1/outcomes/stats`; корневой outcome считается один раз на publication-root, а UI дополнительно показывает `raw_total` как число сырых строк.
 - Backfill для slow REST TF (`1h`, `1d`) теперь учитывает **не только свежесть последней свечи, но и полноту истории**. Если серия свежая, но короче warm-up порога, выполняется cold/top-up fetch вместо вечного delta-refresh по хвосту; это убирает плато вида `16/74 ready` на свежей БД.
 - `/api/v1/health/symbols` и модал «Здоровье символов» теперь возвращают и показывают не только freshness, но и `warmup/readiness`. Состояния «свечи OK» и «recommender готов публиковать» больше не смешиваются в один псевдозелёный статус.
 - Background loop supervisor теперь переживает фатальные unhandled exceptions в `collector` / `reco` / `sentiment` / `llm_reviewer`: crash фиксируется в `decision_log`, состояние потока сохраняется в `app_config`, а loop автоматически перезапускается вместо тихой смерти daemon-thread. В `/api/v1/status` появились `background_threads`, `collector.thread`, `collector.state`, `collector.cycle_age_sec`.
@@ -146,8 +147,8 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `177 passed`
-- покрытие `app/*` — `76%`
+- `188 passed`
+- покрытие `app/*` — `78%`
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback.
 - smoke/coverage прогоны очищены от известных `ResourceWarning: unclosed database` в тестовом harness; верифицировано, что остаётся только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`.
 
@@ -214,7 +215,7 @@ python -m py_compile app/*.py tests/*.py main.py
 
 ## Жизненный цикл исполнения
 1. recommendation публикуется со статусом `recommended`, если это новый actionable выпуск;
-2. если сигнал повторился в окне republish-cooldown без material upgrade, он сохраняется как `active` — рекомендация остаётся актуальной, но не считается новой публикацией;
+2. если сигнал повторился в окне republish-cooldown без material upgrade, он сохраняется как `active` в той же publication-chain: запись остаётся исполнимой для оператора, но её lineage указывает на прежний `publication_root_rec_id`, поэтому outcome/calibration считают только корневую публикацию;
 3. если сигнал для persistence-ботов требует подтверждения ещё одним циклом, он получает статус `pending`;
 4. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
 5. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
@@ -225,7 +226,7 @@ python -m py_compile app/*.py tests/*.py main.py
 
 ### Семантика статусов recommendation
 - `recommended` — новый actionable сигнал, готовый к исполнению;
-- `active` — повторно актуальный сигнал внутри cooldown без material upgrade; исполним, но не считается новым выпуском;
+- `active` — повторно актуальный сигнал внутри cooldown без material upgrade; исполним, но не считается новым выпуском и не создаёт отдельный outcome-root;
 - `pending` — кандидат ждёт подтверждения persistence-gate и ещё не исполним;
 - `suppressed` — скрытая альтернатива, проигравшая dedupe/selector и сохранённая только для аудита.
 

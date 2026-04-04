@@ -2095,6 +2095,7 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
     row = cur.fetchone()
     if not row:
         return None
+    publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
     return {
         "rec_id": row["rec_id"],
         "ts": row["ts"],
@@ -2103,6 +2104,8 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
         "expected_rr": row["expected_rr"],
         "status": row["status"],
         "params": db._json_loads_or_default(row["params_json"], {}),
+        "publication_root_rec_id": publication_root_rec_id,
+        "is_outcome_label_root": bool(int(row["is_outcome_label_root"] or 0)),
     }
 
 
@@ -2118,9 +2121,11 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
             continue
         material_upgrade, diagnostics = _recent_publication_dedupe_material_upgrade(prev, rec)
         reasons = rec.setdefault("reasons", {})
+        previous_root_rec_id = str(prev.get("publication_root_rec_id") or prev.get("rec_id") or "").strip() or str(prev.get("rec_id") or "")
         reasons["publication_dedupe"] = {
             "cooldown_sec": int(cooldown_sec),
             "previous_rec_id": prev.get("rec_id"),
+            "previous_root_rec_id": previous_root_rec_id,
             "previous_ts": prev.get("ts"),
             "previous_status": prev.get("status"),
             "decision": "publish_new" if material_upgrade else "reuse_active",
@@ -2129,8 +2134,13 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
             "material_upgrade": bool(material_upgrade),
             **diagnostics,
         }
-        if not material_upgrade:
+        if material_upgrade:
+            rec["publication_root_rec_id"] = str(rec.get("rec_id") or "")
+            rec["is_outcome_label_root"] = True
+        else:
             rec["status"] = "active"
+            rec["publication_root_rec_id"] = previous_root_rec_id
+            rec["is_outcome_label_root"] = False
 
 
 def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
@@ -2680,6 +2690,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
 
             recs.append({
                 "rec_id": rec_id,
+                "publication_root_rec_id": rec_id,
+                "is_outcome_label_root": True,
                 "ts": ts_now,
                 "venue": venue,
                 "symbol": sym,
