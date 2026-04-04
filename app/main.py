@@ -211,6 +211,32 @@ def _ensure_json_payload_has_only_finite_numbers(value: Any, *, field_name: str,
     raise HTTPException(status_code=422, detail=f"{field_name} contains unsupported value at {current_path}")
 
 
+def _normalized_non_empty_text(value: str, *, field_name: str) -> str:
+    """Строгая нормализация операторских строковых ключей.
+
+    Для audit-facing сущностей нельзя молча принимать пустые/пробельные значения:
+    они создают труднообъяснимые записи в БД (например, sentiment c пустым key),
+    после чего ломается смысл GET-фильтров и ручного анализа историки.
+    """
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=422, detail=f"{field_name} must be a non-empty string")
+    return normalized
+
+
+def _normalize_tag_list(tags: list[str] | None) -> list[str]:
+    """Убирает мусорные/дублирующиеся теги, сохраняя порядок живых значений."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in tags or []:
+        tag = str(raw or "").strip()
+        if not tag or tag in seen:
+            continue
+        out.append(tag)
+        seen.add(tag)
+    return out
+
+
 def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: str, symbol: str, ts: int | None, pnl: float, fee: float, meta: dict[str, Any]) -> bool:
     if not existing:
         return False
@@ -1217,13 +1243,16 @@ def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
 @app.post("/api/v1/sentiment")
 def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
+    scope = _normalized_non_empty_text(req.scope, field_name="scope")
+    key = _normalized_non_empty_text(req.key, field_name="key")
+    tags = _normalize_tag_list(req.tags)
     _ensure_json_payload_has_only_finite_numbers(req.sources, field_name="sources")
     with closing(_get_conn()) as conn:
         ts = req.ts or int(time.time())
         try:
             db.begin_immediate(conn)
-            db.insert_sentiment_point(conn, req.scope, req.key, ts, req.sentiment, req.velocity, req.volume, req.sources, req.tags, commit=False)
-            db.log_decision(conn, "SENTIMENT_PUT", None, None, {"scope": req.scope, "key": req.key, "ts": ts, "sentiment": req.sentiment}, commit=False)
+            db.insert_sentiment_point(conn, scope, key, ts, req.sentiment, req.velocity, req.volume, req.sources, tags, commit=False)
+            db.log_decision(conn, "SENTIMENT_PUT", None, None, {"scope": scope, "key": key, "ts": ts, "sentiment": req.sentiment}, commit=False)
             conn.commit()
         except Exception:
             _rollback_quietly(conn)

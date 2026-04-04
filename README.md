@@ -44,6 +44,8 @@
 - Нефинитный sentiment из внешних источников больше не усиливается clamp-логикой до экстремальных значений.
 
 ### Дополнительные усиления в этой ревизии
+- Ручной `POST /api/v1/sentiment` теперь нормализует операторский `key` и список `tags`: пробелы по краям убираются, пустые/дублирующиеся теги не пишутся в БД и decision log. Пустой `key` отвергается с `422`, чтобы не плодить бессмысленные sentiment-series.
+- Release smoke-tests теперь проверяют поставочный пакет как единый артефакт: README, `.env.example`, audit markdown и операторские `docx/pdf` не должны расходиться между собой.
 - Sentiment ingestion дополнительно hardened against poisoned upstream payloads: невалидный `NaN/inf` из внешних источников больше не может тихо превратиться в фиктивный extreme fear/risk-off.
 - Global sentiment combine теперь пропускает битые source rows вместо отравления итогового market pulse.
 - Per-symbol blended sentiment игнорирует испорченные source blocks и считает только валидные momentum / reddit / rss / trending компоненты.
@@ -71,6 +73,7 @@
 - SQLite persistence с decision log и outcome history;
 - краткая инструкция оператора в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`.
 - аудит этой ревизии: `docs/audit_2026-04-04.md`.
+- тестовый отчёт ревизии: `docs/test_report_2026-04-04.md`.
 
 ## Ограничения дизайна
 - sentiment pipeline остаётся **эвристическим**, а не newsroom/LLM/NER-уровня;
@@ -109,8 +112,8 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `227 passed`
-- покрытие `app/*` — `79%`
+- `232 passed`
+- покрытие `app/*` — `80%`
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows.
 - smoke/coverage прогоны в текущей поставке дают только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`; собственных функциональных падений проект не показывает.
 
