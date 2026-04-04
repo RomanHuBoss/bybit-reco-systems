@@ -664,6 +664,22 @@ def get_bot_by_origin_rec(conn: sqlite3.Connection, origin_rec_id: str) -> dict[
     return _decode_bot_row(cur.fetchone())
 
 
+def get_bot_by_publication_root(conn: sqlite3.Connection, publication_root_rec_id: str) -> dict[str, Any] | None:
+    root_id = str(publication_root_rec_id or "").strip()
+    if not root_id:
+        return None
+    cur = conn.execute(
+        """SELECT b.*
+               FROM bot_instances b
+               JOIN recommendations r ON r.rec_id = b.origin_rec_id
+              WHERE COALESCE(NULLIF(TRIM(r.publication_root_rec_id), ''), r.rec_id) = ?
+              ORDER BY b.started_ts DESC
+              LIMIT 1""",
+        (root_id,),
+    )
+    return _decode_bot_row(cur.fetchone())
+
+
 def list_bot_instances(conn: sqlite3.Connection, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
     if status:
         cur = conn.execute("SELECT * FROM bot_instances WHERE status=? ORDER BY started_ts DESC LIMIT ?", (status, limit))

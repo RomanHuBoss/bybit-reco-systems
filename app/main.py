@@ -624,6 +624,14 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             db.update_recommendation_status(conn, rec_id, "executed", operator)
         return existing, True
 
+    publication_root_rec_id = str(rec.get("publication_root_rec_id") or rec_id).strip() or rec_id
+    if publication_root_rec_id:
+        chain_existing = db.get_bot_by_publication_root(conn, publication_root_rec_id)
+        if chain_existing:
+            if rec.get("status") != "executed":
+                db.update_recommendation_status(conn, rec_id, "executed", operator)
+            return chain_existing, True
+
     ttl_sec = int(rec.get("ttl_sec") or 0)
     rec_ts = int(rec.get("ts") or 0)
     if ttl_sec > 0 and rec_ts > 0 and int(time.time()) > rec_ts + ttl_sec:
@@ -947,6 +955,8 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
         bot = db.get_bot_instance(conn, bot_id)
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
+        if str(bot.get("status") or "") == "stopped":
+            return {"ok": True, "bot_id": bot_id, "status": "stopped", "idempotent": True}
         try:
             ok = db.stop_bot(conn, bot_id, commit=False)
             if not ok:
@@ -958,7 +968,7 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
         except Exception:
             _rollback_quietly(conn)
             raise
-        return {"ok": True, "bot_id": bot_id, "status": "stopped"}
+        return {"ok": True, "bot_id": bot_id, "status": "stopped", "idempotent": False}
 
 
 @app.post("/api/v1/bots/{bot_id}/trades")

@@ -1229,3 +1229,152 @@ def test_api_health_applies_boot_grace_to_pre_restart_stale_rows(tmp_path: Path,
         client.close()
         conn.close()
         sys.modules.pop('app.main', None)
+
+
+
+def test_api_execute_chain_member_reuses_existing_publication_root_bot(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-chain-root',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.44,
+                'confidence': 0.74,
+                'expected_rr': 1.5,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+                'publication_root_rec_id': 'R-chain-root',
+                'is_outcome_label_root': True,
+            },
+            {
+                'rec_id': 'R-chain-active',
+                'ts': ts_now + 60,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.45,
+                'confidence': 0.75,
+                'expected_rr': 1.55,
+                'risk_score': 0.19,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'active',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now + 60,
+                'publication_root_rec_id': 'R-chain-root',
+                'is_outcome_label_root': False,
+            },
+        ],
+    )
+
+    first_exec = client.post(
+        '/api/v1/recommendations/R-chain-root/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert first_exec.status_code == 200
+    first_body = first_exec.json()
+    assert first_body['ok'] is True
+    assert first_body['idempotent'] is False
+    bot_id = first_body['bot_id']
+
+    second_exec = client.post(
+        '/api/v1/recommendations/R-chain-active/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert second_exec.status_code == 200
+    second_body = second_exec.json()
+    assert second_body['ok'] is True
+    assert second_body['idempotent'] is True
+    assert second_body['bot_id'] == bot_id
+
+    bots = db.list_bot_instances(conn)
+    assert len(bots) == 1
+    assert bots[0]['origin_rec_id'] == 'R-chain-root'
+
+    active_rec = db.get_recommendation_by_id(conn, 'R-chain-active')
+    assert active_rec is not None
+    assert active_rec['status'] == 'executed'
+
+
+
+def test_api_stop_bot_is_idempotent(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-stop-idempotent',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.43,
+                'confidence': 0.72,
+                'expected_rr': 1.3,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-stop-idempotent/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert exec_resp.status_code == 200
+    bot_id = exec_resp.json()['bot_id']
+
+    first_stop = client.post(
+        f'/api/v1/bots/{bot_id}/stop',
+        json={'operator': 'tester', 'reason': 'done'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert first_stop.status_code == 200
+    assert first_stop.json() == {'ok': True, 'bot_id': bot_id, 'status': 'stopped', 'idempotent': False}
+
+    second_stop = client.post(
+        f'/api/v1/bots/{bot_id}/stop',
+        json={'operator': 'tester', 'reason': 'duplicate retry'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert second_stop.status_code == 200
+    assert second_stop.json() == {'ok': True, 'bot_id': bot_id, 'status': 'stopped', 'idempotent': True}
+
+    cur = conn.execute("SELECT COUNT(*) AS c FROM decision_log WHERE action='BOT_STOPPED' AND details_json LIKE ?", (f'%"bot_id": "{bot_id}"%',))
+    row = cur.fetchone()
+    assert int(row['c'] or 0) == 1
