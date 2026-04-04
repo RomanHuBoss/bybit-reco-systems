@@ -73,6 +73,10 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
             close is None or high is None or low is None or volume is None
             or close <= 0 or high <= 0 or low <= 0 or volume < 0
             or high < low
+            # Защита в самом feature-layer, а не только в DB/collector: если
+            # compute_features_from_ohlcv() вызывают напрямую с внешним рядом,
+            # логически невозможный бар не должен участвовать в индикаторах.
+            or high < close or low > close
         ):
             continue
         normalized_rows.append({"ts": ts, "close": close, "high": high, "low": low, "volume": volume})
@@ -150,7 +154,15 @@ LIQUIDITY_TIERS = {
 def liquidity_tier(turnover24h_usd: float | None) -> str:
     if turnover24h_usd is None:
         return "unknown"
-    v = float(turnover24h_usd)
+    try:
+        v = float(turnover24h_usd)
+    except Exception:
+        return "unknown"
+    # Non-finite или отрицательный turnover — это повреждённый/неполный payload,
+    # а не реальная «микроликвидность». Иначе poisoned ticker может случайно
+    # заветировать нормальный символ как micro или, наоборот, как high.
+    if not math.isfinite(v) or v < 0:
+        return "unknown"
     if v >= LIQUIDITY_TIERS["high"]:
         return "high"
     if v >= LIQUIDITY_TIERS["medium"]:

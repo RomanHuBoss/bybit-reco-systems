@@ -156,6 +156,25 @@ def _finite_or_default(value: object, default: float) -> float:
     return float(num)
 
 
+def _int_from_params(value: object, default: int = 0, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    """Нормализует целочисленные grid-параметры из legacy/manual JSON.
+
+    Исторические рекомендации могут содержать строковый мусор, NaN/inf или
+    частично испорченный payload. Outcome-процесс не должен падать на таком
+    rec и блокировать дальнейшую разметку; лучше безопасно деградировать к
+    консервативному default и продолжить labeling.
+    """
+    try:
+        num = int(float(value))
+    except Exception:
+        num = int(default)
+    if minimum is not None:
+        num = max(int(minimum), num)
+    if maximum is not None:
+        num = min(int(maximum), num)
+    return int(num)
+
+
 def _extract_cost_components(params: dict | None, fallback_execution_bps: float = 15.0) -> tuple[float, float]:
     execution_bps = None
     funding_bps = None
@@ -226,8 +245,8 @@ def _grid_outcome(
     params = params or {}
     execution_cost_bps, _ = _extract_cost_components(params)
     cost_floor = execution_cost_bps / 10_000.0
-    grid_spacing_pct = float(params.get("grid_spacing_pct") or 0.0)
-    grid_levels = int(params.get("grid_levels") or 0)
+    grid_spacing_pct = _finite_or_default(params.get("grid_spacing_pct"), 0.0)
+    grid_levels = _int_from_params(params.get("grid_levels"), 0, minimum=0, maximum=1000)
 
     trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
     levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}

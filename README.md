@@ -57,6 +57,9 @@
 - История OHLCV валидируется строже: отбрасываются не только `NaN/inf`, но и логически невозможные бары (`high < open/close/low`, `low > open/close/high`).
 - При чтении OHLCV используется overfetch перед фильтрацией, поэтому пачка битых последних баров не лишает движок достаточной истории для features / direction / LLM payload.
 - Crossed quotes (`ask < bid`) теперь санируются и не превращаются в ложный «нулевой спред». Cost-model в таком случае получает безопасный fallback вместо чрезмерно оптимистичной оценки.
+- Outcome-labeling больше не падает на частично испорченном `params_json`: невалидные `grid_spacing_pct/grid_levels` из legacy/manual payload'ов безопасно нормализуются к conservative default вместо аварии цикла разметки.
+- `compute_features_from_ohlcv()` теперь сам отбрасывает логически невозможные бары (`close` вне диапазона `[low, high]`) даже при прямом вызове в обход DB-sanitization.
+- `liquidity_tier()` больше не трактует poisoned `turnover24h` (`NaN/inf` или отрицательное значение) как реальную ликвидность; такой payload считается `unknown`, а не `micro/high`.
 
 ### Интерпретируемость
 - В `reasons_json` сохраняются факторы, контекст сигнала, execution-constraints, funding/OI/liquidity, market shock и LLM review.
@@ -114,7 +117,7 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `241 passed`
+- `244 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows / malformed sentiment adapter payloads / poisoned Reddit posts / safe fail-open of `collect_sentiment_once()` / malformed legacy JSON-shapes in recommendation-bot-trade-sentiment APIs / malformed app_config payloads in status and metrics / rejection of blank audit keys for `risk limits version` and explicit `trade_id`.
 - В этой ревизии baseline coverage не переписывался в документацию автоматически; команда `pytest --cov=app --cov-report=term-missing -q` остаётся рекомендованной локальной проверкой перед live-выкаткой.
