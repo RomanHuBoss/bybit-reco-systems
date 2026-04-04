@@ -170,6 +170,25 @@ def _json_loads_or_default(raw: str | None, default: Any) -> Any:
         return default
 
 
+def _json_loads_mapping_or_default(raw: str | None, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    loaded = _json_loads_or_default(raw, None)
+    if isinstance(loaded, dict):
+        return dict(loaded)
+    return dict(default or {})
+
+
+def _normalized_optional_text(value: str | None, *, field_name: str) -> str | None:
+    """Нормализует optional operator-input без создания мусорных audit-значений."""
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    if "\x00" in normalized:
+        raise HTTPException(status_code=422, detail=f"{field_name} must not contain NUL byte")
+    return normalized
+
+
 def _bounded_limit(value: int, *, default: int, max_value: int) -> int:
     try:
         num = int(value)
@@ -304,11 +323,15 @@ def _set_background_thread_state(name: str, state: str, **fields: Any) -> None:
         logger.warning("background thread state persist failed for %s", name, exc_info=True)
 
 
+def _get_app_config_mapping(conn, key: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = db.get_app_config_json(conn, key, default=None)
+    if isinstance(payload, dict):
+        return dict(payload)
+    return dict(default or {})
+
+
 def _get_background_thread_state(conn, name: str) -> dict[str, Any]:
-    payload = db.get_app_config_json(conn, _background_thread_state_key(name), default={}) or {}
-    if not isinstance(payload, dict):
-        return {}
-    out = dict(payload)
+    out = _get_app_config_mapping(conn, _background_thread_state_key(name), default={})
     updated_ts = int(out.get("updated_ts") or 0)
     out["age_sec"] = None if updated_ts <= 0 else max(0, int(time.time()) - updated_ts)
     return out
@@ -506,8 +529,8 @@ def _collector_warmup_status(conn) -> dict[str, Any]:
 
 
 def _load_collector_warmup_status(conn, *, recompute_if_missing: bool = False) -> dict[str, Any]:
-    status = db.get_app_config_json(conn, "collector_warmup", default={}) or {}
-    if isinstance(status, dict) and status:
+    status = _get_app_config_mapping(conn, "collector_warmup", default={})
+    if status:
         return dict(status)
     if not recompute_if_missing:
         return {}
@@ -548,7 +571,7 @@ def _collector_completed_cycle_this_process(collector_last_cycle: dict[str, Any]
 def _load_symbol_health(conn) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     active_venues = list(getattr(settings, "venues", []) or [])
     warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
-    collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
+    collector_last_cycle = _get_app_config_mapping(conn, "collector_last_cycle", default={})
     items = db.get_symbol_health(
         conn,
         settings.symbols_spot,
@@ -900,7 +923,7 @@ def api_recommendations(
 
         cur = conn.execute("SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1")
         row = cur.fetchone()
-        regime = _json_loads_or_default(row["regime_json"], {
+        regime = _json_loads_mapping_or_default(row["regime_json"], {
             "vol_state": "unknown",
             "trend_state": "unknown",
             "risk_state": "unknown",
@@ -967,27 +990,29 @@ def api_update_risk_limits(req: UpdateRiskLimitsRequest, x_api_key: str | None =
     with closing(_get_conn()) as conn:
         try:
             db.begin_immediate(conn)
-            db.upsert_risk_limits(conn, version=req.version, limits=req.limits, is_active=True, commit=False)
-            db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": req.version, "limits": req.limits}, commit=False)
+            version = _normalized_non_empty_text(req.version, field_name="version")
+            db.upsert_risk_limits(conn, version=version, limits=req.limits, is_active=True, commit=False)
+            db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": version, "limits": req.limits}, commit=False)
             conn.commit()
         except Exception:
             _rollback_quietly(conn)
             raise
-        return {"ok": True, "version": req.version}
+        return {"ok": True, "version": version}
 
 
 @app.post("/api/v1/recommendations/{rec_id}/action")
 def api_reco_action(rec_id: str, req: RecoActionRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
+    operator = _normalized_optional_text(req.operator, field_name="operator")
     allowed = {"executed", "ignored"}
     if req.action not in allowed:
         raise HTTPException(status_code=400, detail=f"action must be one of {sorted(allowed)}")
     with closing(_get_conn()) as conn:
         db.begin_immediate(conn)
         if req.action == "executed":
-            bot, existed = _materialize_bot_from_rec(conn, rec_id, req.operator)
+            bot, existed = _materialize_bot_from_rec(conn, rec_id, operator)
             return {"ok": True, "rec_id": rec_id, "new_status": "executed", "bot_id": bot["bot_id"], "bot": bot, "idempotent": existed}
-        ok = db.update_recommendation_status(conn, rec_id, req.action, req.operator, commit=False)
+        ok = db.update_recommendation_status(conn, rec_id, req.action, operator, commit=False)
         if not ok:
             _rollback_quietly(conn)
             rec = db.get_recommendation_by_id(conn, rec_id)
@@ -1030,10 +1055,12 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
             if not ok:
                 _rollback_quietly(conn)
                 return {"ok": False, "bot_id": bot_id, "status": bot["status"]}
-            state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": req.reason, "stopped_by": req.operator, "stopped_ts": int(time.time())}, commit=False)
+            operator = _normalized_optional_text(req.operator, field_name="operator")
+            reason = _normalized_optional_text(req.reason, field_name="reason")
+            state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": reason, "stopped_by": operator, "stopped_ts": int(time.time())}, commit=False)
             if not state_updated:
                 raise RuntimeError("bot state update failed after stop")
-            db.log_decision(conn, "BOT_STOPPED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "reason": req.reason}, commit=False)
+            db.log_decision(conn, "BOT_STOPPED", bot.get("origin_rec_id"), operator, {"bot_id": bot_id, "reason": reason}, commit=False)
             conn.commit()
         except Exception:
             _rollback_quietly(conn)
@@ -1051,7 +1078,8 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
 
-        trade_id = req.trade_id or f"T-{int(time.time())}-{secrets.token_hex(4)}"
+        operator = _normalized_optional_text(req.operator, field_name="operator")
+        trade_id = _normalized_non_empty_text(req.trade_id, field_name="trade_id") if req.trade_id is not None else f"T-{int(time.time())}-{secrets.token_hex(4)}"
         ts = req.ts or int(time.time())
         if str(bot.get("status") or "") != "running":
             existing_trade = db.get_trade_by_id(conn, trade_id) if req.trade_id else None
@@ -1136,7 +1164,7 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
                     "last_trade_ts": int(trade_summary.get("last_trade_ts") or ts),
                     "last_trade_id": trade_id,
                     "last_trade_meta": req.meta,
-                    "last_operator": req.operator,
+                    "last_operator": operator,
                 },
                 commit=False,
             )
@@ -1146,10 +1174,10 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
                 stop_ok = db.stop_bot(conn, bot_id, commit=False)
                 if not stop_ok:
                     raise HTTPException(status_code=409, detail="bot status changed during trade finalization")
-                stop_state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": req.operator, "stopped_ts": int(time.time())}, commit=False)
+                stop_state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": operator, "stopped_ts": int(time.time())}, commit=False)
                 if not stop_state_updated:
                     raise RuntimeError("bot state update failed after trade stop")
-            db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot}, commit=False)
+            db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot}, commit=False)
             conn.commit()
         except Exception:
             _rollback_quietly(conn)
@@ -1235,7 +1263,7 @@ def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
                 "action": r["action"],
                 "rec_id": r["rec_id"],
                 "operator": r["operator"],
-                "details": _json_loads_or_default(r["details_json"], {}),
+                "details": _json_loads_mapping_or_default(r["details_json"], {}),
             })
         return out
 
@@ -1608,9 +1636,9 @@ def _llm_reviewer_thread():
 def metrics() -> str:
     with closing(_get_conn()) as conn:
         health, _ = _load_symbol_health(conn)
-        collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
-        backfill_last_cycle = db.get_app_config_json(conn, "backfill_last_cycle", default={}) or {}
-        futures_meta_last_cycle = db.get_app_config_json(conn, "futures_meta_last_cycle", default={}) or {}
+        collector_last_cycle = _get_app_config_mapping(conn, "collector_last_cycle", default={})
+        backfill_last_cycle = _get_app_config_mapping(conn, "backfill_last_cycle", default={})
+        futures_meta_last_cycle = _get_app_config_mapping(conn, "futures_meta_last_cycle", default={})
         collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         status_counts = {"ok": 0, "stale": 0, "missing": 0, "disabled": 0}
         for item in health:
@@ -1660,10 +1688,10 @@ def api_status() -> dict[str, Any]:
         from .calibration import load_logreg_from_db, GLOBAL_LOGREG_KEY, BOT_CALIB_KEYS, label_balance_stats
         from .sentiment_features import compute_sentiment_agg
 
-        llm_async_status = db.get_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, default={}) or {}
-        collector_last_cycle = db.get_app_config_json(conn, "collector_last_cycle", default={}) or {}
-        backfill_last_cycle = db.get_app_config_json(conn, "backfill_last_cycle", default={}) or {}
-        futures_meta_last_cycle = db.get_app_config_json(conn, "futures_meta_last_cycle", default={}) or {}
+        llm_async_status = _get_app_config_mapping(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, default={})
+        collector_last_cycle = _get_app_config_mapping(conn, "collector_last_cycle", default={})
+        backfill_last_cycle = _get_app_config_mapping(conn, "backfill_last_cycle", default={})
+        futures_meta_last_cycle = _get_app_config_mapping(conn, "futures_meta_last_cycle", default={})
         collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         background_threads = {
             name: _get_background_thread_state(conn, name)
@@ -1803,7 +1831,7 @@ def api_status() -> dict[str, Any]:
         cur = conn.execute("SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?", (db.now_ts() - 600,))
         collect_errors_10m = int(cur.fetchone()["c"])
         sent = compute_sentiment_agg(conn, scope="global", key="crypto")
-        market_shock = db.get_app_config_json(conn, MARKET_SHOCK_APP_KEY, default={"state": "normal", "title": "Нормальный режим", "severity": "normal", "entry_mode": "normal", "operator_note": "Новые входы разрешены в обычном режиме.", "reasons": [], "metrics": {}})
+        market_shock = _get_app_config_mapping(conn, MARKET_SHOCK_APP_KEY, default={"state": "normal", "title": "Нормальный режим", "severity": "normal", "entry_mode": "normal", "operator_note": "Новые входы разрешены в обычном режиме.", "reasons": [], "metrics": {}})
 
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))
         inference_supported_bot_count = len(bot_status)

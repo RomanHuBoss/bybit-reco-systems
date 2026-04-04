@@ -139,7 +139,7 @@ def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int
 
     for row in rows:
         rec_id = str(row["rec_id"] or "")
-        reasons = _json_loads_or_default(row["reasons_json"], {})
+        reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
         dedupe = reasons.get("publication_dedupe") if isinstance(reasons, dict) else {}
         if not isinstance(dedupe, dict):
             dedupe = {}
@@ -236,6 +236,48 @@ def _json_loads_or_default(raw: Any, default: Any) -> Any:
     return loaded
 
 
+def _json_loads_mapping_or_default(raw: Any, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Возвращает только JSON-object.
+
+    Для operator/UI-facing структур важно не просто пережить битый JSON, но и не
+    выпускать наружу неожиданную форму данных вроде list/str вместо dict. Иначе
+    downstream-код начинает падать уже не на этапе чтения БД, а сильно позже — в
+    UI, API или duplicate-detection ветках.
+    """
+    loaded = _json_loads_or_default(raw, None)
+    if isinstance(loaded, dict):
+        return dict(loaded)
+    return dict(default or {})
+
+
+def _json_loads_list_or_default(raw: Any, default: list[Any] | None = None) -> list[Any]:
+    loaded = _json_loads_or_default(raw, None)
+    if isinstance(loaded, list):
+        return list(loaded)
+    return list(default or [])
+
+
+def _json_loads_list_of_mappings_or_default(raw: Any, default: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    return [dict(item) for item in _json_loads_list_or_default(raw, default) if isinstance(item, dict)]
+
+
+def _json_loads_text_list_or_default(raw: Any, default: list[str] | None = None) -> list[str]:
+    items = _json_loads_list_or_default(raw, None)
+    if not items:
+        return list(default or [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text or text in seen:
+            continue
+        out.append(text)
+        seen.add(text)
+    return out if out else list(default or [])
+
+
 def _finite_float_or_default(value: Any, default: float = 0.0) -> float:
     try:
         num = float(value)
@@ -286,8 +328,8 @@ def _decode_sentiment_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
         "sentiment": float(max(-1.0, min(1.0, sentiment))),
         "velocity": float(velocity),
         "volume": int(volume),
-        "sources": _json_loads_or_default(r["sources_json"], {}),
-        "tags": _json_loads_or_default(r["tags_json"], []),
+        "sources": _json_loads_mapping_or_default(r["sources_json"], {}),
+        "tags": _json_loads_text_list_or_default(r["tags_json"], []),
     }
 
 
@@ -676,9 +718,9 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
             row["venue"],
             row["symbol"],
             row["bot_type"],
-            _json_dumps_canonical(_json_loads_or_default(row["mode_json"], {})),
-            _json_dumps_canonical(_json_loads_or_default(row["params_json"], {})),
-            _json_dumps_canonical(_json_loads_or_default(row["state_json"], {})),
+            _json_dumps_canonical(_json_loads_mapping_or_default(row["mode_json"], {})),
+            _json_dumps_canonical(_json_loads_mapping_or_default(row["params_json"], {})),
+            _json_dumps_canonical(_json_loads_mapping_or_default(row["state_json"], {})),
             row["status"],
             row["origin_rec_id"],
         )
@@ -725,9 +767,9 @@ def _decode_bot_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
         "venue": r["venue"],
         "symbol": r["symbol"],
         "bot_type": r["bot_type"],
-        "mode": _json_loads_or_default(r["mode_json"], {}),
-        "params": _json_loads_or_default(r["params_json"], {}),
-        "state": _json_loads_or_default(r["state_json"], {}),
+        "mode": _json_loads_mapping_or_default(r["mode_json"], {}),
+        "params": _json_loads_mapping_or_default(r["params_json"], {}),
+        "state": _json_loads_mapping_or_default(r["state_json"], {}),
         "status": r["status"],
         "origin_rec_id": r["origin_rec_id"],
     }
@@ -788,7 +830,7 @@ def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any
     row = cur.fetchone()
     if not row:
         return False
-    state = _json_loads_or_default(row["state_json"], {})
+    state = _json_loads_mapping_or_default(row["state_json"], {})
     state = {**state, **patch} if merge else dict(patch)
     conn.execute("UPDATE bot_instances SET state_json=? WHERE bot_id=?", (_json_dumps_canonical(state), bot_id))
     if commit:
@@ -828,7 +870,7 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any], *, commit: boo
             row["symbol"],
             float(row["pnl"]),
             float(row["fee"]),
-            _json_dumps_canonical(_json_loads_or_default(row["meta_json"], {})),
+            _json_dumps_canonical(_json_loads_mapping_or_default(row["meta_json"], {})),
         )
         incoming = payload[1:]
         if existing == incoming:
@@ -857,7 +899,7 @@ def get_trade_by_id(conn: sqlite3.Connection, trade_id: str) -> dict[str, Any] |
         "symbol": r["symbol"],
         "pnl": _finite_float_or_default(r["pnl"], 0.0),
         "fee": _finite_float_or_default(r["fee"], 0.0),
-        "meta": _json_loads_or_default(r["meta_json"], {}),
+        "meta": _json_loads_mapping_or_default(r["meta_json"], {}),
     }
 
 
@@ -878,7 +920,7 @@ def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int 
             "symbol": r["symbol"],
             "pnl": _finite_float_or_default(r["pnl"], 0.0),
             "fee": _finite_float_or_default(r["fee"], 0.0),
-            "meta": _json_loads_or_default(r["meta_json"], {}),
+            "meta": _json_loads_mapping_or_default(r["meta_json"], {}),
         })
     return out
 
@@ -921,7 +963,7 @@ def _recommended_row_passes_conf_filter(row: sqlite3.Row, min_conf: float, stric
     if strict_min_conf:
         return conf >= float(min_conf)
     try:
-        reasons = _json_loads_or_default(row["reasons_json"], {})
+        reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
     except Exception:
         reasons = {}
     confidence_model = reasons.get("confidence_model") if isinstance(reasons, dict) else {}
@@ -983,9 +1025,9 @@ def get_recommendations(
             "confidence": r["confidence"],
             "expected_rr": r["expected_rr"],
             "risk_score": r["risk_score"],
-            "params": _json_loads_or_default(r["params_json"], {}),
-            "reasons": _json_loads_or_default(r["reasons_json"], {}),
-            "blocks": _json_loads_or_default(r["blocks_json"], []),
+            "params": _json_loads_mapping_or_default(r["params_json"], {}),
+            "reasons": _json_loads_mapping_or_default(r["reasons_json"], {}),
+            "blocks": _json_loads_list_of_mappings_or_default(r["blocks_json"], []),
             "status": r["status"],
             "ttl_sec": r["ttl_sec"],
             "model_version": r["model_version"],
@@ -1015,9 +1057,9 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str,
         "confidence": r["confidence"],
         "expected_rr": r["expected_rr"],
         "risk_score": r["risk_score"],
-        "params": _json_loads_or_default(r["params_json"], {}),
-        "reasons": _json_loads_or_default(r["reasons_json"], {}),
-        "blocks": _json_loads_or_default(r["blocks_json"], []),
+        "params": _json_loads_mapping_or_default(r["params_json"], {}),
+        "reasons": _json_loads_mapping_or_default(r["reasons_json"], {}),
+        "blocks": _json_loads_list_of_mappings_or_default(r["blocks_json"], []),
         "status": r["status"],
         "ttl_sec": r["ttl_sec"],
         "model_version": r["model_version"],
@@ -1125,7 +1167,7 @@ def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str,
 def get_active_risk_limits(conn: sqlite3.Connection) -> dict[str, Any] | None:
     cur = conn.execute("""SELECT limits_json FROM risk_limits WHERE is_active=1 ORDER BY created_ts DESC LIMIT 1""")
     row = cur.fetchone()
-    return _json_loads_or_default(row["limits_json"], None) if row else None
+    return _json_loads_mapping_or_default(row["limits_json"], None) if row else None
 
 def insert_sentiment_point(
     conn: sqlite3.Connection,
@@ -1242,7 +1284,7 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000) -> list[
     out = []
     for row in cur.fetchall():
         try:
-            reasons = _json_loads_or_default(row["reasons_json"], {})
+            reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
         except Exception:
             reasons = {}
         out.append({
@@ -1350,9 +1392,9 @@ def get_recent_llm_review_candidates(
             "confidence": r["confidence"],
             "expected_rr": r["expected_rr"],
             "risk_score": r["risk_score"],
-            "params": _json_loads_or_default(r["params_json"], {}),
-            "reasons": _json_loads_or_default(r["reasons_json"], {}),
-            "blocks": _json_loads_or_default(r["blocks_json"], []),
+            "params": _json_loads_mapping_or_default(r["params_json"], {}),
+            "reasons": _json_loads_mapping_or_default(r["reasons_json"], {}),
+            "blocks": _json_loads_list_of_mappings_or_default(r["blocks_json"], []),
             "status": r["status"],
             "ttl_sec": r["ttl_sec"],
             "model_version": r["model_version"],
@@ -1739,7 +1781,7 @@ def _normalize_direction(direction: Any, fallback: str = "neutral") -> str:
 
 def _parse_reasons_json(reasons_json: str | None) -> dict[str, Any]:
     try:
-        reasons = _json_loads_or_default(reasons_json, {})
+        reasons = _json_loads_mapping_or_default(reasons_json, {})
     except Exception:
         reasons = {}
     return reasons if isinstance(reasons, dict) else {}
@@ -2115,7 +2157,7 @@ def get_symbol_health(
     error_counts: dict[tuple[str, str], int] = {}
     for row in cur.fetchall():
         try:
-            d = _json_loads_or_default(row["details_json"], {})
+            d = _json_loads_mapping_or_default(row["details_json"], {})
             venue = str(d.get("venue") or "")
             sym = str(d.get("symbol") or "UNKNOWN")
             key = (venue, sym)
@@ -2134,7 +2176,7 @@ def get_symbol_health(
     disabled_until: dict[tuple[str, str], int] = {}
     for row in cur.fetchall():
         try:
-            d = _json_loads_or_default(row["details_json"], {})
+            d = _json_loads_mapping_or_default(row["details_json"], {})
             venue = str(d.get("venue") or "")
             sym = str(d.get("symbol") or "")
             if not venue or not sym:
@@ -2172,7 +2214,7 @@ def get_symbol_health(
     stale_counts: dict[tuple[str, str], int] = {}
     for row in cur.fetchall():
         try:
-            d = _json_loads_or_default(row["details_json"], {})
+            d = _json_loads_mapping_or_default(row["details_json"], {})
             venue = str(d.get("venue") or "")
             sym = str(d.get("symbol") or "UNKNOWN")
             key = (venue, sym)
