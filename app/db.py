@@ -681,19 +681,32 @@ def get_bot_by_origin_rec(conn: sqlite3.Connection, origin_rec_id: str) -> dict[
     return _decode_bot_row(cur.fetchone())
 
 
-def get_bot_by_publication_root(conn: sqlite3.Connection, publication_root_rec_id: str) -> dict[str, Any] | None:
+def get_bot_by_publication_root(
+    conn: sqlite3.Connection,
+    publication_root_rec_id: str,
+    *,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the newest bot for a publication chain.
+
+    By default this returns the latest historical bot regardless of lifecycle state.
+    Execution-time idempotency should usually scope this to ``status='running'`` so a
+    previously stopped bot does not block a later active chain member from starting a
+    fresh position inside the same publication lineage.
+    """
     root_id = str(publication_root_rec_id or "").strip()
     if not root_id:
         return None
-    cur = conn.execute(
-        """SELECT b.*
+    sql = """SELECT b.*
                FROM bot_instances b
                JOIN recommendations r ON r.rec_id = b.origin_rec_id
-              WHERE COALESCE(NULLIF(TRIM(r.publication_root_rec_id), ''), r.rec_id) = ?
-              ORDER BY b.started_ts DESC
-              LIMIT 1""",
-        (root_id,),
-    )
+              WHERE COALESCE(NULLIF(TRIM(r.publication_root_rec_id), ''), r.rec_id) = ?"""
+    params: list[Any] = [root_id]
+    if status is not None:
+        sql += " AND b.status=?"
+        params.append(str(status))
+    sql += " ORDER BY b.started_ts DESC LIMIT 1"
+    cur = conn.execute(sql, params)
     return _decode_bot_row(cur.fetchone())
 
 

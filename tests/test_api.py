@@ -1364,6 +1364,108 @@ def test_api_execute_chain_member_reuses_existing_publication_root_bot(client_an
 
 
 
+def test_api_execute_active_chain_member_starts_new_bot_after_previous_chain_bot_stopped(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-chain-root-stopped',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.44,
+                'confidence': 0.74,
+                'expected_rr': 1.5,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+                'publication_root_rec_id': 'R-chain-root-stopped',
+                'is_outcome_label_root': True,
+            },
+            {
+                'rec_id': 'R-chain-active-after-stop',
+                'ts': ts_now + 60,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.45,
+                'confidence': 0.75,
+                'expected_rr': 1.55,
+                'risk_score': 0.19,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'active',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now + 60,
+                'publication_root_rec_id': 'R-chain-root-stopped',
+                'is_outcome_label_root': False,
+            },
+        ],
+    )
+
+    first_exec = client.post(
+        '/api/v1/recommendations/R-chain-root-stopped/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert first_exec.status_code == 200
+    first_body = first_exec.json()
+    assert first_body['ok'] is True
+    assert first_body['idempotent'] is False
+    first_bot_id = first_body['bot_id']
+
+    stop_resp = client.post(
+        f'/api/v1/bots/{first_bot_id}/stop',
+        json={'reason': 'finished', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert stop_resp.status_code == 200
+    assert stop_resp.json()['status'] == 'stopped'
+
+    second_exec = client.post(
+        '/api/v1/recommendations/R-chain-active-after-stop/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert second_exec.status_code == 200
+    second_body = second_exec.json()
+    assert second_body['ok'] is True
+    assert second_body['idempotent'] is False
+    assert second_body['bot_id'] != first_bot_id
+    assert second_body['bot']['status'] == 'running'
+    assert second_body['bot']['origin_rec_id'] == 'R-chain-active-after-stop'
+
+    bots = db.list_bot_instances(conn)
+    assert len(bots) == 2
+    running = [b for b in bots if b['status'] == 'running']
+    stopped = [b for b in bots if b['status'] == 'stopped']
+    assert len(running) == 1
+    assert len(stopped) == 1
+    assert running[0]['origin_rec_id'] == 'R-chain-active-after-stop'
+    assert stopped[0]['origin_rec_id'] == 'R-chain-root-stopped'
+
+    active_rec = db.get_recommendation_by_id(conn, 'R-chain-active-after-stop')
+    assert active_rec is not None
+    assert active_rec['status'] == 'executed'
+
+
 def test_api_stop_bot_is_idempotent(client_and_conn):
     client, conn = client_and_conn
     ts_now = int(time.time())

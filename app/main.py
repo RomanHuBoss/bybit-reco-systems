@@ -629,7 +629,10 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
 
     publication_root_rec_id = str(rec.get("publication_root_rec_id") or rec_id).strip() or rec_id
     if publication_root_rec_id:
-        chain_existing = db.get_bot_by_publication_root(conn, publication_root_rec_id)
+        # Reuse only a live bot from the same publication chain. Re-attaching a later
+        # `active` recommendation to a historical *stopped* bot makes the API claim the
+        # signal was executed while leaving the operator with no running position.
+        chain_existing = db.get_bot_by_publication_root(conn, publication_root_rec_id, status="running")
         if chain_existing:
             if rec.get("status") != "executed":
                 db.update_recommendation_status(conn, rec_id, "executed", operator)
