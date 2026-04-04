@@ -25,6 +25,24 @@ class RiskStatus:
     symbol_bot_counts: dict[str, int]
 
 
+def _safe_default_int(value: Any, default: int) -> int:
+    try:
+        num = int(value)
+    except Exception:
+        num = int(default)
+    return int(num)
+
+
+def _safe_default_float(value: Any, default: float) -> float:
+    try:
+        num = float(value)
+    except Exception:
+        num = float(default)
+    if not math.isfinite(num):
+        return float(default)
+    return float(num)
+
+
 def _limit_int(limits: dict[str, Any], key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
     try:
         value = int(limits.get(key, default))
@@ -53,14 +71,22 @@ def _limit_float(limits: dict[str, Any], key: str, default: float, *, minimum: f
 
 def _normalize_risk_limits(active: Any, fallback_limits: dict[str, Any]) -> dict[str, Any]:
     fallback = dict(fallback_limits or {})
-    if not isinstance(active, dict):
-        return fallback
     merged = dict(fallback)
-    merged.update(active)
-    merged["max_concurrent_bots"] = _limit_int(merged, "max_concurrent_bots", int(fallback.get("max_concurrent_bots", 4) or 4), minimum=1, maximum=100000)
-    merged["max_daily_dd_usdt"] = _limit_float(merged, "max_daily_dd_usdt", float(fallback.get("max_daily_dd_usdt", 200.0) or 200.0), minimum=0.0, maximum=1e12)
-    merged["cooldown_after_loss_min"] = _limit_int(merged, "cooldown_after_loss_min", int(fallback.get("cooldown_after_loss_min", 30) or 30), minimum=0, maximum=7 * 24 * 60)
-    merged["max_symbol_bots"] = _limit_int(merged, "max_symbol_bots", int(fallback.get("max_symbol_bots", 1) or 1), minimum=1, maximum=100000)
+    if isinstance(active, dict):
+        merged.update(active)
+
+    # Defaults тоже нормализуем через безопасные helpers: если fallback пришёл из
+    # ENV/legacy-конфига с ``NaN`` или строковым мусором, runtime не должен
+    # падать и не должен возвращать наружу поломанные лимиты как есть.
+    default_max_concurrent = _safe_default_int(fallback.get("max_concurrent_bots", 4) or 4, 4)
+    default_max_daily_dd = _safe_default_float(fallback.get("max_daily_dd_usdt", 200.0) or 200.0, 200.0)
+    default_cooldown_min = _safe_default_int(fallback.get("cooldown_after_loss_min", 30) or 30, 30)
+    default_max_symbol_bots = _safe_default_int(fallback.get("max_symbol_bots", 1) or 1, 1)
+
+    merged["max_concurrent_bots"] = _limit_int(merged, "max_concurrent_bots", default_max_concurrent, minimum=1, maximum=100000)
+    merged["max_daily_dd_usdt"] = _limit_float(merged, "max_daily_dd_usdt", default_max_daily_dd, minimum=0.0, maximum=1e12)
+    merged["cooldown_after_loss_min"] = _limit_int(merged, "cooldown_after_loss_min", default_cooldown_min, minimum=0, maximum=7 * 24 * 60)
+    merged["max_symbol_bots"] = _limit_int(merged, "max_symbol_bots", default_max_symbol_bots, minimum=1, maximum=100000)
     return merged
 
 def day_start_ts_utc() -> int:

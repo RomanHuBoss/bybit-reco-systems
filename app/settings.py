@@ -36,11 +36,26 @@ def _env(key: str, default: str | None = None) -> str:
 
 def _env_json_dict(key: str, default_json: str) -> dict:
     raw = _env(key, default_json)
+
+    # Python stdlib по умолчанию принимает ``NaN``/``Infinity`` как будто это
+    # валидный JSON. Для risk-конфига это опасно: не-finite значения могут
+    # отключить отдельные лимиты через ``nan``-сравнения или уронить дальнейшую
+    # нормализацию. Здесь принимаем только strict JSON и при любом отклонении
+    # откатываемся к безопасному default.
+    def _strict_json_loads(payload: str) -> dict:
+        def _reject_non_finite(token: str):
+            raise ValueError(f"non-finite JSON token is not allowed: {token}")
+
+        loaded = json.loads(payload, parse_constant=_reject_non_finite)
+        if not isinstance(loaded, dict):
+            raise ValueError("json payload must be an object")
+        return loaded
+
     try:
-        loaded = json.loads(raw)
+        loaded = _strict_json_loads(raw)
     except Exception:
-        loaded = json.loads(default_json)
-    return loaded if isinstance(loaded, dict) else json.loads(default_json)
+        loaded = _strict_json_loads(default_json)
+    return loaded
 
 
 def _resolve_project_path(raw: str) -> str:
