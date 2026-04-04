@@ -1722,3 +1722,97 @@ def test_api_stop_bot_is_idempotent(client_and_conn):
     cur = conn.execute("SELECT COUNT(*) AS c FROM decision_log WHERE action='BOT_STOPPED' AND details_json LIKE ?", (f'%"bot_id": "{bot_id}"%',))
     row = cur.fetchone()
     assert int(row['c'] or 0) == 1
+
+
+def test_api_risk_limits_rejects_non_finite_nested_json(client_and_conn):
+    client, conn = client_and_conn
+
+    resp = client.post(
+        '/api/v1/risk/limits',
+        content='{"version":"bad-nan","limits":{"max_daily_dd_usdt":NaN,"nested":{"x":1}}}',
+        headers={'X-API-Key': 'test-admin-key', 'content-type': 'application/json'},
+    )
+    assert resp.status_code == 422
+    assert 'limits contains non-finite number' in resp.json()['detail']
+
+    active = db.get_active_risk_limits(conn)
+    assert active is not None
+    assert active['max_daily_dd_usdt'] == pytest.approx(200.0)
+
+
+def test_api_trade_rejects_non_finite_nested_meta_payload(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-meta-nan',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-api-meta-nan/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert exec_resp.status_code == 200
+    bot_id = exec_resp.json()['bot_id']
+
+    resp = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        content='{"trade_id":"T-api-meta-nan","ts":%d,"pnl":1.0,"fee":0.1,"meta":{"fills":{"maker":NaN}}}' % (ts_now + 10),
+        headers={'X-API-Key': 'test-admin-key', 'content-type': 'application/json'},
+    )
+    assert resp.status_code == 422
+    assert 'meta contains non-finite number' in resp.json()['detail']
+    assert db.list_trades(conn) == []
+
+
+def test_api_sentiment_rejects_non_finite_nested_sources_payload(client_and_conn):
+    client, conn = client_and_conn
+
+    resp = client.post(
+        '/api/v1/sentiment',
+        content='{"scope":"global","key":"crypto","ts":1700000000,"sentiment":0.1,"velocity":0.01,"volume":1,"sources":{"rss":NaN},"tags":["macro"]}',
+        headers={'X-API-Key': 'test-admin-key', 'content-type': 'application/json'},
+    )
+    assert resp.status_code == 422
+    assert 'sources contains non-finite number' in resp.json()['detail']
+    assert db.get_sentiment_series(conn, 'global', 'crypto', limit=10) == []
+
+
+def test_api_risk_status_sanitizes_legacy_non_finite_limits_json(client_and_conn):
+    client, conn = client_and_conn
+
+    conn.execute('UPDATE risk_limits SET is_active=0')
+    conn.execute(
+        'INSERT INTO risk_limits(version, limits_json, is_active, created_ts) VALUES(?,?,?,?)',
+        ('legacy-nan', '{"max_daily_dd_usdt": NaN, "max_concurrent_bots": 2}', 1, int(time.time())),
+    )
+    conn.commit()
+
+    resp = client.get('/api/v1/risk/status')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['limits']['max_concurrent_bots'] == 2
+    assert body['limits']['max_daily_dd_usdt'] == pytest.approx(200.0)

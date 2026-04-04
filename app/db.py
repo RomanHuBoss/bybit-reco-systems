@@ -73,14 +73,36 @@ def begin_immediate(conn: sqlite3.Connection) -> None:
     if not in_txn:
         conn.execute("BEGIN IMMEDIATE")
 
+def _json_dumps_safe(value: Any, *, canonical: bool = False) -> str:
+    """JSON-сериализация, не допускающая non-finite числа.
+
+    SQLite хранит JSON как TEXT, поэтому `NaN`/`Infinity` легко проскальзывают как
+    невалидный с точки зрения RFC payload и потом начинают по-разному вести себя
+    в Python, HTTP-ответах и JS-клиенте. Для проектной целостности храним только
+    стандартный JSON и fail-closed на любом non-finite значении.
+    """
+    kwargs = {
+        "ensure_ascii": False,
+        "allow_nan": False,
+    }
+    if canonical:
+        kwargs.update({"sort_keys": True, "separators": (",", ":")})
+    try:
+        return json.dumps(value, **kwargs)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("json payload must not contain non-finite numbers") from exc
+
+
 def _json_dumps_canonical(value: Any) -> str:
     """Стабильная JSON-сериализация для идемпотентных сравнений.
 
     Для audit/idempotency нам важна семантика payload, а не случайный порядок
     ключей в Python-словаре или в повторном HTTP-запросе. Поэтому все JSON-поля,
     участвующие в duplicate-detection, приводим к каноническому виду.
+    Одновременно запрещаем `NaN`/`Infinity`, чтобы duplicate-detection не работал
+    поверх невалидного JSON.
     """
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return _json_dumps_safe(value, canonical=True)
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -263,7 +285,7 @@ def _commit_write_with_retry(
 
 
 def set_app_config_json(conn: sqlite3.Connection, key: str, value: Any, *, commit: bool = True) -> None:
-    params = (str(key), json.dumps(value, ensure_ascii=False), now_ts())
+    params = (str(key), _json_dumps_safe(value), now_ts())
     if commit:
         _commit_write_with_retry(
             conn,
@@ -316,14 +338,14 @@ def insert_tickers(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, comm
 def insert_features(conn: sqlite3.Connection, venue: str, symbol: str, ts: int, features: dict[str, Any]) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO features(venue,symbol,ts,features_json) VALUES(?,?,?,?)""",
-        (venue, symbol, ts, json.dumps(features, ensure_ascii=False)),
+        (venue, symbol, ts, _json_dumps_safe(features)),
     )
     conn.commit()
 
 def insert_regime(conn: sqlite3.Connection, ts: int, regime: dict[str, Any]) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO market_regime(ts, regime_json) VALUES(?,?)""",
-        (ts, json.dumps(regime, ensure_ascii=False)),
+        (ts, _json_dumps_safe(regime)),
     )
     conn.commit()
 
@@ -335,9 +357,9 @@ def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]],
         payload.append((
             r["rec_id"], r["ts"], r["venue"], r["symbol"], r["bot_type"], r["direction"], r["account_mode"], r["margin_mode"],
             r["score"], r["confidence"], r["expected_rr"], r["risk_score"],
-            json.dumps(r["params"], ensure_ascii=False),
-            json.dumps(r["reasons"], ensure_ascii=False),
-            json.dumps(r["blocks"], ensure_ascii=False),
+            _json_dumps_safe(r["params"]),
+            _json_dumps_safe(r["reasons"]),
+            _json_dumps_safe(r["blocks"]),
             r["status"], r["ttl_sec"], r["model_version"], r["features_ref_ts"],
             publication_root_rec_id,
             is_outcome_label_root,
@@ -363,7 +385,7 @@ def log_decision(
     *,
     commit: bool = True,
 ) -> None:
-    params = (now_ts(), action, rec_id, operator, json.dumps(details, ensure_ascii=False))
+    params = (now_ts(), action, rec_id, operator, _json_dumps_safe(details))
     if commit:
         _commit_write_with_retry(
             conn,
@@ -991,7 +1013,7 @@ def update_recommendation_review(
             new_status = status
     conn.execute(
         "UPDATE recommendations SET reasons_json=?, status=? WHERE rec_id=?",
-        (json.dumps(reasons, ensure_ascii=False), new_status, rec_id),
+        (_json_dumps_safe(reasons), new_status, rec_id),
     )
     conn.commit()
     return True
@@ -1062,7 +1084,7 @@ def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str,
         conn.execute("""UPDATE risk_limits SET is_active=0""")
     conn.execute(
         """INSERT INTO risk_limits(version, limits_json, is_active, created_ts) VALUES(?,?,?,?)""",
-        (version, json.dumps(limits, ensure_ascii=False), 1 if is_active else 0, now_ts()),
+        (version, _json_dumps_safe(limits), 1 if is_active else 0, now_ts()),
     )
     if commit:
         conn.commit()
@@ -1088,7 +1110,7 @@ def insert_sentiment_point(
     conn.execute(
         """INSERT OR REPLACE INTO sentiment(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)
            VALUES(?,?,?,?,?,?,?,?)""",
-        (scope, key, ts, float(sentiment), float(velocity), int(volume), json.dumps(sources, ensure_ascii=False), json.dumps(tags, ensure_ascii=False)),
+        (scope, key, ts, float(sentiment), float(velocity), int(volume), _json_dumps_safe(sources), _json_dumps_safe(tags)),
     )
     if commit:
         conn.commit()
@@ -1108,8 +1130,8 @@ def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]
                 float(row["sentiment"]),
                 float(row.get("velocity") or 0.0),
                 int(row.get("volume") or 0),
-                json.dumps(row.get("sources") or {}, ensure_ascii=False),
-                json.dumps(row.get("tags") or [], ensure_ascii=False),
+                _json_dumps_safe(row.get("sources") or {}),
+                _json_dumps_safe(row.get("tags") or []),
             )
             for row in rows
         ],

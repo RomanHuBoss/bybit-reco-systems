@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -75,6 +76,8 @@ def _env_float(key: str, default: float, *, minimum: float | None = None, maximu
     try:
         value = float(str(raw if raw not in (None, '') else default).strip())
     except Exception:
+        value = float(default)
+    if not math.isfinite(value):
         value = float(default)
     if minimum is not None:
         value = max(float(minimum), value)

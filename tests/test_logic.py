@@ -2354,6 +2354,7 @@ def test_load_settings_clamps_and_defaults_invalid_numeric_env(monkeypatch: pyte
     monkeypatch.setenv("STALE_DATA_MAX_SEC", "-5")
     monkeypatch.setenv("TOP_N", "-100")
     monkeypatch.setenv("MIN_CONF_TO_RECOMMEND", "1.7")
+    monkeypatch.setenv("MIN_SCORE_TO_RECOMMEND", "nan")
     monkeypatch.setenv("TAKER_FEE_BPS_LINEAR", "-9")
     monkeypatch.setenv("OUTCOME_HORIZON_FALLBACK_SEC", "nan")
     monkeypatch.setenv("SENTIMENT_INTERVAL_SEC", "3")
@@ -2368,6 +2369,7 @@ def test_load_settings_clamps_and_defaults_invalid_numeric_env(monkeypatch: pyte
     assert settings.stale_data_max_sec == 60
     assert settings.top_n == 1
     assert settings.min_conf_to_recommend == 1.0
+    assert settings.min_score_to_recommend == pytest.approx(0.08)
     assert settings.taker_fee_bps_linear == 0.0
     assert settings.outcome_horizon_fallback_sec == 900
     assert settings.sentiment_interval_sec == 10

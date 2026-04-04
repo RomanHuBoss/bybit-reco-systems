@@ -188,6 +188,29 @@ def _bounded_probability(value: float | None, *, default: float) -> float:
     return max(0.0, min(num, 1.0))
 
 
+def _ensure_json_payload_has_only_finite_numbers(value: Any, *, field_name: str, path: str = "") -> None:
+    current_path = path or field_name
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise HTTPException(status_code=422, detail=f"{field_name} contains non-finite number at {current_path}")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{current_path}.{key}" if current_path else str(key)
+            _ensure_json_payload_has_only_finite_numbers(item, field_name=field_name, path=child)
+        return
+    if isinstance(value, (list, tuple)):
+        for idx, item in enumerate(value):
+            child = f"{current_path}[{idx}]"
+            _ensure_json_payload_has_only_finite_numbers(item, field_name=field_name, path=child)
+        return
+    # Pydantic may already coerce most JSON scalars, но на всякий случай не храним
+    # неожиданные типы в operator-facing JSON payload'ах.
+    raise HTTPException(status_code=422, detail=f"{field_name} contains unsupported value at {current_path}")
+
+
 def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: str, symbol: str, ts: int | None, pnl: float, fee: float, meta: dict[str, Any]) -> bool:
     if not existing:
         return False
@@ -914,6 +937,7 @@ def api_risk_status() -> dict[str, Any]:
 @app.post("/api/v1/risk/limits")
 def api_update_risk_limits(req: UpdateRiskLimitsRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
+    _ensure_json_payload_has_only_finite_numbers(req.limits, field_name="limits")
     with closing(_get_conn()) as conn:
         try:
             db.begin_immediate(conn)
@@ -994,6 +1018,7 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
 @app.post("/api/v1/bots/{bot_id}/trades")
 def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
+    _ensure_json_payload_has_only_finite_numbers(req.meta, field_name="meta")
     with closing(_get_conn()) as conn:
         db.begin_immediate(conn)
         bot = db.get_bot_instance(conn, bot_id)
@@ -1192,6 +1217,7 @@ def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
 @app.post("/api/v1/sentiment")
 def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
+    _ensure_json_payload_has_only_finite_numbers(req.sources, field_name="sources")
     with closing(_get_conn()) as conn:
         ts = req.ts or int(time.time())
         try:

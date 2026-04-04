@@ -9,6 +9,9 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- **2026-04-04 — дополнительный аудит JSON-целостности operator payload'ов и risk-конфигурации.** Закрыт скрытый класс дефектов, при котором mutating API и DB-слой принимали невалидный JSON с `NaN` / `Infinity` во вложенных полях (`trade.meta`, `sentiment.sources`, `risk_limits`). Такие значения могли тихо попасть в SQLite как не-RFC JSON, а для risk limits — ещё и фактически отключить отдельные ограничения через `nan`-сравнения.
+- Теперь operator-facing JSON persist'ится только в **strict JSON** (`allow_nan=False`), а mutating endpoints fail-closed возвращают `422`, если во вложенном payload найдено non-finite число.
+- Дополнительно введён защитный fallback для legacy/отравленных risk limits из старой БД: `NaN` в `max_daily_dd_usdt` и других float-лимитах больше не проносится в runtime как есть, а откатывается к безопасному default.
 - **2026-04-04 — дополнительный аудит write-serialization и operator-action integrity.** Все mutating API-пути (`execute recommendation`, `ignore recommendation`, `record trade`, `stop bot`, `risk limits`, `sentiment put`) теперь начинают работу с `BEGIN IMMEDIATE`, чтобы read-check-write решения принимались под захваченным write-lock, а не на потенциально устаревшем pre-write snapshot SQLite.
 - Исполнение рекомендации больше не может оставить после себя `running`-бота при тихом провале статусного перехода `recommended/active -> executed`: если финальная фиксация recommendation-status не состоялась, создание бота целиком откатывается.
 - `POST /api/v1/bots/{bot_id}/trades` с `stop_bot=true` теперь fail-closed и проверяет, что перевод бота в `stopped` действительно состоялся. Раньше редкая silent-false ветка могла зафиксировать trade, записать stop metadata в state и даже вернуть `bot_status="stopped"`, хотя сама строка bot instance оставалась `running`.
@@ -118,7 +121,8 @@
 - операторский UI;
 - REST API для рекомендаций, risk status, sentiment, bot lifecycle и trade ingestion;
 - SQLite persistence с decision log и outcome history;
-- краткая инструкция оператора в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`.
+- краткая инструкция оператора в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`;
+- технический аудит этой ревизии в `docs/audit_2026-04-04.md`.
 
 ## Ограничения дизайна
 - sentiment pipeline остаётся **эвристическим**, а не newsroom/LLM/NER-уровня;
@@ -157,7 +161,7 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `201 passed`
+- `205 passed`
 - покрытие `app/*` — `78%`
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows.
 - smoke/coverage прогоны очищены от известных `ResourceWarning: unclosed database` в тестовом harness; верифицировано, что остаётся только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`.

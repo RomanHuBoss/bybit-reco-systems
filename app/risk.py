@@ -42,6 +42,8 @@ def _limit_float(limits: dict[str, Any], key: str, default: float, *, minimum: f
         value = float(limits.get(key, default))
     except Exception:
         value = float(default)
+    if not math.isfinite(value):
+        value = float(default)
     if minimum is not None:
         value = max(float(minimum), value)
     if maximum is not None:
