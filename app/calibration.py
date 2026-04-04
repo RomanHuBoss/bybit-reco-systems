@@ -24,6 +24,35 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def _strict_json_dumps(value: Any) -> str:
+    """Строгая JSON-сериализация без NaN/Infinity.
+
+    Калибраторы влияют на confidence всей системы, поэтому даже единичный
+    невалидный коэффициент нельзя тихо сохранять в SQLite как legacy-JSON.
+    """
+    try:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("calibration payload must contain only finite JSON numbers") from exc
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return float(num)
+
+
+def _finite_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
 # ── Platt scaler ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -481,7 +510,7 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
     }
     conn.execute(
         "INSERT OR REPLACE INTO app_config(key, value_json, updated_ts) VALUES (?, ?, ?)",
-        (key, json.dumps(obj), int(__import__("time").time())),
+        (key, _strict_json_dumps(obj), int(__import__("time").time())),
     )
     conn.commit()
 
@@ -492,21 +521,43 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
     if not r:
         return None
     try:
-        obj  = json.loads(r["value_json"])
+        obj = json.loads(r["value_json"])
+        if not isinstance(obj, dict):
+            return None
+        raw_coef = obj.get("coef") or []
+        if not isinstance(raw_coef, list):
+            return None
+        coef: list[float] = []
+        for item in raw_coef:
+            num = _finite_float(item)
+            if num is None:
+                return None
+            coef.append(num)
+
+        intercept = _finite_float(obj.get("intercept", 0.0))
+        if intercept is None:
+            return None
+
         platt_obj = obj.get("platt") or {}
+        if not isinstance(platt_obj, dict):
+            return None
+        platt_a = _finite_float(platt_obj.get("a", 1.0))
+        platt_b = _finite_float(platt_obj.get("b", 0.0))
+        if platt_a is None or platt_b is None:
+            return None
         platt = PlattScaler(
-            a=float(platt_obj.get("a", 1.0)),
-            b=float(platt_obj.get("b", 0.0)),
+            a=platt_a,
+            b=platt_b,
             fitted=bool(platt_obj.get("fitted", False)),
-            saved_ts=int(platt_obj.get("ts", 0)),
+            saved_ts=_finite_int(platt_obj.get("ts", 0), 0),
         )
         return LogRegScaler(
-            coef=list(obj.get("coef") or []),
-            intercept=float(obj.get("intercept", 0.0)),
+            coef=coef,
+            intercept=intercept,
             platt=platt,
             fitted=bool(obj.get("fitted", False)),
-            saved_ts=int(obj.get("ts", 0)),
-            n_samples=int(obj.get("n_samples", 0)),
+            saved_ts=_finite_int(obj.get("ts", 0), 0),
+            n_samples=max(0, _finite_int(obj.get("n_samples", 0), 0)),
         )
     except Exception:
         return None
@@ -522,7 +573,7 @@ def save_platt_to_db(conn, key: str, scaler: PlattScaler) -> None:
     }
     conn.execute(
         "INSERT OR REPLACE INTO app_config(key, value_json, updated_ts) VALUES (?, ?, ?)",
-        (key, json.dumps(obj), int(__import__("time").time())),
+        (key, _strict_json_dumps(obj), int(__import__("time").time())),
     )
     conn.commit()
 
@@ -534,11 +585,17 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
         return None
     try:
         obj = json.loads(r["value_json"])
+        if not isinstance(obj, dict):
+            return None
+        a = _finite_float(obj.get("a", 1.0))
+        b = _finite_float(obj.get("b", 0.0))
+        if a is None or b is None:
+            return None
         return PlattScaler(
-            a=float(obj.get("a", 1.0)),
-            b=float(obj.get("b", 0.0)),
+            a=a,
+            b=b,
             fitted=bool(obj.get("fitted", False)),
-            saved_ts=int(obj.get("ts", 0)),
+            saved_ts=_finite_int(obj.get("ts", 0), 0),
         )
     except Exception:
         return None

@@ -1297,7 +1297,26 @@ def _build_trade_plan(
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
+    """Безопасный clamp без превращения NaN в «идеальный» bound.
+
+    Обычная конструкция max(lo, min(hi, x)) плохо ведёт себя на NaN: для диапазона
+    [0, 1] она возвращает 1.0, то есть испорченное значение может незаметно стать
+    максимально «хорошим». Для рекомендаций это опасно: NaN в confidence/score не
+    должен эскалироваться в bullish signal. Поэтому NaN уводим в нейтральный ноль,
+    если ноль лежит внутри диапазона; иначе — в нижнюю границу.
+    """
+    try:
+        num = float(x)
+    except Exception:
+        num = float('nan')
+    if math.isnan(num):
+        neutral = 0.0 if float(lo) <= 0.0 <= float(hi) else float(lo)
+        return float(neutral)
+    if num <= float(lo):
+        return float(lo)
+    if num >= float(hi):
+        return float(hi)
+    return float(num)
 
 def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))

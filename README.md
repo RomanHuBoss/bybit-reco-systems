@@ -9,6 +9,8 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- **2026-04-04 — дополнительный аудит калибраторов confidence и математических guardrails.** Закрыт скрытый класс дефектов, при котором legacy/poisoned calibration rows с `NaN` в коэффициентах или Platt-параметрах могли загрузиться из `app_config`, а общая функция clamp превращала `NaN` в верхнюю границу диапазона. Для confidence это означало риск ложного раздувания оценки вплоть до `1.0` вместо fail-safe поведения.
+- Persistence calibration-моделей переведён на **strict JSON** (`allow_nan=False`), загрузка legacy calibrator rows с non-finite полями теперь fail-closed возвращает `None`, а NaN в recommender clamp больше не эскалируется в «идеальный» сигнал и уходит в безопасное нейтральное значение.
 - **2026-04-04 — дополнительный аудит JSON-целостности operator payload'ов и risk-конфигурации.** Закрыт скрытый класс дефектов, при котором mutating API и DB-слой принимали невалидный JSON с `NaN` / `Infinity` во вложенных полях (`trade.meta`, `sentiment.sources`, `risk_limits`). Такие значения могли тихо попасть в SQLite как не-RFC JSON, а для risk limits — ещё и фактически отключить отдельные ограничения через `nan`-сравнения.
 - Теперь operator-facing JSON persist'ится только в **strict JSON** (`allow_nan=False`), а mutating endpoints fail-closed возвращают `422`, если во вложенном payload найдено non-finite число.
 - Дополнительно введён защитный fallback для legacy/отравленных risk limits из старой БД: `NaN` в `max_daily_dd_usdt` и других float-лимитах больше не проносится в runtime как есть, а откатывается к безопасному default.
@@ -161,7 +163,7 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `205 passed`
+- `208 passed`
 - покрытие `app/*` — `78%`
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows.
 - smoke/coverage прогоны очищены от известных `ResourceWarning: unclosed database` в тестовом harness; верифицировано, что остаётся только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`.
@@ -175,8 +177,9 @@ python -m py_compile app/*.py tests/*.py main.py
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
 - `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
-- `ADMIN_API_KEY` — ключ для mutating endpoints;
+- `ADMIN_API_KEY` — ключ для mutating endpoints; настоятельно рекомендуется задать перед любым запуском вне localhost/стенда, иначе mutating API остаётся открытым по design для локальной разработки;
 - `COLLECTOR_MAX_WORKERS`, `FUTURES_COLLECT_MAX_WORKERS` — bounded parallelism for collector REST fetches;
+- `RISK_DAY_TZ` — часовой пояс дневной отсечки для daily PnL / drawdown limits (по умолчанию `UTC`);
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.
 
 ### Опциональный локальный LLM-reviewer
@@ -221,6 +224,8 @@ python -m py_compile app/*.py tests/*.py main.py
 - `GET /metrics`
 
 ### Mutating (`X-API-Key`, если задан `ADMIN_API_KEY`)
+> Для любого окружения с сетевым доступом следует считать `ADMIN_API_KEY` обязательным operational minimum. Если ключ не задан, проект сознательно оставляет mutating endpoints открытыми ради локального/dev-режима.
+
 - `POST /api/v1/recommendations/{rec_id}/action` с `{"action":"executed|ignored","operator":"..."}`
 - `POST /api/v1/bots/{bot_id}/trades`
 - `POST /api/v1/bots/{bot_id}/stop`
