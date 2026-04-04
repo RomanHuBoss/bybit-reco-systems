@@ -9,6 +9,8 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- **2026-04-04 — дополнительный аудит feature-engineering и LLM payload integrity.** Закрыт скрытый класс дефектов, при котором legacy/poisoned OHLCV rows или промежуточные feature snapshots с `NaN` / `Infinity` могли дожить до расчёта признаков и текстового payload для локального LLM-reviewer. Это создавало два риска: тихое заражение scorer/diagnostics нечисловыми значениями и отправку в reviewer не-RFC JSON с JavaScript-токенами `NaN`/`Infinity`.
+- Feature extractor теперь фильтрует невалидные свечи fail-safe, не использует crossed/нечисловые quotes для spread-оценки и возвращает `None`, если после санации осталось меньше минимально допустимой истории. LLM payload перед сериализацией проходит рекурсивную strict-JSON санацию, а все reviewer-запросы используют `allow_nan=False`.
 - **2026-04-04 — дополнительный аудит калибраторов confidence и математических guardrails.** Закрыт скрытый класс дефектов, при котором legacy/poisoned calibration rows с `NaN` в коэффициентах или Platt-параметрах могли загрузиться из `app_config`, а общая функция clamp превращала `NaN` в верхнюю границу диапазона. Для confidence это означало риск ложного раздувания оценки вплоть до `1.0` вместо fail-safe поведения.
 - Persistence calibration-моделей переведён на **strict JSON** (`allow_nan=False`), загрузка legacy calibrator rows с non-finite полями теперь fail-closed возвращает `None`, а NaN в recommender clamp больше не эскалируется в «идеальный» сигнал и уходит в безопасное нейтральное значение.
 - **2026-04-04 — дополнительный аудит JSON-целостности operator payload'ов и risk-конфигурации.** Закрыт скрытый класс дефектов, при котором mutating API и DB-слой принимали невалидный JSON с `NaN` / `Infinity` во вложенных полях (`trade.meta`, `sentiment.sources`, `risk_limits`). Такие значения могли тихо попасть в SQLite как не-RFC JSON, а для risk limits — ещё и фактически отключить отдельные ограничения через `nan`-сравнения.
@@ -163,7 +165,7 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `208 passed`
+- `211 passed`
 - покрытие `app/*` — `78%`
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows.
 - smoke/coverage прогоны очищены от известных `ResourceWarning: unclosed database` в тестовом harness; верифицировано, что остаётся только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`.

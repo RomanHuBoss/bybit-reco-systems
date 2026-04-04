@@ -47,6 +47,43 @@ def _trim_text(value: Any, limit: int = 600) -> str | None:
     return s if len(s) <= limit else s[:limit]
 
 
+def _sanitize_jsonable(value: Any) -> Any:
+    """Рекурсивно переводит payload в strict JSON-safe вид.
+
+    LLM-reviewer общается с внешним процессом через JSON. Non-finite числа здесь
+    опасны сразу в двух смыслах: они нарушают RFC JSON и могут замаскировать
+    реально испорченный feature snapshot под будто бы валидный prompt. Поэтому
+    NaN/inf не сериализуем вообще — заменяем на None и сохраняем остальную
+    структуру payload без «улучшения» значений.
+    """
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _sanitize_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_jsonable(v) for v in value]
+    try:
+        num = float(value)
+    except Exception:
+        return value
+    return num if math.isfinite(num) else None
+
+
+def _strict_json_dumps(value: Any) -> str:
+    return json.dumps(
+        _sanitize_jsonable(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
 @dataclass
 class LLMReviewResult:
     provider: str
@@ -283,7 +320,7 @@ def build_review_payload(
     oi = reasons.get("open_interest") or {}
     fast_veto = reasons.get("fast_veto") or {}
 
-    return {
+    return _sanitize_jsonable({
         "schema_version": PROMPT_VERSION,
         "candidate": {
             "venue": rec.get("venue"),
@@ -337,7 +374,7 @@ def build_review_payload(
             },
             "candles_by_tf": {tf_label(tf): rows for tf, rows in sorted(candles_by_tf.items()) if rows},
         },
-    }
+    })
 
 
 class OllamaCandleReviewer:
@@ -389,7 +426,7 @@ class OllamaCandleReviewer:
             **self._base_request_fields(),
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+                {"role": "user", "content": _strict_json_dumps(payload)},
             ],
         }
         data, meta = self._post_json("/api/chat", req)
@@ -408,7 +445,7 @@ class OllamaCandleReviewer:
         )
 
     def _request_generate(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        prompt = SYSTEM_PROMPT + "\n\nINPUT:\n" + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        prompt = SYSTEM_PROMPT + "\n\nINPUT:\n" + _strict_json_dumps(payload)
         req = {
             **self._base_request_fields(),
             "prompt": prompt,
@@ -439,7 +476,7 @@ class OllamaCandleReviewer:
             "base_url": self.base_url,
             "timeout_sec": self.timeout_sec,
             "keep_alive": self.keep_alive,
-            "payload_bytes": len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+            "payload_bytes": len(_strict_json_dumps(payload).encode("utf-8")),
         }
         try:
             content: str | None = None

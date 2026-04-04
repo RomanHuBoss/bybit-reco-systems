@@ -13,7 +13,7 @@ from app import db
 from app import recommender as recommender_module
 from app.direction import aggregate_direction
 from app.outcomes import _get_first_tradeable_candle_after
-from app.llm_review import LLMReviewResult, OllamaCandleReviewer, parse_review_content, parse_tf_secs
+from app.llm_review import LLMReviewResult, OllamaCandleReviewer, build_review_payload, parse_review_content, parse_tf_secs
 from app.recommender import (
     _apply_llm_reviewer,
     _advance_persistence_gate,
@@ -2956,3 +2956,80 @@ def test_collector_uses_incremental_hot_path_and_local_tf_derivation(tmp_path: P
     assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 14400, limit=5)
 
     conn.close()
+
+
+def test_compute_features_skips_poisoned_rows_but_keeps_valid_tail():
+    rows = []
+    for i in range(40):
+        rows.append({"ts": i + 1, "close": 100.0 + i, "high": 101.0 + i, "low": 99.0 + i, "volume": 10.0 + i})
+    rows[5]["close"] = float("nan")
+    rows[7]["volume"] = float("inf")
+
+    feat = compute_features_from_ohlcv(rows, {"bid": float("nan"), "ask": 101.0})
+
+    assert feat is not None
+    assert math.isfinite(feat["rv"])
+    assert math.isfinite(feat["atr"])
+    assert feat["spread_bps"] is None
+    assert feat["bid"] is None
+    assert feat["ask"] is None
+    assert feat["ts_last"] == 40
+
+
+
+def test_compute_features_fail_closed_when_valid_history_drops_below_minimum():
+    rows = []
+    for i in range(30):
+        rows.append({"ts": i + 1, "close": 100.0 + i, "high": 101.0 + i, "low": 99.0 + i, "volume": 10.0})
+    rows[0]["close"] = float("nan")
+
+    feat = compute_features_from_ohlcv(rows, None)
+
+    assert feat is None
+
+
+
+def test_ollama_reviewer_sanitizes_nonfinite_payload_before_serialization():
+    class FakeReviewer(OllamaCandleReviewer):
+        def __init__(self):
+            super().__init__(base_url="http://127.0.0.1:11434", model="fake-llm", timeout_sec=5)
+            self.captured_payload = None
+
+        def _request_chat(self, payload):
+            self.captured_payload = payload
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            return (
+                '{"thesis_direction":"neutral","execution_direction":"neutral","confidence":0.51,"regime_view":"range","risk_flags":[],"summary":"strict json ok"}',
+                {"endpoint": "/api/chat", "done": True, "done_reason": "stop", "eval_count": 1},
+            )
+
+    payload = build_review_payload(
+        rec={
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "status": "recommended",
+            "score": float("nan"),
+            "confidence": 0.7,
+            "expected_rr": 1.2,
+            "risk_score": 0.3,
+            "params": {"grid_levels": 8, "grid_spacing_pct": 1.1, "price_range_lower": 95.0, "price_range_upper": 105.0},
+            "reasons": {"execution_constraints": {}, "funding": {}, "open_interest": {}, "fast_veto": {}},
+        },
+        feature_snapshot={"atr_pct": float("nan"), "range_score": 0.8},
+        direction_agg={"direction": "long", "raw_direction": "long", "scores": {"all": float("inf")}},
+        market_shock={"state": "normal", "guard_blocks_neutral": False},
+        sentiment_summary={"effective_sentiment": float("nan")},
+        candles_by_tf={60: [[1, 100.0, 101.0, 99.0, float("nan"), 10.0]]},
+    )
+    reviewer = FakeReviewer()
+
+    result = reviewer.review(payload)
+
+    assert result.status == "ok"
+    assert reviewer.captured_payload is not None
+    assert reviewer.captured_payload["candidate"]["score"] is None
+    assert reviewer.captured_payload["market_context"]["feature_snapshot"]["atr_pct"] is None
+    assert reviewer.captured_payload["market_context"]["direction_agg"]["score_all"] is None
+    assert reviewer.captured_payload["market_context"]["candles_by_tf"]["1m"][0][4] is None

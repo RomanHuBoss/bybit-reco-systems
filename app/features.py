@@ -3,13 +3,16 @@ from __future__ import annotations
 import math
 from typing import Any
 
+
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
 
 def _pct(a: float, b: float) -> float:
     if b == 0:
         return 0.0
     return a / b
+
 
 def _std(xs: list[float]) -> float:
     if len(xs) < 2:
@@ -18,21 +21,69 @@ def _std(xs: list[float]) -> float:
     v = sum((x - m) ** 2 for x in xs) / (len(xs) - 1)
     return math.sqrt(v)
 
+
 def _sma(xs: list[float], n: int) -> float:
     if not xs:
         return 0.0
     n = max(1, min(n, len(xs)))
     return sum(xs[-n:]) / n
 
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return num
+
+
+def _normalize_ticker_quotes(ticker: dict[str, Any] | None) -> tuple[float | None, float | None, float | None]:
+    if not ticker:
+        return None, None, None
+    bid = _finite_float(ticker.get("bid"))
+    ask = _finite_float(ticker.get("ask"))
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return None, None, None
+    mid = (bid + ask) / 2.0
+    spread_bps = (ask - bid) / mid * 1e4 if mid > 0 else None
+    return bid, ask, spread_bps
+
+
 def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ticker: dict[str, Any] | None) -> dict[str, Any] | None:
     # expects rows ordered old->new with keys close/high/low/volume/ts
     if not ohlcv_rows or len(ohlcv_rows) < 30:
         return None
 
-    closes = [float(r["close"]) for r in ohlcv_rows]
-    highs = [float(r["high"]) for r in ohlcv_rows]
-    lows = [float(r["low"]) for r in ohlcv_rows]
-    vols = [float(r["volume"]) for r in ohlcv_rows]
+    normalized_rows: list[dict[str, float | int]] = []
+    # Защита от «отравленных» исторических строк: legacy NaN/inf не должны тихо
+    # превращаться в NaN-признаки и дальше раздувать scorer/LLM payload. Плохие
+    # свечи просто выкидываем; если валидной истории осталось мало — fail-closed.
+    for row in ohlcv_rows:
+        close = _finite_float(row.get("close"))
+        high = _finite_float(row.get("high"))
+        low = _finite_float(row.get("low"))
+        volume = _finite_float(row.get("volume"))
+        try:
+            ts = int(row["ts"])
+        except Exception:
+            continue
+        if (
+            close is None or high is None or low is None or volume is None
+            or close <= 0 or high <= 0 or low <= 0 or volume < 0
+            or high < low
+        ):
+            continue
+        normalized_rows.append({"ts": ts, "close": close, "high": high, "low": low, "volume": volume})
+
+    if len(normalized_rows) < 30:
+        return None
+
+    closes = [float(r["close"]) for r in normalized_rows]
+    highs = [float(r["high"]) for r in normalized_rows]
+    lows = [float(r["low"]) for r in normalized_rows]
+    vols = [float(r["volume"]) for r in normalized_rows]
 
     last = closes[-1]
     rets = []
@@ -66,14 +117,7 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
     v_z = (vols[-1] - v_mean) / (v_std + 1e-9)
 
     # Spread (bps) from ticker
-    spread_bps = None
-    bid = ask = None
-    if ticker:
-        bid = ticker.get("bid")
-        ask = ticker.get("ask")
-        if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
-            mid = (bid + ask) / 2
-            spread_bps = (ask - bid) / mid * 1e4 if mid else None
+    bid, ask, spread_bps = _normalize_ticker_quotes(ticker)
 
     return {
         "price": last,
@@ -89,7 +133,7 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
         "spread_bps": float(spread_bps) if spread_bps is not None else None,
         "bid": bid,
         "ask": ask,
-        "ts_last": int(ohlcv_rows[-1]["ts"]),
+        "ts_last": int(normalized_rows[-1]["ts"]),
     }
 
 
