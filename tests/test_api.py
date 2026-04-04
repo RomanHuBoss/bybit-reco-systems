@@ -645,6 +645,204 @@ def test_api_duplicate_trade_does_not_apply_new_side_effects(client_and_conn):
     assert len(trade_logs) == 1
 
 
+def test_api_duplicate_trade_is_idempotent_when_meta_key_order_changes(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-dup-meta-order',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-api-dup-meta-order/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert exec_resp.status_code == 200
+    bot_id = exec_resp.json()['bot_id']
+
+    first_trade = {
+        'trade_id': 'T-api-dup-meta-order',
+        'ts': ts_now + 60,
+        'pnl': 5.0,
+        'fee': 0.5,
+        'operator': 'tester',
+        'meta': {'fills': {'maker': 1, 'taker': 2}, 'tags': ['grid', 'retry']},
+        'stop_bot': False,
+    }
+    first_trade_resp = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json=first_trade,
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert first_trade_resp.status_code == 200
+    assert first_trade_resp.json()['insert_result'] == 'inserted'
+
+    duplicate_trade = {
+        **first_trade,
+        'meta': {'tags': ['grid', 'retry'], 'fills': {'taker': 2, 'maker': 1}},
+    }
+    dup_resp = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json=duplicate_trade,
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert dup_resp.status_code == 200
+    dup_body = dup_resp.json()
+    assert dup_body['insert_result'] == 'duplicate'
+    assert dup_body['idempotent'] is True
+    assert dup_body['trade_count'] == 1
+
+
+
+def test_api_execute_expired_recommendation_marks_row_expired_and_creates_no_bot(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-expired-exec',
+                'ts': ts_now - 300,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1,
+                'model_version': 'test',
+                'features_ref_ts': ts_now - 300,
+            }
+        ],
+    )
+
+    resp = client.post(
+        '/api/v1/recommendations/R-api-expired-exec/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert resp.status_code == 409
+    assert resp.json()['detail'] == 'recommendation already expired'
+
+    rec = db.get_recommendation_by_id(conn, 'R-api-expired-exec')
+    assert rec is not None
+    assert rec['status'] == 'expired'
+    assert db.get_bot_by_origin_rec(conn, 'R-api-expired-exec') is None
+
+
+
+def test_api_execute_is_blocked_by_live_risk_limits_without_creating_bot(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.upsert_risk_limits(
+        conn,
+        'risk-live-block',
+        {
+            'max_concurrent_bots': 10,
+            'max_daily_dd_usdt': 1_000_000.0,
+            'cooldown_after_loss_min': 0,
+            'max_symbol_bots': 1,
+        },
+    )
+    db.insert_bot_instance(
+        conn,
+        {
+            'bot_id': 'B-risk-existing',
+            'started_ts': ts_now - 60,
+            'stopped_ts': None,
+            'venue': 'linear',
+            'symbol': 'BTCUSDT',
+            'bot_type': 'futures_grid',
+            'mode': {'account_mode': 'one_way', 'margin_mode': 'isolated', 'direction': 'long'},
+            'params': {'grid_levels': 8},
+            'state': {'seed': 'existing'},
+            'status': 'running',
+            'origin_rec_id': 'R-risk-existing',
+        },
+    )
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-risk-blocked-exec',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    resp = client.post(
+        '/api/v1/recommendations/R-api-risk-blocked-exec/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert resp.status_code == 409
+    assert 'execution blocked by current risk limits' in resp.json()['detail']
+    assert 'MAX_SYMBOL_BOTS' in resp.json()['detail']
+
+    assert db.get_bot_by_origin_rec(conn, 'R-api-risk-blocked-exec') is None
+    rec = db.get_recommendation_by_id(conn, 'R-api-risk-blocked-exec')
+    assert rec is not None
+    assert rec['status'] == 'recommended'
+    decisions_resp = client.get('/api/v1/decisions?limit=50')
+    assert decisions_resp.status_code == 200
+    blocked_logs = [
+        row for row in decisions_resp.json()
+        if row['action'] == 'EXECUTION_BLOCKED' and row['rec_id'] == 'R-api-risk-blocked-exec'
+    ]
+    assert len(blocked_logs) == 1
+
+
 def test_api_recommendations_supports_latest_operator_snapshot_mode(client_and_conn):
     client, conn = client_and_conn
     ts_now = int(time.time())

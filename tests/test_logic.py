@@ -985,6 +985,50 @@ def test_insert_bot_instance_detects_duplicate_bot_id(conn):
 
 
 
+def test_insert_bot_instance_duplicate_bot_id_ignores_json_key_order(conn):
+    # Регрессия: идемпотентность не должна зависеть от порядка ключей в JSON-полях.
+    first = _bot(
+        bot_id="B-dup-order",
+        origin_rec_id="R-dup-order",
+        state={"meta": {"z": 1, "x": 2}, "flags": ["warm", "ready"]},
+    )
+    first["mode"] = {"b": 2, "a": 1}
+    first["params"] = {"grid": {"upper": 105.0, "lower": 95.0}, "levels": [3, 2, 1]}
+
+    same_semantics = _bot(
+        bot_id="B-dup-order",
+        origin_rec_id="R-dup-order",
+        state={"flags": ["warm", "ready"], "meta": {"x": 2, "z": 1}},
+    )
+    same_semantics["mode"] = {"a": 1, "b": 2}
+    same_semantics["params"] = {"levels": [3, 2, 1], "grid": {"lower": 95.0, "upper": 105.0}}
+
+    assert db.insert_bot_instance(conn, first) == "inserted"
+    assert db.insert_bot_instance(conn, same_semantics) == "duplicate_bot_id"
+
+
+
+def test_insert_trade_duplicate_is_semantic_for_meta_key_order(conn):
+    db.insert_bot_instance(conn, _bot(bot_id="B-trade-order", origin_rec_id="R-trade-order"))
+    first = {
+        "trade_id": "T-order",
+        "bot_id": "B-trade-order",
+        "ts": 1_700_000_000,
+        "symbol": "BTCUSDT",
+        "pnl": 12.5,
+        "fee": 0.4,
+        "meta": {"fills": {"maker": 1, "taker": 2}, "tags": ["a", "b"]},
+    }
+    same_semantics = {
+        **first,
+        "meta": {"tags": ["a", "b"], "fills": {"taker": 2, "maker": 1}},
+    }
+
+    assert db.insert_trade(conn, first) == "inserted"
+    assert db.insert_trade(conn, same_semantics) == "duplicate"
+
+
+
 def test_risk_status_uses_peak_to_trough_drawdown_and_trade_losses_for_cooldown(conn, monkeypatch):
     monkeypatch.setenv("RISK_DAY_TZ", "UTC")
     now = int(time.time())

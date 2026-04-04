@@ -73,6 +73,16 @@ def begin_immediate(conn: sqlite3.Connection) -> None:
     if not in_txn:
         conn.execute("BEGIN IMMEDIATE")
 
+def _json_dumps_canonical(value: Any) -> str:
+    """Стабильная JSON-сериализация для идемпотентных сравнений.
+
+    Для audit/idempotency нам важна семантика payload, а не случайный порядок
+    ключей в Python-словаре или в повторном HTTP-запросе. Поэтому все JSON-поля,
+    участвующие в duplicate-detection, приводим к каноническому виду.
+    """
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     cur = conn.execute(f"PRAGMA table_info({table})")
     return {str(row["name"]) for row in cur.fetchall()}
@@ -590,9 +600,9 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
         bot["venue"],
         bot["symbol"],
         bot["bot_type"],
-        json.dumps(bot["mode"], ensure_ascii=False),
-        json.dumps(bot["params"], ensure_ascii=False),
-        json.dumps(bot["state"], ensure_ascii=False),
+        _json_dumps_canonical(bot["mode"]),
+        _json_dumps_canonical(bot["params"]),
+        _json_dumps_canonical(bot["state"]),
         bot["status"],
         bot.get("origin_rec_id"),
     )
@@ -611,9 +621,9 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
             row["venue"],
             row["symbol"],
             row["bot_type"],
-            row["mode_json"],
-            row["params_json"],
-            row["state_json"],
+            _json_dumps_canonical(_json_loads_or_default(row["mode_json"], {})),
+            _json_dumps_canonical(_json_loads_or_default(row["params_json"], {})),
+            _json_dumps_canonical(_json_loads_or_default(row["state_json"], {})),
             row["status"],
             row["origin_rec_id"],
         )
@@ -725,7 +735,7 @@ def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any
         return False
     state = _json_loads_or_default(row["state_json"], {})
     state = {**state, **patch} if merge else dict(patch)
-    conn.execute("UPDATE bot_instances SET state_json=? WHERE bot_id=?", (json.dumps(state, ensure_ascii=False), bot_id))
+    conn.execute("UPDATE bot_instances SET state_json=? WHERE bot_id=?", (_json_dumps_canonical(state), bot_id))
     if commit:
         conn.commit()
     return True
@@ -748,7 +758,7 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any], *, commit: boo
         trade["symbol"],
         _require_finite_float("pnl", trade.get("pnl") or 0.0),
         _require_finite_float("fee", trade.get("fee") or 0.0, minimum=0.0),
-        json.dumps(trade.get("meta") or {}, ensure_ascii=False),
+        _json_dumps_canonical(trade.get("meta") or {}),
     )
     cur = conn.execute(
         """SELECT bot_id, ts, symbol, pnl, fee, meta_json
@@ -763,7 +773,7 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any], *, commit: boo
             row["symbol"],
             float(row["pnl"]),
             float(row["fee"]),
-            row["meta_json"],
+            _json_dumps_canonical(_json_loads_or_default(row["meta_json"], {})),
         )
         incoming = payload[1:]
         if existing == incoming:
