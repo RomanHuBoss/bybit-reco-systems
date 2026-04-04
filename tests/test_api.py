@@ -562,6 +562,89 @@ def test_api_recommendations_counts_missing_llm_review_as_none_and_not_pending(c
     assert body['llm_status_counts']['pending'] == 1
 
 
+def test_api_duplicate_trade_does_not_apply_new_side_effects(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-api-dup-sidefx',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-api-dup-sidefx/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert exec_resp.status_code == 200
+    bot_id = exec_resp.json()['bot_id']
+
+    first_trade = {
+        'trade_id': 'T-api-dup-sidefx',
+        'ts': ts_now + 60,
+        'pnl': 8.0,
+        'fee': 1.0,
+        'operator': 'tester',
+        'meta': {'fill_count': 1},
+        'stop_bot': False,
+    }
+    first_trade_resp = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json=first_trade,
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert first_trade_resp.status_code == 200
+    assert first_trade_resp.json()['insert_result'] == 'inserted'
+
+    duplicate_with_new_side_effect = dict(first_trade)
+    duplicate_with_new_side_effect['stop_bot'] = True
+    dup_resp = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json=duplicate_with_new_side_effect,
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert dup_resp.status_code == 200
+    dup_body = dup_resp.json()
+    assert dup_body['insert_result'] == 'duplicate'
+    assert dup_body['idempotent'] is True
+    assert dup_body['bot_status'] == 'running'
+    assert dup_body['trade_count'] == 1
+
+    bot_resp = client.get(f'/api/v1/bots/{bot_id}')
+    assert bot_resp.status_code == 200
+    bot = bot_resp.json()
+    assert bot['status'] == 'running'
+    assert bot['state']['trade_count'] == 1
+    assert bot['state'].get('stop_reason') is None
+
+    decisions_resp = client.get('/api/v1/decisions?limit=20')
+    assert decisions_resp.status_code == 200
+    trade_logs = [row for row in decisions_resp.json() if row['action'] == 'TRADE_RECORDED' and row['details'].get('trade_id') == 'T-api-dup-sidefx']
+    assert len(trade_logs) == 1
+
+
 def test_api_recommendations_supports_latest_operator_snapshot_mode(client_and_conn):
     client, conn = client_and_conn
     ts_now = int(time.time())
@@ -621,6 +704,67 @@ def test_api_recommendations_supports_latest_operator_snapshot_mode(client_and_c
     assert body['snapshot_mode'] == 'latest_operator'
     assert body['snapshot_ts'] == ts_now - 120
     assert body['items'][0]['rec_id'] == 'R-older-reviewed'
+
+
+def test_api_recommendations_latest_operator_respects_non_actionable_filters(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_regime(conn, ts_now, {'vol_state': 'low', 'trend_state': 'mixed', 'risk_state': 'risk_on', 'confidence': 0.61})
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-older-reviewed-visible',
+                'ts': ts_now - 120,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.41,
+                'confidence': 0.71,
+                'expected_rr': 1.2,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {'llm_review': {'status': 'ok', 'mode': 'advisory'}},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now - 120,
+            },
+            {
+                'rec_id': 'R-latest-pending-only',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'ETHUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.33,
+                'confidence': 0.55,
+                'expected_rr': 0.9,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {'queue': 'awaiting_review'},
+                'blocks': [],
+                'status': 'pending',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            },
+        ],
+    )
+
+    resp = client.get('/api/v1/recommendations?snapshot=latest_operator&min_conf=0&show_recommended=false&show_pending=true')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['snapshot_mode'] == 'latest_operator'
+    assert body['snapshot_ts'] == ts_now
+    assert [item['rec_id'] for item in body['items']] == ['R-latest-pending-only']
 
 
 def test_api_status_and_health_report_large_batch_llm_default_capacity(client_and_conn):

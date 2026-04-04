@@ -706,13 +706,41 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     return created or bot, False
 
 
-def _resolve_recommendation_snapshot_ts(conn, venue: str | None, snapshot: str, *, min_conf: float, strict_min_conf: bool) -> int | None:
+def _resolve_recommendation_snapshot_ts(
+    conn,
+    venue: str | None,
+    snapshot: str,
+    *,
+    min_conf: float,
+    strict_min_conf: bool,
+    requested_statuses: list[str] | None = None,
+) -> int | None:
     mode = str(snapshot or "latest_operator").strip().lower()
     if mode == "latest":
         return db.get_latest_reco_ts(conn, venue=venue)
     recent = db.list_recent_reco_snapshot_ts(conn, venue=venue, limit=50)
     if not recent:
         return None
+
+    requested_statuses = list(dict.fromkeys(requested_statuses or []))
+    actionable_statuses = ["recommended", "active"]
+    requested_has_actionable = any(status in actionable_statuses for status in requested_statuses)
+    requested_non_actionable_only = bool(requested_statuses) and not requested_has_actionable
+
+    if requested_non_actionable_only:
+        for ts in recent:
+            matching_count = db.count_recommendations_for_statuses(
+                conn,
+                venue=venue,
+                min_conf=min_conf,
+                statuses=requested_statuses,
+                snapshot_ts=ts,
+                strict_min_conf=strict_min_conf,
+            )
+            if matching_count > 0:
+                return ts
+        return recent[0]
+
     latest_visible_ts: int | None = None
     latest_llm_ready_ts: int | None = None
     for ts in recent:
@@ -730,7 +758,7 @@ def _resolve_recommendation_snapshot_ts(conn, venue: str | None, snapshot: str, 
                 conn,
                 venue=venue,
                 min_conf=min_conf,
-                statuses=["recommended", "active"],
+                statuses=actionable_statuses,
                 snapshot_ts=ts,
                 strict_min_conf=strict_min_conf,
             )
@@ -780,6 +808,7 @@ def api_recommendations(
             snapshot,
             min_conf=effective_min_conf,
             strict_min_conf=strict_min_conf,
+            requested_statuses=statuses,
         )
         items = db.get_recommendations(
             conn,
@@ -998,6 +1027,20 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
         realized_pnl_gross = float(trade_summary["realized_pnl_gross"])
         realized_fee = float(trade_summary["realized_fee"])
         realized_pnl_net = float(trade_summary["realized_pnl_net"])
+        if insert_result == "duplicate":
+            return {
+                "ok": True,
+                "trade_id": trade_id,
+                "bot_id": bot_id,
+                "trade_count": int(trade_summary["trade_count"]),
+                "insert_result": insert_result,
+                "realized_pnl": realized_pnl_net,
+                "realized_pnl_gross": realized_pnl_gross,
+                "realized_pnl_net": realized_pnl_net,
+                "realized_fee": realized_fee,
+                "bot_status": bot["status"],
+                "idempotent": True,
+            }
         try:
             db.update_bot_state(
                 conn,

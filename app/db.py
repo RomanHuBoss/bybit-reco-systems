@@ -2211,6 +2211,36 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
 
 
 
+def count_recommendations_for_statuses(
+    conn: sqlite3.Connection,
+    venue: str | None,
+    min_conf: float,
+    statuses: list[str],
+    snapshot_ts: int | None = None,
+    strict_min_conf: bool = False,
+) -> int:
+    if not statuses:
+        return 0
+    _supported_sql, _supported_params = sql_in_clause("bot_type")
+    placeholders = ",".join("?" for _ in statuses)
+    if snapshot_ts is not None:
+        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts = ? AND {_supported_sql} AND status IN ({placeholders})"""
+        params: list[Any] = [snapshot_ts, *_supported_params, *statuses]
+    else:
+        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts > ? AND {_supported_sql} AND status IN ({placeholders})"""
+        params = [now_ts() - 86400, *_supported_params, *statuses]
+    if venue:
+        q += " AND venue=?"
+        params.append(venue)
+    cur = conn.execute(q, params)
+    count = 0
+    for r in cur.fetchall():
+        if not _recommended_row_passes_conf_filter(r, min_conf=min_conf, strict_min_conf=strict_min_conf):
+            continue
+        count += 1
+    return count
+
+
 def count_visible_recommendations(
     conn: sqlite3.Connection,
     venue: str | None,
@@ -2218,20 +2248,11 @@ def count_visible_recommendations(
     snapshot_ts: int | None = None,
     strict_min_conf: bool = False,
 ) -> int:
-    _supported_sql, _supported_params = sql_in_clause("bot_type")
-    placeholders = ",".join("?" for _ in ACTIONABLE_RECOMMENDATION_STATUSES)
-    if snapshot_ts is not None:
-        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts = ? AND {_supported_sql} AND status IN ({placeholders})"""
-        params: list[Any] = [snapshot_ts, *_supported_params, *ACTIONABLE_RECOMMENDATION_STATUSES]
-    else:
-        q = f"""SELECT status, confidence, reasons_json FROM recommendations WHERE ts > ? AND {_supported_sql} AND status IN ({placeholders})"""
-        params = [now_ts() - 86400, *_supported_params, *ACTIONABLE_RECOMMENDATION_STATUSES]
-    if venue:
-        q += " AND venue=?"
-        params.append(venue)
-    cur = conn.execute(q, params)
-    count = 0
-    for r in cur.fetchall():
-        if _recommended_row_passes_conf_filter(r, min_conf=min_conf, strict_min_conf=strict_min_conf):
-            count += 1
-    return count
+    return count_recommendations_for_statuses(
+        conn,
+        venue,
+        min_conf,
+        list(ACTIONABLE_RECOMMENDATION_STATUSES),
+        snapshot_ts=snapshot_ts,
+        strict_min_conf=strict_min_conf,
+    )
