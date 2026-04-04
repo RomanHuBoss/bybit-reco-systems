@@ -249,6 +249,129 @@ def test_execute_recommendation_rolls_back_bot_insert_on_followup_failure(client
     monkeypatch.setattr(app_main.db, 'update_recommendation_status', real_update)
 
 
+def test_execute_rolls_back_when_status_update_returns_false(client_and_conn, monkeypatch: pytest.MonkeyPatch):
+    client, conn = client_and_conn
+    import app.main as app_main
+
+    ts_now = int(time.time())
+    db.insert_recommendations(
+        conn,
+        [{
+            'rec_id': 'R-exec-status-false',
+            'ts': ts_now,
+            'venue': 'linear',
+            'symbol': 'BTCUSDT',
+            'bot_type': 'futures_grid',
+            'direction': 'long',
+            'account_mode': 'one_way',
+            'margin_mode': 'isolated',
+            'score': 0.42,
+            'confidence': 0.67,
+            'expected_rr': 1.4,
+            'risk_score': 0.2,
+            'params': {'grid_levels': 8},
+            'reasons': {},
+            'blocks': [],
+            'status': 'recommended',
+            'ttl_sec': 1800,
+            'model_version': 'test',
+            'features_ref_ts': ts_now,
+        }],
+    )
+
+    real_update = app_main.db.update_recommendation_status
+
+    def false_update(conn_, rec_id, status, operator=None, **kwargs):
+        if rec_id == 'R-exec-status-false' and status == 'executed':
+            return False
+        return real_update(conn_, rec_id, status, operator, **kwargs)
+
+    monkeypatch.setattr(app_main.db, 'update_recommendation_status', false_update)
+
+    resp = client.post(
+        '/api/v1/recommendations/R-exec-status-false/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()['detail'] == 'recommendation status changed during execution'
+    assert db.get_bot_by_origin_rec(conn, 'R-exec-status-false') is None
+    rec = db.get_recommendation_by_id(conn, 'R-exec-status-false')
+    assert rec is not None
+    assert rec['status'] == 'recommended'
+
+
+def test_trade_record_rolls_back_when_stop_bot_status_change_fails(client_and_conn, monkeypatch: pytest.MonkeyPatch):
+    client, conn = client_and_conn
+    import app.main as app_main
+
+    ts_now = int(time.time())
+    db.insert_recommendations(
+        conn,
+        [{
+            'rec_id': 'R-trade-stop-false',
+            'ts': ts_now,
+            'venue': 'linear',
+            'symbol': 'BTCUSDT',
+            'bot_type': 'futures_grid',
+            'direction': 'long',
+            'account_mode': 'one_way',
+            'margin_mode': 'isolated',
+            'score': 0.42,
+            'confidence': 0.67,
+            'expected_rr': 1.4,
+            'risk_score': 0.2,
+            'params': {'grid_levels': 8},
+            'reasons': {},
+            'blocks': [],
+            'status': 'recommended',
+            'ttl_sec': 1800,
+            'model_version': 'test',
+            'features_ref_ts': ts_now,
+        }],
+    )
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-trade-stop-false/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert exec_resp.status_code == 200
+    bot_id = exec_resp.json()['bot_id']
+
+    real_stop = app_main.db.stop_bot
+
+    def false_stop(conn_, bot_id_, **kwargs):
+        if bot_id_ == bot_id:
+            return False
+        return real_stop(conn_, bot_id_, **kwargs)
+
+    monkeypatch.setattr(app_main.db, 'stop_bot', false_stop)
+
+    resp = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json={
+            'trade_id': 'T-trade-stop-false',
+            'ts': ts_now + 60,
+            'pnl': 4.0,
+            'fee': 0.25,
+            'operator': 'tester',
+            'meta': {'fill_count': 1},
+            'stop_bot': True,
+        },
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()['detail'] == 'bot status changed during trade finalization'
+    assert db.get_trade_by_id(conn, 'T-trade-stop-false') is None
+    bot = db.get_bot_instance(conn, bot_id)
+    assert bot is not None
+    assert bot['status'] == 'running'
+    assert bot['state'].get('trade_count', 0) == 0
+    assert bot['state'].get('stop_reason') is None
+
+
 def test_trade_record_rolls_back_on_log_failure(client_and_conn, monkeypatch: pytest.MonkeyPatch):
     client, conn = client_and_conn
     import app.main as app_main

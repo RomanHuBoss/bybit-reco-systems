@@ -56,6 +56,23 @@ def connect(db_path: str) -> sqlite3.Connection:
 def connect_runtime_locks(db_path: str) -> sqlite3.Connection:
     return connect(runtime_lock_db_path(db_path))
 
+
+def begin_immediate(conn: sqlite3.Connection) -> None:
+    """Start a write transaction eagerly to serialize mutating API flows.
+
+    SQLite defaults to DEFERRED transactions, which means two writers can both read
+    the same pre-update state and only contend later on the first write. For API
+    paths that change bot/recommendation lifecycle state, we want to lock the write
+    side before making any business-logic decisions so the read-check-write sequence
+    stays coherent.
+    """
+    try:
+        in_txn = bool(getattr(conn, "in_transaction", False))
+    except Exception:
+        in_txn = False
+    if not in_txn:
+        conn.execute("BEGIN IMMEDIATE")
+
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     cur = conn.execute(f"PRAGMA table_info({table})")
     return {str(row["name"]) for row in cur.fetchall()}

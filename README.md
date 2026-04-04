@@ -9,6 +9,10 @@
 - `futures_grid`
 
 ## Что дополнительно усилено в текущей ревизии
+- **2026-04-04 — дополнительный аудит write-serialization и operator-action integrity.** Все mutating API-пути (`execute recommendation`, `ignore recommendation`, `record trade`, `stop bot`, `risk limits`, `sentiment put`) теперь начинают работу с `BEGIN IMMEDIATE`, чтобы read-check-write решения принимались под захваченным write-lock, а не на потенциально устаревшем pre-write snapshot SQLite.
+- Исполнение рекомендации больше не может оставить после себя `running`-бота при тихом провале статусного перехода `recommended/active -> executed`: если финальная фиксация recommendation-status не состоялась, создание бота целиком откатывается.
+- `POST /api/v1/bots/{bot_id}/trades` с `stop_bot=true` теперь fail-closed и проверяет, что перевод бота в `stopped` действительно состоялся. Раньше редкая silent-false ветка могла зафиксировать trade, записать stop metadata в state и даже вернуть `bot_status="stopped"`, хотя сама строка bot instance оставалась `running`.
+- Boot-grace в `/api/v1/health/symbols` перестал маскировать по-настоящему старые данные от предыдущего процесса. Льготный режим теперь поднимает только умеренно просроченные строки внутри собственного grace-window, а не любые исторические `stale`-ряды с ненулевыми timestamps.
 - **2026-04-04 — дополнительный аудит operator/API идемпотентности и целостности publication-chain.** Исполнение рекомендации теперь дедуплицируется не только по точному `rec_id`, но и по всему `publication_root_rec_id`: повторный `execute` по `active`/`recommended`-элементам одной и той же publication-chain больше не может породить второй бот и вторую рыночную экспозицию на тот же сигнал.
 - `POST /api/v1/bots/{bot_id}/stop` сделан **честно идемпотентным**: безопасный retry после уже выполненной остановки возвращает `ok=true, idempotent=true` и не плодит дубли `BOT_STOPPED` в audit trail.
 - **2026-04-04 — дополнительный аудит API-идемпотентности и snapshot-целостности.** Повторный `POST /api/v1/bots/{bot_id}/trades` с уже существующим `trade_id` теперь является **строгим no-op**: duplicate retry больше не может привнести новые side effects (например, остановить running-бот через поздний `stop_bot=true`) и не размножает `TRADE_RECORDED` в audit trail.
@@ -151,9 +155,9 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `192 passed`
+- `195 passed`
 - покрытие `app/*` — `78%`
-- регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events.
+- регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows.
 - smoke/coverage прогоны очищены от известных `ResourceWarning: unclosed database` в тестовом harness; верифицировано, что остаётся только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`.
 
 ## Ключевые env

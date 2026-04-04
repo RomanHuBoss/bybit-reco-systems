@@ -1195,7 +1195,52 @@ def test_api_health_applies_boot_grace_to_pre_restart_stale_rows(tmp_path: Path,
     monkeypatch.setenv('SYMBOLS_SPOT', '')
     monkeypatch.setenv('VENUES', 'linear')
     monkeypatch.setenv('STALE_DATA_MAX_SEC', '300')
-    monkeypatch.setenv('COLLECT_INTERVAL_SEC', '20')
+    monkeypatch.setenv('COLLECT_INTERVAL_SEC', '120')
+
+    sys.modules.pop('app.main', None)
+    app_main = importlib.import_module('app.main')
+    app_main.app.router.on_startup.clear()
+
+    conn = db.connect(str(db_path))
+    db.init_db(conn)
+    now = int(time.time())
+    db.upsert_ohlcv(conn, [{
+        'venue': 'linear', 'symbol': 'BTCUSDT', 'tf_sec': 60, 'ts': now - 320,
+        'open': 1.0, 'high': 1.0, 'low': 1.0, 'close': 1.0, 'volume': 1.0,
+    }])
+    db.insert_tickers(conn, [{
+        'venue': 'linear', 'symbol': 'BTCUSDT', 'ts': now - 320,
+        'last': 1.0, 'bid': 1.0, 'ask': 1.0, 'vol24h': 1.0, 'turnover24h': 1.0,
+    }])
+    db.set_app_config_json(conn, 'collector_last_cycle', {'started_ts': now - 600, 'duration_ms': 1500})
+
+    client = TestClient(app_main.app)
+    try:
+        resp = client.get('/api/v1/health/symbols')
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body['boot_grace']['active'] is True
+        assert body['summary']['stale'] == 0
+        assert body['summary']['ok'] == 1
+        assert body['symbols'][0]['status'] == 'ok'
+        assert body['symbols'][0]['raw_status'] == 'stale'
+        assert body['symbols'][0]['status_reason'] == 'boot_grace'
+    finally:
+        client.close()
+        conn.close()
+        sys.modules.pop('app.main', None)
+
+
+
+def test_api_health_boot_grace_does_not_mask_very_old_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / 'health_boot_grace_too_old.db'
+    monkeypatch.setenv('DB_PATH', str(db_path))
+    monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
+    monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
+    monkeypatch.setenv('SYMBOLS_SPOT', '')
+    monkeypatch.setenv('VENUES', 'linear')
+    monkeypatch.setenv('STALE_DATA_MAX_SEC', '300')
+    monkeypatch.setenv('COLLECT_INTERVAL_SEC', '120')
 
     sys.modules.pop('app.main', None)
     app_main = importlib.import_module('app.main')
@@ -1220,16 +1265,15 @@ def test_api_health_applies_boot_grace_to_pre_restart_stale_rows(tmp_path: Path,
         assert resp.status_code == 200
         body = resp.json()
         assert body['boot_grace']['active'] is True
-        assert body['summary']['stale'] == 0
-        assert body['summary']['ok'] == 1
-        assert body['symbols'][0]['status'] == 'ok'
-        assert body['symbols'][0]['raw_status'] == 'stale'
-        assert body['symbols'][0]['status_reason'] == 'boot_grace'
+        assert body['summary']['stale'] == 1
+        assert body['summary']['ok'] == 0
+        assert body['symbols'][0]['status'] == 'stale'
+        assert 'raw_status' not in body['symbols'][0]
+        assert 'status_reason' not in body['symbols'][0]
     finally:
         client.close()
         conn.close()
         sys.modules.pop('app.main', None)
-
 
 
 def test_api_execute_chain_member_reuses_existing_publication_root_bot(client_and_conn):

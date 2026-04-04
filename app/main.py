@@ -517,9 +517,11 @@ def _load_symbol_health(conn) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         for item in items:
             row = dict(item)
             if row.get("status") == "stale" and row.get("last_candle_ts") and row.get("last_ticker_ts"):
-                row["raw_status"] = "stale"
-                row["status"] = "ok"
-                row["status_reason"] = "boot_grace"
+                data_age_sec = row.get("data_age_sec")
+                if data_age_sec is not None and int(data_age_sec) <= int(boot_grace_sec):
+                    row["raw_status"] = "stale"
+                    row["status"] = "ok"
+                    row["status_reason"] = "boot_grace"
             normalized.append(row)
         items = normalized
     return items, {
@@ -614,6 +616,7 @@ def _is_supported_execution_direction(bot_type: str, venue: str, direction: str)
 
 
 def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) -> tuple[dict[str, Any], bool]:
+    db.begin_immediate(conn)
     rec = db.get_recommendation_by_id(conn, rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="rec_id not found")
@@ -689,7 +692,9 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
                 return existing, True
             raise HTTPException(status_code=409, detail="bot creation conflicted with an existing origin_rec_id")
 
-        db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
+        status_updated = db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
+        if not status_updated:
+            raise HTTPException(status_code=409, detail="recommendation status changed during execution")
         db.log_decision(
             conn,
             "BOT_STARTED",
@@ -908,6 +913,7 @@ def api_update_risk_limits(req: UpdateRiskLimitsRequest, x_api_key: str | None =
     _require_admin_key(x_api_key)
     with closing(_get_conn()) as conn:
         try:
+            db.begin_immediate(conn)
             db.upsert_risk_limits(conn, version=req.version, limits=req.limits, is_active=True, commit=False)
             db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": req.version, "limits": req.limits}, commit=False)
             conn.commit()
@@ -922,13 +928,21 @@ def api_reco_action(rec_id: str, req: RecoActionRequest, x_api_key: str | None =
     _require_admin_key(x_api_key)
     allowed = {"executed", "ignored"}
     if req.action not in allowed:
-        return {"ok": False, "error": f"action must be one of {allowed}"}
+        raise HTTPException(status_code=400, detail=f"action must be one of {sorted(allowed)}")
     with closing(_get_conn()) as conn:
+        db.begin_immediate(conn)
         if req.action == "executed":
             bot, existed = _materialize_bot_from_rec(conn, rec_id, req.operator)
             return {"ok": True, "rec_id": rec_id, "new_status": "executed", "bot_id": bot["bot_id"], "bot": bot, "idempotent": existed}
-        ok = db.update_recommendation_status(conn, rec_id, req.action, req.operator)
-        return {"ok": ok, "rec_id": rec_id, "new_status": req.action}
+        ok = db.update_recommendation_status(conn, rec_id, req.action, req.operator, commit=False)
+        if not ok:
+            _rollback_quietly(conn)
+            rec = db.get_recommendation_by_id(conn, rec_id)
+            if rec is None:
+                raise HTTPException(status_code=404, detail="rec_id not found")
+            raise HTTPException(status_code=409, detail=f"recommendation status={rec.get('status')} cannot be changed to {req.action}")
+        conn.commit()
+        return {"ok": True, "rec_id": rec_id, "new_status": req.action}
 
 
 @app.get("/api/v1/bots")
@@ -952,6 +966,7 @@ def api_bot_details(bot_id: str) -> dict[str, Any]:
 def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
     with closing(_get_conn()) as conn:
+        db.begin_immediate(conn)
         bot = db.get_bot_instance(conn, bot_id)
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
@@ -962,7 +977,9 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
             if not ok:
                 _rollback_quietly(conn)
                 return {"ok": False, "bot_id": bot_id, "status": bot["status"]}
-            db.update_bot_state(conn, bot_id, {"stop_reason": req.reason, "stopped_by": req.operator, "stopped_ts": int(time.time())}, commit=False)
+            state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": req.reason, "stopped_by": req.operator, "stopped_ts": int(time.time())}, commit=False)
+            if not state_updated:
+                raise RuntimeError("bot state update failed after stop")
             db.log_decision(conn, "BOT_STOPPED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "reason": req.reason}, commit=False)
             conn.commit()
         except Exception:
@@ -975,6 +992,7 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
 def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
     with closing(_get_conn()) as conn:
+        db.begin_immediate(conn)
         bot = db.get_bot_instance(conn, bot_id)
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
@@ -1052,7 +1070,7 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
                 "idempotent": True,
             }
         try:
-            db.update_bot_state(
+            state_updated = db.update_bot_state(
                 conn,
                 bot_id,
                 {
@@ -1068,9 +1086,15 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
                 },
                 commit=False,
             )
+            if not state_updated:
+                raise RuntimeError("bot state update failed after trade")
             if req.stop_bot:
-                db.stop_bot(conn, bot_id, commit=False)
-                db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": req.operator, "stopped_ts": int(time.time())}, commit=False)
+                stop_ok = db.stop_bot(conn, bot_id, commit=False)
+                if not stop_ok:
+                    raise HTTPException(status_code=409, detail="bot status changed during trade finalization")
+                stop_state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": req.operator, "stopped_ts": int(time.time())}, commit=False)
+                if not stop_state_updated:
+                    raise RuntimeError("bot state update failed after trade stop")
             db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), req.operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot}, commit=False)
             conn.commit()
         except Exception:
@@ -1168,6 +1192,7 @@ def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header
     with closing(_get_conn()) as conn:
         ts = req.ts or int(time.time())
         try:
+            db.begin_immediate(conn)
             db.insert_sentiment_point(conn, req.scope, req.key, ts, req.sentiment, req.velocity, req.volume, req.sources, req.tags, commit=False)
             db.log_decision(conn, "SENTIMENT_PUT", None, None, {"scope": req.scope, "key": req.key, "ts": ts, "sentiment": req.sentiment}, commit=False)
             conn.commit()
