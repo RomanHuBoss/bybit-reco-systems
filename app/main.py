@@ -25,7 +25,7 @@ from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import compute_outcomes_once
 from .recommender import run_recommender_once, run_llm_review_sweep_once, LLM_REVIEW_ASYNC_STATUS_APP_KEY
-from .risk import get_risk_limits, compute_risk_status, gate_candidate
+from .risk import get_risk_limits, compute_risk_status, gate_candidate, normalize_risk_limits
 from .security import is_authorized
 from . import db
 from .bot_types import SUPPORTED_BOT_TYPES, is_supported_bot_type, sql_in_clause
@@ -77,7 +77,8 @@ def _bootstrap_db() -> None:
         db.init_db(conn)
         active = db.get_active_risk_limits(conn)
         if not active:
-            db.upsert_risk_limits(conn, version="bootstrap", limits=settings.risk_limits, is_active=True)
+            bootstrap_limits = normalize_risk_limits(settings.risk_limits, settings.risk_limits)
+            db.upsert_risk_limits(conn, version="bootstrap", limits=bootstrap_limits, is_active=True)
 
         current_label_version = db.get_app_config_json(conn, "outcome_label_version")
         if current_label_version != OUTCOME_LABEL_VERSION:
@@ -987,17 +988,28 @@ def api_risk_status() -> dict[str, Any]:
 def api_update_risk_limits(req: UpdateRiskLimitsRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
     _require_admin_key(x_api_key)
     _ensure_json_payload_has_only_finite_numbers(req.limits, field_name="limits")
+    effective_limits = normalize_risk_limits(req.limits, settings.risk_limits)
     with closing(_get_conn()) as conn:
         try:
             db.begin_immediate(conn)
             version = _normalized_non_empty_text(req.version, field_name="version")
-            db.upsert_risk_limits(conn, version=version, limits=req.limits, is_active=True, commit=False)
-            db.log_decision(conn, "UPDATE_LIMITS", None, None, {"version": version, "limits": req.limits}, commit=False)
+            # Persist the effective normalized limits, otherwise DB/audit and runtime
+            # diverge: operator sees the raw payload, while the engine silently applies
+            # clamped defaults/guards on read.
+            db.upsert_risk_limits(conn, version=version, limits=effective_limits, is_active=True, commit=False)
+            db.log_decision(
+                conn,
+                "UPDATE_LIMITS",
+                None,
+                None,
+                {"version": version, "limits": effective_limits, "raw_limits": req.limits},
+                commit=False,
+            )
             conn.commit()
         except Exception:
             _rollback_quietly(conn)
             raise
-        return {"ok": True, "version": version}
+        return {"ok": True, "version": version, "limits": effective_limits}
 
 
 @app.post("/api/v1/recommendations/{rec_id}/action")

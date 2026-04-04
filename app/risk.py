@@ -15,6 +15,14 @@ from typing import Any
 
 from . import db
 
+DEFAULT_RISK_LIMITS: dict[str, Any] = {
+    "max_concurrent_bots": 4,
+    "max_daily_dd_usdt": 200.0,
+    "cooldown_after_loss_min": 30,
+    "max_symbol_bots": 1,
+}
+
+
 @dataclass
 class RiskStatus:
     limits: dict[str, Any]
@@ -111,9 +119,27 @@ def day_start_ts_utc() -> int:
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return int(midnight.timestamp())
 
+def normalize_risk_limits(limits: Any, fallback_limits: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Возвращает канонический runtime-набор risk limits.
+
+    API/ENV могут приносить строковый мусор, отрицательные значения или лишние ключи.
+    Runtime всё равно умеет работать только с известным набором лимитов, поэтому для
+    целостности храним и отдаём именно *effective* limits, а не сырой операторский payload.
+    Иначе БД/audit показывают одно, а реально применяются другие границы после clamp.
+    """
+    base = _normalize_risk_limits(fallback_limits, DEFAULT_RISK_LIMITS)
+    effective = _normalize_risk_limits(limits, base)
+    return {
+        "max_concurrent_bots": int(effective["max_concurrent_bots"]),
+        "max_daily_dd_usdt": float(effective["max_daily_dd_usdt"]),
+        "cooldown_after_loss_min": int(effective["cooldown_after_loss_min"]),
+        "max_symbol_bots": int(effective["max_symbol_bots"]),
+    }
+
+
 def get_risk_limits(conn, fallback_limits: dict[str, Any]) -> dict[str, Any]:
     active = db.get_active_risk_limits(conn)
-    return _normalize_risk_limits(active, fallback_limits)
+    return normalize_risk_limits(active, fallback_limits)
 
 def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     active_bots = db.get_active_bots(conn)
@@ -151,7 +177,7 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     # cooldown: use the latest realised loss from trades first; fall back to explicit LOSS log entry.
     # The previous implementation only looked for action='LOSS', but no code path emits that
     # action, so cooldown_after_loss_min was effectively dead and never blocked candidates.
-    limits = _normalize_risk_limits(limits, limits)
+    limits = normalize_risk_limits(limits, limits)
     cooldown_min = _limit_int(limits, "cooldown_after_loss_min", 0, minimum=0, maximum=7 * 24 * 60)
     cooldown_active = False
     if cooldown_min > 0:
@@ -195,7 +221,7 @@ def gate_candidate(conn, venue: str, symbol: str, limits: dict[str, Any], cached
     # Accept pre-computed risk status to avoid re-querying DB per (symbol, bot_type)
     rs = cached_status if cached_status is not None else compute_risk_status(conn, limits)
 
-    limits = _normalize_risk_limits(limits, limits)
+    limits = normalize_risk_limits(limits, limits)
     max_conc = _limit_int(limits, "max_concurrent_bots", 999999, minimum=1, maximum=100000)
     if rs.active_bots >= max_conc:
         blocks.append({"code":"MAX_CONCURRENT_BOTS", "msg": f"active_bots={rs.active_bots} >= limit={max_conc}"})

@@ -156,6 +156,24 @@ def _finite_or_default(value: object, default: float) -> float:
     return float(num)
 
 
+def _finite_positive_or_none(value: object) -> float | None:
+    """Положительное finite число либо ``None``.
+
+    Для ценовых границ grid-модели poisoned значения вроде ``"NaN"``/``"Infinity"``
+    особенно опасны: они не роняют outcome-cycle, но тихо отключают range/kill-switch
+    penalties и ломают интерпретацию исторической разметки.
+    """
+    try:
+        if value is None:
+            return None
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num) or num <= 0:
+        return None
+    return float(num)
+
+
 def _int_from_params(value: object, default: int = 0, *, minimum: int | None = None, maximum: int | None = None) -> int:
     """Нормализует целочисленные grid-параметры из legacy/manual JSON.
 
@@ -253,22 +271,14 @@ def _grid_outcome(
     range_block = levels.get("range") if isinstance(levels.get("range"), dict) else {}
     kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
 
-    def _num(value: object) -> float | None:
-        try:
-            if value is None:
-                return None
-            return float(value)
-        except Exception:
-            return None
-
-    lo = _num(params.get("price_range_lower"))
-    hi = _num(params.get("price_range_upper"))
+    lo = _finite_positive_or_none(params.get("price_range_lower"))
+    hi = _finite_positive_or_none(params.get("price_range_upper"))
     if lo is None:
-        lo = _num(range_block.get("lower"))
+        lo = _finite_positive_or_none(range_block.get("lower"))
     if hi is None:
-        hi = _num(range_block.get("upper"))
-    ks_lo = _num(kill_switch.get("lower")) if kill_switch else None
-    ks_hi = _num(kill_switch.get("upper")) if kill_switch else None
+        hi = _finite_positive_or_none(range_block.get("upper"))
+    ks_lo = _finite_positive_or_none(kill_switch.get("lower")) if kill_switch else None
+    ks_hi = _finite_positive_or_none(kill_switch.get("upper")) if kill_switch else None
     if ks_lo is None:
         ks_lo = lo
     if ks_hi is None:
