@@ -258,6 +258,39 @@ def _require_finite_float(name: str, value: Any, *, minimum: float | None = None
     return num
 
 
+def _require_non_negative_int(name: str, value: Any) -> int:
+    try:
+        num = int(value)
+    except Exception as exc:
+        raise ValueError(f"{name} must be an integer >= 0") from exc
+    if num < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return int(num)
+
+
+def _decode_sentiment_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not r:
+        return None
+    sentiment = _finite_float_or_default(r["sentiment"], float('nan'))
+    velocity = _finite_float_or_default(r["velocity"], float('nan'))
+    try:
+        volume = int(r["volume"])
+    except Exception:
+        return None
+    if not math.isfinite(sentiment) or not math.isfinite(velocity) or volume < 0:
+        return None
+    return {
+        "scope": r["scope"],
+        "key": r["key"],
+        "ts": int(r["ts"]),
+        "sentiment": float(max(-1.0, min(1.0, sentiment))),
+        "velocity": float(velocity),
+        "volume": int(volume),
+        "sources": _json_loads_or_default(r["sources_json"], {}),
+        "tags": _json_loads_or_default(r["tags_json"], []),
+    }
+
+
 def _commit_write_with_retry(
     conn: sqlite3.Connection,
     op,
@@ -1110,7 +1143,16 @@ def insert_sentiment_point(
     conn.execute(
         """INSERT OR REPLACE INTO sentiment(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)
            VALUES(?,?,?,?,?,?,?,?)""",
-        (scope, key, ts, float(sentiment), float(velocity), int(volume), _json_dumps_safe(sources), _json_dumps_safe(tags)),
+        (
+            scope,
+            key,
+            ts,
+            _require_finite_float("sentiment", sentiment),
+            _require_finite_float("velocity", velocity),
+            _require_non_negative_int("volume", volume),
+            _json_dumps_safe(sources),
+            _json_dumps_safe(tags),
+        ),
     )
     if commit:
         conn.commit()
@@ -1127,9 +1169,9 @@ def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]
                 row["scope"],
                 row["key"],
                 int(row["ts"]),
-                float(row["sentiment"]),
-                float(row.get("velocity") or 0.0),
-                int(row.get("volume") or 0),
+                _require_finite_float("sentiment", row["sentiment"]),
+                _require_finite_float("velocity", row.get("velocity") or 0.0),
+                _require_non_negative_int("volume", row.get("volume") or 0),
                 _json_dumps_safe(row.get("sources") or {}),
                 _json_dumps_safe(row.get("tags") or []),
             )
@@ -1146,16 +1188,9 @@ def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: 
     )
     out = []
     for r in cur.fetchall()[::-1]:
-        out.append({
-            "scope": r["scope"],
-            "key": r["key"],
-            "ts": r["ts"],
-            "sentiment": r["sentiment"],
-            "velocity": r["velocity"],
-            "volume": r["volume"],
-            "sources": _json_loads_or_default(r["sources_json"], {}),
-            "tags": _json_loads_or_default(r["tags_json"], []),
-        })
+        decoded = _decode_sentiment_row(r)
+        if decoded is not None:
+            out.append(decoded)
     return out
 
 def sum_daily_gross_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
@@ -1187,19 +1222,7 @@ def get_latest_sentiment(conn: sqlite3.Connection, scope: str, key: str) -> dict
         """SELECT * FROM sentiment WHERE scope=? AND key=? ORDER BY ts DESC LIMIT 1""",
         (scope, key),
     )
-    r = cur.fetchone()
-    if not r:
-        return None
-    return {
-        "scope": r["scope"],
-        "key": r["key"],
-        "ts": r["ts"],
-        "sentiment": r["sentiment"],
-        "velocity": r["velocity"],
-        "volume": r["volume"],
-        "sources": _json_loads_or_default(r["sources_json"], {}),
-        "tags": _json_loads_or_default(r["tags_json"], []),
-    }
+    return _decode_sentiment_row(cur.fetchone())
 
 
 def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000) -> list[dict[str, Any]]:

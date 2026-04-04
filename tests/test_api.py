@@ -1292,6 +1292,55 @@ def test_api_recommendations_sanitizes_non_finite_min_conf(client_and_conn):
     assert len(body['items']) == 1
 
 
+
+
+def test_api_sentiment_rejects_negative_volume(client_and_conn):
+    client, _ = client_and_conn
+
+    resp = client.post(
+        '/api/v1/sentiment',
+        json={'scope': 'global', 'key': 'crypto', 'sentiment': 0.1, 'velocity': 0.0, 'volume': -1},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert resp.status_code == 422
+
+
+def test_api_sentiment_get_skips_legacy_non_finite_rows(client_and_conn):
+    client, conn = client_and_conn
+    now_ts = int(time.time())
+
+    conn.execute(
+        """INSERT INTO sentiment(scope, key, ts, sentiment, velocity, volume, sources_json, tags_json)
+               VALUES('global', 'crypto', ?, 1e999, 0.0, 1, '{}', '[]')""",
+        (now_ts - 60,),
+    )
+    db.insert_sentiment_point(
+        conn,
+        'global',
+        'crypto',
+        now_ts - 30,
+        0.25,
+        0.05,
+        2,
+        {'rss': 2},
+        ['sanitized'],
+    )
+
+    resp = client.get('/api/v1/sentiment?scope=global&key=crypto&limit=10')
+    assert resp.status_code == 200
+    assert resp.json()['items'] == [
+        {
+            'scope': 'global',
+            'key': 'crypto',
+            'ts': now_ts - 30,
+            'sentiment': 0.25,
+            'velocity': 0.05,
+            'volume': 2,
+            'sources': {'rss': 2},
+            'tags': ['sanitized'],
+        }
+    ]
+
 def test_api_sentiment_rejects_non_finite_velocity(client_and_conn):
     client, _ = client_and_conn
 

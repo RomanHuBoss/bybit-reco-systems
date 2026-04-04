@@ -11,7 +11,30 @@ def _now_ts() -> int:
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
+    """Безопасный clamp для legacy sentiment-рядов.
+
+    Non-finite значения не должны превращаться в верхнюю границу диапазона и
+    симулировать экстремальный risk-on/risk-off. Для sentiment safer default —
+    нейтральный ноль, если он лежит внутри диапазона.
+    """
+    try:
+        num = float(x)
+    except Exception:
+        num = float('nan')
+    if not math.isfinite(num):
+        neutral = 0.0 if float(lo) <= 0.0 <= float(hi) else float(lo)
+        return float(neutral)
+    return max(float(lo), min(float(hi), num))
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return float(num)
 
 
 def ewma(points: list[tuple[int, float, float]], half_life_sec: int, now_ts: int) -> float:
@@ -21,10 +44,14 @@ def ewma(points: list[tuple[int, float, float]], half_life_sec: int, now_ts: int
     num = 0.0
     den = 0.0
     for ts, s, w in points:
+        s_num = _finite_float(s)
+        w_num = _finite_float(w)
+        if s_num is None or w_num is None or w_num <= 0:
+            continue
         age = max(0, now_ts - int(ts))
         decay = math.exp(-lam * age)
-        ww = float(w) * decay
-        num += ww * float(s)
+        ww = w_num * decay
+        num += ww * s_num
         den += ww
     return float(num / den) if den > 0 else 0.0
 
@@ -41,10 +68,23 @@ def fetch_sentiment_points(conn, scope: str, key: str, since_ts: int, limit: int
     rows = cur.fetchall()
     out = []
     for r in rows:
+        sentiment = _finite_float(r["sentiment"])
+        if sentiment is None:
+            continue
+        try:
+            ts = int(r["ts"])
+        except Exception:
+            continue
+        try:
+            volume = int(r["volume"])
+        except Exception:
+            volume = 0
         out.append({
-            "ts": int(r["ts"]),
-            "sentiment": float(r["sentiment"]),
-            "volume": int(r["volume"]),
+            "ts": ts,
+            # Legacy/imported rows may violate the nominal [-1, 1] contract.
+            # Clamp them instead of letting one outlier dominate the whole EWMA.
+            "sentiment": _clamp(sentiment, -1.0, 1.0),
+            "volume": max(0, volume),
         })
     return out
 
@@ -154,12 +194,23 @@ def compute_symbol_sentiment_map(conn, horizon_sec: int = 3600 * 6) -> dict[str,
     bucketed: dict[str, dict[int, list[tuple[int, float, float]]]] = defaultdict(lambda: defaultdict(list))
     for row in cur.fetchall():
         sym = str(row["key"])
-        ts = int(row["ts"])
-        s = float(row["sentiment"])
+        try:
+            ts = int(row["ts"])
+        except Exception:
+            continue
+        s = _finite_float(row["sentiment"])
+        if s is None:
+            continue
+        try:
+            volume_raw = float(row["volume"] or 1.0)
+        except Exception:
+            volume_raw = 1.0
+        if not math.isfinite(volume_raw):
+            volume_raw = 1.0
         # Compress volume contribution; volume is useful, but repeated polls of the same
         # source must not dominate simply because they were written many times.
-        v = min(4.0, math.sqrt(max(1.0, float(row["volume"] or 1.0))))
-        bucketed[sym][ts // bucket_sec].append((ts, s, v))
+        v = min(4.0, math.sqrt(max(1.0, volume_raw)))
+        bucketed[sym][ts // bucket_sec].append((ts, _clamp(s, -1.0, 1.0), v))
 
     result: dict[str, tuple[float, int]] = {}
     for sym, buckets in bucketed.items():

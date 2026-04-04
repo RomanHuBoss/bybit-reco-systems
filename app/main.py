@@ -595,7 +595,7 @@ class SentimentPointRequest(BaseModel):
     ts: int | None = None
     sentiment: float = Field(..., ge=-1.0, le=1.0, allow_inf_nan=False)
     velocity: float = Field(0.0, allow_inf_nan=False)
-    volume: int = 1
+    volume: int = Field(1, ge=0)
     sources: dict[str, Any] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
 
