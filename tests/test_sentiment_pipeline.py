@@ -5,7 +5,15 @@ import pytest
 from pathlib import Path
 
 from app import db
-from app.sentiment import _score_text, blend_per_symbol, combine_global_sentiment, fetch_fear_greed
+from app.sentiment import (
+    _score_text,
+    blend_per_symbol,
+    collect_sentiment_once,
+    combine_global_sentiment,
+    fetch_fear_greed,
+    fetch_reddit_sentiment,
+    global_market_momentum_point,
+)
 from app.sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 
 
@@ -271,3 +279,104 @@ def test_combine_global_sentiment_skips_non_finite_source_rows():
     assert combined['volume'] == 6
     assert combined['sources'] == {'market': {'market': True}}
     assert combined['tags'] == ['market_momentum']
+
+def test_fetch_reddit_sentiment_skips_poisoned_posts_but_keeps_valid_neighbors(monkeypatch):
+    monkeypatch.setattr('app.sentiment.REDDIT_RSS', {'BTCUSDT': 'https://reddit.test/btc'})
+    monkeypatch.setattr('app.sentiment.time.time', lambda: 1_700_000_200)
+
+    client = _DummyClient({
+        'data': {
+            'children': [
+                'broken-row',
+                {'data': 'bad-payload'},
+                {
+                    'data': {
+                        'title': 'bull breakout',
+                        'selftext': 'record growth',
+                        'upvote_ratio': 0.9,
+                    }
+                },
+            ]
+        }
+    })
+
+    points = fetch_reddit_sentiment(client)
+
+    assert 'BTCUSDT' in points
+    point = points['BTCUSDT']
+    assert point['volume'] == 1
+    assert point['sources']['posts_analyzed'] == 1
+    assert point['sentiment'] > 0.0
+
+
+def test_global_market_momentum_point_skips_non_dict_entries():
+    point = global_market_momentum_point({
+        'BROKEN': 'not-a-dict',
+        'BTCUSDT': {'sentiment': 0.4, 'volume': 25_000_000},
+        'ETHUSDT': {'sentiment': float('nan'), 'volume': 5_000_000},
+    })
+
+    assert point is not None
+    assert point['sentiment'] == pytest.approx(0.4)
+    assert point['sources'] == {'symbols_used': 1}
+    assert point['volume'] == 1
+
+
+def test_blend_per_symbol_skips_non_dict_source_blocks(monkeypatch):
+    monkeypatch.setattr('app.sentiment.time.time', lambda: 1_700_000_250)
+
+    blended = blend_per_symbol(
+        rss_map={'BTCUSDT': [0.1]},
+        reddit_map={'BTCUSDT': 'broken'},
+        trending_map={'BTCUSDT': ['broken-list']},
+        momentum_map={'BTCUSDT': {'sentiment': 0.5, 'velocity': 0.3}},
+    )
+
+    assert 'BTCUSDT' in blended
+    point = blended['BTCUSDT']
+    assert point['sentiment'] == pytest.approx((0.5 * 0.45 + 0.1 * 0.15) / (0.45 + 0.15))
+    assert point['velocity'] == pytest.approx(0.3)
+    assert point['sources']['reddit'] is None
+    assert point['sources']['trending'] is False
+    assert point['sources']['sources_used'] == ['momentum', 'rss']
+
+
+def test_combine_global_sentiment_skips_non_dict_source_rows_too():
+    combined = combine_global_sentiment([
+        'broken-row',
+        {
+            'scope': 'global',
+            'key': 'market',
+            'sentiment': 0.15,
+            'volume': 3,
+            'sources': {'market': True},
+            'tags': ['market_momentum'],
+        },
+    ])
+
+    assert combined is not None
+    assert combined['sentiment'] == pytest.approx(0.15)
+    assert combined['volume'] == 6
+    assert combined['sources'] == {'market': {'market': True}}
+
+
+def test_collect_sentiment_once_tolerates_malformed_adapter_returns(monkeypatch):
+    monkeypatch.setattr('app.sentiment.fetch_fear_greed', lambda client: {'scope': 'global', 'key': 'fng', 'sentiment': 0.2, 'volume': 1, 'sources': {'fng': 60}, 'tags': ['fear_greed'], 'ts': 1_700_000_300, 'velocity': 0.0})
+    monkeypatch.setattr('app.sentiment.fetch_rss_sentiment', lambda client: ({'scope': 'global', 'key': 'rss', 'sentiment': -0.1, 'volume': 5, 'sources': {'rss': True}, 'tags': ['news_rss'], 'ts': 1_700_000_300, 'velocity': 0.0}, {'BTCUSDT': [0.2]}))
+    monkeypatch.setattr('app.sentiment.fetch_reddit_sentiment', lambda client: 'broken')
+    monkeypatch.setattr('app.sentiment.fetch_coingecko_trending', lambda client: ['broken'])
+    monkeypatch.setattr('app.sentiment.fetch_coingecko_momentum', lambda client: {'BTCUSDT': {'sentiment': 0.4, 'velocity': 0.1, 'volume': 1000, 'sources': {'cg': True}, 'tags': ['coingecko_momentum'], 'scope': 'symbol', 'key': 'BTCUSDT', 'ts': 1_700_000_300}})
+    monkeypatch.setattr('app.sentiment.time.time', lambda: 1_700_000_300)
+
+    points = collect_sentiment_once()
+
+    globals_ = [p for p in points if p.get('scope') == 'global']
+    symbols = [p for p in points if p.get('scope') == 'symbol']
+    assert any(p.get('key') == 'fng' for p in globals_)
+    assert any(p.get('key') == 'rss' for p in globals_)
+    assert any(p.get('key') == 'crypto_market_momentum' for p in globals_)
+    assert any(p.get('key') == 'crypto' for p in globals_)
+    blended = next(p for p in symbols if p.get('key') == 'BTCUSDT')
+    assert blended['sources']['sources_used'] == ['momentum', 'rss']
+    assert math.isfinite(blended['sentiment'])
+

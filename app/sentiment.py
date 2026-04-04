@@ -174,6 +174,17 @@ def _keyword_match(text: str, token_set: set[str], keyword: str) -> bool:
     normalized = " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
     return " ".join(kw_tokens) in normalized
 
+
+def _as_dict(value: Any) -> dict[str, Any] | None:
+    """Возвращает только dict-подобные payload, остальное отбрасывает.
+
+    Sentiment-контур получает данные из внешних HTTP-источников и из внутренних
+    blending-адаптеров. Один poisoned block (строка, список, legacy-JSON-артефакт)
+    не должен ронять весь цикл. Helper позволяет централизованно fail-open/skip
+    такие элементы и продолжать расчёт по оставшимся валидным источникам.
+    """
+    return value if isinstance(value, dict) else None
+
 # ── 1. Fear & Greed (global) ──────────────────────────────────────────────────
 
 def fetch_fear_greed(client: httpx.Client) -> dict[str, Any] | None:
@@ -284,16 +295,22 @@ def fetch_reddit_sentiment(client: httpx.Client) -> dict[str, dict[str, Any]]:
         try:
             r = client.get(url, timeout=10.0, headers=headers)
             r.raise_for_status()
-            data = r.json()
-            posts = data.get("data", {}).get("children", [])
+            data = _as_dict(r.json()) or {}
+            posts_parent = _as_dict(data.get("data")) or {}
+            posts = posts_parent.get("children", [])
+            if not isinstance(posts, list):
+                continue
             scores: list[float] = []
             for post in posts:
-                pd = post.get("data", {})
-                title = pd.get("title", "")
-                text  = pd.get("selftext", "")
+                post_row = _as_dict(post)
+                pd = _as_dict((post_row or {}).get("data"))
+                if not pd:
+                    continue
+                title = str(pd.get("title") or "")
+                text  = str(pd.get("selftext") or "")
                 # Reddit-native sentiment proxy: upvote_ratio ∈ [0,1] → [-1,1]
-                # Внешний JSON Reddit иногда приносит битые ratio; используем
-                # нейтральный 0.5, чтобы не создать искусственный bearish bias.
+                # Внешний JSON Reddit иногда приносит битые ratio или отдельные
+                # poisoned posts. Пропускаем только испорченный post, а не весь символ.
                 upvote_ratio = _safe_unit_interval(pd.get("upvote_ratio", 0.5), 0.5)
                 native_sent  = (upvote_ratio - 0.5) * 2.0
                 # Text sentiment
@@ -331,10 +348,19 @@ def fetch_coingecko_trending(client: httpx.Client) -> dict[str, Any] | None:
             headers={"User-Agent": "bybit-reco-v2/0.3"},
         )
         r.raise_for_status()
-        data = r.json()
-        coins = [c.get("item", {}) for c in data.get("coins", [])]
+        data = _as_dict(r.json()) or {}
+        raw_coins = data.get("coins", [])
+        if not isinstance(raw_coins, list):
+            return None
+        trending_ids: list[str] = []
+        for row in raw_coins:
+            coin_row = _as_dict(row)
+            item = _as_dict((coin_row or {}).get("item"))
+            cg_id = str((item or {}).get("id") or "").strip()
+            if cg_id:
+                trending_ids.append(cg_id)
         return {
-            "trending_ids": [c.get("id") for c in coins],
+            "trending_ids": trending_ids,
         }
     except Exception:
         return None
@@ -440,11 +466,14 @@ def global_market_momentum_point(momentum_map: dict[str, dict[str, Any]]) -> dic
     total_weight = 0.0
     used = 0
     for sym, point in momentum_map.items():
-        try:
-            sent = _safe_float(point.get("sentiment"), 0.0)
-            vol = max(1.0, _safe_float(point.get("volume"), 1.0))
-        except Exception:
+        point_row = _as_dict(point)
+        if not point_row:
             continue
+        sent = _finite_float(point_row.get("sentiment"))
+        vol_raw = _finite_float(point_row.get("volume"))
+        if sent is None:
+            continue
+        vol = max(1.0, vol_raw if vol_raw is not None else 1.0)
         weight = _clamp(math.sqrt(min(vol, 5_000_000_000.0)) / 5000.0, 0.8, 6.0)
         weighted_sum += sent * weight
         total_weight += weight
@@ -495,7 +524,7 @@ def blend_per_symbol(
         wtotal = 0.0
         sources_used: list[str] = []
 
-        mom = momentum_map.get(sym)
+        mom = _as_dict(momentum_map.get(sym))
         mom_sent = _finite_float((mom or {}).get("sentiment"))
         mom_vel = _finite_float((mom or {}).get("velocity"))
         if mom and mom_sent is not None:
@@ -504,7 +533,7 @@ def blend_per_symbol(
             wtotal += w
             sources_used.append("momentum")
 
-        red = reddit_map.get(sym)
+        red = _as_dict(reddit_map.get(sym))
         red_sent = _finite_float((red or {}).get("sentiment"))
         if red and red_sent is not None:
             w = _SOURCE_WEIGHTS["reddit"]
@@ -521,7 +550,7 @@ def blend_per_symbol(
             wtotal += w
             sources_used.append("rss")
 
-        trd = trending_map.get(sym)
+        trd = _as_dict(trending_map.get(sym))
         trd_sent = _finite_float((trd or {}).get("sentiment"))
         if trd and trd_sent is not None:
             w = _SOURCE_WEIGHTS["coingecko_trending"]
@@ -569,8 +598,11 @@ def combine_global_sentiment(points: list[dict[str, Any]]) -> dict[str, Any] | N
     tags: list[str] = []
     sources: dict = {}
     for p in points:
-        sent = _finite_float((p or {}).get("sentiment"))
-        vol_raw = _finite_float((p or {}).get("volume"))
+        point = _as_dict(p)
+        if not point:
+            continue
+        sent = _finite_float(point.get("sentiment"))
+        vol_raw = _finite_float(point.get("volume"))
         if sent is None:
             continue
         # Один битый upstream source не должен отравлять общий global pulse.
@@ -578,8 +610,9 @@ def combine_global_sentiment(points: list[dict[str, Any]]) -> dict[str, Any] | N
         vol = max(vol_raw if vol_raw is not None else 1.0, _GLOBAL_MIN_SOURCE_WEIGHT)
         wsum += sent * vol
         w += vol
-        tags.extend(p.get("tags") or [])
-        sources[p.get("key", "src")] = p.get("sources", {})
+        tags.extend(point.get("tags") or [])
+        source_key = str(point.get("key") or "src")
+        sources[source_key] = point.get("sources", {}) if isinstance(point.get("sources"), dict) else {}
     if w <= 0:
         return None
     s = wsum / w
@@ -611,16 +644,20 @@ def collect_sentiment_once() -> list[dict[str, Any]]:
             pts.append(fng)
 
         global_rss, rss_per_sym = fetch_rss_sentiment(client)
-        if global_rss:
+        if isinstance(global_rss, dict) and global_rss:
             pts.append(global_rss)
+        rss_per_sym = rss_per_sym if isinstance(rss_per_sym, dict) else {}
 
-        # Per-symbol sources
-        reddit_map   = fetch_reddit_sentiment(client)
+        # Per-symbol sources. Дополнительно нормализуем типы адаптеров: один
+        # неожиданный return payload не должен сорвать весь sentiment-цикл.
+        reddit_map_raw = fetch_reddit_sentiment(client)
+        reddit_map = reddit_map_raw if isinstance(reddit_map_raw, dict) else {}
         trending_raw = fetch_coingecko_trending(client)
-        trending_map = trending_to_symbol_points(trending_raw)
-        momentum_map = fetch_coingecko_momentum(client)
+        trending_map = trending_to_symbol_points(trending_raw if isinstance(trending_raw, dict) else None)
+        momentum_map_raw = fetch_coingecko_momentum(client)
+        momentum_map = momentum_map_raw if isinstance(momentum_map_raw, dict) else {}
         global_momentum = global_market_momentum_point(momentum_map)
-        if global_momentum:
+        if isinstance(global_momentum, dict) and global_momentum:
             pts.append(global_momentum)
 
     # Blended per-symbol points

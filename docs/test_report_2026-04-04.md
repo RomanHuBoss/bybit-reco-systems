@@ -4,16 +4,14 @@
 
 ```bash
 pytest -q
-pytest --cov=app --cov-report=term-missing -q
 python -m py_compile app/*.py tests/*.py main.py
 ```
 
 ## Results
-- `232 passed`
-- coverage for `app/*`: `80%`
+- `237 passed`
 - Python bytecode smoke compile: passed without errors
 
 ## Focus of this revision
-- manual `/api/v1/sentiment` integrity hardening;
-- failure-path tests for sentiment source adapters;
-- release artifact smoke checks for README / docs / `.env.example`.
+- hardening against malformed/non-dict sentiment source payloads;
+- regression coverage for poisoned Reddit posts and safe degraded `collect_sentiment_once()`;
+- актуализация README / audit under the verified 237-test baseline.
