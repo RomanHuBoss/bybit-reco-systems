@@ -44,6 +44,9 @@
 - Нефинитный sentiment из внешних источников больше не усиливается clamp-логикой до экстремальных значений.
 
 ### Дополнительные усиления в этой ревизии
+- Sentiment ingestion дополнительно hardened against poisoned upstream payloads: невалидный `NaN/inf` из внешних источников больше не может тихо превратиться в фиктивный extreme fear/risk-off.
+- Global sentiment combine теперь пропускает битые source rows вместо отравления итогового market pulse.
+- Per-symbol blended sentiment игнорирует испорченные source blocks и считает только валидные momentum / reddit / rss / trending компоненты.
 - `DB_PATH` теперь нормализуется к абсолютному пути относительно корня проекта. Перезапуск из другой shell-директории больше не уводит сервис в случайный `./data/app.db`.
 - `RUNTIME_LOCK_DB_PATH` по умолчанию разворачивается в sidecar-файл `*.runtime_locks.sqlite`; блокировки лидерства больше не делят файл с основными write-paths.
 - Панель «Детали» в UI теперь корректно сбрасывает устаревший `rec_id` после `404` и перестаёт бесконечно запрашивать несуществующую запись.
@@ -106,8 +109,8 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `224 passed`
-- покрытие `app/*` — `78%`
+- `227 passed`
+- покрытие `app/*` — `79%`
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows.
 - smoke/coverage прогоны в текущей поставке дают только внешнее `PendingDeprecationWarning` из зависимости `python_multipart`; собственных функциональных падений проект не показывает.
 

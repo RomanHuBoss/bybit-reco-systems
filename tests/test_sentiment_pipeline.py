@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 
 from app import db
-from app.sentiment import _score_text, combine_global_sentiment
+from app.sentiment import _score_text, blend_per_symbol, combine_global_sentiment, fetch_fear_greed
 from app.sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 
 
@@ -197,3 +197,77 @@ def test_insert_sentiment_points_rejects_non_finite_and_negative_volume(tmp_path
 
     assert db.get_sentiment_series(conn, 'global', 'crypto', limit=10) == []
     conn.close()
+
+
+class _DummyResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _DummyClient:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def get(self, *args, **kwargs):
+        return _DummyResponse(self.payload)
+
+
+def test_fetch_fear_greed_ignores_non_finite_upstream_payload(monkeypatch):
+    monkeypatch.setattr('app.sentiment.time.time', lambda: 1_700_000_000)
+
+    point = fetch_fear_greed(_DummyClient({'data': [{'value': 'NaN', 'value_classification': 'bad'}]}))
+
+    assert point is None
+
+
+def test_blend_per_symbol_skips_poisoned_sources_instead_of_creating_fake_extreme(monkeypatch):
+    monkeypatch.setattr('app.sentiment.time.time', lambda: 1_700_000_100)
+
+    blended = blend_per_symbol(
+        rss_map={'BTCUSDT': [0.2, float('nan')]},
+        reddit_map={'BTCUSDT': {'sentiment': float('nan')}},
+        trending_map={'BTCUSDT': {'sentiment': 0.6}},
+        momentum_map={'BTCUSDT': {'sentiment': 0.4, 'velocity': float('nan')}},
+    )
+
+    assert 'BTCUSDT' in blended
+    point = blended['BTCUSDT']
+    assert point['sentiment'] == pytest.approx((0.4 * 0.45 + 0.2 * 0.15 + 0.6 * 0.10) / (0.45 + 0.15 + 0.10))
+    assert point['velocity'] == 0.0
+    assert point['sources']['reddit'] is None
+    assert point['sources']['rss_mentions'] == 1
+    assert point['sources']['sources_used'] == ['momentum', 'rss', 'trending']
+    assert math.isfinite(point['sentiment'])
+
+
+def test_combine_global_sentiment_skips_non_finite_source_rows():
+    combined = combine_global_sentiment([
+        {
+            'scope': 'global',
+            'key': 'broken',
+            'sentiment': float('nan'),
+            'volume': float('nan'),
+            'sources': {'broken': True},
+            'tags': ['broken'],
+        },
+        {
+            'scope': 'global',
+            'key': 'market',
+            'sentiment': 0.25,
+            'volume': 4,
+            'sources': {'market': True},
+            'tags': ['market_momentum'],
+        },
+    ])
+
+    assert combined is not None
+    assert combined['sentiment'] == pytest.approx(0.25)
+    assert combined['volume'] == 6
+    assert combined['sources'] == {'market': {'market': True}}
+    assert combined['tags'] == ['market_momentum']

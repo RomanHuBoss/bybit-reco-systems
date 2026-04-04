@@ -140,6 +140,31 @@ def _safe_float(value: Any, default: float) -> float:
     return float(num)
 
 
+def _finite_float(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return float(num)
+
+
+def _safe_sentiment(value: Any, default: float = 0.0) -> float:
+    """Нормализация sentiment-значений без ложного ухода в экстремумы.
+
+    Для sentiment safer default — нейтральный ноль. Это особенно важно для
+    внешних источников: битый `NaN/inf` не должен тихо превращаться в -1.0 и
+    симулировать сильный risk-off.
+    """
+    return _clamp(_safe_float(value, default), -1.0, 1.0)
+
+
+def _safe_unit_interval(value: Any, default: float = 0.5) -> float:
+    """Безопасная нормализация величин вида 0..1 с нейтральным default=0.5."""
+    return _clamp(_safe_float(value, default), 0.0, 1.0)
+
+
 def _keyword_match(text: str, token_set: set[str], keyword: str) -> bool:
     kw_tokens = re.findall(r"[a-z0-9']+", (keyword or "").lower())
     if not kw_tokens:
@@ -159,13 +184,15 @@ def fetch_fear_greed(client: httpx.Client) -> dict[str, Any] | None:
         item = (data.get("data") or [None])[0]
         if not item:
             return None
-        value = float(item.get("value"))
+        value = _finite_float(item.get("value"))
+        if value is None:
+            return None
         sentiment = (value - 50.0) / 50.0   # 0..100 → -1..1
         return {
             "scope": "global",
             "key": "crypto_fng",
             "ts": _now_ts(),
-            "sentiment": _clamp(sentiment, -1.0, 1.0),
+            "sentiment": _safe_sentiment(sentiment),
             "velocity": 0.0,
             "volume": 1,
             "sources": {"alternative_me_fng_value": value, "classification": item.get("value_classification")},
@@ -265,7 +292,9 @@ def fetch_reddit_sentiment(client: httpx.Client) -> dict[str, dict[str, Any]]:
                 title = pd.get("title", "")
                 text  = pd.get("selftext", "")
                 # Reddit-native sentiment proxy: upvote_ratio ∈ [0,1] → [-1,1]
-                upvote_ratio = _clamp(_safe_float(pd.get("upvote_ratio", 0.5), 0.5), 0.0, 1.0)
+                # Внешний JSON Reddit иногда приносит битые ratio; используем
+                # нейтральный 0.5, чтобы не создать искусственный bearish bias.
+                upvote_ratio = _safe_unit_interval(pd.get("upvote_ratio", 0.5), 0.5)
                 native_sent  = (upvote_ratio - 0.5) * 2.0
                 # Text sentiment
                 text_sent = _score_text(title + " " + text)
@@ -277,7 +306,7 @@ def fetch_reddit_sentiment(client: httpx.Client) -> dict[str, dict[str, Any]]:
                     "scope": "symbol",
                     "key": sym,
                     "ts": _now_ts(),
-                    "sentiment": _clamp(float(avg), -1.0, 1.0),
+                    "sentiment": _safe_sentiment(avg),
                     "velocity": 0.0,
                     "volume": len(scores),
                     "sources": {"reddit_url": url, "posts_analyzed": len(scores)},
@@ -467,20 +496,24 @@ def blend_per_symbol(
         sources_used: list[str] = []
 
         mom = momentum_map.get(sym)
-        if mom:
+        mom_sent = _finite_float((mom or {}).get("sentiment"))
+        mom_vel = _finite_float((mom or {}).get("velocity"))
+        if mom and mom_sent is not None:
             w = _SOURCE_WEIGHTS["coingecko_momentum"]
-            wsum += float(mom["sentiment"]) * w
+            wsum += mom_sent * w
             wtotal += w
             sources_used.append("momentum")
 
         red = reddit_map.get(sym)
-        if red:
+        red_sent = _finite_float((red or {}).get("sentiment"))
+        if red and red_sent is not None:
             w = _SOURCE_WEIGHTS["reddit"]
-            wsum += float(red["sentiment"]) * w
+            wsum += red_sent * w
             wtotal += w
             sources_used.append("reddit")
 
-        rss_scores = rss_map.get(sym, [])
+        rss_scores_raw = rss_map.get(sym, [])
+        rss_scores = [score for score in (_finite_float(x) for x in rss_scores_raw) if score is not None]
         if rss_scores:
             rss_avg = sum(rss_scores) / len(rss_scores)
             w = _SOURCE_WEIGHTS["news_rss"]
@@ -489,9 +522,10 @@ def blend_per_symbol(
             sources_used.append("rss")
 
         trd = trending_map.get(sym)
-        if trd:
+        trd_sent = _finite_float((trd or {}).get("sentiment"))
+        if trd and trd_sent is not None:
             w = _SOURCE_WEIGHTS["coingecko_trending"]
-            wsum += float(trd["sentiment"]) * w
+            wsum += trd_sent * w
             wtotal += w
             sources_used.append("trending")
 
@@ -503,15 +537,17 @@ def blend_per_symbol(
             "scope": "symbol",
             "key": sym,
             "ts": ts,
-            "sentiment": _clamp(float(blended), -1.0, 1.0),
-            "velocity": float(mom["velocity"]) if mom else 0.0,
+            # Защищаем blended-point от poisoned source map: один legacy NaN не
+            # должен превращать весь символ в фиктивный экстремум.
+            "sentiment": _safe_sentiment(blended),
+            "velocity": _safe_sentiment(mom_vel if mom_vel is not None else 0.0),
             "volume": len(sources_used),  # number of data sources blended
             "sources": {
                 "sources_used": sources_used,
-                "momentum": float(mom["sentiment"]) if mom else None,
-                "reddit":   float(red["sentiment"]) if red else None,
-                "rss_mentions": len(rss_scores) if rss_scores else 0,
-                "trending": bool(trd),
+                "momentum": mom_sent,
+                "reddit": red_sent,
+                "rss_mentions": len(rss_scores),
+                "trending": bool(trd and trd_sent is not None),
             },
             "tags": ["per_symbol", "blended"] + sources_used,
         }
@@ -533,19 +569,25 @@ def combine_global_sentiment(points: list[dict[str, Any]]) -> dict[str, Any] | N
     tags: list[str] = []
     sources: dict = {}
     for p in points:
-        # Clamp minimum weight so no source is drowned out by higher-volume ones.
-        # FnG (vol=1) and RSS (vol=40-80) each get at least _GLOBAL_MIN_SOURCE_WEIGHT.
-        vol = max(float(p.get("volume") or 1.0), _GLOBAL_MIN_SOURCE_WEIGHT)
-        wsum += float(p.get("sentiment") or 0.0) * vol
+        sent = _finite_float((p or {}).get("sentiment"))
+        vol_raw = _finite_float((p or {}).get("volume"))
+        if sent is None:
+            continue
+        # Один битый upstream source не должен отравлять общий global pulse.
+        # Невалидный/нулевой volume заменяем безопасным минимальным весом.
+        vol = max(vol_raw if vol_raw is not None else 1.0, _GLOBAL_MIN_SOURCE_WEIGHT)
+        wsum += sent * vol
         w += vol
         tags.extend(p.get("tags") or [])
         sources[p.get("key", "src")] = p.get("sources", {})
-    s = wsum / w if w else 0.0
+    if w <= 0:
+        return None
+    s = wsum / w
     return {
         "scope": "global",
         "key": "crypto",
         "ts": _now_ts(),
-        "sentiment": _clamp(float(s), -1.0, 1.0),
+        "sentiment": _safe_sentiment(s),
         "velocity": 0.0,
         "volume": int(w),
         "sources": sources,
