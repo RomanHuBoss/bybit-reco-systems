@@ -1285,7 +1285,7 @@ def _build_trade_plan(
     plan: dict[str, Any] = {
         "reference_price": _round_price(price, decimals=10),
         "decision_timeframes": decision_tfs,
-        "expected_horizon": {**horizon, "basis": "heuristics(bot_type)+regime_confidence", "label_horizon_hours": int(params.get("label_horizon_hours") or (BOT_HORIZONS.get(bot_type, 6 * 3600) // 3600))},
+        "expected_horizon": {**horizon, "basis": "heuristics(bot_type)+regime_confidence", "label_horizon_hours": max(1, int(_safe_int_or_none(params.get("label_horizon_hours")) or (BOT_HORIZONS.get(bot_type, 6 * 3600) // 3600)))},
         "volatility": {
             "atr_pct_1m": atr_pct_1m,
             "atr_pct_15m": atr_pct_15m if atr_pct_15m > 0 else None,

@@ -213,6 +213,13 @@ def _bounded_probability(value: float | None, *, default: float) -> float:
     return max(0.0, min(num, 1.0))
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
 def _ensure_json_payload_has_only_finite_numbers(value: Any, *, field_name: str, path: str = "") -> None:
     current_path = path or field_name
     if value is None or isinstance(value, (str, bool, int)):
@@ -294,7 +301,7 @@ def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: 
         return False
     if str(existing.get("symbol") or "") != str(symbol):
         return False
-    if ts is not None and int(existing.get("ts") or 0) != int(ts):
+    if ts is not None and _safe_int(existing.get("ts"), 0) != int(ts):
         return False
     try:
         pnl_match = math.isclose(float(existing.get("pnl") or 0.0), float(pnl), rel_tol=1e-12, abs_tol=1e-12)
@@ -747,8 +754,8 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
                 _rollback_quietly(conn)
             return chain_existing, True
 
-    ttl_sec = int(rec.get("ttl_sec") or 0)
-    rec_ts = int(rec.get("ts") or 0)
+    ttl_sec = max(0, _safe_int(rec.get("ttl_sec"), 0))
+    rec_ts = max(0, _safe_int(rec.get("ts"), 0))
     if ttl_sec > 0 and rec_ts > 0 and int(time.time()) > rec_ts + ttl_sec:
         db.update_recommendation_status(conn, rec_id, "expired", operator)
         raise HTTPException(status_code=409, detail="recommendation already expired")

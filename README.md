@@ -68,6 +68,9 @@
 - `compute_features_from_ohlcv()` теперь сам отбрасывает логически невозможные бары (`close` вне диапазона `[low, high]`) даже при прямом вызове в обход DB-sanitization.
 - `liquidity_tier()` больше не трактует poisoned `turnover24h` (`NaN/inf` или отрицательное значение) как реальную ликвидность; такой payload считается `unknown`, а не `micro/high`.
 - `trade_plan` и `cost_model` дополнительно санируются от `NaN/Infinity`: один poisoned numeric больше не превращает рекомендацию в несериализуемый JSON и не рисует оператору фиктивные уровни вида `nan/inf`.
+- Outcome-labeling теперь fail-safe переживает malformed `trade_plan` / `expected_horizon` shapes из legacy/manual JSON: строка/список вместо dict и non-finite `label_horizon_hours` больше не роняют весь labeling sweep и не блокируют последующие рекомендации.
+- Execute-path теперь устойчив к испорченным `ttl_sec` / `ts` в legacy строках рекомендации: ручной запуск не падает `500` из-за одиночной битой записи, а безопасно трактует такие значения как отсутствующие.
+- Генерация `trade_plan` и idempotency-проверка trades дополнительно hardened against malformed numerics/timestamps: мусорный `label_horizon_hours` откатывается к builtin horizon, а poisoned historical `trade.ts` не ломает повторный запрос.
 - LLM review payload теперь fail-safe переживает malformed legacy/manual recommendation numerics (`score/confidence/expected_rr/risk_score`): мусор в исторической строке не роняет весь reviewer sweep ещё до общей JSON-санации.
 - `MASTER_KEY` теперь валидируется на bootstrap как корректный Fernet key. Ошибка конфигурации выявляется при старте сервиса, а не в момент первой live-операции шифрования/дешифрования.
 - `RUNTIME_LOCK_DB_PATH` теперь обязан отличаться от `DB_PATH`; accidental конфиг на один и тот же SQLite-файл блокируется fail-fast, чтобы не возвращать runtime lock в тот же файл, где идут основные write-paths.
@@ -134,7 +137,7 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `268 passed`
+- `274 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - `pytest --cov=app --cov-report=term-missing` — total coverage `81%`
 - `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения

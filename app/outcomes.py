@@ -17,14 +17,14 @@ GRID_BOTS = set(GRID_BOT_TYPES)
 
 
 def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_horizon_sec: int) -> tuple[int, bool]:
-    params = params or {}
+    params = params if isinstance(params, dict) else {}
 
     def _hours_to_sec(value: object) -> int | None:
         try:
             hours = float(value)
         except Exception:
             return None
-        if hours <= 0:
+        if not math.isfinite(hours) or hours <= 0:
             return None
         return int(hours * 3600)
 
@@ -36,8 +36,8 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
         lo, hi = bounds.get(bot_type, (0.5, 72.0))
         return max(lo, min(hi, float(hours)))
 
-    trade_plan = params.get("trade_plan") or {}
-    expected_horizon = trade_plan.get("expected_horizon") or {}
+    trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    expected_horizon = trade_plan.get("expected_horizon") if isinstance(trade_plan.get("expected_horizon"), dict) else {}
 
     # Outcome labeling is bot-mechanics-specific and should mature on the dedicated
     # label horizon, not on the operator-facing max holding window. Otherwise grid
