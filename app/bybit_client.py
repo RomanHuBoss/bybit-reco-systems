@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any
+from typing import Any, Mapping
 
 import httpx
 
@@ -25,6 +25,25 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _result_list(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Возвращает list[dict] из `result.list` без протечки битой формы выше по стеку.
+
+    Upstream API в норме всегда отдаёт dict -> result -> list, но в реальной жизни
+    прокси, WAF или partially broken mock/stub могут вернуть иную форму. Для
+    публичного клиента лучше деградировать к пустому списку, чем выбросить
+    `AttributeError` из `.get(...)` в бизнес-слое.
+    """
+    result = _mapping_or_none(data.get("result")) or {}
+    items = result.get("list")
+    if not isinstance(items, list):
+        return []
+    return [dict(item) for item in items if isinstance(item, Mapping)]
 
 
 class BybitPublicClient:
@@ -65,19 +84,25 @@ class BybitPublicClient:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                r = self._client.get(url, params=params)
-                if self._is_retryable_http_status(r.status_code):
-                    raise RuntimeError(f"Bybit HTTP {r.status_code}: retryable upstream error")
-                r.raise_for_status()
-                data = r.json()
-                if isinstance(data, dict):
-                    ret_code = int(data.get("retCode", 0) or 0)
-                    if ret_code != 0:
-                        ret_msg = str(data.get("retMsg") or "")
-                        if attempt < self.max_retries and self._is_retryable_bybit_error(ret_code, ret_msg):
-                            time.sleep(self._retry_delay(attempt))
-                            continue
-                        raise RuntimeError(f"Bybit error {ret_code}: {ret_msg}")
+                response = self._client.get(url, params=params)
+                if self._is_retryable_http_status(response.status_code):
+                    raise RuntimeError(f"Bybit HTTP {response.status_code}: retryable upstream error")
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise RuntimeError("Bybit response shape error: expected JSON object")
+
+                ret_code_raw = data.get("retCode", 0)
+                try:
+                    ret_code = int(ret_code_raw or 0)
+                except Exception as exc:
+                    raise RuntimeError(f"Bybit response shape error: invalid retCode={ret_code_raw!r}") from exc
+                if ret_code != 0:
+                    ret_msg = str(data.get("retMsg") or "")
+                    if attempt < self.max_retries and self._is_retryable_bybit_error(ret_code, ret_msg):
+                        time.sleep(self._retry_delay(attempt))
+                        continue
+                    raise RuntimeError(f"Bybit error {ret_code}: {ret_msg}")
                 return data
             except Exception as exc:
                 last_exc = exc
@@ -98,7 +123,7 @@ class BybitPublicClient:
         if symbol:
             params["symbol"] = symbol
         data = self._get("/v5/market/tickers", params=params)
-        return data.get("result", {}).get("list", []) or []
+        return _result_list(data)
 
     def get_kline(
         self,
@@ -120,18 +145,20 @@ class BybitPublicClient:
         if end is not None:
             params["end"] = str(int(end))
         data = self._get("/v5/market/kline", params=params)
-        return data.get("result", {}).get("list", []) or []
+        result = _mapping_or_none(data.get("result")) or {}
+        items = result.get("list")
+        return items if isinstance(items, list) else []
 
     def get_funding_rate(self, symbol: str) -> dict[str, Any] | None:
         """Current funding rate from linear tickers endpoint."""
         data = self._get("/v5/market/tickers", {"category": "linear", "symbol": symbol})
-        items = data.get("result", {}).get("list", [])
+        items = _result_list(data)
         if not items:
             return None
-        t = items[0]
-        next_funding_raw = _safe_int(t.get("nextFundingTime") or 0)
+        ticker = items[0]
+        next_funding_raw = _safe_int(ticker.get("nextFundingTime") or 0)
         next_funding_ts = next_funding_raw // 1000 if next_funding_raw > 10**11 else next_funding_raw
-        funding_rate = _safe_float(t.get("fundingRate"))
+        funding_rate = _safe_float(ticker.get("fundingRate"))
         return {
             "symbol": symbol,
             "funding_rate": funding_rate,
@@ -167,16 +194,19 @@ class BybitPublicClient:
             "/v5/market/open-interest",
             params,
         )
-        result = data.get("result", {}) or {}
-        items = result.get("list", []) or []
+        result = _mapping_or_none(data.get("result")) or {}
+        items = result.get("list")
         out: list[dict[str, Any]] = []
-        for r in items:
-            ts_raw = _safe_int(r.get("timestamp"))
-            oi = _safe_float(r.get("openInterest"))
-            if ts_raw <= 0 or oi is None or oi < 0:
-                continue
-            ts = ts_raw // 1000 if ts_raw > 10**11 else ts_raw
-            out.append({"ts": ts, "oi": oi})
+        if isinstance(items, list):
+            for row in items:
+                if not isinstance(row, Mapping):
+                    continue
+                ts_raw = _safe_int(row.get("timestamp"))
+                oi = _safe_float(row.get("openInterest"))
+                if ts_raw <= 0 or oi is None or oi < 0:
+                    continue
+                ts = ts_raw // 1000 if ts_raw > 10**11 else ts_raw
+                out.append({"ts": ts, "oi": oi})
         next_cursor = result.get("nextPageCursor") or result.get("cursor") or None
         if next_cursor is not None:
             next_cursor = str(next_cursor)
@@ -206,5 +236,5 @@ class BybitPublicClient:
     def get_instrument_info(self, category: str, symbol: str) -> dict[str, Any] | None:
         """Metadata for a single instrument (tick size, lot size, etc.)."""
         data = self._get("/v5/market/instruments-info", {"category": category, "symbol": symbol})
-        items = data.get("result", {}).get("list", []) or []
+        items = _result_list(data)
         return items[0] if items else None

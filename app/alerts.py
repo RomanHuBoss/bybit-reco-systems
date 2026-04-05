@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 """
 Telegram alerting — optional, activated by TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env.
 Sends alerts for: collect errors spike, all symbols stale, no recommendations.
 """
+
+from __future__ import annotations
 
 import time
 from typing import Any
@@ -29,11 +29,20 @@ def _mark_sent(key: str) -> None:
 
 
 def send_telegram(token: str, chat_id: str, text: str) -> bool:
-    """Fire-and-forget Telegram message. Returns True on success."""
+    """Fire-and-forget Telegram message. Returns True on success.
+
+    Telegram иногда отвечает HTTP 200, но с payload `{"ok": false, ...}`.
+    Для alerting это критично: ложный success привёл бы к установке cooldown
+    и фактической потере следующего реального алерта. Поэтому считаем успехом
+    только transport-level 200 + application-level `ok=true`.
+    """
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        r = httpx.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=8.0)
-        return r.status_code == 200
+        response = httpx.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=8.0)
+        if response.status_code != 200:
+            return False
+        payload = response.json()
+        return isinstance(payload, dict) and bool(payload.get("ok"))
     except Exception:
         return False
 

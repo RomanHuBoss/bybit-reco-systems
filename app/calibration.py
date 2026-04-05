@@ -134,7 +134,6 @@ def fit_platt(
 
     weights = ws if (ws and len(ws) == len(xs)) else [1.0] * len(xs)
     a, b = 1.0, 0.0
-    n = len(xs)
     w_sum = sum(weights)
     for _ in range(iters):
         da = db_ = 0.0

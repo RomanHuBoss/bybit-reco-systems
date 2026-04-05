@@ -44,6 +44,10 @@
 - Нефинитный sentiment из внешних источников больше не усиливается clamp-логикой до экстремальных значений.
 
 ### Дополнительные усиления в этой ревизии
+- Telegram alerting теперь считает доставку успешной только при `HTTP 200` **и** `{"ok": true}` в ответе Telegram API. Ложный `200 OK` с `{"ok": false}` больше не ставит cooldown и не приводит к тихой потере следующего реального алерта.
+- Public Bybit client больше не доверяет форме upstream JSON вслепую: response обязан быть объектом с валидным `retCode`, а `result.list` санируется от недиктовых элементов. Это устраняет неявные `AttributeError`/`ValueError` на сломанном proxy/mock payload и делает причину сбоя диагностируемой.
+- Убраны мёртвые переменные и неоднозначные ветки в runtime/status-коде; статический smoke-check по `ruff` теперь проходит на всём `app/` слое без предупреждений.
+
 - Risk limits теперь приводятся к каноническим *effective limits* ещё в mutating API и bootstrap-конфигурации: в БД и decision log больше не сохраняется сырой операторский payload, который runtime потом тихо clamp'ит по-другому. Это устраняет расхождение между `/api/v1/risk/status`, активной записью `risk_limits` и audit trail.
 - Outcome-labeling теперь игнорирует poisoned `price_range_lower/upper` и kill-switch bounds (`"NaN"`, `"Infinity"`, отрицательные/нулевые значения) и корректно откатывается к валидным границам из `trade_plan.levels.*`. Битый top-level JSON больше не отключает range/kill-switch penalties и не искажает историческую разметку grid-рекомендаций.
 - Ручной `POST /api/v1/sentiment` теперь нормализует операторский `key` и список `tags`: пробелы по краям убираются, пустые/дублирующиеся теги не пишутся в БД и decision log. Пустой `key` отвергается с `422`, чтобы не плодить бессмысленные sentiment-series.
@@ -79,8 +83,10 @@
 - REST API для рекомендаций, risk status, sentiment, bot lifecycle и trade ingestion;
 - SQLite persistence с decision log и outcome history;
 - краткая инструкция оператора в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`.
-- аудит этой ревизии: `docs/audit_2026-04-04.md`.
-- тестовый отчёт ревизии: `docs/test_report_2026-04-04.md`.
+- аудит предыдущей ревизии: `docs/audit_2026-04-04.md`.
+- тестовый отчёт предыдущей ревизии: `docs/test_report_2026-04-04.md`.
+- аудит текущей ревизии: `docs/audit_2026-04-05.md`.
+- тестовый отчёт текущей ревизии: `docs/test_report_2026-04-05.md`.
 
 ## Ограничения дизайна
 - sentiment pipeline остаётся **эвристическим**, а не newsroom/LLM/NER-уровня;
@@ -119,7 +125,7 @@ python -m py_compile app/*.py tests/*.py main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `247 passed`
+- `252 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows / malformed sentiment adapter payloads / poisoned Reddit posts / safe fail-open of `collect_sentiment_once()` / malformed legacy JSON-shapes in recommendation-bot-trade-sentiment APIs / malformed app_config payloads in status and metrics / rejection of blank audit keys for `risk limits version` and explicit `trade_id` / persistence of normalized effective risk limits in bootstrap and mutating API / fail-open fallback from poisoned top-level grid range bounds to valid `trade_plan.levels.range` and `trade_plan.levels.kill_switch`.
 - В этой ревизии baseline coverage не переписывался в документацию автоматически; команда `pytest --cov=app --cov-report=term-missing -q` остаётся рекомендованной локальной проверкой перед live-выкаткой.

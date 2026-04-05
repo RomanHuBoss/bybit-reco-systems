@@ -28,7 +28,7 @@ from .recommender import run_recommender_once, run_llm_review_sweep_once, LLM_RE
 from .risk import get_risk_limits, compute_risk_status, gate_candidate, normalize_risk_limits
 from .security import is_authorized
 from . import db
-from .bot_types import SUPPORTED_BOT_TYPES, is_supported_bot_type, sql_in_clause
+from .bot_types import sql_in_clause
 import logging
 
 logger = logging.getLogger(__name__)
@@ -1329,7 +1329,6 @@ def _collector_thread():
                     "collector_max_workers": int(getattr(settings, "collector_max_workers", 1) or 1),
                     "futures_collect_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
                 }
-                lock_lost = False
                 with closing(_get_conn()) as conn:
                     heartbeat = _make_runtime_lock_heartbeat(lock_key)
                     for venue in settings.venues:
@@ -1346,7 +1345,6 @@ def _collector_thread():
                                 )
                             )
                         except RuntimeLockLostError as e:
-                            lock_lost = True
                             cycle_stats["lock_lost"] = True
                             _rollback_quietly(conn)
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
@@ -1355,7 +1353,6 @@ def _collector_thread():
                             _rollback_quietly(conn)
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "err": str(e)})
                         if not heartbeat():
-                            lock_lost = True
                             cycle_stats["lock_lost"] = True
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": "collector runtime lock lost"})
                             break
@@ -1392,7 +1389,6 @@ def _backfill_thread():
                     "collector_max_workers": int(getattr(settings, "collector_max_workers", 1) or 1),
                     "futures_collect_max_workers": int(getattr(settings, "futures_collect_max_workers", 1) or 1),
                 }
-                lock_lost = False
                 with closing(_get_conn()) as conn:
                     heartbeat = _make_runtime_lock_heartbeat(lock_key)
                     for venue in settings.venues:
@@ -1409,7 +1405,6 @@ def _backfill_thread():
                                 )
                             )
                         except RuntimeLockLostError as e:
-                            lock_lost = True
                             cycle_stats["lock_lost"] = True
                             _rollback_quietly(conn)
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": str(e)})
@@ -1418,7 +1413,6 @@ def _backfill_thread():
                             _rollback_quietly(conn)
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "backfill", "err": str(e)})
                         if not heartbeat():
-                            lock_lost = True
                             cycle_stats["lock_lost"] = True
                             _log_decision_fresh("COLLECT_ERROR", None, None, {"venue": venue, "symbol": "UNKNOWN", "field": "runtime_lock", "err": "backfill runtime lock lost"})
                             break
@@ -1649,8 +1643,6 @@ def metrics() -> str:
     with closing(_get_conn()) as conn:
         health, _ = _load_symbol_health(conn)
         collector_last_cycle = _get_app_config_mapping(conn, "collector_last_cycle", default={})
-        backfill_last_cycle = _get_app_config_mapping(conn, "backfill_last_cycle", default={})
-        futures_meta_last_cycle = _get_app_config_mapping(conn, "futures_meta_last_cycle", default={})
         collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         status_counts = {"ok": 0, "stale": 0, "missing": 0, "disabled": 0}
         for item in health:

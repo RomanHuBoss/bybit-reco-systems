@@ -2551,12 +2551,17 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             # Context completeness penalty — reduce confidence when key signals are missing.
             # The system already falls back gracefully; this makes the uncertainty explicit.
             _ctx_mult = 1.0
-            if not f.get("_atr_pct_1h"):          _ctx_mult *= 0.92  # no 1h ATR
-            if not sentiment_has_data:            _ctx_mult *= 0.94  # missing sentiment is uncertainty, not true neutral
-            if venue == "linear" and oi_sig.get("oi_now") is None: _ctx_mult *= 0.96  # no OI data
-            if venue == "linear" and fr_sig.get("value") is None:  _ctx_mult *= 0.98  # no funding data
+            if not f.get("_atr_pct_1h"):
+                _ctx_mult *= 0.92  # no 1h ATR
+            if not sentiment_has_data:
+                _ctx_mult *= 0.94  # missing sentiment is uncertainty, not true neutral
+            if venue == "linear" and oi_sig.get("oi_now") is None:
+                _ctx_mult *= 0.96  # no OI data
+            if venue == "linear" and fr_sig.get("value") is None:
+                _ctx_mult *= 0.98  # no funding data
             _dir_tf_count = len((f.get("_direction_agg") or {}).get("tf_used") or [])
-            if _dir_tf_count < 3:                  _ctx_mult *= 0.93  # sparse TF coverage
+            if _dir_tf_count < 3:
+                _ctx_mult *= 0.93  # sparse TF coverage
             if _ctx_mult < 1.0:
                 conf = float(_clamp(conf * _ctx_mult, 0.0, 1.0))
 

@@ -462,7 +462,6 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
 
         if entry is None or entry == 0:
             continue
-        price_ret: float
         ret_proxy: float
         success: int
         exitp: float
@@ -472,7 +471,6 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             if ep is None:
                 continue
             exitp = ep
-            price_ret = (exitp - entry) / entry
             success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, direction, params)
             _, funding_cost_bps = _extract_cost_components(params)
             if venue == "linear" and funding_cost_bps:
