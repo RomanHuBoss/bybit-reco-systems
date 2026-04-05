@@ -51,7 +51,7 @@
 - Risk limits теперь приводятся к каноническим *effective limits* ещё в mutating API и bootstrap-конфигурации: в БД и decision log больше не сохраняется сырой операторский payload, который runtime потом тихо clamp'ит по-другому. Это устраняет расхождение между `/api/v1/risk/status`, активной записью `risk_limits` и audit trail.
 - Outcome-labeling теперь игнорирует poisoned `price_range_lower/upper` и kill-switch bounds (`"NaN"`, `"Infinity"`, отрицательные/нулевые значения) и корректно откатывается к валидным границам из `trade_plan.levels.*`. Битый top-level JSON больше не отключает range/kill-switch penalties и не искажает историческую разметку grid-рекомендаций.
 - Ручной `POST /api/v1/sentiment` теперь нормализует операторский `key` и список `tags`: пробелы по краям убираются, пустые/дублирующиеся теги не пишутся в БД и decision log. Пустой `key` отвергается с `422`, чтобы не плодить бессмысленные sentiment-series.
-- Release smoke-tests теперь проверяют поставочный пакет как единый артефакт: README, `.env.example` и операторские `docx/pdf` не должны расходиться между собой.
+- Release smoke-tests теперь проверяют поставочный пакет как единый артефакт: README, `.env.example`, `requirements-dev.txt` и операторские `docx/pdf` не должны расходиться между собой.
 - Sentiment ingestion дополнительно hardened against poisoned upstream payloads: невалидный `NaN/inf` из внешних источников больше не может тихо превратиться в фиктивный extreme fear/risk-off.
 - Global sentiment combine теперь пропускает не только non-finite source rows, но и недиктовые/poisoned payload-блоки вместо падения всего sentiment-цикла.
 - Per-symbol blended sentiment игнорирует испорченные source blocks и считает только валидные momentum / reddit / rss / trending компоненты, даже если соседний source вернул строку/список вместо dict.
@@ -127,11 +127,13 @@ python -m py_compile app/*.py tests/*.py main.py
 ruff check app tests main.py
 ```
 
+Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
+
 Текущий проверочный baseline этой ревизии:
-- `263 passed`
+- `265 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - `pytest --cov=app --cov-report=term-missing` — total coverage `81%`
-- `requirements-dev.txt` добавлен в поставку, чтобы quality-gate (`pytest`, `pytest-cov`, `ruff`) был воспроизводимым из репозитория, а не зависел от случайно установленного локального окружения
+- `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows / malformed sentiment adapter payloads / poisoned Reddit posts / safe fail-open of `collect_sentiment_once()` / malformed legacy JSON-shapes in recommendation-bot-trade-sentiment APIs / malformed app_config payloads in status and metrics / rejection of blank audit keys for `risk limits version` and explicit `trade_id` / persistence of normalized effective risk limits in bootstrap and mutating API / fail-open fallback from poisoned top-level grid range bounds to valid `trade_plan.levels.range` and `trade_plan.levels.kill_switch` / rejection of `NUL` in sentiment tags and GET-filters / explicit transaction cleanup on idempotent execution paths / sanitization of non-finite `trade_plan` and `cost_model` payloads.
 
 ## Ключевые env
