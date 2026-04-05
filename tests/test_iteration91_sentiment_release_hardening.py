@@ -174,11 +174,58 @@ def test_release_artifacts_are_present_and_cross_referenced() -> None:
     readme = (root / "README.md").read_text(encoding="utf-8")
     env_example = (root / ".env.example").read_text(encoding="utf-8")
 
-    assert "docs/audit_2026-04-04.md" in readme
+    assert "docs/audit_" not in readme
+    assert "docs/test_report_" not in readme
     assert "instrukciya_operatora_bybit_recommender.docx" in readme
     assert "instrukciya_operatora_bybit_recommender.pdf" in readme
-    assert (root / "docs" / "audit_2026-04-04.md").exists()
     assert (root / "docs" / "instrukciya_operatora_bybit_recommender.docx").exists()
     assert (root / "docs" / "instrukciya_operatora_bybit_recommender.pdf").exists()
     assert "ADMIN_API_KEY" in env_example
     assert "RUNTIME_LOCK_DB_PATH" in env_example
+
+
+def test_api_sentiment_put_rejects_nul_in_key(isolated_client_and_conn):
+    _app_main, client, conn = isolated_client_and_conn
+
+    resp = client.post(
+        "/api/v1/sentiment",
+        headers={"X-API-Key": "test-admin-key"},
+        json={
+            "scope": "global",
+            "key": "crypto\u0000desk",
+            "ts": 1_700_300_000,
+            "sentiment": 0.2,
+            "velocity": 0.0,
+            "volume": 1,
+            "sources": {"manual": ["desk"]},
+            "tags": ["manual"],
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "NUL byte" in resp.text
+    assert db.get_sentiment_series(conn, "global", "crypto", limit=10) == []
+
+
+def test_api_sentiment_get_normalizes_whitespace_in_scope_and_key(isolated_client_and_conn):
+    _app_main, client, conn = isolated_client_and_conn
+    db.insert_sentiment_point(
+        conn,
+        "global",
+        "crypto",
+        1_700_300_100,
+        0.15,
+        0.01,
+        3,
+        {"manual": ["desk"]},
+        ["manual"],
+    )
+
+    resp = client.get('/api/v1/sentiment?scope=%20global%20&key=%20crypto%20&limit=5')
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['scope'] == 'global'
+    assert body['key'] == 'crypto'
+    assert len(body['items']) == 1
+    assert body['items'][0]['sentiment'] == 0.15

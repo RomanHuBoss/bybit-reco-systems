@@ -62,8 +62,8 @@ def test_get_risk_limits_sanitizes_corrupted_fallback_when_active_limits_absent(
         conn.close()
 
 
-def test_readme_audit_reference_exists() -> None:
+def test_readme_has_no_audit_or_test_report_artifact_references() -> None:
     root = Path(__file__).resolve().parent.parent
     readme = (root / "README.md").read_text(encoding="utf-8")
-    assert "docs/audit_2026-04-04.md" in readme
-    assert (root / "docs" / "audit_2026-04-04.md").exists()
+    assert "docs/audit_" not in readme
+    assert "docs/test_report_" not in readme

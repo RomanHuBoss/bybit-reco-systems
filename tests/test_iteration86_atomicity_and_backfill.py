@@ -133,7 +133,6 @@ def test_api_sentiment_put_rolls_back_when_audit_log_fails(isolated_app, monkeyp
         raise RuntimeError("audit sink unavailable")
 
     monkeypatch.setattr(app_main.db, "log_decision", _boom)
-    baseline_limits = db.get_active_risk_limits(conn)
     baseline_logs = conn.execute("SELECT COUNT(*) AS c FROM decision_log").fetchone()["c"]
 
     resp = client.post(

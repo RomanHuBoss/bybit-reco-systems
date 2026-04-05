@@ -7,3 +7,9 @@ __pycache__
 /data/app.db
 /tmp_smoke.db
 /data/app.runtime_locks.sqlite
+/data/*.db
+/data/*.db-wal
+/data/*.db-shm
+/data/*.runtime_locks.sqlite
+/docs/audit_*.md
+/docs/test_report_*.md

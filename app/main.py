@@ -237,10 +237,16 @@ def _normalized_non_empty_text(value: str, *, field_name: str) -> str:
     Для audit-facing сущностей нельзя молча принимать пустые/пробельные значения:
     они создают труднообъяснимые записи в БД (например, sentiment c пустым key),
     после чего ломается смысл GET-фильтров и ручного анализа историки.
+
+    Дополнительно запрещаем NUL-байт. SQLite/JSON обычно переживают такой ввод
+    непредсказуемо: визуально строка может выглядеть нормальной, а фильтрация,
+    экспорт и ручной разбор историки начинают вести себя несогласованно.
     """
     normalized = str(value or "").strip()
     if not normalized:
         raise HTTPException(status_code=422, detail=f"{field_name} must be a non-empty string")
+    if "\x00" in normalized:
+        raise HTTPException(status_code=422, detail=f"{field_name} must not contain NUL byte")
     return normalized
 
 
@@ -1302,6 +1308,10 @@ def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header
 
 @app.get("/api/v1/sentiment")
 def api_sentiment_get(scope: str = "global", key: str = "crypto", limit: int = 120) -> dict[str, Any]:
+    # GET-фильтры нормализуем так же, как mutating API: операторский пробельный
+    # ввод не должен приводить к "пустому" ответу при существующей серии.
+    scope = str(scope or "").strip() or "global"
+    key = str(key or "").strip() or "crypto"
     limit = _bounded_limit(limit, default=120, max_value=1000)
     with closing(_get_conn()) as conn:
         series = db.get_sentiment_series(conn, scope, key, limit=limit)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 from contextlib import closing
-import sqlite3
 import sys
 from pathlib import Path
 

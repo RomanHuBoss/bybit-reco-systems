@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 
 from app import db
 from app.calibration import (
@@ -9,7 +8,6 @@ from app.calibration import (
     load_logreg_from_db,
     load_platt_from_db,
     save_logreg_to_db,
-    save_platt_to_db,
 )
 from app.recommender import _clamp
 
