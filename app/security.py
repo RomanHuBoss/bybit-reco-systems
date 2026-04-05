@@ -12,9 +12,21 @@ class KeyStore:
 
     @staticmethod
     def from_env(master_key: str | None) -> "KeyStore | None":
+        """Build a keystore from env and fail fast on malformed Fernet keys.
+
+        Без этой проверки приложение могло принять битый MASTER_KEY на старте,
+        а упасть только позже — в момент первой encrypt/decrypt операции. Для
+        production-контура это плохая деградация: ошибка конфигурации должна
+        проявляться сразу и явно.
+        """
         if not master_key:
             return None
-        return KeyStore(master_key=master_key.encode("utf-8"))
+        encoded = master_key.encode("utf-8")
+        try:
+            Fernet(encoded)
+        except Exception as exc:
+            raise ValueError("MASTER_KEY must be a valid Fernet key") from exc
+        return KeyStore(master_key=encoded)
 
     def encrypt(self, data: str) -> str:
         f = Fernet(self.master_key)

@@ -67,6 +67,9 @@
 - `compute_features_from_ohlcv()` теперь сам отбрасывает логически невозможные бары (`close` вне диапазона `[low, high]`) даже при прямом вызове в обход DB-sanitization.
 - `liquidity_tier()` больше не трактует poisoned `turnover24h` (`NaN/inf` или отрицательное значение) как реальную ликвидность; такой payload считается `unknown`, а не `micro/high`.
 - `trade_plan` и `cost_model` дополнительно санируются от `NaN/Infinity`: один poisoned numeric больше не превращает рекомендацию в несериализуемый JSON и не рисует оператору фиктивные уровни вида `nan/inf`.
+- LLM review payload теперь fail-safe переживает malformed legacy/manual recommendation numerics (`score/confidence/expected_rr/risk_score`): мусор в исторической строке не роняет весь reviewer sweep ещё до общей JSON-санации.
+- `MASTER_KEY` теперь валидируется на bootstrap как корректный Fernet key. Ошибка конфигурации выявляется при старте сервиса, а не в момент первой live-операции шифрования/дешифрования.
+- `RUNTIME_LOCK_DB_PATH` теперь обязан отличаться от `DB_PATH`; accidental конфиг на один и тот же SQLite-файл блокируется fail-fast, чтобы не возвращать runtime lock в тот же файл, где идут основные write-paths.
 - `_estimate_cost_model()` теперь fail-safe обрабатывает невалидный `spread` / `funding_rate`: для битого funding payload не начисляется фиктивный carry, а спред откатывается к консервативному fallback вместо загрязнения `net_cost_bps`.
 - Идемпотентные execute/stop/trade-paths явнее закрывают SQLite write-транзакции на раннем возврате; повторный запрос больше не держит лишний `BEGIN IMMEDIATE` до закрытия соединения.
 - Sentiment API теперь отвергает `NUL` не только в `key`, но и в `tags`, а GET-фильтры `scope/key` перестали тихо превращаться в пустой ответ при poisoned query-string.
@@ -130,7 +133,7 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `265 passed`
+- `268 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - `pytest --cov=app --cov-report=term-missing` — total coverage `81%`
 - `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения
@@ -138,7 +141,7 @@ ruff check app tests main.py
 
 ## Ключевые env
 - `DB_PATH` — путь к основной SQLite БД. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
-- `RUNTIME_LOCK_DB_PATH` — путь к отдельной sidecar-БД runtime lock; по умолчанию это `*.runtime_locks.sqlite` рядом с основной БД;
+- `RUNTIME_LOCK_DB_PATH` — путь к отдельной sidecar-БД runtime lock; по умолчанию это `*.runtime_locks.sqlite` рядом с основной БД. Значение обязано отличаться от `DB_PATH`, иначе bootstrap завершится ошибкой конфигурации;
 - `SYMBOLS_SPOT`, `SYMBOLS_LINEAR` — списки символов;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
 - `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
@@ -146,6 +149,7 @@ ruff check app tests main.py
 - `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
 - `ADMIN_API_KEY` — ключ для mutating endpoints; настоятельно рекомендуется задать перед любым запуском вне localhost/стенда, иначе mutating API остаётся открытым по design для локальной разработки;
+- `MASTER_KEY` — Fernet-ключ для шифрования секретов. Теперь валидируется fail-fast на старте: битое значение больше не принимается молча;
 - `COLLECTOR_MAX_WORKERS`, `FUTURES_COLLECT_MAX_WORKERS` — bounded parallelism for collector REST fetches;
 - `RISK_DAY_TZ` — часовой пояс дневной отсечки для daily PnL / drawdown limits (по умолчанию `UTC`);
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — optional alerts.

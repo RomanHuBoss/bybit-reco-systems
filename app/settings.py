@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 from .llm_review import parse_tf_secs
+from .security import KeyStore
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -184,6 +185,10 @@ def load_settings() -> Settings:
     )
 
     master_key = os.getenv("MASTER_KEY", "") or None
+    if master_key:
+        # Fail fast: шифровальный ключ должен быть валиден ещё на bootstrap,
+        # а не только в момент первой операции с секретом.
+        KeyStore.from_env(master_key)
     admin_api_key = os.getenv("ADMIN_API_KEY", "") or None
 
     outcome_horizon_fallback_sec = _env_int(
@@ -224,6 +229,8 @@ def load_settings() -> Settings:
 
     db_path = _resolve_project_path(_env("DB_PATH", "./data/app.db"))
     runtime_lock_db_path = _resolve_project_path(os.getenv("RUNTIME_LOCK_DB_PATH") or _default_runtime_lock_db_path(db_path))
+    if Path(runtime_lock_db_path) == Path(db_path):
+        raise RuntimeError("RUNTIME_LOCK_DB_PATH must differ from DB_PATH")
 
     return Settings(
         require_conf_gate=require_conf_gate,

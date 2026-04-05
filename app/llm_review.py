@@ -84,6 +84,23 @@ def _strict_json_dumps(value: Any) -> str:
     )
 
 
+def _safe_payload_number(value: Any, *, digits: int = 6) -> float | None:
+    """Безопасно приводит произвольное значение к finite float для LLM payload.
+
+    Reviewer читает не только свежие runtime-строки, но и исторические/legacy
+    рекомендации из SQLite. Один poisoned numeric (например, строка ``"oops"``
+    или ``NaN``) не должен ронять весь review sweep ещё до общей JSON-
+    санации payload.
+    """
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return round(num, digits)
+
+
 @dataclass
 class LLMReviewResult:
     provider: str
@@ -329,10 +346,10 @@ def build_review_payload(
             "engine_execution_direction": rec.get("direction"),
             "engine_raw_direction": execution_constraints.get("raw_direction") or direction_agg.get("raw_direction") or direction_agg.get("direction"),
             "engine_status": rec.get("status"),
-            "score": round(float(rec.get("score") or 0.0), 6),
-            "confidence": round(float(rec.get("confidence") or 0.0), 6),
-            "expected_rr": round(float(rec.get("expected_rr") or 0.0), 6),
-            "risk_score": round(float(rec.get("risk_score") or 0.0), 6),
+            "score": _safe_payload_number(rec.get("score")),
+            "confidence": _safe_payload_number(rec.get("confidence")),
+            "expected_rr": _safe_payload_number(rec.get("expected_rr")),
+            "risk_score": _safe_payload_number(rec.get("risk_score")),
             "grid_levels": params.get("grid_levels"),
             "grid_spacing_pct": params.get("grid_spacing_pct"),
             "price_range_lower": params.get("price_range_lower"),
