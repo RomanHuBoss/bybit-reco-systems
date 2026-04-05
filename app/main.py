@@ -251,16 +251,35 @@ def _normalized_non_empty_text(value: str, *, field_name: str) -> str:
 
 
 def _normalize_tag_list(tags: list[str] | None) -> list[str]:
-    """Убирает мусорные/дублирующиеся теги, сохраняя порядок живых значений."""
+    """Убирает мусорные/дублирующиеся теги, сохраняя порядок живых значений.
+
+    Для audit-facing series теги должны быть безопасными строками. NUL-байт здесь
+    особенно неприятен: визуально тег может выглядеть нормально, но фильтрация,
+    экспорт и ручной анализ начинают вести себя несогласованно.
+    """
     out: list[str] = []
     seen: set[str] = set()
     for raw in tags or []:
         tag = str(raw or "").strip()
-        if not tag or tag in seen:
+        if not tag:
+            continue
+        if "\x00" in tag:
+            raise HTTPException(status_code=422, detail="tags must not contain NUL byte")
+        if tag in seen:
             continue
         out.append(tag)
         seen.add(tag)
     return out
+
+
+
+def _normalized_filter_text(value: str | None, *, default: str, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return str(default)
+    if "\x00" in normalized:
+        raise HTTPException(status_code=422, detail=f"{field_name} must not contain NUL byte")
+    return normalized
 
 
 def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: str, symbol: str, ts: int | None, pnl: float, fee: float, meta: dict[str, Any]) -> bool:
@@ -703,7 +722,10 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     existing = db.get_bot_by_origin_rec(conn, rec_id)
     if existing:
         if rec.get("status") != "executed":
-            db.update_recommendation_status(conn, rec_id, "executed", operator)
+            db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
+            conn.commit()
+        else:
+            _rollback_quietly(conn)
         return existing, True
 
     publication_root_rec_id = str(rec.get("publication_root_rec_id") or rec_id).strip() or rec_id
@@ -714,7 +736,10 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         chain_existing = db.get_bot_by_publication_root(conn, publication_root_rec_id, status="running")
         if chain_existing:
             if rec.get("status") != "executed":
-                db.update_recommendation_status(conn, rec_id, "executed", operator)
+                db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
+                conn.commit()
+            else:
+                _rollback_quietly(conn)
             return chain_existing, True
 
     ttl_sec = int(rec.get("ttl_sec") or 0)
@@ -1067,6 +1092,7 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
         if str(bot.get("status") or "") == "stopped":
+            _rollback_quietly(conn)
             return {"ok": True, "bot_id": bot_id, "status": "stopped", "idempotent": True}
         try:
             ok = db.stop_bot(conn, bot_id, commit=False)
@@ -1114,6 +1140,7 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
                 realized_pnl_gross = float(trade_summary["realized_pnl_gross"])
                 realized_fee = float(trade_summary["realized_fee"])
                 realized_pnl_net = float(trade_summary["realized_pnl_net"])
+                _rollback_quietly(conn)
                 return {
                     "ok": True,
                     "trade_id": trade_id,
@@ -1156,6 +1183,7 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = 
         realized_fee = float(trade_summary["realized_fee"])
         realized_pnl_net = float(trade_summary["realized_pnl_net"])
         if insert_result == "duplicate":
+            _rollback_quietly(conn)
             return {
                 "ok": True,
                 "trade_id": trade_id,
@@ -1310,8 +1338,8 @@ def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header
 def api_sentiment_get(scope: str = "global", key: str = "crypto", limit: int = 120) -> dict[str, Any]:
     # GET-фильтры нормализуем так же, как mutating API: операторский пробельный
     # ввод не должен приводить к "пустому" ответу при существующей серии.
-    scope = str(scope or "").strip() or "global"
-    key = str(key or "").strip() or "crypto"
+    scope = _normalized_filter_text(scope, default="global", field_name="scope")
+    key = _normalized_filter_text(key, default="crypto", field_name="key")
     limit = _bounded_limit(limit, default=120, max_value=1000)
     with closing(_get_conn()) as conn:
         series = db.get_sentiment_series(conn, scope, key, limit=limit)

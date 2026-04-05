@@ -53,7 +53,13 @@ def _round_price(x: float | None, decimals: int = 6) -> float | None:
     if x is None:
         return None
     try:
-        return float(round(float(x), decimals))
+        num = float(x)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    try:
+        return float(round(num, decimals))
     except Exception:
         return None
 
@@ -76,6 +82,45 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
     if not math.isfinite(num):
         return float(default)
     return num
+
+
+def _finite_or_none(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return float(num)
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _sanitize_json_numbers(value: Any) -> Any:
+    """Рекурсивно убирает non-finite числа из operator/audit payload'ов.
+
+    Это нужно не только ради красивого UI. В проекте JSON сериализуется в strict-mode,
+    поэтому один `NaN`/`Infinity` внутри trade-plan или cost-model превращает целую
+    рекомендацию в несериализуемую и может сорвать публикацию snapshot'а.
+    """
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): _sanitize_json_numbers(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_json_numbers(v) for v in value]
+    try:
+        num = float(value)
+    except Exception:
+        return value
+    return num if math.isfinite(num) else None
 
 
 def _llm_reviewer_context_signature(settings) -> str:
@@ -1016,8 +1061,7 @@ def _estimate_cost_model(
     over the whole horizon because that creates fake carry costs on trades that exit
     before the next funding timestamp and gets long/short economics backwards.
     """
-    spread_bps = f.get("spread_bps")
-    spread_bps = float(spread_bps) if spread_bps is not None else None
+    spread_bps = _finite_or_none(f.get("spread_bps"))
 
     if spread_bps is None:
         fallback_spread = 10.0 if venue == "spot" else 8.0
@@ -1027,11 +1071,11 @@ def _estimate_cost_model(
         spread_bps_used = max(0.0, float(spread_bps))
         spread_missing = False
 
-    fee_bps_round_trip = max(0.0, float(taker_fee_bps)) * 2.0
+    fee_bps_round_trip = max(0.0, _finite_float(taker_fee_bps, 0.0)) * 2.0
     slippage_bps = max(1.0 if venue == "spot" else 0.8, spread_bps_used * (0.35 if bot_type in ("spot_grid", "futures_grid") else 0.50))
 
     horizon_sec = BOT_HORIZONS.get(bot_type, 0)
-    fr = float(funding_rate) if funding_rate is not None else None
+    fr = _finite_or_none(funding_rate)
     directional_funding_bps_8h = 0.0
     if fr is not None:
         if direction == "long":
@@ -1077,7 +1121,7 @@ def _estimate_cost_model(
         "funding_rate": fr,
         "direction": direction,
         "directional_funding_bps_8h": float(directional_funding_bps_8h),
-        "next_funding_ts": int(nfts_out) if nfts_out else (int(next_funding_ts) if next_funding_ts else None),
+        "next_funding_ts": int(nfts_out) if nfts_out else _safe_int_or_none(next_funding_ts),
         "expected_funding_events": int(expected_funding_events),
         "expected_funding_bps": float(expected_funding_bps),
         # Canonical cost floor for scoring / RR / labels must reflect unavoidable
@@ -1201,11 +1245,12 @@ def _build_trade_plan(
 ) -> dict[str, Any]:
     """Human/actionable execution guide shown in the UI 'Details' panel."""
 
-    price = float(f.get("price") or 0.0) or None
-    atr_pct_1m = float(f.get("atr_pct") or 0.0)
-    atr_pct_15m = float(f.get("_atr_pct_15m") or 0.0)
-    atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
-    atr_pct_4h = float(f.get("_atr_pct_4h") or 0.0)
+    price_raw = _finite_or_none(f.get("price"))
+    price = price_raw if (price_raw is not None and price_raw > 0) else None
+    atr_pct_1m = max(0.0, _finite_float(f.get("atr_pct"), 0.0))
+    atr_pct_15m = max(0.0, _finite_float(f.get("_atr_pct_15m"), 0.0))
+    atr_pct_1h = max(0.0, _finite_float(f.get("_atr_pct_1h"), 0.0))
+    atr_pct_4h = max(0.0, _finite_float(f.get("_atr_pct_4h"), 0.0))
     atr_pct_slow = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
     atr_source = "1h" if atr_pct_1h > 0 else "1m"
 
@@ -1215,20 +1260,26 @@ def _build_trade_plan(
 
     d = f.get("_direction_agg") or {}
     regime = str(d.get("regime") or "unknown")
-    regime_conf = float(d.get("regime_confidence") or 0.0)
+    regime_conf = _finite_float(d.get("regime_confidence"), 0.0)
     if regime_conf >= 0.75:
         horizon = {"min_hours": max(1, int(horizon["min_hours"] * 0.8)), "max_hours": int(horizon["max_hours"] * 0.85)}
     elif regime_conf <= 0.35:
         horizon = {"min_hours": int(horizon["min_hours"] * 1.0), "max_hours": int(horizon["max_hours"] * 0.6)}
 
-    lower = params.get("price_range_lower")
-    upper = params.get("price_range_upper")
+    lower = _finite_or_none(params.get("price_range_lower"))
+    if lower is not None and lower <= 0:
+        lower = None
+    upper = _finite_or_none(params.get("price_range_upper"))
+    if upper is not None and upper <= 0:
+        upper = None
     ks_pad = (0.6 * atr_abs_used) if (atr_abs_used is not None and atr_abs_used > 0) else None
-    lower_ks = (float(lower) - ks_pad) if (lower is not None and ks_pad is not None) else None
-    upper_ks = (float(upper) + ks_pad) if (upper is not None and ks_pad is not None) else None
+    lower_ks = (lower - ks_pad) if (lower is not None and ks_pad is not None) else None
+    upper_ks = (upper + ks_pad) if (upper is not None and ks_pad is not None) else None
 
-    step_pct = params.get("grid_spacing_pct")
-    step_abs = (price * float(step_pct) / 100.0) if (price is not None and step_pct is not None) else None
+    step_pct = _finite_or_none(params.get("grid_spacing_pct"))
+    if step_pct is not None and step_pct <= 0:
+        step_pct = None
+    step_abs = (price * step_pct / 100.0) if (price is not None and step_pct is not None) else None
     tp_leg_abs = (0.7 * step_abs) if step_abs is not None else (0.25 * atr_abs_used if atr_abs_used else None)
 
     plan: dict[str, Any] = {
@@ -1247,13 +1298,13 @@ def _build_trade_plan(
         "regime": {
             "name": regime,
             "confidence": _round_price(regime_conf, decimals=4),
-            "trendiness": _round_price(float(d.get("trendiness") or 0.0), decimals=4) if isinstance(d.get("trendiness"), (int, float)) else None,
-            "coherence": _round_price(float(d.get("coherence") or 0.0), decimals=4) if isinstance(d.get("coherence"), (int, float)) else None,
+            "trendiness": _round_price(_finite_or_none(d.get("trendiness")), decimals=4),
+            "coherence": _round_price(_finite_or_none(d.get("coherence")), decimals=4),
         },
         "bot_type": bot_type,
         "venue": venue,
         "direction": direction,
-        "cost_model": dict(cost_model or {}),
+        "cost_model": _sanitize_json_numbers(dict(cost_model or {})),
         "levels": {
             "range": {
                 "lower": _round_price(float(lower), decimals=10) if lower is not None else None,
@@ -1284,12 +1335,13 @@ def _build_trade_plan(
         "notes": "Ориентиры уровней масштабируются по ATR старшего ТФ (предпочтительно 1h, fallback = 1m). Это подсказка для запуска/контроля бота, а не обещание результата.",
     }
 
-    if venue == "linear" and int(params.get("leverage") or 1) > 1:
+    leverage = max(1, int(_safe_int_or_none(params.get("leverage")) or 1))
+    if venue == "linear" and leverage > 1:
         ks = plan["levels"].get("kill_switch") or {}
-        span_note = params.get("range_span_pct_total")
-        span_str = f"{float(span_note):.2f}" if span_note is not None else "n/a"
+        span_note = _finite_or_none(params.get("range_span_pct_total"))
+        span_str = f"{span_note:.2f}" if span_note is not None else "n/a"
         plan["notes"] += (
-            f" Для futures_grid с leverage={int(params.get('leverage') or 1)} и span≈{span_str}% проверьте, что liquidation price лежит за пределами kill_switch "
+            f" Для futures_grid с leverage={leverage} и span≈{span_str}% проверьте, что liquidation price лежит за пределами kill_switch "
             f"[{ks.get('lower')}, {ks.get('upper')}]."
         )
 
