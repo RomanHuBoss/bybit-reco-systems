@@ -440,7 +440,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
 
         import json
         try:
-            params = json.loads(r["params_json"]) if r["params_json"] else None
+            params = json.loads(r["params_json"], parse_constant=lambda _token: None) if r["params_json"] else None
         except Exception:
             params = None
         signal_ref_ts = int(r["features_ref_ts"]) if r["features_ref_ts"] is not None else ts0

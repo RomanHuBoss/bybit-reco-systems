@@ -229,7 +229,14 @@ def _json_loads_or_default(raw: Any, default: Any) -> Any:
     if raw in (None, ""):
         return default
     try:
-        loaded = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(raw, str):
+            # Python stdlib по умолчанию принимает NaN/Infinity как валидный JSON.
+            # Для audit/UI/business-logic чтения это опасно: poisoned legacy payload
+            # может не просто дожить до API-ответа, а изменить решение движка.
+            # Здесь сохраняем остальную структуру, но non-finite токены гасим в None.
+            loaded = json.loads(raw, parse_constant=lambda _token: None)
+        else:
+            loaded = raw
     except Exception:
         return default
     return loaded

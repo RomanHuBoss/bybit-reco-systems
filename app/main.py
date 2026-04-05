@@ -166,7 +166,12 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
 
 def _json_loads_or_default(raw: str | None, default: Any) -> Any:
     try:
-        return json.loads(raw) if raw else default
+        if not raw:
+            return default
+        # UI/status helpers не должны принимать non-finite JSON как норму.
+        # Legacy/manual payload с NaN/Infinity лучше деградировать к None внутри
+        # структуры, чем позволять ему тихо влиять на API-ответы и ветвление.
+        return json.loads(raw, parse_constant=lambda _token: None)
     except Exception:
         return default
 

@@ -70,6 +70,7 @@
 - `_estimate_cost_model()` теперь fail-safe обрабатывает невалидный `spread` / `funding_rate`: для битого funding payload не начисляется фиктивный carry, а спред откатывается к консервативному fallback вместо загрязнения `net_cost_bps`.
 - Идемпотентные execute/stop/trade-paths явнее закрывают SQLite write-транзакции на раннем возврате; повторный запрос больше не держит лишний `BEGIN IMMEDIATE` до закрытия соединения.
 - Sentiment API теперь отвергает `NUL` не только в `key`, но и в `tags`, а GET-фильтры `scope/key` перестали тихо превращаться в пустой ответ при poisoned query-string.
+- Чтение legacy/manual JSON из SQLite и status/UI helper-слоёв теперь нейтрализует `NaN/Infinity` в `None` вместо того, чтобы позволять poisoned payload тихо менять ветвление бизнес-логики.
 
 ### Интерпретируемость
 - В `reasons_json` сохраняются факторы, контекст сигнала, execution-constraints, funding/OI/liquidity, market shock и LLM review.
@@ -119,16 +120,18 @@ API поднимется на `127.0.0.1:8000`.
 
 ## Минимальная проверка после установки
 ```bash
+pip install -r requirements.txt -r requirements-dev.txt
 pytest -q
 pytest --cov=app --cov-report=term-missing -q
 python -m py_compile app/*.py tests/*.py main.py
+ruff check app tests main.py
 ```
 
 Текущий проверочный baseline этой ревизии:
-- `254 passed`
+- `263 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
-- `ruff check app tests main.py` — passed without errors
-- `pytest --cov=app --cov-report=term-missing` (split-run regression set) — total coverage `69%`
+- `pytest --cov=app --cov-report=term-missing` — total coverage `81%`
+- `requirements-dev.txt` добавлен в поставку, чтобы quality-gate (`pytest`, `pytest-cov`, `ruff`) был воспроизводимым из репозитория, а не зависел от случайно установленного локального окружения
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows / malformed sentiment adapter payloads / poisoned Reddit posts / safe fail-open of `collect_sentiment_once()` / malformed legacy JSON-shapes in recommendation-bot-trade-sentiment APIs / malformed app_config payloads in status and metrics / rejection of blank audit keys for `risk limits version` and explicit `trade_id` / persistence of normalized effective risk limits in bootstrap and mutating API / fail-open fallback from poisoned top-level grid range bounds to valid `trade_plan.levels.range` and `trade_plan.levels.kill_switch` / rejection of `NUL` in sentiment tags and GET-filters / explicit transaction cleanup on idempotent execution paths / sanitization of non-finite `trade_plan` and `cost_model` payloads.
 
 ## Ключевые env
