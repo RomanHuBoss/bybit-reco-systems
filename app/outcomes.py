@@ -196,12 +196,13 @@ def _int_from_params(value: object, default: int = 0, *, minimum: int | None = N
 def _extract_cost_components(params: dict | None, fallback_execution_bps: float = 15.0) -> tuple[float, float]:
     execution_bps = None
     funding_bps = None
+    net_cost_bps = None
     if params:
         for block in (params.get("cost_model") or {}, (params.get("trade_plan") or {}).get("cost_model") or {}):
             if not isinstance(block, dict):
                 continue
             if execution_bps is None:
-                for key in ("execution_cost_bps", "total_cost_bps", "net_cost_bps"):
+                for key in ("execution_cost_bps", "total_cost_bps"):
                     if block.get(key) is not None:
                         try:
                             execution_bps = _finite_or_default(block.get(key), float(fallback_execution_bps))
@@ -209,13 +210,29 @@ def _extract_cost_components(params: dict | None, fallback_execution_bps: float 
                         except Exception:
                             logger.debug("cost block parse error", exc_info=True)
 
+            if net_cost_bps is None and block.get("net_cost_bps") is not None:
+                try:
+                    net_cost_bps = _finite_or_default(block.get("net_cost_bps"), float(fallback_execution_bps))
+                except Exception:
+                    logger.debug("net cost block parse error", exc_info=True)
+
             if funding_bps is None and block.get("expected_funding_bps") is not None:
                 try:
                     funding_bps = _finite_or_default(block.get("expected_funding_bps"), 0.0)
                 except Exception:
                     logger.debug("funding block parse error", exc_info=True)
-    execution_bps_out = _finite_or_default(execution_bps if execution_bps is not None else fallback_execution_bps, float(fallback_execution_bps))
+
     funding_bps_out = _finite_or_default(funding_bps if funding_bps is not None else 0.0, 0.0)
+    if execution_bps is None and net_cost_bps is not None:
+        # Legacy/manual payload может содержать только net_cost_bps. Для outcome-labeling
+        # execution friction и funding carry учитываются раздельно: grid-модель использует
+        # execution-cost floor внутри _grid_outcome(), а funding для linear вычитается позже.
+        # Если blindly принять net_cost_bps за execution_cost_bps и потом ещё раз вычесть
+        # expected_funding_bps, то funding будет учтён дважды и историческая разметка
+        # станет излишне пессимистичной. Поэтому по возможности раскладываем net = exec + funding.
+        execution_bps = max(0.0, float(net_cost_bps) - float(funding_bps_out))
+
+    execution_bps_out = _finite_or_default(execution_bps if execution_bps is not None else fallback_execution_bps, float(fallback_execution_bps))
     return float(execution_bps_out), float(funding_bps_out)
 
 
