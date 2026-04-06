@@ -1400,7 +1400,7 @@ async function loadOutcomes() {
       { label: "LLM disagree", value: Number(llmSummary.disagree_total || 0) },
       { label: "LLM errors", value: Number(llmSummary.error_total || 0) },
     ])}
-    <p class="modal-note">Это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок. Карточка «Всего исходов» считает только корневые публикации одной идеи; повторные active-подтверждения той же publication-chain вынесены в «Сырые строки» и не раздувают win-rate / calibration. Ниже отдельно показаны raw_direction и execution_direction, чтобы neutral не смешивал истинный neutral с bearish-thesis на споте. Дополнительно показано, что говорил LLM-reviewer и совпадал ли он с алгоритмическим verdict.</p>
+    <p class="modal-note">Это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок. Карточка «Всего исходов» считает только корневые публикации одной идеи; повторные active-подтверждения той же publication-chain вынесены в «Сырые строки» и не раздувают win-rate / calibration. Same-direction сигнал по тому же символу теперь не открывает новый outcome-root, пока предыдущая псевдо-сделка этой chain не доживёт до своего horizon. Ниже отдельно показаны raw_direction и execution_direction, чтобы neutral не смешивал истинный neutral с bearish-thesis на споте. Дополнительно показано, что говорил LLM-reviewer и совпадал ли он с алгоритмическим verdict.</p>
     <div class="modal-section">
       <div class="modal-section-title">LLM reviewer поверх алгоритма</div>
       ${buildModalTable([

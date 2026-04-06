@@ -13,7 +13,7 @@ from .risk import gate_candidate, compute_risk_status as _compute_risk_status
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
-from .outcomes import BOT_HORIZONS
+from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
 from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
 from .collector import RuntimeLockLostError
@@ -2180,13 +2180,118 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
     }
 
 
+def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fallback_horizon_sec: int) -> dict[str, Any] | None:
+    """Находит незавершённую псевдо-сделку по той же execution-chain.
+
+    Для outcome-labeling важно имитировать реальную торговлю, а не поток идей.
+    Поэтому same-direction сигнал по тому же `(venue, symbol, bot_type)` не должен
+    открывать новый root, пока предыдущая корневая идея ещё находится внутри
+    своего окна label-horizon.
+
+    Важная деталь: нельзя блокировать только по отсутствию записи в `reco_outcomes`.
+    Если цикл labeler временно не смог проставить outcome из-за дырки в market-data,
+    бесконечный lock сломает публикацию навсегда. Поэтому lock держим до horizon, а не
+    до бесконечности: после истечения окна система сможет открыть новый root даже если
+    старый outcome так и не был вычислен.
+    """
+    cur = conn.execute(
+        """SELECT r.rec_id, r.ts, r.features_ref_ts, r.bot_type, r.status,
+                  r.score, r.confidence, r.expected_rr,
+                  r.params_json, r.publication_root_rec_id, r.is_outcome_label_root
+           FROM recommendations r
+           LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
+           WHERE r.venue=? AND r.symbol=? AND r.bot_type=? AND r.direction=?
+             AND COALESCE(r.is_outcome_label_root, 1) = 1
+             AND o.rec_id IS NULL
+             AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'pending', 'expired', 'ignored')
+             AND r.ts < ?
+           ORDER BY r.ts DESC LIMIT 8""",
+        (
+            str(rec.get("venue") or ""),
+            str(rec.get("symbol") or ""),
+            str(rec.get("bot_type") or ""),
+            str(rec.get("direction") or "neutral"),
+            int(ts_now),
+        ),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return None
+
+    for row in rows:
+        params = db._json_loads_or_default(row["params_json"], {})
+        effective_horizon_sec, _ = _resolve_effective_horizon(
+            str(row["bot_type"] or rec.get("bot_type") or ""),
+            params if isinstance(params, dict) else {},
+            int(fallback_horizon_sec),
+        )
+        # Для grid-логики pseudo-entry начинается не на features_ref_ts, а на первом
+        # tradeable 1m candle после него. Здесь используем безопасную аппроксимацию:
+        # max(ts, features_ref_ts) + 60s, чтобы не отпустить lock немного раньше срока.
+        signal_ref_ts = max(
+            _safe_int_or_none(row["ts"]) or 0,
+            _safe_int_or_none(row["features_ref_ts"]) or 0,
+        )
+        lock_until_ts = int(signal_ref_ts) + 60 + int(effective_horizon_sec)
+        if int(ts_now) >= lock_until_ts:
+            continue
+        publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
+        return {
+            "rec_id": row["rec_id"],
+            "ts": row["ts"],
+            "score": row["score"],
+            "confidence": row["confidence"],
+            "expected_rr": row["expected_rr"],
+            "status": row["status"],
+            "params": params if isinstance(params, dict) else {},
+            "publication_root_rec_id": publication_root_rec_id,
+            "is_outcome_label_root": True,
+            "open_position_lock": True,
+            "effective_horizon_sec": int(effective_horizon_sec),
+            "lock_until_ts": int(lock_until_ts),
+        }
+    return None
+
+
 def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings, ts_now: int) -> None:
     cooldown_sec = max(0, int(getattr(settings, "reco_republish_cooldown_sec", 0) or 0))
-    if cooldown_sec <= 0:
-        return
+    fallback_horizon_sec = max(
+        300,
+        int(getattr(settings, "outcome_horizon_fallback_sec", min(BOT_HORIZONS.values())) or min(BOT_HORIZONS.values())),
+    )
     for rec in recs:
         if not _is_llm_review_eligible_status(rec.get("status")):
             continue
+
+        prev_open_root = _find_open_publication_position(conn, rec, ts_now, fallback_horizon_sec)
+        if prev_open_root is not None:
+            _material_upgrade_ignored, diagnostics = _recent_publication_dedupe_material_upgrade(prev_open_root, rec)
+            reasons = rec.setdefault("reasons", {})
+            previous_root_rec_id = str(prev_open_root.get("publication_root_rec_id") or prev_open_root.get("rec_id") or "").strip() or str(prev_open_root.get("rec_id") or "")
+            reasons["publication_dedupe"] = {
+                "cooldown_sec": int(cooldown_sec),
+                "previous_rec_id": prev_open_root.get("rec_id"),
+                "previous_root_rec_id": previous_root_rec_id,
+                "previous_ts": prev_open_root.get("ts"),
+                "previous_status": prev_open_root.get("status"),
+                "decision": "reuse_active",
+                "active_reuse": True,
+                "suppressed": False,
+                "material_upgrade": False,
+                "open_position_lock": True,
+                "lock_reason": "existing_same_direction_pseudo_position",
+                "effective_horizon_sec": int(prev_open_root.get("effective_horizon_sec") or 0),
+                "lock_until_ts": int(prev_open_root.get("lock_until_ts") or 0),
+                **diagnostics,
+            }
+            rec["status"] = "active"
+            rec["publication_root_rec_id"] = previous_root_rec_id
+            rec["is_outcome_label_root"] = False
+            continue
+
+        if cooldown_sec <= 0:
+            continue
+
         prev = _find_recent_publication(conn, rec, ts_now, cooldown_sec)
         if prev is None:
             continue
@@ -2203,6 +2308,7 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
             "active_reuse": not material_upgrade,
             "suppressed": False,
             "material_upgrade": bool(material_upgrade),
+            "open_position_lock": False,
             **diagnostics,
         }
         if material_upgrade:

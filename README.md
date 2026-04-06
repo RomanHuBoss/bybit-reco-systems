@@ -137,7 +137,7 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `274 passed`
+- `276 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - `pytest --cov=app --cov-report=term-missing` — total coverage `81%`
 - `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения
@@ -150,7 +150,7 @@ ruff check app tests main.py
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
 - `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
-- `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи;
+- `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи; после этого окна same-direction сигнал всё равно не откроет новый outcome-root, пока предыдущая псевдо-сделка той же chain не доживёт до своего horizon или не получит outcome;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
 - `ADMIN_API_KEY` — ключ для mutating endpoints; настоятельно рекомендуется задать перед любым запуском вне localhost/стенда, иначе mutating API остаётся открытым по design для локальной разработки;
 - `MASTER_KEY` — Fernet-ключ для шифрования секретов. Теперь валидируется fail-fast на старте: битое значение больше не принимается молча;
@@ -210,18 +210,19 @@ ruff check app tests main.py
 
 ## Жизненный цикл исполнения
 1. recommendation публикуется со статусом `recommended`, если это новый actionable выпуск;
-2. если сигнал повторился в окне republish-cooldown без material upgrade, он сохраняется как `active` в той же publication-chain: запись остаётся исполнимой для оператора, но её lineage указывает на прежний `publication_root_rec_id`, поэтому outcome/calibration считают только корневую публикацию; если предыдущий bot этой chain уже остановлен, новый `execute` обязан создать новый running-бот, а не вернуть старый stopped-instance;
-3. если сигнал для persistence-ботов требует подтверждения ещё одним циклом, он получает статус `pending`;
-4. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
-5. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
-6. создаётся `bot_instance`, recommendation переводится в `executed`;
-7. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
-8. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
-9. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
+2. если same-direction сигнал пришёл, пока предыдущая корневая идея по этому `(venue, symbol, bot_type, direction)` ещё находится внутри своего outcome-horizon, новый `publication_root` не создаётся даже при material-upgrade: запись принудительно сохраняется как `active` в существующей publication-chain, чтобы outcome-labeling имитировал одну открытую псевдо-сделку, а не серию повторных входов;
+3. если сигнал повторился уже после закрытия псевдо-сделки, но внутри republish-cooldown и без material upgrade, он тоже сохраняется как `active` в той же publication-chain: запись остаётся исполнимой для оператора, но её lineage указывает на прежний `publication_root_rec_id`, поэтому outcome/calibration считают только корневую публикацию; если предыдущий bot этой chain уже остановлен, новый `execute` обязан создать новый running-бот, а не вернуть старый stopped-instance;
+4. если сигнал для persistence-ботов требует подтверждения ещё одним циклом, он получает статус `pending`;
+5. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
+6. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
+7. создаётся `bot_instance`, recommendation переводится в `executed`;
+8. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
+9. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
+10. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
 
 ### Семантика статусов recommendation
 - `recommended` — новый actionable сигнал, готовый к исполнению;
-- `active` — повторно актуальный сигнал внутри cooldown без material upgrade; исполним, но не считается новым выпуском и не создаёт отдельный outcome-root;
+- `active` — повторно актуальный signal-update внутри уже открытой publication-chain; возникает либо при обычном cooldown-reuse, либо при жёстком same-direction pseudo-position lock до завершения horizon. Исполним, но не считается новым выпуском и не создаёт отдельный outcome-root;
 - `pending` — кандидат ждёт подтверждения persistence-gate и ещё не исполним;
 - `suppressed` — скрытая альтернатива, проигравшая dedupe/selector и сохранённая только для аудита.
 
