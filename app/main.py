@@ -650,7 +650,22 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=partial(_run_supervised_background_target, "futures_meta", _futures_meta_thread), name="futures_meta", daemon=True).start()
     threading.Thread(target=partial(_run_supervised_background_target, "sentiment", _sentiment_thread), name="sentiment", daemon=True).start()
     threading.Thread(target=partial(_run_supervised_background_target, "reco", _reco_thread), name="reco", daemon=True).start()
-    threading.Thread(target=partial(_run_supervised_background_target, "llm_reviewer", _llm_reviewer_thread), name="llm_reviewer", daemon=True).start()
+    if bool(getattr(settings, "llm_reviewer_enabled", False)):
+        threading.Thread(target=partial(_run_supervised_background_target, "llm_reviewer", _llm_reviewer_thread), name="llm_reviewer", daemon=True).start()
+    else:
+        # Когда reviewer выключен конфигом, его воркер не должен стартовать вообще.
+        # Иначе supervised-wrapper интерпретирует штатный return как падение потока,
+        # бесконечно пишет "background thread crashed" и засоряет статус/логи.
+        _set_background_thread_state("llm_reviewer", "disabled", owner=RUNTIME_OWNER)
+        try:
+            with closing(_get_conn()) as conn:
+                db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {
+                    "enabled": False,
+                    "state": "disabled",
+                    "updated_ts": int(time.time()),
+                })
+        except Exception:
+            logger.warning("llm reviewer disabled state persist failed", exc_info=True)
     yield
 
 

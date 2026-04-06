@@ -79,6 +79,50 @@ def test_collect_backfill_once_forces_cold_fetch_when_series_is_fresh_but_short(
         conn.close()
 
 
+def test_lifespan_does_not_start_disabled_llm_reviewer_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / "lifespan_llm_disabled.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
+    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("VENUES", "linear")
+    monkeypatch.setenv("LLM_REVIEWER_ENABLED", "0")
+    sys.modules.pop("app.main", None)
+    app_main = importlib.import_module("app.main")
+    started: list[str] = []
+
+    class _DummyThread:
+        def __init__(self, *args, name: str | None = None, **kwargs):
+            self.name = str(name or "")
+
+        def start(self):
+            started.append(self.name)
+
+    try:
+        monkeypatch.setattr(app_main.threading, "Thread", _DummyThread)
+
+        async def _run() -> None:
+            async with app_main.lifespan(app_main.app):
+                return None
+
+        asyncio.run(_run())
+        assert "collector" in started
+        assert "llm_reviewer" not in started
+
+        with db.connect(str(db_path)) as conn:
+            thread_state = db.get_app_config_json(
+                conn,
+                app_main._background_thread_state_key("llm_reviewer"),
+                default={},
+            ) or {}
+            async_state = db.get_app_config_json(conn, app_main.LLM_REVIEW_ASYNC_STATUS_APP_KEY, default={}) or {}
+
+        assert thread_state.get("state") == "disabled"
+        assert async_state.get("enabled") is False
+        assert async_state.get("state") == "disabled"
+    finally:
+        sys.modules.pop("app.main", None)
+
+
 def test_lifespan_starts_backfill_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "lifespan_backfill.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
