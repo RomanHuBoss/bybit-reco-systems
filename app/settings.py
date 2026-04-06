@@ -150,6 +150,7 @@ class Settings:
     llm_reviewer_max_workers: int = 2
     llm_reviewer_min_confidence: float = 0.65
     llm_reviewer_cadence_sec: int = 300
+    llm_reviewer_ttl_sec: int | None = None
     llm_reviewer_keep_alive: str = "90s"
     reco_ttl_sec: int | None = None
     outcomes_interval_sec: int = 60
@@ -214,6 +215,8 @@ def load_settings() -> Settings:
     llm_reviewer_max_workers = _env_int("LLM_REVIEWER_MAX_WORKERS", 2, minimum=1, maximum=32)
     llm_reviewer_min_confidence = _env_float("LLM_REVIEWER_MIN_CONFIDENCE", 0.65, minimum=0.0, maximum=1.0)
     llm_reviewer_cadence_sec = _env_int("LLM_REVIEWER_CADENCE_SEC", 300, minimum=5, maximum=3600)
+    llm_reviewer_ttl_raw = os.getenv("LLM_REVIEWER_TTL_SEC")
+    llm_reviewer_ttl_sec = None if llm_reviewer_ttl_raw in (None, "") else _env_int("LLM_REVIEWER_TTL_SEC", 900, minimum=60, maximum=7 * 24 * 3600)
     llm_reviewer_keep_alive = _env("LLM_REVIEWER_KEEP_ALIVE", "90s").strip() or "90s"
     backfill_full_sweep_on_warmup = _env("BACKFILL_FULL_SWEEP_ON_WARMUP", "1").strip().lower() in ("1", "true", "yes", "y")
     backfill_per_tf_budget = _env_int("BACKFILL_PER_TF_BUDGET", 0, minimum=0, maximum=10000)
@@ -274,6 +277,7 @@ def load_settings() -> Settings:
         llm_reviewer_max_workers=llm_reviewer_max_workers,
         llm_reviewer_min_confidence=llm_reviewer_min_confidence,
         llm_reviewer_cadence_sec=llm_reviewer_cadence_sec,
+        llm_reviewer_ttl_sec=llm_reviewer_ttl_sec,
         llm_reviewer_keep_alive=llm_reviewer_keep_alive,
         reco_ttl_sec=reco_ttl_sec,
         outcomes_interval_sec=outcomes_interval_sec,

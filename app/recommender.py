@@ -35,6 +35,7 @@ LLM_REVIEWER_DEFAULT_MAX_CANDIDATES = 24
 LLM_REVIEWER_DEFAULT_MAX_WORKERS = 2
 LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE = 0.65
 LLM_REVIEWER_DEFAULT_CADENCE_SEC = 300
+LLM_REVIEWER_DEFAULT_TTL_SEC = 900
 
 
 def _fmt_tf(tf_sec: int) -> str:
@@ -203,6 +204,45 @@ def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
         }
 
 
+def _llm_review_hold_target_status(rec: dict[str, Any]) -> str | None:
+    reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
+    llm_review = reasons.get("llm_review") if isinstance(reasons, dict) and isinstance(reasons.get("llm_review"), dict) else {}
+    target = str(llm_review.get("publish_target_status") or "").strip().lower()
+    if target in LLM_REVIEW_ELIGIBLE_STATUSES:
+        return target
+    return None
+
+
+def _restore_llm_held_status(rec: dict[str, Any]) -> str | None:
+    current = str(rec.get("status") or "").strip().lower()
+    if current != "pending":
+        return None
+    target = _llm_review_hold_target_status(rec)
+    if target is None:
+        return None
+    rec["status"] = target
+    return target
+
+
+def _carry_forward_llm_hold_target(rec: dict[str, Any], review_dict: dict[str, Any]) -> dict[str, Any]:
+    target = _llm_review_hold_target_status(rec)
+    if target in LLM_REVIEW_ELIGIBLE_STATUSES:
+        review_dict["publish_target_status"] = target
+    return review_dict
+
+
+def _llm_review_ttl_sec(settings) -> int:
+    explicit_ttl = getattr(settings, "llm_reviewer_ttl_sec", None)
+    if explicit_ttl is not None:
+        try:
+            return max(60, int(explicit_ttl))
+        except Exception:
+            pass
+    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
+    reco_ttl = _recommendation_ttl_sec(settings)
+    return max(int(reco_ttl), cadence_sec, LLM_REVIEWER_DEFAULT_TTL_SEC)
+
+
 def _load_llm_review_cache(conn) -> dict[str, dict[str, Any]]:
     raw = db.get_app_config_json(conn, LLM_REVIEW_CACHE_APP_KEY, default={}) or {}
     out: dict[str, dict[str, Any]] = {}
@@ -230,9 +270,9 @@ def _load_llm_review_cache(conn) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _save_llm_review_cache(conn, state: dict[str, dict[str, Any]], cadence_sec: int) -> None:
+def _save_llm_review_cache(conn, state: dict[str, dict[str, Any]], fresh_ttl_sec: int) -> None:
     now = int(time.time())
-    ttl = max(int(cadence_sec) * 4, 1800)
+    ttl = max(int(fresh_ttl_sec) * 4, 1800)
     payload: dict[str, dict[str, Any]] = {}
     for key, meta in (state or {}).items():
         if not isinstance(key, str) or not isinstance(meta, dict):
@@ -359,14 +399,14 @@ def _llm_cache_age_sec(meta: dict[str, Any]) -> int | None:
 def _is_fresh_llm_cache_entry(
     meta: dict[str, Any],
     reviewer: OllamaCandleReviewer | None,
-    cadence_sec: int,
+    fresh_ttl_sec: int,
     *,
     context_signature: str = "",
 ) -> tuple[bool, int | None]:
     cache_age = _llm_cache_age_sec(meta)
     if not isinstance(meta, dict) or not meta or cache_age is None:
         return False, cache_age
-    if cache_age > max(5, int(cadence_sec or 5)):
+    if cache_age > max(5, int(fresh_ttl_sec or 5)):
         return False, cache_age
     provider = str(meta.get("provider") or "ollama")
     model = str(meta.get("model") or "")
@@ -386,43 +426,19 @@ def _is_fresh_llm_cache_entry(
     return True, cache_age
 
 LLM_REVIEW_ELIGIBLE_STATUSES = frozenset({"recommended", "active"})
-LLM_PUBLICATION_TARGET_STATUSES = frozenset({"recommended", "active"})
 
 
 def _is_llm_review_eligible_status(status: Any) -> bool:
     return str(status or "").strip().lower() in LLM_REVIEW_ELIGIBLE_STATUSES
 
 
-def _llm_publish_target_status(rec: dict[str, Any], review_dict: dict[str, Any] | None = None) -> str | None:
-    review = review_dict
-    if not isinstance(review, dict):
-        reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
-        review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
-    target = str((review or {}).get("publish_target_status") or "").strip().lower()
-    if target in LLM_PUBLICATION_TARGET_STATUSES:
-        return target
-    return None
-
-
-def _is_llm_review_candidate(rec: dict[str, Any]) -> bool:
-    if _is_llm_review_eligible_status(rec.get("status")):
-        return True
-    return _llm_publish_target_status(rec) is not None
-
-
 def _llm_candidate_sort_key(rec: dict[str, Any]) -> tuple[float, float]:
     return (float(rec.get("confidence") or 0.0), float(rec.get("score") or 0.0))
 
 
-def _make_pending_llm_review(
-    rec: dict[str, Any],
-    mode: str,
-    reviewer: OllamaCandleReviewer | None,
-    *,
-    reason: str = "queued",
-    publish_target_status: str | None = None,
-) -> dict[str, Any]:
-    out = {
+def _make_pending_llm_review(rec: dict[str, Any], mode: str, reviewer: OllamaCandleReviewer | None, *, reason: str = "queued") -> dict[str, Any]:
+    target_status = str(rec.get("status") or "").strip().lower()
+    review = {
         "provider": getattr(reviewer, "provider", "ollama") if reviewer is not None else "ollama",
         "model": getattr(reviewer, "model", "") if reviewer is not None else "",
         "prompt_version": getattr(reviewer, "prompt_version", None) or "ohlcv_multitf_v1",
@@ -432,11 +448,9 @@ def _make_pending_llm_review(
         "reason": reason,
         "queued_ts": int(time.time()),
     }
-    target = str(publish_target_status or "").strip().lower()
-    if target in LLM_PUBLICATION_TARGET_STATUSES:
-        out["publish_target_status"] = target
-        out["publication_hold"] = True
-    return out
+    if target_status in LLM_REVIEW_ELIGIBLE_STATUSES:
+        review["publish_target_status"] = target_status
+    return review
 
 
 def _sanitize_llm_review_dict(rec: dict[str, Any], review_dict: dict[str, Any]) -> dict[str, Any]:
@@ -463,25 +477,22 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
     if mode not in {"advisory", "gate"}:
         mode = "advisory"
     cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
+    fresh_ttl_sec = _llm_review_ttl_sec(settings)
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", LLM_REVIEWER_DEFAULT_MAX_CANDIDATES) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES))
-    candidates = [r for r in recs if _is_llm_review_candidate(r)]
+    candidates = [r for r in recs if _is_llm_review_eligible_status(r.get("status"))]
     candidates.sort(key=_llm_candidate_sort_key, reverse=True)
     queued_ids = {str(r.get("rec_id")) for r in candidates[:max_candidates]}
     for rec in recs:
-        if not _is_llm_review_candidate(rec):
+        if not _is_llm_review_eligible_status(rec.get("status")):
             _sync_recommendation_metadata(rec)
             continue
         reasons = rec.setdefault("reasons", {})
-        current_status = str(rec.get("status") or "").strip().lower()
-        publish_target_status = _llm_publish_target_status(rec)
-        if publish_target_status is None and current_status in LLM_PUBLICATION_TARGET_STATUSES:
-            publish_target_status = current_status
         cache_key = _llm_cache_key(rec)
         cache_meta = llm_cache.get(cache_key) or {}
-        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec, context_signature=context_signature)
+        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, fresh_ttl_sec, context_signature=context_signature)
         if cache_is_fresh:
             review_dict = _build_cached_review_dict(
                 cache_meta,
@@ -490,9 +501,6 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
                 int(cache_age or 0),
                 source="cache_inherited",
             )
-            if publish_target_status is not None:
-                review_dict["publish_target_status"] = publish_target_status
-                review_dict["publication_hold"] = True
             reasons["llm_review"] = review_dict
             stats["cached"] += 1
             stats["inherited"] += 1
@@ -505,32 +513,21 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
                 diagnostics={"cache_key": cache_key, "phase": "publish_annotation"},
                 persist_decision_log=False,
             )
+            if not vetoed and not errored:
+                _restore_llm_held_status(rec)
             if vetoed:
                 stats["vetoed"] += 1
             if errored:
                 stats["errors"] += 1
             _sync_recommendation_metadata(rec)
             continue
-        if publish_target_status is not None and current_status in LLM_PUBLICATION_TARGET_STATUSES:
-            rec["status"] = "pending"
         if str(rec.get("rec_id") or "") in queued_ids:
-            reasons["llm_review"] = _make_pending_llm_review(
-                rec,
-                mode,
-                reviewer,
-                reason="queued_async",
-                publish_target_status=publish_target_status,
-            )
+            reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason="queued_async")
             stats["queued"] += 1
         else:
-            reasons["llm_review"] = _make_pending_llm_review(
-                rec,
-                mode,
-                reviewer,
-                reason=f"deferred_candidate_cap ({max_candidates})",
-                publish_target_status=publish_target_status,
-            )
+            reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason=f"deferred_candidate_cap ({max_candidates})")
             stats["deferred"] += 1
+        rec["status"] = "pending"
         _sync_recommendation_metadata(rec)
     return stats
 
@@ -552,7 +549,12 @@ def _load_llm_candles_for_symbol(conn, venue: str, symbol: str, tf_secs: list[in
 
 
 def _should_enqueue_llm_review(rec: dict[str, Any]) -> bool:
-    if not _is_llm_review_candidate(rec):
+    current_status = str(rec.get("status") or "").strip().lower()
+    hold_target_status = _llm_review_hold_target_status(rec)
+    if current_status != "pending":
+        if not _is_llm_review_eligible_status(current_status):
+            return False
+    elif hold_target_status not in LLM_REVIEW_ELIGIBLE_STATUSES:
         return False
     llm_review = ((rec.get("reasons") or {}).get("llm_review") if isinstance(rec.get("reasons"), dict) else None) or {}
     llm_status = str(llm_review.get("status") or "").lower()
@@ -562,9 +564,10 @@ def _should_enqueue_llm_review(rec: dict[str, Any]) -> bool:
 
 
 def _llm_review_recent_sec(settings) -> int:
-    ttl_sec = _recommendation_ttl_sec(settings)
+    ttl_sec = _llm_review_ttl_sec(settings)
+    reco_ttl_sec = _recommendation_ttl_sec(settings)
     cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
-    return max(int(ttl_sec), cadence_sec * 4, 3600)
+    return max(int(ttl_sec), int(reco_ttl_sec), cadence_sec * 4, 3600)
 
 
 def _llm_pending_sort_key(rec: dict[str, Any]) -> tuple[int, float, float]:
@@ -682,6 +685,7 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
     cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
+    fresh_ttl_sec = _llm_review_ttl_sec(settings)
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     cache_dirty = False
@@ -707,7 +711,7 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
     for rec in candidates:
         cache_key = _llm_cache_key(rec)
         cache_meta = llm_cache.get(cache_key) or {}
-        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec, context_signature=context_signature)
+        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, fresh_ttl_sec, context_signature=context_signature)
         if cache_is_fresh:
             reasons = rec.setdefault("reasons", {})
             review_dict = _build_cached_review_dict(
@@ -717,6 +721,7 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
                 int(cache_age or 0),
                 source="async_cache",
             )
+            review_dict = _carry_forward_llm_hold_target(rec, review_dict)
             reasons["llm_review"] = review_dict
             vetoed, errored = _apply_llm_review_decision(
                 conn,
@@ -726,8 +731,9 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
                 source="async_cache",
                 diagnostics={"cache_key": cache_key, "phase": "sweep"},
             )
+            restored_status = None if (vetoed or errored) else _restore_llm_held_status(rec)
             _sync_recommendation_metadata(rec)
-            db.update_recommendation_review(conn, rec["rec_id"], reasons=reasons, status=rec.get("status"))
+            db.update_recommendation_review(conn, rec["rec_id"], reasons=reasons, status=rec.get("status") if (vetoed or restored_status is not None) else None)
             stats["cached"] += 1
             if vetoed:
                 stats["vetoed"] += 1
@@ -799,13 +805,9 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
                         "error": str(exc),
                         "source": "async_live",
                     }
-                    publish_target_status = _llm_publish_target_status(peer)
-                    if publish_target_status is not None:
-                        review_dict["publish_target_status"] = publish_target_status
-                        review_dict["publication_hold"] = True
                     reasons["llm_review"] = review_dict
                     _sync_recommendation_metadata(peer)
-                    db.update_recommendation_review(conn, peer["rec_id"], reasons=reasons, status=peer.get("status"))
+                    db.update_recommendation_review(conn, peer["rec_id"], reasons=reasons, status=None)
                     db.log_decision(conn, "LLM_REVIEW_ERROR", peer.get("rec_id"), None, {"err": str(exc), "source": "async_sweep_exception", "cache_key": cache_key})
                 stats["errors"] += len(peers)
                 continue
@@ -821,14 +823,11 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
                 reasons = peer.setdefault("reasons", {})
                 if idx == 0:
                     review_dict = _sanitize_llm_review_dict(peer, result.to_dict())
+                    review_dict = _carry_forward_llm_hold_target(peer, review_dict)
                     review_dict["mode"] = mode
                     review_dict["gate_decision"] = "pass"
                     review_dict["source"] = "async_live"
                     review_dict["review_ts"] = review_ts
-                    publish_target_status = _llm_publish_target_status(peer)
-                    if publish_target_status is not None:
-                        review_dict["publish_target_status"] = publish_target_status
-                        review_dict["publication_hold"] = True
                     reasons["llm_review"] = review_dict
                     vetoed, errored = _apply_llm_review_decision(
                         conn,
@@ -848,10 +847,7 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
                         source="async_inherited",
                         inherited_from_rec_id=rec.get("rec_id"),
                     )
-                    publish_target_status = _llm_publish_target_status(peer)
-                    if publish_target_status is not None:
-                        review_dict["publish_target_status"] = publish_target_status
-                        review_dict["publication_hold"] = True
+                    review_dict = _carry_forward_llm_hold_target(peer, review_dict)
                     reasons["llm_review"] = review_dict
                     vetoed, errored = _apply_llm_review_decision(
                         conn,
@@ -862,8 +858,9 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
                         diagnostics={"cache_key": cache_key, "parent_rec_id": rec.get("rec_id")},
                     )
                     stats["inherited"] += 1
+                restored_status = None if (vetoed or errored) else _restore_llm_held_status(peer)
                 _sync_recommendation_metadata(peer)
-                db.update_recommendation_review(conn, peer["rec_id"], reasons=reasons, status=peer.get("status"))
+                db.update_recommendation_review(conn, peer["rec_id"], reasons=reasons, status=peer.get("status") if (vetoed or restored_status is not None) else None)
                 stats["completed"] += 1
                 _check_heartbeat()
                 if vetoed:
@@ -871,7 +868,7 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
                 if errored:
                     stats["errors"] += 1
     if cache_dirty:
-        _save_llm_review_cache(conn, llm_cache, cadence_sec)
+        _save_llm_review_cache(conn, llm_cache, fresh_ttl_sec)
     if scope_has_latest_pending:
         recent_pool = db.get_recent_llm_review_candidates(conn, recent_sec=_llm_review_recent_sec(settings), limit=4000, snapshot_ts=None)
         stats["pending_after"] = sum(
@@ -903,8 +900,6 @@ def _apply_llm_review_decision(
     symbol = str(rec.get("symbol") or "")
     bot_type = str(rec.get("bot_type") or "")
     status = str(review_dict.get("status") or "unknown")
-    prev_status = str(rec.get("status") or "")
-    publish_target_status = _llm_publish_target_status(rec, review_dict)
 
     if status == "error":
         if persist_decision_log:
@@ -912,8 +907,6 @@ def _apply_llm_review_decision(
                 "venue": venue,
                 "symbol": symbol,
                 "bot_type": bot_type,
-                "prev_status": prev_status,
-                "publish_target_status": publish_target_status,
                 "model": review_dict.get("model"),
                 "source": source,
                 "error": review_dict.get("error"),
@@ -924,10 +917,10 @@ def _apply_llm_review_decision(
 
     llm_confidence = _finite_float(review_dict.get("confidence") or 0.0, 0.0)
     if mode == "gate" and llm_confidence >= float(min_conf) and str(review_dict.get("execution_direction") or "neutral") != str(rec.get("direction") or "neutral"):
+        prev_status = str(rec.get("status") or "")
         rec["status"] = "no_trade"
         review_dict["gate_decision"] = "veto"
         review_dict["gate_reason"] = "execution_direction_mismatch"
-        review_dict["publication_released"] = False
         if persist_decision_log:
             db.log_decision(conn, "LLM_REVIEW_VETO", rec.get("rec_id"), None, {
                 "venue": venue,
@@ -935,7 +928,6 @@ def _apply_llm_review_decision(
                 "bot_type": bot_type,
                 "prev_status": prev_status,
                 "new_status": rec["status"],
-                "publish_target_status": publish_target_status,
                 "engine_direction": rec.get("direction"),
                 "llm_execution_direction": review_dict.get("execution_direction"),
                 "llm_thesis_direction": review_dict.get("thesis_direction"),
@@ -947,21 +939,11 @@ def _apply_llm_review_decision(
             })
         return True, False
 
-    released = False
-    if status == "ok" and publish_target_status is not None and prev_status == "pending":
-        rec["status"] = publish_target_status
-        released = True
-    review_dict["publication_released"] = bool(released)
-
     if persist_decision_log:
         db.log_decision(conn, "LLM_REVIEW_OK", rec.get("rec_id"), None, {
             "venue": venue,
             "symbol": symbol,
             "bot_type": bot_type,
-            "prev_status": prev_status,
-            "new_status": rec.get("status"),
-            "publish_target_status": publish_target_status,
-            "publication_released": bool(released),
             "engine_direction": rec.get("direction"),
             "llm_execution_direction": review_dict.get("execution_direction"),
             "llm_thesis_direction": review_dict.get("thesis_direction"),
@@ -1012,6 +994,7 @@ def _apply_llm_reviewer(
     max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", LLM_REVIEWER_DEFAULT_MAX_CANDIDATES) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES))
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
     cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
+    fresh_ttl_sec = _llm_review_ttl_sec(settings)
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
     cache_dirty = False
@@ -1026,7 +1009,7 @@ def _apply_llm_reviewer(
         symbol = str(rec.get("symbol") or "")
         cache_key = _llm_cache_key(rec)
         cache_meta = llm_cache.get(cache_key) or {}
-        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, cadence_sec, context_signature=context_signature)
+        cache_is_fresh, cache_age = _is_fresh_llm_cache_entry(cache_meta, reviewer, fresh_ttl_sec, context_signature=context_signature)
         if cache_is_fresh:
             review_dict = _build_cached_review_dict(cache_meta, rec, mode, int(cache_age or 0), source="cache")
             reasons["llm_review"] = review_dict
@@ -1097,7 +1080,7 @@ def _apply_llm_reviewer(
         _sync_recommendation_metadata(rec)
 
     if cache_dirty:
-        _save_llm_review_cache(conn, llm_cache, cadence_sec)
+        _save_llm_review_cache(conn, llm_cache, fresh_ttl_sec)
 
     return stats
 

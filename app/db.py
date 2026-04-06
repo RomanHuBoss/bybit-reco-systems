@@ -1712,7 +1712,7 @@ _ALLOWED_STATUS_TRANSITIONS = {
     # recommendation engine / async reviewers may still downgrade a fresh idea
     # before an operator explicitly acts on it.
     "recommended": {"recommended", "active", "pending", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
-    "active": {"active", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
+    "active": {"active", "pending", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
     "pending": {"pending", "recommended", "active", "ignored", "blocked", "no_trade", "suppressed", "expired"},
     "executed": {"executed"},
     "ignored": {"ignored"},

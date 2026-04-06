@@ -171,6 +171,7 @@ ruff check app tests main.py
 - `LLM_REVIEWER_MAX_WORKERS=2`
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
 - `LLM_REVIEWER_CADENCE_SEC=300`
+- `LLM_REVIEWER_TTL_SEC=` — отдельный TTL валидности LLM-review для повторного использования по тому же `(venue, symbol, bot_type, direction)`; по умолчанию не короче TTL самой рекомендации
 - `LLM_REVIEWER_KEEP_ALIVE=90s`
 
 Режимы:
@@ -178,7 +179,7 @@ ruff check app tests main.py
 - `gate` — уверенное расхождение LLM с `execution_direction` может перевести идею в `no_trade`.
 
 Важно:
-- LLM-reviewer работает асинхронно и не должен блокировать публикацию core-сигналов. Reviewer применяется к новым `recommended` и к повторно актуальным `active`, но не тратит циклы на `pending`/`suppressed`.
+- Если LLM-reviewer включён, actionable-статусы (`recommended`/`active`) без свежего LLM-вердикта временно переводятся в `pending` и возвращаются обратно после review. Для same-direction reuse теперь используется отдельный TTL валидности reviewer-кэша, поэтому `active` не должен откатываться в `pending` только из-за короткого sweep cadence.
 - В shipped-профиле reviewer настроен консервативно для локальных GPU уровня RTX 3060: короткий keep-alive, сниженный parallelism и ограниченное число live-кандидатов на sweep.
 - UI и API умеют показывать `pending`, `ok`, `error`, `cache_inherited`, `async_live` и другие состояния reviewer.
 - После изменения `LLM_REVIEWER_TFS` или `LLM_REVIEWER_CANDLES_PER_TF` старый кэш reviewer больше не переиспользуется автоматически.
