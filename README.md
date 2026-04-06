@@ -30,60 +30,6 @@
 
 Это **не execution engine биржевого уровня** и не полноценный симулятор исполнения. Сервис оценивает пригодность сетапа и его качество, но не заменяет отдельный production-grade execution layer.
 
-## Что важно в текущей версии
-### Логика LLM-reviewer
-- LLM-review теперь не живёт в ритме каждого нового `rec_id`.
-- Свежий review переиспользуется между соседними рекомендациями одного `(venue, symbol, bot_type, direction-signature)`.
-- Кэш LLM теперь инвалидируется не только по `model/provider/prompt_version`, но и по **контексту ревью**: набору ТФ и числу свечей на ТФ. Это исключает тихое наследование старого review после изменения входного LLM-контекста.
-- Свежие cache-hit ключи больше не съедают весь live candidate budget: sweep теперь сканирует весь pending-срез последнего snapshot и применяет live cap уже после cache-resolution. Это устраняет starvation, при котором часть символов могла висеть `pending` практически бесконечно.
-- Нефинитные значения confidence (`NaN`, `inf`) из LLM больше не превращаются в ложный `1.0`; они безопасно нормализуются к `0.0`.
-
-### Защита от плохих market-data рядов
-- Некорректные OHLCV-бары (нефинитные, нулевые/отрицательные цены, отрицательный объём) отсекаются на чтении из БД, чтобы один испорченный бар не ломал features, direction, shock guard и LLM payload.
-- Коллектор дополнительно отбрасывает невалидные `ticker`, `OHLCV`, `funding`, `OI` значения ещё до записи в БД.
-- Нефинитный sentiment из внешних источников больше не усиливается clamp-логикой до экстремальных значений.
-
-### Дополнительные усиления в этой ревизии
-- Telegram alerting теперь считает доставку успешной только при `HTTP 200` **и** `{"ok": true}` в ответе Telegram API. Ложный `200 OK` с `{"ok": false}` больше не ставит cooldown и не приводит к тихой потере следующего реального алерта.
-- Public Bybit client больше не доверяет форме upstream JSON вслепую: response обязан быть объектом с валидным `retCode`, а `result.list` санируется от недиктовых элементов. Это устраняет неявные `AttributeError`/`ValueError` на сломанном proxy/mock payload и делает причину сбоя диагностируемой.
-- Убраны мёртвые переменные и неоднозначные ветки в runtime/status-коде; статический smoke-check по `ruff` теперь проходит на всём `app/` слое без предупреждений.
-
-- Risk limits теперь приводятся к каноническим *effective limits* ещё в mutating API и bootstrap-конфигурации: в БД и decision log больше не сохраняется сырой операторский payload, который runtime потом тихо clamp'ит по-другому. Это устраняет расхождение между `/api/v1/risk/status`, активной записью `risk_limits` и audit trail.
-- Outcome-labeling теперь игнорирует poisoned `price_range_lower/upper` и kill-switch bounds (`"NaN"`, `"Infinity"`, отрицательные/нулевые значения) и корректно откатывается к валидным границам из `trade_plan.levels.*`. Битый top-level JSON больше не отключает range/kill-switch penalties и не искажает историческую разметку grid-рекомендаций.
-- Ручной `POST /api/v1/sentiment` теперь нормализует операторский `key` и список `tags`: пробелы по краям убираются, пустые/дублирующиеся теги не пишутся в БД и decision log. Пустой `key` отвергается с `422`, чтобы не плодить бессмысленные sentiment-series.
-- Outcome-labeling для legacy/manual рекомендаций теперь корректно разлагает `net_cost_bps` на execution-cost и funding-carry, если явный `execution_cost_bps` отсутствует. Это устраняет двойной штраф funding в исторической разметке linear grid-сетапов и выравнивает outcome/calibration с economics recommender-слоя.
-- Release smoke-tests теперь проверяют поставочный пакет как единый артефакт: README, `.env.example`, `requirements-dev.txt` и операторские `docx/pdf` не должны расходиться между собой.
-- Sentiment ingestion дополнительно hardened against poisoned upstream payloads: невалидный `NaN/inf` из внешних источников больше не может тихо превратиться в фиктивный extreme fear/risk-off.
-- Global sentiment combine теперь пропускает не только non-finite source rows, но и недиктовые/poisoned payload-блоки вместо падения всего sentiment-цикла.
-- Per-symbol blended sentiment игнорирует испорченные source blocks и считает только валидные momentum / reddit / rss / trending компоненты, даже если соседний source вернул строку/список вместо dict.
-- Reddit sentiment больше не теряет весь символ из-за одного битого post payload: испорченная запись пропускается локально, валидные соседние посты продолжают участвовать в оценке.
-- `collect_sentiment_once()` дополнительно нормализует типы return payload'ов от source-adapter'ов и fail-open переживает неожиданный мусорный ответ отдельного адаптера.
-- `DB_PATH` теперь нормализуется к абсолютному пути относительно корня проекта. Перезапуск из другой shell-директории больше не уводит сервис в случайный `./data/app.db`.
-- `RUNTIME_LOCK_DB_PATH` по умолчанию разворачивается в sidecar-файл `*.runtime_locks.sqlite`; блокировки лидерства больше не делят файл с основными write-paths.
-- Панель «Детали» в UI теперь корректно сбрасывает устаревший `rec_id` после `404` и перестаёт бесконечно запрашивать несуществующую запись.
-- История OHLCV валидируется строже: отбрасываются не только `NaN/inf`, но и логически невозможные бары (`high < open/close/low`, `low > open/close/high`).
-- При чтении OHLCV используется overfetch перед фильтрацией, поэтому пачка битых последних баров не лишает движок достаточной истории для features / direction / LLM payload.
-- Crossed quotes (`ask < bid`) теперь санируются и не превращаются в ложный «нулевой спред». Cost-model в таком случае получает безопасный fallback вместо чрезмерно оптимистичной оценки.
-- Outcome-labeling больше не падает на частично испорченном `params_json`: невалидные `grid_spacing_pct/grid_levels` из legacy/manual payload'ов безопасно нормализуются к conservative default вместо аварии цикла разметки.
-- `compute_features_from_ohlcv()` теперь сам отбрасывает логически невозможные бары (`close` вне диапазона `[low, high]`) даже при прямом вызове в обход DB-sanitization.
-- `liquidity_tier()` больше не трактует poisoned `turnover24h` (`NaN/inf` или отрицательное значение) как реальную ликвидность; такой payload считается `unknown`, а не `micro/high`.
-- `trade_plan` и `cost_model` дополнительно санируются от `NaN/Infinity`: один poisoned numeric больше не превращает рекомендацию в несериализуемый JSON и не рисует оператору фиктивные уровни вида `nan/inf`.
-- Outcome-labeling теперь fail-safe переживает malformed `trade_plan` / `expected_horizon` shapes из legacy/manual JSON: строка/список вместо dict и non-finite `label_horizon_hours` больше не роняют весь labeling sweep и не блокируют последующие рекомендации.
-- Execute-path теперь устойчив к испорченным `ttl_sec` / `ts` в legacy строках рекомендации: ручной запуск не падает `500` из-за одиночной битой записи, а безопасно трактует такие значения как отсутствующие.
-- Генерация `trade_plan` и idempotency-проверка trades дополнительно hardened against malformed numerics/timestamps: мусорный `label_horizon_hours` откатывается к builtin horizon, а poisoned historical `trade.ts` не ломает повторный запрос.
-- LLM review payload теперь fail-safe переживает malformed legacy/manual recommendation numerics (`score/confidence/expected_rr/risk_score`): мусор в исторической строке не роняет весь reviewer sweep ещё до общей JSON-санации.
-- `MASTER_KEY` теперь валидируется на bootstrap как корректный Fernet key. Ошибка конфигурации выявляется при старте сервиса, а не в момент первой live-операции шифрования/дешифрования.
-- `RUNTIME_LOCK_DB_PATH` теперь обязан отличаться от `DB_PATH`; accidental конфиг на один и тот же SQLite-файл блокируется fail-fast, чтобы не возвращать runtime lock в тот же файл, где идут основные write-paths.
-- `_estimate_cost_model()` теперь fail-safe обрабатывает невалидный `spread` / `funding_rate`: для битого funding payload не начисляется фиктивный carry, а спред откатывается к консервативному fallback вместо загрязнения `net_cost_bps`.
-- Идемпотентные execute/stop/trade-paths явнее закрывают SQLite write-транзакции на раннем возврате; повторный запрос больше не держит лишний `BEGIN IMMEDIATE` до закрытия соединения.
-- Sentiment API теперь отвергает `NUL` не только в `key`, но и в `tags`, а GET-фильтры `scope/key` перестали тихо превращаться в пустой ответ при poisoned query-string.
-- Чтение legacy/manual JSON из SQLite и status/UI helper-слоёв теперь нейтрализует `NaN/Infinity` в `None` вместо того, чтобы позволять poisoned payload тихо менять ветвление бизнес-логики.
-
-### Интерпретируемость
-- В `reasons_json` сохраняются факторы, контекст сигнала, execution-constraints, funding/OI/liquidity, market shock и LLM review.
-- UI и API различают raw / calibrated confidence и показывают оператору итоговый статус вместе с блоками решения.
-- Для grid-стратегий outcome-labeling и calibration живут отдельно от операторского max holding window.
-
 ## Что входит в проект
 - сбор spot/linear тикеров и OHLCV;
 - сбор funding и open interest для linear;
@@ -229,6 +175,7 @@ ruff check app tests main.py
 
 ## Stability notes
 - background loops используют SQLite runtime lock, поэтому активным сборщиком/рекомендером остаётся только один лидер;
+- background loops завершаются по lifespan stop-event и не должны переживать штатный stop/restart процесса как «ложно упавшие» daemon-потоки;
 - collector работает с явными stage-boundary commit, а не с одной гигантской write-транзакцией через весь цикл: это осознанный компромисс ради корректного heartbeat и отсутствия скрытого split-brain under SQLite;
 - SQLite работает в `WAL`-режиме с увеличенным `busy_timeout`;
 - ошибки одного символа не должны ронять весь collect/recommend loop;
@@ -253,18 +200,9 @@ ruff check app tests main.py
 - не деградирует ли quality score / confidence после накопления новых outcome labels;
 - корректно ли отрабатывают risk limits после записи реальных trade rows.
 
-## Production notes
+## Инженерные заметки
 - используйте внешний process supervisor;
 - делайте резервные копии SQLite;
 - не храните реальные секреты в `.env` внутри репозитория;
 - если нужен полноценный execution layer, его нужно строить отдельно от recommendation engine.
 
-
-## Runtime lock storage
-
-Runtime leadership locks are stored in a separate SQLite sidecar database. By default the path is derived from `DB_PATH` (for example `app.db` -> `app.runtime_locks.sqlite`). You can override it with `RUNTIME_LOCK_DB_PATH`. This isolates heartbeat writes from long-running market-data transactions in the main database and avoids false leadership loss caused by `database is locked` on the primary DB file.
-
-
-## Runtime loops
-
-Background work is split into `collector`, `backfill`, `futures_meta`, `sentiment`, `reco` and `llm_reviewer`. During warm-up the backfill loop can sweep the full active symbol set per timeframe, while futures metadata stays on its own cadence so open-interest collection cannot stall readiness progress.

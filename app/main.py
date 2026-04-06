@@ -49,6 +49,9 @@ BACKGROUND_THREAD_ERROR_ACTIONS = {
 }
 _instrument_meta_cache: dict[tuple[str, str], tuple[float, dict[str, Any], bool]] = {}
 _instrument_meta_lock = threading.Lock()
+_BACKGROUND_STOP_EVENT = threading.Event()
+_BACKGROUND_THREADS: list[threading.Thread] = []
+_BACKGROUND_THREADS_LOCK = threading.Lock()
 
 
 def _get_conn():
@@ -67,9 +70,32 @@ def _interval_loop_wait(next_run: float, interval_sec: int) -> float:
     interval = max(1, int(interval_sec))
     now = time.monotonic()
     if now < next_run:
-        time.sleep(next_run - now)
+        # Ожидание делаем прерываемым через общий stop-event. Иначе при shutdown
+        # поток может висеть в `sleep()` ещё весь интервал и переживать lifespan.
+        _BACKGROUND_STOP_EVENT.wait(next_run - now)
     # If the previous iteration overran, do not add another full sleep on top.
     return max(next_run + interval, time.monotonic())
+
+
+def _start_background_thread(name: str, target) -> None:
+    thread = threading.Thread(target=target, name=name, daemon=True)
+    with _BACKGROUND_THREADS_LOCK:
+        _BACKGROUND_THREADS.append(thread)
+    thread.start()
+
+
+def _join_background_threads(timeout_sec: float = 1.0) -> None:
+    with _BACKGROUND_THREADS_LOCK:
+        threads = list(_BACKGROUND_THREADS)
+        _BACKGROUND_THREADS.clear()
+    for thread in threads:
+        join = getattr(thread, "join", None)
+        if not callable(join):
+            continue
+        try:
+            join(timeout=max(0.0, float(timeout_sec)))
+        except Exception:
+            logger.debug("background thread join failed: %s", getattr(thread, "name", "unknown"), exc_info=True)
 
 
 def _bootstrap_db() -> None:
@@ -409,7 +435,7 @@ def _run_supervised_background_target(
 ) -> None:
     restart_count = 0
     consecutive_failures = 0
-    while True:
+    while not _BACKGROUND_STOP_EVENT.is_set():
         start_ts = int(time.time())
         _set_background_thread_state(
             name,
@@ -421,7 +447,7 @@ def _run_supervised_background_target(
         )
         try:
             target()
-            if treat_return_as_error:
+            if treat_return_as_error and not _BACKGROUND_STOP_EVENT.is_set():
                 raise RuntimeError(f"{name} background loop returned unexpectedly")
             _set_background_thread_state(
                 name,
@@ -645,13 +671,14 @@ def _load_symbol_health(conn) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    threading.Thread(target=partial(_run_supervised_background_target, "collector", _collector_thread), name="collector", daemon=True).start()
-    threading.Thread(target=partial(_run_supervised_background_target, "backfill", _backfill_thread), name="backfill", daemon=True).start()
-    threading.Thread(target=partial(_run_supervised_background_target, "futures_meta", _futures_meta_thread), name="futures_meta", daemon=True).start()
-    threading.Thread(target=partial(_run_supervised_background_target, "sentiment", _sentiment_thread), name="sentiment", daemon=True).start()
-    threading.Thread(target=partial(_run_supervised_background_target, "reco", _reco_thread), name="reco", daemon=True).start()
+    _BACKGROUND_STOP_EVENT.clear()
+    _start_background_thread("collector", partial(_run_supervised_background_target, "collector", _collector_thread))
+    _start_background_thread("backfill", partial(_run_supervised_background_target, "backfill", _backfill_thread))
+    _start_background_thread("futures_meta", partial(_run_supervised_background_target, "futures_meta", _futures_meta_thread))
+    _start_background_thread("sentiment", partial(_run_supervised_background_target, "sentiment", _sentiment_thread))
+    _start_background_thread("reco", partial(_run_supervised_background_target, "reco", _reco_thread))
     if bool(getattr(settings, "llm_reviewer_enabled", False)):
-        threading.Thread(target=partial(_run_supervised_background_target, "llm_reviewer", _llm_reviewer_thread), name="llm_reviewer", daemon=True).start()
+        _start_background_thread("llm_reviewer", partial(_run_supervised_background_target, "llm_reviewer", _llm_reviewer_thread))
     else:
         # Когда reviewer выключен конфигом, его воркер не должен стартовать вообще.
         # Иначе supervised-wrapper интерпретирует штатный return как падение потока,
@@ -666,10 +693,14 @@ async def lifespan(app: FastAPI):
                 })
         except Exception:
             logger.warning("llm reviewer disabled state persist failed", exc_info=True)
-    yield
+    try:
+        yield
+    finally:
+        _BACKGROUND_STOP_EVENT.set()
+        _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.9", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.10", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -1379,7 +1410,7 @@ def _collector_thread():
     lock_ttl = max(120, settings.collect_interval_sec * 20)
     next_run = time.monotonic()
     try:
-        while True:
+        while not _BACKGROUND_STOP_EVENT.is_set():
             with closing(_get_lock_conn()) as lock_conn:
                 has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
             if has_lock:
@@ -1439,7 +1470,7 @@ def _backfill_thread():
     lock_ttl = max(120, settings.collect_interval_sec * 20)
     next_run = time.monotonic()
     try:
-        while True:
+        while not _BACKGROUND_STOP_EVENT.is_set():
             with closing(_get_lock_conn()) as lock_conn:
                 has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
             if has_lock:
@@ -1500,7 +1531,7 @@ def _futures_meta_thread():
     next_run = time.monotonic()
     _last_run = 0.0
     try:
-        while True:
+        while not _BACKGROUND_STOP_EVENT.is_set():
             if settings.symbols_linear:
                 run_allowed = True
                 if not bool(getattr(settings, "futures_meta_during_warmup", False)):
@@ -1554,7 +1585,7 @@ def _sentiment_thread():
     lock_key = "runtime:sentiment"
     lock_ttl = max(60, settings.sentiment_interval_sec * 4)
     next_run = _interval_loop_start(settings.sentiment_interval_sec)
-    while True:
+    while not _BACKGROUND_STOP_EVENT.is_set():
         with closing(_get_lock_conn()) as lock_conn:
             has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:
@@ -1588,7 +1619,7 @@ def _reco_thread():
     lock_key = "runtime:reco"
     lock_ttl = max(60, settings.reco_interval_sec * 4)
     next_run = time.monotonic()
-    while True:
+    while not _BACKGROUND_STOP_EVENT.is_set():
         result = {}
         with closing(_get_lock_conn()) as lock_conn:
             has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)

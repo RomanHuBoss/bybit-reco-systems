@@ -238,8 +238,8 @@ def _llm_review_ttl_sec(settings) -> int:
             return max(60, int(explicit_ttl))
         except Exception:
             pass
-    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
     reco_ttl = _recommendation_ttl_sec(settings)
+    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
     return max(int(reco_ttl), cadence_sec, LLM_REVIEWER_DEFAULT_TTL_SEC)
 
 
@@ -433,7 +433,9 @@ def _is_llm_review_eligible_status(status: Any) -> bool:
 
 
 def _llm_candidate_sort_key(rec: dict[str, Any]) -> tuple[float, float]:
-    return (float(rec.get("confidence") or 0.0), float(rec.get("score") or 0.0))
+    # Исторические/manual записи могут содержать строки, NaN/Infinity или иной мусор
+    # в `score/confidence`. LLM-очередь не должна падать из-за одной битой записи.
+    return (_finite_float(rec.get("confidence"), 0.0), _finite_float(rec.get("score"), 0.0))
 
 
 def _make_pending_llm_review(rec: dict[str, Any], mode: str, reviewer: OllamaCandleReviewer | None, *, reason: str = "queued") -> dict[str, Any]:
@@ -476,7 +478,6 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
     if mode not in {"advisory", "gate"}:
         mode = "advisory"
-    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
     fresh_ttl_sec = _llm_review_ttl_sec(settings)
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
     context_signature = _llm_reviewer_context_signature(settings)
@@ -571,7 +572,7 @@ def _llm_review_recent_sec(settings) -> int:
 
 
 def _llm_pending_sort_key(rec: dict[str, Any]) -> tuple[int, float, float]:
-    return (int(rec.get("ts") or 0), float(rec.get("confidence") or 0.0), float(rec.get("score") or 0.0))
+    return (int(rec.get("ts") or 0), _finite_float(rec.get("confidence"), 0.0), _finite_float(rec.get("score"), 0.0))
 
 
 
@@ -684,7 +685,6 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
 
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
-    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
     fresh_ttl_sec = _llm_review_ttl_sec(settings)
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
@@ -993,7 +993,6 @@ def _apply_llm_reviewer(
 
     max_candidates = max(1, int(getattr(settings, "llm_reviewer_max_candidates", LLM_REVIEWER_DEFAULT_MAX_CANDIDATES) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES))
     min_conf = float(getattr(settings, "llm_reviewer_min_confidence", LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE) or LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE)
-    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
     fresh_ttl_sec = _llm_review_ttl_sec(settings)
     context_signature = _llm_reviewer_context_signature(settings)
     llm_cache = _load_llm_review_cache(conn)
@@ -1001,7 +1000,7 @@ def _apply_llm_reviewer(
     live_calls = 0
 
     candidates = [r for r in recs if _is_llm_review_eligible_status(r.get("status"))]
-    candidates.sort(key=lambda r: (float(r.get("confidence") or 0.0), float(r.get("score") or 0.0)), reverse=True)
+    candidates.sort(key=_llm_candidate_sort_key, reverse=True)
 
     for rec in candidates:
         reasons = rec.setdefault("reasons", {})
