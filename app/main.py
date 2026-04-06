@@ -758,9 +758,18 @@ def index() -> str:
     return (static_dir / "index.html").read_text(encoding="utf-8")
 
 
-def _require_admin_key(x_api_key: str | None) -> None:
-    if not is_authorized(settings.admin_api_key, x_api_key):
-        raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
+def _require_admin_key(x_api_key: str | None, request: Request | None = None) -> None:
+    client_host = None
+    if request is not None:
+        try:
+            client = getattr(request, "client", None)
+            client_host = getattr(client, "host", None)
+        except Exception:
+            client_host = None
+    if not is_authorized(settings.admin_api_key, x_api_key, client_host=client_host):
+        if settings.admin_api_key:
+            raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
+        raise HTTPException(status_code=401, detail="mutating API requires ADMIN_API_KEY or loopback access")
 
 
 def _is_supported_execution_direction(bot_type: str, venue: str, direction: str) -> bool:
@@ -1074,8 +1083,8 @@ def api_risk_status() -> dict[str, Any]:
 
 
 @app.post("/api/v1/risk/limits")
-def api_update_risk_limits(req: UpdateRiskLimitsRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
-    _require_admin_key(x_api_key)
+def api_update_risk_limits(req: UpdateRiskLimitsRequest, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key, request)
     _ensure_json_payload_has_only_finite_numbers(req.limits, field_name="limits")
     effective_limits = normalize_risk_limits(req.limits, settings.risk_limits)
     with closing(_get_conn()) as conn:
@@ -1102,8 +1111,8 @@ def api_update_risk_limits(req: UpdateRiskLimitsRequest, x_api_key: str | None =
 
 
 @app.post("/api/v1/recommendations/{rec_id}/action")
-def api_reco_action(rec_id: str, req: RecoActionRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
-    _require_admin_key(x_api_key)
+def api_reco_action(rec_id: str, req: RecoActionRequest, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key, request)
     operator = _normalized_optional_text(req.operator, field_name="operator")
     allowed = {"executed", "ignored"}
     if req.action not in allowed:
@@ -1142,8 +1151,8 @@ def api_bot_details(bot_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/v1/bots/{bot_id}/stop")
-def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
-    _require_admin_key(x_api_key)
+def api_stop_bot(bot_id: str, req: BotStopRequest, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key, request)
     with closing(_get_conn()) as conn:
         db.begin_immediate(conn)
         bot = db.get_bot_instance(conn, bot_id)
@@ -1171,8 +1180,8 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, x_api_key: str | None = Heade
 
 
 @app.post("/api/v1/bots/{bot_id}/trades")
-def api_record_trade(bot_id: str, req: BotTradeRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
-    _require_admin_key(x_api_key)
+def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key, request)
     _ensure_json_payload_has_only_finite_numbers(req.meta, field_name="meta")
     with closing(_get_conn()) as conn:
         db.begin_immediate(conn)
@@ -1373,8 +1382,8 @@ def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
 
 
 @app.post("/api/v1/sentiment")
-def api_sentiment_put(req: SentimentPointRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
-    _require_admin_key(x_api_key)
+def api_sentiment_put(req: SentimentPointRequest, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    _require_admin_key(x_api_key, request)
     scope = _normalized_non_empty_text(req.scope, field_name="scope")
     key = _normalized_non_empty_text(req.key, field_name="key")
     tags = _normalize_tag_list(req.tags)

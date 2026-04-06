@@ -28,7 +28,7 @@
 4. **Audit layer** — `recommendations`, `decision_log`, `bot_instances`, `trades`, `reco_outcomes`.
 5. **Operator layer** — UI и API для ручного исполнения и анализа.
 
-Это **не execution engine биржевого уровня** и не полноценный симулятор исполнения. Сервис оценивает пригодность сетапа и его качество, но не заменяет отдельный production-grade execution layer.
+Это **не execution engine биржевого уровня** и не полноценный симулятор исполнения. Сервис оценивает пригодность сетапа и его качество, но не заменяет отдельный production-grade execution layer. Ордеры на Bybit из этого проекта не отправляются: `bot_instances` и `trades` отражают операторский / audit-контур, а не живой OMS/EMS.
 
 ## Что входит в проект
 - сбор spot/linear тикеров и OHLCV;
@@ -59,6 +59,14 @@
 - `reasons.direction_agg` — агрегированное направление и структура голосов по ТФ.
 - `reasons.execution_constraints` — что можно, а что нельзя исполнить на выбранном bot_type.
 - `reasons.llm_review` — second opinion LLM, включая источник (`live`, `cache`, `cache_inherited`, `async_live`, `async_inherited`).
+
+## Документация в репозитории
+- `docs/ARCHITECTURE.md` — фактическая архитектура, потоки данных и границы ответственности.
+- `docs/MODULES.md` — назначение ключевых модулей и их контракты.
+- `docs/TRADING_LOGIC.md` — торгово-логические правила, ограничения и жизненный цикл recommendation/publication-chain.
+- `docs/SCENARIOS.md` — ключевые эксплуатационные сценарии и expected behavior.
+- `docs/KNOWN_RISKS.md` — оставшиеся риски и осознанные ограничения.
+- `CHANGELOG.md` — журнал существенных исправлений этой ревизии.
 
 ## Быстрый запуск
 ```bash
@@ -98,7 +106,7 @@ ruff check app tests main.py
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
 - `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи; после этого окна same-direction сигнал всё равно не откроет новый outcome-root, пока предыдущая псевдо-сделка той же chain не доживёт до своего horizon или не получит outcome;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
-- `ADMIN_API_KEY` — ключ для mutating endpoints; настоятельно рекомендуется задать перед любым запуском вне localhost/стенда, иначе mutating API остаётся открытым по design для локальной разработки;
+- `ADMIN_API_KEY` — ключ для mutating endpoints; если ключ пуст, mutating API разрешён только с loopback (`127.0.0.1` / `::1` / `localhost`). Для любого удалённо доступного стенда ключ обязателен;
 - `MASTER_KEY` — Fernet-ключ для шифрования секретов. Теперь валидируется fail-fast на старте: битое значение больше не принимается молча;
 - `COLLECTOR_MAX_WORKERS`, `FUTURES_COLLECT_MAX_WORKERS` — bounded parallelism for collector REST fetches;
 - `RISK_DAY_TZ` — часовой пояс дневной отсечки для daily PnL / drawdown limits (по умолчанию `UTC`);
@@ -117,7 +125,7 @@ ruff check app tests main.py
 - `LLM_REVIEWER_MAX_WORKERS=2`
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
 - `LLM_REVIEWER_CADENCE_SEC=300`
-- `LLM_REVIEWER_TTL_SEC=` — отдельный TTL валидности LLM-review для повторного использования по тому же `(venue, symbol, bot_type, direction)`; по умолчанию не короче TTL самой рекомендации
+- `LLM_REVIEWER_TTL_SEC=` — отдельный TTL валидности LLM-review для повторного использования по тому же `(venue, symbol, bot_type, direction)`; оставьте пустым для auto-режима: по умолчанию не короче TTL самой рекомендации
 - `LLM_REVIEWER_KEEP_ALIVE=90s`
 
 Режимы:

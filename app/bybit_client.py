@@ -31,6 +31,18 @@ def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
+
+
+def _header_value(response: Any, name: str) -> str | None:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = headers.get(name)
+    except Exception:
+        return None
+    return None if value in (None, "") else str(value)
+
 def _result_list(data: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Возвращает list[dict] из `result.list` без протечки битой формы выше по стеку.
 
@@ -56,8 +68,16 @@ class BybitPublicClient:
     def close(self) -> None:
         self._client.close()
 
-    def _retry_delay(self, attempt: int) -> float:
-        return self.backoff_base_sec * (2 ** max(0, int(attempt)))
+    def _retry_delay(self, attempt: int, retry_after: str | None = None) -> float:
+        delay = self.backoff_base_sec * (2 ** max(0, int(attempt)))
+        if retry_after not in (None, ""):
+            try:
+                header_delay = float(str(retry_after).strip())
+            except Exception:
+                header_delay = None
+            if header_delay is not None and math.isfinite(header_delay):
+                delay = max(delay, max(0.0, header_delay))
+        return delay
 
     def _is_retryable_http_status(self, status_code: int) -> bool:
         return int(status_code) == 429 or 500 <= int(status_code) <= 599
@@ -85,7 +105,11 @@ class BybitPublicClient:
         for attempt in range(self.max_retries + 1):
             try:
                 response = self._client.get(url, params=params)
+                retry_after = _header_value(response, "Retry-After") if response is not None else None
                 if self._is_retryable_http_status(response.status_code):
+                    if attempt < self.max_retries:
+                        time.sleep(self._retry_delay(attempt, retry_after))
+                        continue
                     raise RuntimeError(f"Bybit HTTP {response.status_code}: retryable upstream error")
                 response.raise_for_status()
                 data = response.json()
@@ -100,7 +124,7 @@ class BybitPublicClient:
                 if ret_code != 0:
                     ret_msg = str(data.get("retMsg") or "")
                     if attempt < self.max_retries and self._is_retryable_bybit_error(ret_code, ret_msg):
-                        time.sleep(self._retry_delay(attempt))
+                        time.sleep(self._retry_delay(attempt, _header_value(response, "Retry-After")))
                         continue
                     raise RuntimeError(f"Bybit error {ret_code}: {ret_msg}")
                 return data
