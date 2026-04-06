@@ -102,6 +102,27 @@ def _env_float(key: str, default: float, *, minimum: float | None = None, maximu
     return float(value)
 
 
+def _csv_symbols_unique(raw: str) -> list[str]:
+    """Нормализует CSV-список символов и убирает дубли с сохранением порядка.
+
+    Для торгового контура это не косметика: дубликаты в env приводят к
+    повторному сбору market data по одному и тому же инструменту, раздувают
+    нагрузку на публичный API и потенциально создают несколько конкурирующих
+    рекомендаций для фактически одного symbol/venue. На bootstrap выгоднее
+    нормализовать конфиг один раз, чем надеяться, что все downstream-циклы
+    сами будут дедуплицировать вход.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for chunk in str(raw or '').split(','):
+        symbol = chunk.strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+    return out
+
+
 @dataclass(frozen=True)
 class Settings:
     outcome_horizon_fallback_sec: int
@@ -177,8 +198,8 @@ def load_settings() -> Settings:
 
     symbols_spot_default = "BTCUSDT,ETHUSDT" if "spot" in venues else ""
     symbols_linear_default = "BTCUSDT,ETHUSDT" if "linear" in venues else ""
-    symbols_spot = [s.strip().upper() for s in _env("SYMBOLS_SPOT", symbols_spot_default).split(",") if s.strip()] if "spot" in venues else []
-    symbols_linear = [s.strip().upper() for s in _env("SYMBOLS_LINEAR", symbols_linear_default).split(",") if s.strip()] if "linear" in venues else []
+    symbols_spot = _csv_symbols_unique(_env("SYMBOLS_SPOT", symbols_spot_default)) if "spot" in venues else []
+    symbols_linear = _csv_symbols_unique(_env("SYMBOLS_LINEAR", symbols_linear_default)) if "linear" in venues else []
 
     risk_limits = _env_json_dict(
         "RISK_LIMITS_JSON",
