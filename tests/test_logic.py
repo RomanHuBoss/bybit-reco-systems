@@ -1905,6 +1905,77 @@ def test_run_llm_review_sweep_once_updates_latest_snapshot_asynchronously(conn, 
 
 
 
+def test_run_llm_review_sweep_releases_llm_held_pending_rec(conn, monkeypatch):
+    ts_now = int(time.time())
+    db.insert_recommendations(
+        conn,
+        [{
+            "rec_id": "R-held-pending-1",
+            "ts": ts_now,
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.71,
+            "confidence": 0.82,
+            "expected_rr": 1.3,
+            "risk_score": 0.2,
+            "params": {"grid_levels": 8},
+            "reasons": {
+                "llm_review": {
+                    "status": "pending",
+                    "mode": "advisory",
+                    "gate_decision": "pending",
+                    "publish_target_status": "recommended",
+                    "publication_hold": True,
+                    "queued_ts": ts_now,
+                }
+            },
+            "blocks": [],
+            "status": "pending",
+            "ttl_sec": 900,
+            "model_version": "test",
+            "features_ref_ts": ts_now,
+        }],
+    )
+
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+        def review(self, payload):
+            return LLMReviewResult(
+                provider="ollama",
+                model="fake-llm",
+                thesis_direction="long",
+                execution_direction="long",
+                confidence=0.81,
+                regime_view="bullish_range",
+                risk_flags=[],
+                summary="async ok",
+            )
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_max_candidates=10,
+    )
+    monkeypatch.setattr(recommender_module, "_make_llm_reviewer", lambda settings: FakeReviewer())
+    monkeypatch.setattr(recommender_module, "_load_llm_candles_for_symbol", lambda *args, **kwargs: {900: [[1, 1, 1, 1, 1, 1.0]]})
+
+    stats = run_llm_review_sweep_once(conn, settings)
+    rec = db.get_recommendation_by_id(conn, "R-held-pending-1")
+
+    assert stats["completed"] == 1
+    assert rec is not None
+    assert rec["status"] == "recommended"
+    assert rec["reasons"]["llm_review"]["status"] == "ok"
+    assert rec["reasons"]["llm_review"]["publication_released"] is True
+
+
 def test_mark_llm_reviews_async_includes_active_candidates(conn):
     ts_now = int(time.time())
     recs = [
@@ -1968,6 +2039,50 @@ def test_mark_llm_reviews_async_includes_active_candidates(conn):
     assert stats["queued"] == 1
     assert recs[0]["reasons"]["llm_review"]["status"] == "pending"
     assert recs[1].get("reasons", {}).get("llm_review") is None
+
+
+def test_mark_llm_reviews_async_holds_actionable_rec_until_llm_ready(conn):
+    ts_now = int(time.time())
+    recs = [{
+        "rec_id": "R-hold-1",
+        "ts": ts_now,
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "bot_type": "futures_grid",
+        "direction": "long",
+        "account_mode": "one_way",
+        "margin_mode": "isolated",
+        "score": 0.74,
+        "confidence": 0.86,
+        "expected_rr": 1.35,
+        "risk_score": 0.18,
+        "params": {"grid_levels": 8},
+        "reasons": {},
+        "blocks": [],
+        "status": "recommended",
+        "ttl_sec": 900,
+        "model_version": "test",
+        "features_ref_ts": ts_now,
+    }]
+
+    class FakeReviewer:
+        provider = "ollama"
+        model = "fake-llm"
+
+    settings = _settings_for_tests(
+        llm_reviewer_enabled=True,
+        llm_reviewer_mode="advisory",
+        llm_reviewer_model="fake-llm",
+        llm_reviewer_max_candidates=1,
+    )
+
+    stats = recommender_module._mark_llm_reviews_async(conn, recs, settings, reviewer=FakeReviewer())
+
+    assert stats["queued"] == 1
+    assert recs[0]["status"] == "pending"
+    assert recs[0]["reasons"]["llm_review"]["status"] == "pending"
+    assert recs[0]["reasons"]["llm_review"]["publish_target_status"] == "recommended"
+    assert recs[0]["reasons"]["llm_review"]["publication_hold"] is True
 
 
 def test_mark_llm_reviews_async_defers_overflow_candidates_without_final_skip(conn):

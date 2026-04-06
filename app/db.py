@@ -1367,8 +1367,8 @@ def get_recent_llm_review_candidates(
 ) -> list[dict[str, Any]]:
     cutoff_ts = max(0, now_ts() - max(60, int(recent_sec)))
     _supported_sql, _supported_params = sql_in_clause("bot_type")
-    _eligible_status_params = ["recommended", "active"]
-    _eligible_status_sql = "status IN (?,?)"
+    _eligible_status_params = ["recommended", "active", "pending"]
+    _eligible_status_sql = "status IN (?,?,?)"
     if snapshot_ts is not None:
         q = f"""SELECT * FROM recommendations
             WHERE ts = ? AND {_eligible_status_sql} AND {_supported_sql}"""
@@ -1713,7 +1713,7 @@ _ALLOWED_STATUS_TRANSITIONS = {
     # before an operator explicitly acts on it.
     "recommended": {"recommended", "active", "pending", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
     "active": {"active", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
-    "pending": {"pending", "ignored", "blocked", "no_trade", "suppressed", "expired"},
+    "pending": {"pending", "recommended", "active", "ignored", "blocked", "no_trade", "suppressed", "expired"},
     "executed": {"executed"},
     "ignored": {"ignored"},
     "expired": {"expired"},
