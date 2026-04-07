@@ -8,8 +8,8 @@ import math
 logger = logging.getLogger(__name__)
 
 BOT_HORIZONS: dict[str, int] = {
-    "spot_grid": 6 * 3600,
-    "futures_grid": 6 * 3600,
+    "spot_grid": 12 * 3600,
+    "futures_grid": 12 * 3600,
 }
 HORIZON_SEC_DEFAULT = 30 * 60
 
@@ -42,7 +42,7 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
     # Outcome labeling is bot-mechanics-specific and should mature on the dedicated
     # label horizon, not on the operator-facing max holding window. Otherwise grid
     # recommendations can sit 28h/48h without labels even though the intended
-    # evaluation horizon is 6h.
+    # evaluation horizon is 12h.
     explicit_hours = (
         params.get("label_horizon_hours")
         or trade_plan.get("label_horizon_hours")
@@ -266,6 +266,47 @@ def _net_return(
     return gross - exec_cost_pct - fixed_cost_pct
 
 
+def _resolve_grid_tp_leg_abs(entry: float, params: dict | None, fallback_step_abs: float | None = None) -> float | None:
+    """Return explicit grid TP-per-leg distance in price terms.
+
+    Outcome semantics should respect the operator-facing TP anchor from the
+    recommendation payload. If the payload is partially malformed, degrade
+    safely to a spacing-based fallback instead of silently disabling the TP
+    success path.
+    """
+    params = params if isinstance(params, dict) else {}
+    trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}
+    tp_block = levels.get("tp_per_leg") if isinstance(levels.get("tp_per_leg"), dict) else {}
+
+    tp_abs = _finite_positive_or_none(tp_block.get("abs")) if tp_block else None
+    if tp_abs is not None:
+        return float(tp_abs)
+
+    tp_pct = _finite_positive_or_none(tp_block.get("pct")) if tp_block else None
+    if tp_pct is not None and entry:
+        return float(entry) * float(tp_pct) / 100.0
+
+    if fallback_step_abs is not None and fallback_step_abs > 0.0:
+        return float(fallback_step_abs) * 0.70
+    return None
+
+
+def _grid_tp_hit(min_p: float, max_p: float, entry: float, direction: str, tp_leg_abs: float | None) -> bool:
+    if not entry or tp_leg_abs is None or tp_leg_abs <= 0.0:
+        return False
+    long_tp = float(entry) + float(tp_leg_abs)
+    short_tp = float(entry) - float(tp_leg_abs)
+    if direction == "short":
+        return min_p <= short_tp
+    if direction == "neutral":
+        # Neutral grid should not shortcut to success on a one-sided barrier touch.
+        # Keep neutral labeling anchored to realised oscillation / PnL mechanics
+        # so a single directional spike does not inflate win-rate.
+        return False
+    return max_p >= long_tp
+
+
 def _grid_outcome(
     conn,
     venue: str,
@@ -316,6 +357,8 @@ def _grid_outcome(
     min_step_pct = max((cost_floor / 0.70) * 1.15, 0.0008)
     step_pct = max(grid_spacing_pct / 100.0, min_step_pct)
     step_abs = entry * step_pct
+    tp_leg_abs = _resolve_grid_tp_leg_abs(entry, params, fallback_step_abs=step_abs)
+    tp_hit = _grid_tp_hit(min_p, max_p, entry, direction, tp_leg_abs)
 
     completed_steps = 0
     in_range_ratio = 0.0
@@ -396,9 +439,18 @@ def _grid_outcome(
         occupancy_penalty_base = max(range_span_pct * 0.85, step_pct * 2.0)
         net_proxy -= (min_range_ratio - in_range_ratio) * occupancy_penalty_base
 
+    # Explicit TP achievement should count as success for grid outcome semantics:
+    # if the operator-facing per-leg target was touched inside the label window,
+    # WR must reflect that realised profit opportunity even when the close of the
+    # horizon later drifts away and the oscillation counter stays < 2.
+    if tp_hit and tp_leg_abs is not None and entry:
+        tp_realized_net = max(0.0001, (float(tp_leg_abs) / float(entry)) - cost_floor)
+        net_proxy = max(net_proxy, tp_realized_net)
+
     # A single profitable leg is too easy to obtain on noisy data and was one of the
     # reasons why historical win-rate inflated toward ~100%. Require at least two
-    # matched oscillation legs plus a buffer above explicit trading costs.
+    # matched oscillation legs plus a buffer above explicit trading costs — unless
+    # the explicit per-leg TP itself was already reached.
     min_steps_required = 2
     required_profit = max(
         cost_floor * (1.60 if direction == "neutral" else 1.35),
@@ -407,10 +459,13 @@ def _grid_outcome(
     )
 
     success = int(
-        completed_steps >= min_steps_required
-        and (in_range_ratio == 0.0 or in_range_ratio >= min_range_ratio)
-        and kill_switch_breach_pct <= 1e-12
-        and net_proxy > required_profit
+        tp_hit
+        or (
+            completed_steps >= min_steps_required
+            and (in_range_ratio == 0.0 or in_range_ratio >= min_range_ratio)
+            and kill_switch_breach_pct <= 1e-12
+            and net_proxy > required_profit
+        )
     )
     return success, net_proxy
 

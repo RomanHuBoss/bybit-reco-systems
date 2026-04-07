@@ -45,7 +45,7 @@ def test_compute_outcomes_once_survives_nonfinite_grid_params(tmp_path, monkeypa
 
     base_ts = 1_700_000_000
     ohlcv_rows = []
-    for i in range(500):
+    for i in range(1000):
         ts = base_ts + i * 60
         px = 100.0 + ((i % 6) - 3) * 0.4
         ohlcv_rows.append({
@@ -86,7 +86,7 @@ def test_compute_outcomes_once_survives_nonfinite_grid_params(tmp_path, monkeypa
 
     assert processed == 1
     assert row is not None
-    assert row["horizon_sec"] == 6 * 3600
+    assert row["horizon_sec"] == 12 * 3600
     assert row["success"] in (0, 1)
     assert math.isfinite(float(row["ret"]))
 

@@ -89,7 +89,7 @@ def test_compute_outcomes_only_labels_publication_root(tmp_path: Path):
     db.init_db(conn)
     try:
         now = db.now_ts()
-        ts_root = now - 9 * 3600
+        ts_root = now - 15 * 3600
         ts_active = ts_root + 300
         db.insert_recommendations(
             conn,
@@ -151,7 +151,7 @@ def test_compute_outcomes_only_labels_publication_root(tmp_path: Path):
         )
 
         entry_ts = ts_root + 60
-        exit_ts = entry_ts + 6 * 3600
+        exit_ts = entry_ts + 12 * 3600
         db.upsert_ohlcv(
             conn,
             [

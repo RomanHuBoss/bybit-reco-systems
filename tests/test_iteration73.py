@@ -284,7 +284,7 @@ def test_open_position_lock_releases_chain_after_horizon_elapsed(tmp_path: Path)
     db.init_db(conn)
     try:
         ts_now = int(time.time())
-        ts_prev = ts_now - (7 * 3600)
+        ts_prev = ts_now - (13 * 3600)
         _insert_recent_reco(conn, "R-prev", ts_prev, confidence=0.55, score=0.18)
 
         recs = [{

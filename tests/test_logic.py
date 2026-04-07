@@ -1062,15 +1062,15 @@ def test_estimate_cost_model_rolls_stale_funding_forward_and_counts_crossed_even
 
     stale = _estimate_cost_model(next_funding_ts=now - 3600, **base_args)
     assert stale["next_funding_ts"] > now
-    assert stale["expected_funding_events"] == 0
-    assert stale["expected_funding_bps"] == 0.0
+    assert stale["expected_funding_events"] == 1
+    assert stale["expected_funding_bps"] == pytest.approx(5.0)
 
     imminent = _estimate_cost_model(next_funding_ts=now + 3600, **base_args)
-    assert imminent["expected_funding_events"] == 1
-    assert imminent["expected_funding_bps"] == pytest.approx(5.0)
+    assert imminent["expected_funding_events"] == 2
+    assert imminent["expected_funding_bps"] == pytest.approx(10.0)
 
     short = _estimate_cost_model(next_funding_ts=now + 3600, direction="short", **{k: v for k, v in base_args.items() if k != "direction"})
-    assert short["expected_funding_bps"] == pytest.approx(-5.0)
+    assert short["expected_funding_bps"] == pytest.approx(-10.0)
 
 
 
@@ -2372,8 +2372,8 @@ def test_compute_outcomes_scans_past_stuck_unprocessable_rows(conn):
     from app.outcomes import compute_outcomes_once
 
     now = db.now_ts()
-    stuck_ts = now - 9 * 3600
-    good_ts = now - 8 * 3600
+    stuck_ts = now - 15 * 3600
+    good_ts = now - 14 * 3600
 
     db.insert_recommendations(
         conn,
@@ -2424,7 +2424,7 @@ def test_compute_outcomes_scans_past_stuck_unprocessable_rows(conn):
     )
 
     entry_ts = good_ts + 60
-    exit_ts = entry_ts + 6 * 3600
+    exit_ts = entry_ts + 12 * 3600
     db.upsert_ohlcv(
         conn,
         [

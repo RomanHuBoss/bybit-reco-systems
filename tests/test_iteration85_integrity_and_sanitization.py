@@ -33,7 +33,7 @@ def test_compute_outcomes_skips_recommendations_with_venue_bot_type_mismatch(tmp
     db.init_db(conn)
     try:
         ts_now = int(time.time())
-        rec_ts = ts_now - 7 * 3600
+        rec_ts = ts_now - 13 * 3600
         db.insert_recommendations(
             conn,
             [

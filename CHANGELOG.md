@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-04-07 neutral TP semantics and default horizon revision
+
+### Исправлено
+- Для `neutral` у grid-ботов убран success-shortcut по одноразовому касанию `tp_per_leg`: outcome снова считается только по oscillation / PnL-логике, без двустороннего barrier-hit semantics.
+- Дефолтный label horizon для `spot_grid` и `futures_grid` изменён с `6h` на `12h`; соответствующие default-значения trade plan / outcome labeling синхронизированы.
+
+### Добавлено
+- Тест на то, что `neutral` не получает `success=1` от одиночного касания одной TP-границы.
+
+## 2026-04-07 grid TP outcome revision
+
+### Исправлено
+- Для `spot_grid` / `futures_grid` success в outcome-labeling теперь выставляется в `1`, если внутри окна разметки был фактически достигнут `trade_plan.levels.tp_per_leg`.
+- WR-статистика по grid теперь наследует эту семантику через `reco_outcomes.success`, а не зависит только от matched oscillation legs / end-of-horizon proxy.
+- `ret` для таких исходов больше не остаётся ложно-отрицательным при фактическом касании TP: если per-leg TP достигнут, outcome proxy фиксирует положительный realised-profit floor.
+
+### Добавлено
+- Тесты `tests/test_iteration106_grid_tp_success_semantics.py` на long/short grid и на `tp_per_leg` в форматах `abs` и `pct`.
+
 ## 2026-04-06 audit hardening revision
 
 ### Исправлено

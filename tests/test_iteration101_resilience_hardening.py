@@ -77,7 +77,7 @@ def test_resolve_effective_horizon_ignores_non_mapping_trade_plan_shapes() -> No
         900,
     )
 
-    assert effective_horizon == 6 * 3600
+    assert effective_horizon == 12 * 3600
     assert used_fallback is False
 
 
@@ -101,7 +101,7 @@ def test_build_trade_plan_falls_back_to_builtin_label_horizon_on_invalid_input()
         cost_model={"execution_cost_bps": 8.0},
     )
 
-    assert plan["expected_horizon"]["label_horizon_hours"] == 6
+    assert plan["expected_horizon"]["label_horizon_hours"] == 12
 
 
 # Исполнение рекомендации не должно падать 500 из-за битого ttl/ts в legacy строке БД.
