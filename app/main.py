@@ -553,12 +553,54 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         elif tick_size is not None and (upper - lower) < tick_size:
             errors.append({"code": "RANGE_TOO_NARROW_FOR_TICK", "msg": f"Ширина диапазона {upper - lower:.12f} меньше tick_size={tick_size}."})
 
+    if reference_price is not None and lower is not None and upper is not None and not (lower <= reference_price <= upper):
+        errors.append({
+            "code": "REFERENCE_OUTSIDE_RANGE",
+            "msg": f"reference_price={reference_price} находится вне основного диапазона [{lower}, {upper}].",
+        })
+
+    if lower_ks is not None and upper_ks is not None and upper_ks <= lower_ks:
+        errors.append({"code": "INVALID_KILL_SWITCH_RANGE", "msg": "kill_switch.upper должен быть строго больше kill_switch.lower."})
+    if lower is not None and lower_ks is not None and lower_ks > lower:
+        errors.append({
+            "code": "KILL_SWITCH_INSIDE_MAIN_RANGE",
+            "msg": f"kill_switch.lower={lower_ks} находится внутри основного диапазона и не защищает нижнюю границу {lower}.",
+        })
+    if upper is not None and upper_ks is not None and upper_ks < upper:
+        errors.append({
+            "code": "KILL_SWITCH_INSIDE_MAIN_RANGE",
+            "msg": f"kill_switch.upper={upper_ks} находится внутри основного диапазона и не защищает верхнюю границу {upper}.",
+        })
+
+    snapped_step = None
     if step_abs is not None and tick_size is not None and step_abs < tick_size:
         errors.append({"code": "GRID_STEP_BELOW_TICK", "msg": f"Шаг сетки {step_abs} меньше tick_size={tick_size}; уровни схлопнутся после округления."})
     if step_abs is not None:
         snapped_step = _quantize_to_step(step_abs, tick_size, mode="nearest") if tick_size is not None else step_abs
         if snapped_step is not None:
             snapped["grid_step_abs"] = _format_step_aligned(snapped_step, tick_size if tick_size is not None else snapped_step) or str(snapped_step)
+
+    snapped_lower = _quantize_to_step(lower, tick_size, mode="nearest") if lower is not None and tick_size is not None else lower
+    snapped_upper = _quantize_to_step(upper, tick_size, mode="nearest") if upper is not None and tick_size is not None else upper
+    if snapped_lower is not None and snapped_upper is not None and snapped_upper <= snapped_lower:
+        errors.append({
+            "code": "RANGE_COLLAPSES_AFTER_TICK_ROUNDING",
+            "msg": f"После выравнивания по tick_size={tick_size} диапазон схлопывается: lower={snapped_lower}, upper={snapped_upper}.",
+        })
+    if snapped_step is not None and snapped_lower is not None and snapped_upper is not None and snapped_upper > snapped_lower:
+        span = float(snapped_upper) - float(snapped_lower)
+        if snapped_step > span:
+            errors.append({
+                "code": "GRID_STEP_EXCEEDS_RANGE",
+                "msg": f"Шаг сетки {snapped_step} больше ширины диапазона {span}; сетка вырождается.",
+            })
+        else:
+            intervals = int(math.floor((span / float(snapped_step)) + 1e-12)) if snapped_step > 0 else 0
+            if intervals < 2:
+                errors.append({
+                    "code": "GRID_TOO_FEW_TICK_LEVELS",
+                    "msg": f"После выравнивания по tick_size сетка содержит только {intervals} интервал(ов); для grid требуется минимум 2.",
+                })
 
     if max_leverage is not None and leverage is not None and leverage > max_leverage:
         errors.append({"code": "LEVERAGE_ABOVE_MAX", "msg": f"Рекомендованное leverage={leverage} выше Bybit max_leverage={max_leverage}."})
@@ -1080,14 +1122,32 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     if not rec:
         raise HTTPException(status_code=404, detail="rec_id not found")
 
+    current_status = str(rec.get("status") or "")
+    ttl_sec = max(0, _safe_int(rec.get("ttl_sec"), 0))
+    rec_ts = max(0, _safe_int(rec.get("ts"), 0))
+    is_expired = bool(ttl_sec > 0 and rec_ts > 0 and int(time.time()) > rec_ts + ttl_sec)
+
     existing = db.get_bot_by_origin_rec(conn, rec_id)
     if existing:
-        if rec.get("status") != "executed":
+        if current_status != "executed":
             db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
             conn.commit()
         else:
             _rollback_quietly(conn)
         return existing, True
+
+    # Идемпотентный reuse живого бота допустим только для уже исполненной записи
+    # или для по-прежнему исполнимого actionable recommendation. Иначе можно было
+    # бы тихо перевести `pending`/`ignored`/`expired` запись в `executed` только
+    # потому, что в той же publication-chain уже существует running bot.
+    if current_status != "executed":
+        if is_expired:
+            db.update_recommendation_status(conn, rec_id, "expired", operator)
+            raise HTTPException(status_code=409, detail="recommendation already expired")
+        if current_status in {"blocked", "no_trade", "suppressed", "pending", "expired", "ignored"}:
+            raise HTTPException(status_code=409, detail=f"recommendation status={current_status} cannot be executed")
+        if not _is_supported_execution_direction(str(rec.get("bot_type") or ""), str(rec.get("venue") or ""), str(rec.get("direction") or "")):
+            raise HTTPException(status_code=409, detail="recommendation direction is not executable for this bot_type/venue")
 
     publication_root_rec_id = str(rec.get("publication_root_rec_id") or rec_id).strip() or rec_id
     if publication_root_rec_id:
@@ -1096,21 +1156,16 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         # signal was executed while leaving the operator with no running position.
         chain_existing = db.get_bot_by_publication_root(conn, publication_root_rec_id, status="running")
         if chain_existing:
-            if rec.get("status") != "executed":
+            if current_status != "executed":
                 db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
                 conn.commit()
             else:
                 _rollback_quietly(conn)
             return chain_existing, True
 
-    ttl_sec = max(0, _safe_int(rec.get("ttl_sec"), 0))
-    rec_ts = max(0, _safe_int(rec.get("ts"), 0))
-    if ttl_sec > 0 and rec_ts > 0 and int(time.time()) > rec_ts + ttl_sec:
-        db.update_recommendation_status(conn, rec_id, "expired", operator)
-        raise HTTPException(status_code=409, detail="recommendation already expired")
+    if current_status == "executed":
+        raise HTTPException(status_code=409, detail="recommendation marked executed but no running bot exists for this publication chain")
 
-    if rec["status"] in {"blocked", "no_trade", "suppressed", "pending", "expired", "ignored"}:
-        raise HTTPException(status_code=409, detail=f"recommendation status={rec['status']} cannot be executed")
     if not _is_supported_execution_direction(str(rec.get("bot_type") or ""), str(rec.get("venue") or ""), str(rec.get("direction") or "")):
         raise HTTPException(status_code=409, detail="recommendation direction is not executable for this bot_type/venue")
 

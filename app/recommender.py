@@ -102,6 +102,27 @@ def _safe_int_or_none(value: Any) -> int | None:
         return None
 
 
+def _first_tradeable_1m_candle_ts(conn, venue: str, symbol: str, ts_after: int) -> int | None:
+    """Возвращает ts первой доступной 1m-candle строго после signal ref ts.
+
+    Publication-chain lock должен жить до фактического pseudo-entry, а не до
+    приближённого `features_ref_ts + 60`. При длинной дырке в 1m-данных слишком
+    ранний unlock создаёт ложный второй outcome-root поверх ещё незавершённой
+    идеи. Если candle пока нет, вызывающий код деградирует к консервативной
+    аппроксимации, но при наличии данных используем реальный tradeable ts.
+    """
+    cur = conn.execute(
+        """SELECT ts FROM ohlcv
+           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts>?
+           ORDER BY ts ASC LIMIT 1""",
+        (venue, symbol, int(ts_after)),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return _safe_int_or_none(row["ts"])
+
+
 def _sanitize_json_numbers(value: Any) -> Any:
     """Рекурсивно убирает non-finite числа из operator/audit payload'ов.
 
@@ -2285,14 +2306,21 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
             params if isinstance(params, dict) else {},
             int(fallback_horizon_sec),
         )
-        # Для grid-логики pseudo-entry начинается не на features_ref_ts, а на первом
-        # tradeable 1m candle после него. Здесь используем безопасную аппроксимацию:
-        # max(ts, features_ref_ts) + 60s, чтобы не отпустить lock немного раньше срока.
+        # Для grid-логики pseudo-entry начинается на первом tradeable 1m candle после
+        # signal ref ts. Если такая candle уже есть в БД, используем её реальный ts;
+        # иначе временно деградируем к прежней консервативной аппроксимации +60s.
         signal_ref_ts = max(
             _safe_int_or_none(row["ts"]) or 0,
             _safe_int_or_none(row["features_ref_ts"]) or 0,
         )
-        lock_until_ts = int(signal_ref_ts) + 60 + int(effective_horizon_sec)
+        tradeable_ts = _first_tradeable_1m_candle_ts(
+            conn,
+            str(rec.get("venue") or ""),
+            str(rec.get("symbol") or ""),
+            int(signal_ref_ts),
+        )
+        pseudo_entry_ts = int(tradeable_ts) if tradeable_ts is not None else int(signal_ref_ts) + 60
+        lock_until_ts = int(pseudo_entry_ts) + int(effective_horizon_sec)
         if int(ts_now) >= lock_until_ts:
             continue
         publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
