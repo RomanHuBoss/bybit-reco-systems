@@ -18,7 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .settings import load_settings
-from .shock_guard import APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
+from .shock_guard import (
+    APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY,
+    apply_market_shock_gate,
+    compute_symbol_fast_veto,
+)
 from .bybit_client import BybitPublicClient
 from .collector import collect_once, collect_backfill_once, collect_futures_once, RuntimeLockLostError
 from .alerts import check_and_alert
@@ -181,7 +185,13 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
             "max_price": price_filter.get("maxPrice"),
             "qty_step": lot_filter.get("qtyStep"),
             "min_order_qty": lot_filter.get("minOrderQty"),
+            "max_order_qty": lot_filter.get("maxOrderQty"),
+            "max_market_order_qty": lot_filter.get("maxMktOrderQty"),
+            "min_notional": lot_filter.get("minNotionalValue"),
             "price_scale": info.get("priceScale"),
+            "min_leverage": (info.get("leverageFilter") or {}).get("minLeverage"),
+            "max_leverage": (info.get("leverageFilter") or {}).get("maxLeverage"),
+            "leverage_step": (info.get("leverageFilter") or {}).get("leverageStep"),
         }
         cache_ok = True
 
@@ -347,7 +357,291 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
         out["bybit_meta"] = _fetch_bybit_instrument_meta(venue, symbol) if venue and symbol else {}
     except Exception:
         out["bybit_meta"] = {}
+    out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, out.get("bybit_meta") or {})
     return out
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return float(num)
+
+
+def _count_step_decimals(step: float | str | None) -> int | None:
+    if step in (None, ""):
+        return None
+    raw = str(step).strip().lower()
+    if not raw:
+        return None
+    if "e-" in raw:
+        try:
+            return max(0, int(raw.split("e-")[-1]))
+        except Exception:
+            return None
+    if "." not in raw:
+        return 0
+    normalized = raw.rstrip("0")
+    if normalized.endswith("."):
+        return 0
+    return max(0, len(normalized.split(".", 1)[1]))
+
+
+def _quantize_to_step(value: float | None, step: float | None, *, mode: str = "nearest") -> float | None:
+    num = _finite_float_or_none(value)
+    tick = _finite_float_or_none(step)
+    if num is None or tick is None or tick <= 0:
+        return None
+    decimals = _count_step_decimals(step) or 0
+    factor = 10 ** max(0, int(decimals))
+    scaled_value = int(round(num * factor))
+    scaled_step = max(1, int(round(tick * factor)))
+    ratio = scaled_value / scaled_step
+    if mode == "down":
+        units = math.floor(ratio + 1e-12)
+    elif mode == "up":
+        units = math.ceil(ratio - 1e-12)
+    else:
+        units = round(ratio)
+    return float((units * scaled_step) / factor)
+
+
+def _format_step_aligned(value: float | None, step: float | None) -> str | None:
+    num = _finite_float_or_none(value)
+    tick = _finite_float_or_none(step)
+    if num is None:
+        return None
+    decimals = _count_step_decimals(step if tick is not None and tick > 0 else num) or 0
+    return f"{num:.{max(0, int(decimals))}f}"
+
+
+def _active_symbol_disable_state(conn, venue: str, symbol: str, *, now_ts: int | None = None) -> dict[str, Any] | None:
+    now = int(now_ts or time.time())
+    cur = conn.execute(
+        """SELECT ts, details_json FROM decision_log
+           WHERE action='SYMBOL_DISABLED' AND ts >= ?
+           ORDER BY ts DESC""",
+        (max(0, now - 86400),),
+    )
+    for row in cur.fetchall():
+        details = _json_loads_mapping_or_default(row["details_json"], {})
+        if str(details.get("venue") or "") != str(venue):
+            continue
+        if str(details.get("symbol") or "") != str(symbol):
+            continue
+        retry_at = None
+        try:
+            if details.get("retry_at") not in (None, ""):
+                retry_at = int(details.get("retry_at"))
+        except Exception:
+            retry_at = None
+        if retry_at is None:
+            try:
+                retry_after_sec = int(details.get("retry_after_sec") or 0)
+            except Exception:
+                retry_after_sec = 0
+            retry_at = int(row["ts"] or 0) + max(retry_after_sec, 86400 if retry_after_sec <= 0 else retry_after_sec)
+        if int(retry_at or 0) > now:
+            return {
+                "retry_at": int(retry_at),
+                "details": details,
+                "logged_ts": int(row["ts"] or 0),
+            }
+    return None
+
+
+def _execution_market_data_blocks(conn, rec: dict[str, Any], *, now_ts: int | None = None) -> list[dict[str, Any]]:
+    now = int(now_ts or time.time())
+    venue = str(rec.get("venue") or "")
+    symbol = str(rec.get("symbol") or "")
+    stale_sec = max(60, int(getattr(settings, "stale_data_max_sec", 0) or 0))
+
+    blocks: list[dict[str, Any]] = []
+    last_candle_ts = db.get_latest_ohlcv_ts(conn, venue, symbol, 60)
+    last_ticker_ts = db.get_latest_ticker_ts(conn, venue, symbol)
+    candle_age_sec = None if last_candle_ts is None else max(0, now - int(last_candle_ts))
+    ticker_age_sec = None if last_ticker_ts is None else max(0, now - int(last_ticker_ts))
+
+    if last_candle_ts is None:
+        blocks.append({"code": "MISSING_CANDLE_DATA", "msg": f"{venue}:{symbol} — отсутствуют 1m candles для execution-time preflight"})
+    elif candle_age_sec is not None and candle_age_sec > stale_sec:
+        blocks.append({"code": "STALE_CANDLE_DATA", "msg": f"{venue}:{symbol} — 1m candles stale: age_sec={candle_age_sec} > limit={stale_sec}"})
+
+    if last_ticker_ts is None:
+        blocks.append({"code": "MISSING_TICKER_DATA", "msg": f"{venue}:{symbol} — отсутствует свежий ticker для execution-time preflight"})
+    elif ticker_age_sec is not None and ticker_age_sec > stale_sec:
+        blocks.append({"code": "STALE_TICKER_DATA", "msg": f"{venue}:{symbol} — ticker stale: age_sec={ticker_age_sec} > limit={stale_sec}"})
+
+    disabled = _active_symbol_disable_state(conn, venue, symbol, now_ts=now)
+    if disabled is not None:
+        blocks.append({
+            "code": "SYMBOL_DISABLED",
+            "msg": f"{venue}:{symbol} временно отключён после upstream-ошибок до ts={int(disabled['retry_at'])}",
+        })
+
+    return blocks
+
+
+def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    params = rec.get("params") if isinstance(rec, dict) else {}
+    if not isinstance(params, dict):
+        params = {}
+    plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    levels = plan.get("levels") if isinstance(plan.get("levels"), dict) else {}
+    range_levels = levels.get("range") if isinstance(levels.get("range"), dict) else {}
+    kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
+    grid_step = levels.get("grid_step") if isinstance(levels.get("grid_step"), dict) else {}
+
+    tick_size = _finite_float_or_none((meta or {}).get("tick_size"))
+    min_price = _finite_float_or_none((meta or {}).get("min_price"))
+    max_price = _finite_float_or_none((meta or {}).get("max_price"))
+    min_notional = _finite_float_or_none((meta or {}).get("min_notional"))
+    max_leverage = _finite_float_or_none((meta or {}).get("max_leverage"))
+    leverage = _finite_float_or_none(params.get("leverage"))
+
+    errors: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+    snapped: dict[str, str] = {}
+
+    if not meta:
+        warnings.append({
+            "code": "BYBIT_META_UNAVAILABLE",
+            "msg": "Не удалось получить metadata инструмента Bybit; точная проверка tick/lot/min-notional недоступна.",
+        })
+    if not plan:
+        warnings.append({
+            "code": "TRADE_PLAN_MISSING",
+            "msg": "У рекомендации нет полного trade_plan; execution-time preflight не может полноценно проверить диапазон и шаг сетки.",
+        })
+
+    reference_price = _finite_float_or_none(plan.get("reference_price"))
+    lower = _finite_float_or_none(range_levels.get("lower"))
+    upper = _finite_float_or_none(range_levels.get("upper"))
+    lower_ks = _finite_float_or_none(kill_switch.get("lower"))
+    upper_ks = _finite_float_or_none(kill_switch.get("upper"))
+    step_abs = _finite_float_or_none(grid_step.get("step_abs"))
+
+    named_prices = {
+        "reference_price": reference_price,
+        "range_lower": lower,
+        "range_upper": upper,
+        "kill_switch_lower": lower_ks,
+        "kill_switch_upper": upper_ks,
+    }
+    for field_name, value in named_prices.items():
+        if value is None:
+            continue
+        if min_price is not None and value < min_price:
+            errors.append({"code": "PRICE_BELOW_MIN_PRICE", "msg": f"{field_name}={value} ниже min_price={min_price}."})
+        if max_price is not None and value > max_price:
+            errors.append({"code": "PRICE_ABOVE_MAX_PRICE", "msg": f"{field_name}={value} выше max_price={max_price}."})
+        snapped_value = _quantize_to_step(value, tick_size, mode="nearest")
+        if snapped_value is not None:
+            snapped[field_name] = _format_step_aligned(snapped_value, tick_size) or str(snapped_value)
+            if abs(float(snapped_value) - float(value)) > max(1e-12, abs(tick_size or 0.0) * 1e-6):
+                warnings.append({
+                    "code": "PRICE_OFF_TICK",
+                    "msg": f"{field_name}={value} не выровнен по tick_size={tick_size}; ближайшее допустимое значение={snapped[field_name]}",
+                })
+
+    if lower is not None and upper is not None:
+        if upper <= lower:
+            errors.append({"code": "INVALID_RANGE", "msg": "price_range_upper должен быть строго больше price_range_lower."})
+        elif tick_size is not None and (upper - lower) < tick_size:
+            errors.append({"code": "RANGE_TOO_NARROW_FOR_TICK", "msg": f"Ширина диапазона {upper - lower:.12f} меньше tick_size={tick_size}."})
+
+    if step_abs is not None and tick_size is not None and step_abs < tick_size:
+        errors.append({"code": "GRID_STEP_BELOW_TICK", "msg": f"Шаг сетки {step_abs} меньше tick_size={tick_size}; уровни схлопнутся после округления."})
+    if step_abs is not None:
+        snapped_step = _quantize_to_step(step_abs, tick_size, mode="nearest") if tick_size is not None else step_abs
+        if snapped_step is not None:
+            snapped["grid_step_abs"] = _format_step_aligned(snapped_step, tick_size if tick_size is not None else snapped_step) or str(snapped_step)
+
+    if max_leverage is not None and leverage is not None and leverage > max_leverage:
+        errors.append({"code": "LEVERAGE_ABOVE_MAX", "msg": f"Рекомендованное leverage={leverage} выше Bybit max_leverage={max_leverage}."})
+
+    if leverage is not None and str(rec.get("venue") or "") == "spot" and leverage > 1:
+        errors.append({"code": "SPOT_LEVERAGE_INVALID", "msg": f"Для spot leverage должен быть 1, получено {leverage}."})
+
+    warnings.append({
+        "code": "SIZE_INPUT_REQUIRED",
+        "msg": "Проект не рассчитывает order qty/капитал на leg, поэтому qty_step/min_order_qty нельзя проверить без операторского размера позиции.",
+    })
+    if min_notional is not None:
+        warnings.append({
+            "code": "MIN_NOTIONAL_NOT_CHECKED",
+            "msg": f"Bybit min_notional={min_notional}, но система не знает фактический размер заявки и не может проверить этот лимит автоматически.",
+        })
+
+    return {
+        "ok": len(errors) == 0,
+        "critical": len(errors) > 0,
+        "errors": errors,
+        "warnings": warnings,
+        "meta_checked": bool(meta),
+        "snapped_levels": snapped,
+    }
+
+
+def _execution_preflight(conn, rec: dict[str, Any], *, now_ts: int | None = None) -> dict[str, Any]:
+    now = int(now_ts or time.time())
+    blocks: list[dict[str, Any]] = []
+    blocks.extend(_execution_market_data_blocks(conn, rec, now_ts=now))
+
+    market_shock = _get_app_config_mapping(
+        conn,
+        MARKET_SHOCK_APP_KEY,
+        default={
+            "state": "normal",
+            "title": "Нормальный режим",
+            "severity": "normal",
+            "entry_mode": "normal",
+            "operator_note": "Новые входы разрешены в обычном режиме.",
+            "reasons": [],
+            "metrics": {},
+        },
+    )
+    blocks.extend(
+        apply_market_shock_gate(
+            market_shock,
+            str(rec.get("venue") or ""),
+            str(rec.get("bot_type") or ""),
+            str(rec.get("direction") or "neutral"),
+        )
+    )
+
+    feature_row = db.get_latest_features(conn, str(rec.get("venue") or ""), str(rec.get("symbol") or "")) or {}
+    fast_veto = compute_symbol_fast_veto(
+        conn,
+        str(rec.get("venue") or ""),
+        str(rec.get("symbol") or ""),
+        now,
+        str(rec.get("direction") or "neutral"),
+        feature_row=feature_row,
+    )
+    for block in fast_veto.get("blocks") or []:
+        if isinstance(block, dict):
+            blocks.append(dict(block))
+
+    try:
+        bybit_meta = _fetch_bybit_instrument_meta(str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
+    except Exception:
+        bybit_meta = {}
+    bybit_validation = _validate_trade_plan_against_bybit_meta(rec, bybit_meta)
+    for item in bybit_validation.get("errors") or []:
+        if isinstance(item, dict):
+            blocks.append({"code": str(item.get("code") or "BYBIT_PLAN_INVALID"), "msg": str(item.get("msg") or "Bybit plan validation failed")})
+
+    return {
+        "blocks": blocks,
+        "market_shock": market_shock,
+        "fast_veto": fast_veto,
+        "bybit_meta": bybit_meta,
+        "bybit_validation": bybit_validation,
+    }
 
 
 def _rollback_quietly(conn) -> None:
@@ -820,15 +1114,33 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     if not _is_supported_execution_direction(str(rec.get("bot_type") or ""), str(rec.get("venue") or ""), str(rec.get("direction") or "")):
         raise HTTPException(status_code=409, detail="recommendation direction is not executable for this bot_type/venue")
 
-    # Re-check current risk limits at execution time.
-    # Recommendation-time gates are only a snapshot; by the moment an operator clicks
-    # execute, active bot count / symbol cap / cooldown / day DD may already have changed.
+    # Повторно проверяем риск-лимиты в момент operator action.
+    # Recommendation-time gate — это только снимок; к моменту подтверждения
+    # могли измениться число активных ботов, symbol-cap, cooldown и дневной DD.
     limits = get_risk_limits(conn, settings.risk_limits)
     exec_blocks = gate_candidate(conn, rec["venue"], rec["symbol"], limits)
     if exec_blocks:
         db.log_decision(conn, "EXECUTION_BLOCKED", rec_id, operator, {"blocks": exec_blocks})
         codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in exec_blocks)
         raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
+
+    preflight = _execution_preflight(conn, rec, now_ts=int(time.time()))
+    preflight_blocks = list(preflight.get("blocks") or [])
+    if preflight_blocks:
+        db.log_decision(
+            conn,
+            "EXECUTION_PRECHECK_BLOCKED",
+            rec_id,
+            operator,
+            {
+                "blocks": preflight_blocks,
+                "market_shock": preflight.get("market_shock"),
+                "fast_veto": preflight.get("fast_veto"),
+                "bybit_validation": preflight.get("bybit_validation"),
+            },
+        )
+        codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in preflight_blocks)
+        raise HTTPException(status_code=409, detail=f"execution blocked by preflight checks: {codes}")
 
     bot = {
         "bot_id": f"B-{int(time.time())}-{rec['symbol']}-{secrets.token_hex(4)}",
@@ -852,6 +1164,12 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             "realized_pnl_net": 0.0,
             "realized_fee": 0.0,
             "last_trade_ts": None,
+            "execution_preflight": {
+                "checked_ts": int(time.time()),
+                "market_shock": preflight.get("market_shock"),
+                "fast_veto": preflight.get("fast_veto"),
+                "bybit_validation": preflight.get("bybit_validation"),
+            },
         },
         "status": "running",
         "origin_rec_id": rec_id,

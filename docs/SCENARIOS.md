@@ -13,7 +13,9 @@
 
 ## 3. Operator execute
 - `POST /api/v1/recommendations/{rec_id}/action` с `executed`;
-- recommendation переводится в `executed`;
+- сервис повторно проверяет риск-лимиты, свежесть `1m` candles/ticker, активный `market shock`, `symbol fast-veto` и базовую Bybit-валидность trade plan;
+- при блоке возвращается `409`, recommendation остаётся неисполненной, а в `decision_log` фиксируется `EXECUTION_BLOCKED` или `EXECUTION_PRECHECK_BLOCKED`;
+- только после успешного preflight recommendation переводится в `executed`;
 - создаётся `bot_instance` или переиспользуется running bot той же chain.
 
 ## 4. Operator stop

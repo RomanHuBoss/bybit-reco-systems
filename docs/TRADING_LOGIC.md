@@ -36,6 +36,14 @@
 
 Execution-time recheck обязателен: recommendation snapshot не считается гарантией, что лимиты всё ещё свободны к моменту operator action.
 
+Дополнительно перед подтверждением `executed` система проверяет:
+- наличие и свежесть `1m` candles и ticker по символу;
+- активный `market shock guard`;
+- текущий `symbol fast-veto`;
+- базовую исполнимость диапазона/шага сетки относительно `tick_size`, `min_price`, `max_price`, `max_leverage` и spot/futures semantics.
+
+Если один из этих блоков срабатывает, recommendation не переводится в `executed`, а оператор получает `409 execution blocked by preflight checks`.
+
 ## 7. Cost model
 Cost model учитывает:
 - spread;
@@ -55,7 +63,11 @@ Cost model учитывает:
 - reduce-only guarantees;
 - hedge/one-way reconciliation;
 - isolated/cross switching;
-- leverage tier validation;
-- min notional / qty step / tick size enforcement в execution path.
+- private WS/REST reconciliation с фактическими ордерами и позициями.
+
+Execution-time preflight теперь частично валидирует recommendation against Bybit metadata, но ограничения остаются:
+- `qty_step`, `min_order_qty` и `min_notional` нельзя проверить до конца без фактического размера заявки/капитала на leg;
+- нет проверки реального leverage tier по текущей позиции и margin usage;
+- нет биржевой гарантии, что оператор создаст бота на Bybit без ручных отклонений от recommendation payload.
 
 Эти ограничения должны реализовываться во внешнем OMS/EMS.

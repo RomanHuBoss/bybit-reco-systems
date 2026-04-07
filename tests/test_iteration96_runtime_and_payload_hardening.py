@@ -24,8 +24,38 @@ def isolated_app_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     app_main.app.router.on_startup.clear()
+    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {})
 
     conn = db.connect(str(db_path))
+    ts_now = int(time.time())
+    db.upsert_ohlcv(
+        conn,
+        [{
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "tf_sec": 60,
+            "ts": ts_now - 60,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 10.0,
+        }],
+    )
+    db.insert_tickers(
+        conn,
+        [{
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "ts": ts_now - 30,
+            "last": 100.5,
+            "bid": 100.4,
+            "ask": 100.6,
+            "vol24h": 1000.0,
+            "turnover24h": 100000.0,
+        }],
+    )
+    db.insert_features(conn, "linear", "BTCUSDT", ts_now - 30, {"volume_z": 0.1})
     client = TestClient(app_main.app, raise_server_exceptions=False)
     try:
         yield app_main, client, conn

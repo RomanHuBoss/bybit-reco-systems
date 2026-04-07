@@ -22,8 +22,42 @@ def client_conn_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sys.modules.pop('app.main', None)
     app_main = importlib.import_module('app.main')
     app_main.app.router.on_startup.clear()
+    monkeypatch.setattr(app_main, '_fetch_bybit_instrument_meta', lambda venue, symbol: {})
 
     conn = db.connect(str(db_path))
+    ts_now = int(time.time())
+    db.upsert_ohlcv(
+        conn,
+        [
+            {
+                'ts': ts_now - 60,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'tf_sec': 60,
+                'open': 60000.0,
+                'high': 60100.0,
+                'low': 59900.0,
+                'close': 60050.0,
+                'volume': 1000.0,
+            }
+        ],
+    )
+    db.insert_tickers(
+        conn,
+        [
+            {
+                'ts': ts_now - 10,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'last': 60050.0,
+                'bid': 60049.5,
+                'ask': 60050.5,
+                'vol24h': 1000000.0,
+                'turnover24h': 50000000.0,
+            }
+        ],
+    )
+    db.insert_features(conn, 'linear', 'BTCUSDT', ts_now - 30, {'volume_z': 0.1})
     client = TestClient(app_main.app)
     try:
         yield client, conn, app_main

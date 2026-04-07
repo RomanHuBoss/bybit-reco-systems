@@ -63,6 +63,7 @@
 - REST API;
 - background loops;
 - operator lifecycle (`executed`, `ignored`, stop-bot, trade ingestion);
+- execution-time preflight перед подтверждением `executed`;
 - status/metrics endpoints.
 
 ## 3. Хранилище
@@ -86,7 +87,7 @@ Runtime leadership вынесен в отдельную sidecar-БД (`RUNTIME_L
 ## 5. Границы ответственности
 ### Что проект делает корректно
 - оценивает пригодность символа/режима для grid-идеи;
-- предотвращает часть operator-side ошибок через status machine, risk gates и audit trail;
+- предотвращает часть operator-side ошибок через status machine, risk gates, execution-time preflight и audit trail;
 - позволяет воспроизводимо анализировать качество публикаций и outcomes.
 
 ### Что остаётся вне системы

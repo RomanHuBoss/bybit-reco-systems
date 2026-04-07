@@ -16,6 +16,7 @@
 - считает score / confidence / expected RR / risk score;
 - применяет risk-gate, publication-gate, market shock guard и symbol fast-veto;
 - при необходимости отправляет кандидат в локальный LLM-reviewer;
+- перед operator-confirmation повторно проверяет риск-лимиты, свежесть market-data, актуальный market shock / fast-veto и базовую исполнимость trade plan относительно metadata инструмента Bybit;
 - сохраняет рекомендации, решения, outcome-labeling, calibration state, trade history и risk limits в SQLite;
 - отдаёт REST API и операторский UI.
 
@@ -58,6 +59,8 @@
 - `risk_score` — грубая оценка рыночной/исполнительной сложности.
 - `reasons.direction_agg` — агрегированное направление и структура голосов по ТФ.
 - `reasons.execution_constraints` — что можно, а что нельзя исполнить на выбранном bot_type.
+- `bybit_meta` — metadata инструмента Bybit, доступная UI для операторской сверки диапазона, leverage и шагов.
+- `bybit_plan_validation` — результат execution-time валидации trade plan: ошибки блокируют подтверждение, предупреждения напоминают о неполной проверке qty/min_notional без фактического размера позиции.
 - `reasons.llm_review` — second opinion LLM, включая источник (`live`, `cache`, `cache_inherited`, `async_live`, `async_inherited`).
 
 ## Документация в репозитории
@@ -91,11 +94,11 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `283 passed`
+- `292 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - `pytest --cov=app --cov-report=term-missing` — запускать в release/dev-контуре; ожидается стабильный coverage baseline не ниже ранее зафиксированного уровня
 - `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения
-- регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows / malformed sentiment adapter payloads / poisoned Reddit posts / safe fail-open of `collect_sentiment_once()` / malformed legacy JSON-shapes in recommendation-bot-trade-sentiment APIs / malformed app_config payloads in status and metrics / rejection of blank audit keys for `risk limits version` and explicit `trade_id` / persistence of normalized effective risk limits in bootstrap and mutating API / fail-open fallback from poisoned top-level grid range bounds to valid `trade_plan.levels.range` and `trade_plan.levels.kill_switch` / rejection of `NUL` in sentiment tags and GET-filters / explicit transaction cleanup on idempotent execution paths / sanitization of non-finite `trade_plan` and `cost_model` payloads / correct decomposition of legacy `net_cost_bps` into execution-cost plus funding-carry for outcome-labeling.
+- регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows / malformed sentiment adapter payloads / poisoned Reddit posts / safe fail-open of `collect_sentiment_once()` / malformed legacy JSON-shapes in recommendation-bot-trade-sentiment APIs / malformed app_config payloads in status and metrics / rejection of blank audit keys for `risk limits version` and explicit `trade_id` / persistence of normalized effective risk limits in bootstrap and mutating API / fail-open fallback from poisoned top-level grid range bounds to valid `trade_plan.levels.range` and `trade_plan.levels.kill_switch` / rejection of `NUL` in sentiment tags and GET-filters / explicit transaction cleanup on idempotent execution paths / sanitization of non-finite `trade_plan` and `cost_model` payloads / correct decomposition of legacy `net_cost_bps` into execution-cost plus funding-carry for outcome-labeling / execution-time preflight по свежести market-data / market shock / fast-veto / базовой Bybit-валидации сетки.
 
 ## Ключевые env
 - `DB_PATH` — путь к основной SQLite БД. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
@@ -158,6 +161,7 @@ ruff check app tests main.py
 > Для любого окружения с сетевым доступом следует считать `ADMIN_API_KEY` обязательным operational minimum. Если ключ не задан, проект сознательно оставляет mutating endpoints открытыми ради локального/dev-режима.
 
 - `POST /api/v1/recommendations/{rec_id}/action` с `{"action":"executed|ignored","operator":"..."}`
+  - для `executed` endpoint теперь делает execution-time preflight и может вернуть `409`, если recommendation устарела по market-data, блокируется текущим market shock / fast-veto или её trade plan не проходит базовую Bybit-валидацию.
 - `POST /api/v1/bots/{bot_id}/trades`
 - `POST /api/v1/bots/{bot_id}/stop`
 - `POST /api/v1/risk/limits`
@@ -170,10 +174,11 @@ ruff check app tests main.py
 4. если сигнал для persistence-ботов требует подтверждения ещё одним циклом, он получает статус `pending`;
 5. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
 6. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
-7. создаётся `bot_instance`, recommendation переводится в `executed`;
-8. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
-9. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
-10. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
+7. перед созданием `bot_instance` сервис повторно проверяет текущие риск-лимиты, свежесть candles/ticker, актуальный market shock / fast-veto и базовую Bybit-валидность сетки; при ошибке возвращается `409`, а в `decision_log` пишется `EXECUTION_BLOCKED` или `EXECUTION_PRECHECK_BLOCKED`;
+8. если preflight пройден, создаётся `bot_instance`, recommendation переводится в `executed`;
+9. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
+10. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
+11. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
 
 ### Семантика статусов recommendation
 - `recommended` — новый actionable сигнал, готовый к исполнению;
@@ -205,6 +210,7 @@ ruff check app tests main.py
 - нет ли частых `COLLECT_ERROR`, `LLM_REVIEW_ERROR`, `STALE_DATA_SKIP`, `SYMBOL_DISABLED`;
 - не «залипает» ли `pending` у LLM-reviewer;
 - совпадает ли Bybit-форма бота с тем, что показывает панель деталей;
+- нет ли в деталях `bybit_plan_validation.errors` или предупреждений о том, что диапазон/шаг сетки не выровнен по ограничениям Bybit;
 - не деградирует ли quality score / confidence после накопления новых outcome labels;
 - корректно ли отрабатывают risk limits после записи реальных trade rows.
 

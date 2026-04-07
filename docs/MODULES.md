@@ -42,6 +42,9 @@ Runtime risk gates.
 
 ## `app/main.py`
 FastAPI, background supervision и mutating operator API.
+- execution-time preflight для operator-confirmation;
+- safe JSON normalization для UI/API;
+- частичная Bybit-валидация trade plan для панелей деталей и execute-path.
 
 ## `app/db.py`
 SQLite persistence, нормализация JSON, runtime locks, lifecycle helpers.
