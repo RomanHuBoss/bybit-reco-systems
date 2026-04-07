@@ -182,6 +182,13 @@ def test_release_artifacts_are_present_and_cross_referenced() -> None:
     assert (root / "docs" / "instrukciya_operatora_bybit_recommender.pdf").exists()
     assert "ADMIN_API_KEY" in env_example
     assert "RUNTIME_LOCK_DB_PATH" in env_example
+    assert "SYMBOLS_SPOT=BTCUSDT,ETHUSDT" in env_example
+    assert (root / "docs" / "ARCHITECTURE.md").exists()
+    assert (root / "docs" / "MODULES.md").exists()
+    assert (root / "docs" / "TRADING_LOGIC.md").exists()
+    assert (root / "docs" / "SCENARIOS.md").exists()
+    assert (root / "docs" / "KNOWN_RISKS.md").exists()
+    assert (root / "CHANGELOG.md").exists()
 
 
 def test_api_sentiment_put_rejects_nul_in_key(isolated_client_and_conn):

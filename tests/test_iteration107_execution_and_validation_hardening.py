@@ -286,3 +286,48 @@ def test_open_position_lock_uses_actual_first_tradeable_candle_after_signal(tmp_
         assert prev["lock_until_ts"] > ts_now
     finally:
         conn.close()
+
+
+# Validation должна ловить не только ценовую геометрию, но и режимные противоречия
+# recommendation: неподдерживаемый margin_mode и leverage вне шага/границ Bybit не должны
+# доходить до operator execution как будто это исполнимый futures-grid.
+def test_validate_trade_plan_detects_mode_and_leverage_constraint_errors(isolated_app_and_conn):
+    app_main, _client, _conn = isolated_app_and_conn
+
+    rec = {
+        "bot_type": "futures_grid",
+        "venue": "linear",
+        "direction": "long",
+        "account_mode": "unified",
+        "margin_mode": "cross",
+        "params": {
+            "leverage": 2.15,
+            "trade_plan": {
+                "reference_price": 100.0,
+                "levels": {
+                    "range": {"lower": 99.0, "upper": 101.0},
+                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+                    "grid_step": {"step_abs": 0.5},
+                },
+            },
+        },
+    }
+    meta = {
+        "category": "linear",
+        "tick_size": "0.1",
+        "min_price": "1",
+        "max_price": "1000000",
+        "min_notional": "5",
+        "min_leverage": "2.5",
+        "max_leverage": "10",
+        "leverage_step": "0.1",
+    }
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, meta)
+    error_codes = {item["code"] for item in validation["errors"]}
+
+    assert validation["ok"] is False
+    assert "MARGIN_MODE_UNSUPPORTED" in error_codes
+    assert "LEVERAGE_BELOW_MIN" in error_codes
+    assert "LEVERAGE_OFF_STEP" in error_codes
+    assert validation["snapped_levels"]["leverage"] == "2.2"
