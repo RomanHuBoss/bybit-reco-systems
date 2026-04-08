@@ -162,9 +162,173 @@ def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int
         if current_root != root_rec_id or current_label_root != is_label_root:
             updates.append((root_rec_id, is_label_root, rec_id))
 
-    if not updates:
+    if updates:
+        conn.executemany(
+            "UPDATE recommendations SET publication_root_rec_id=?, is_outcome_label_root=? WHERE rec_id=?",
+            updates,
+        )
+    repaired = repair_async_llm_pending_publication_chains(conn)
+    return len(updates) + int(repaired)
+
+
+
+def _recommendation_pending_hold_target(reasons_json: str | None) -> str:
+    reasons = _json_loads_mapping_or_default(reasons_json, {})
+    llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
+    return str(llm_review.get("publish_target_status") or "").strip().lower()
+
+
+
+def _is_publication_actionable_status(status: Any, reasons_json: str | None) -> bool:
+    status_norm = str(status or "").strip().lower()
+    if status_norm in ACTIVE_PUBLICATION_STATUSES:
+        return True
+    if status_norm != "pending":
+        return False
+    return _recommendation_pending_hold_target(reasons_json) in ACTIONABLE_RECOMMENDATION_STATUSES
+
+
+
+def _backfill_first_tradeable_1m_candle_ts(conn: sqlite3.Connection, venue: str, symbol: str, ts_after: int) -> int | None:
+    cur = conn.execute(
+        """SELECT ts FROM ohlcv
+           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts>?
+           ORDER BY ts ASC LIMIT 1""",
+        (venue, symbol, int(ts_after)),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    try:
+        return int(row["ts"])
+    except Exception:
+        return None
+
+
+
+def _backfill_effective_horizon_sec(bot_type: str, params: dict[str, Any] | None, fallback_horizon_sec: int = 12 * 3600) -> int:
+    params = params if isinstance(params, dict) else {}
+
+    def _hours_to_sec(value: Any) -> int | None:
+        try:
+            hours = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(hours) or hours <= 0:
+            return None
+        return int(hours * 3600)
+
+    def _bounded_hours(hours: float) -> float:
+        bounds = {
+            "spot_grid": (6.0, 48.0),
+            "futures_grid": (6.0, 48.0),
+        }
+        lo, hi = bounds.get(bot_type, (0.5, 72.0))
+        return max(lo, min(hi, float(hours)))
+
+    trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    expected_horizon = trade_plan.get("expected_horizon") if isinstance(trade_plan.get("expected_horizon"), dict) else {}
+
+    explicit_hours = (
+        params.get("label_horizon_hours")
+        or trade_plan.get("label_horizon_hours")
+        or expected_horizon.get("label_horizon_hours")
+    )
+    explicit_sec = _hours_to_sec(explicit_hours)
+    if explicit_sec is not None:
+        return int(_bounded_hours(explicit_sec / 3600.0) * 3600)
+
+    builtin = {"spot_grid": 12 * 3600, "futures_grid": 12 * 3600}.get(bot_type)
+    if builtin is not None:
+        return int(builtin)
+
+    max_sec = _hours_to_sec(expected_horizon.get("max_hours"))
+    if max_sec is not None:
+        return int(_bounded_hours(max_sec / 3600.0) * 3600)
+    return int(fallback_horizon_sec)
+
+
+
+def repair_async_llm_pending_publication_chains(conn: sqlite3.Connection) -> int:
+    """Retrofit lineage for roots duplicated while async LLM review kept prior rows pending.
+
+    Historical bug: publish-time dedupe ignored the previous cycle's `pending` rows even
+    when they were only waiting for async LLM review and would later be restored to
+    `recommended`/`active`. That allowed a new same-direction root every minute or two.
+    We repair such rows by reusing the earlier open publication chain until its label
+    horizon expires or an outcome is already present.
+    """
+    cols = _table_columns(conn, "recommendations")
+    if "publication_root_rec_id" not in cols or "is_outcome_label_root" not in cols:
         return 0
 
+    cur = conn.execute(
+        """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
+                     r.status, r.reasons_json, r.params_json, r.features_ref_ts,
+                     r.publication_root_rec_id, r.is_outcome_label_root,
+                     CASE WHEN o.rec_id IS NULL THEN 0 ELSE 1 END AS has_outcome
+              FROM recommendations r
+              LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
+              ORDER BY r.ts ASC, r.rec_id ASC"""
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return 0
+
+    active_chains: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    updates: list[tuple[str, int, str]] = []
+
+    for row in rows:
+        venue = str(row["venue"] or "")
+        symbol = str(row["symbol"] or "")
+        bot_type = str(row["bot_type"] or "")
+        direction = str(row["direction"] or "neutral")
+        rec_id = str(row["rec_id"] or "")
+        ts = int(row["ts"] or 0)
+        key = (venue, symbol, bot_type, direction)
+
+        prev = active_chains.get(key)
+        if prev is not None and ts >= int(prev.get("lock_until_ts") or 0):
+            active_chains.pop(key, None)
+            prev = None
+
+        current_root = str(row["publication_root_rec_id"] or rec_id).strip() or rec_id
+        try:
+            current_is_root = int(row["is_outcome_label_root"] or 0)
+        except Exception:
+            current_is_root = 0
+
+        actionable = _is_publication_actionable_status(row["status"], row["reasons_json"])
+        if not actionable:
+            continue
+
+        if prev is not None:
+            desired_root = str(prev.get("root_rec_id") or prev.get("rec_id") or rec_id)
+            desired_is_root = 1 if rec_id == desired_root else 0
+            if current_root != desired_root or current_is_root != desired_is_root:
+                updates.append((desired_root, desired_is_root, rec_id))
+            continue
+
+        params = _json_loads_mapping_or_default(row["params_json"], {})
+        signal_ref_ts = max(int(row["features_ref_ts"] or 0), ts)
+        tradeable_ts = _backfill_first_tradeable_1m_candle_ts(conn, venue, symbol, signal_ref_ts)
+        pseudo_entry_ts = int(tradeable_ts) if tradeable_ts is not None else int(signal_ref_ts) + 60
+        effective_horizon_sec = _backfill_effective_horizon_sec(bot_type, params)
+        lock_until_ts = int(pseudo_entry_ts) + int(effective_horizon_sec)
+
+        desired_root = current_root or rec_id
+        desired_is_root = 1 if desired_root == rec_id else 0
+        if current_root != desired_root or current_is_root != desired_is_root:
+            updates.append((desired_root, desired_is_root, rec_id))
+        if desired_is_root:
+            active_chains[key] = {
+                "rec_id": rec_id,
+                "root_rec_id": desired_root,
+                "lock_until_ts": int(lock_until_ts),
+            }
+
+    if not updates:
+        return 0
     conn.executemany(
         "UPDATE recommendations SET publication_root_rec_id=?, is_outcome_label_root=? WHERE rec_id=?",
         updates,

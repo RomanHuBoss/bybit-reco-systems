@@ -2228,6 +2228,28 @@ def _recent_publication_dedupe_material_upgrade(prev: dict[str, Any] | None, rec
     return bool(material), diagnostics
 
 
+def _recommendation_row_is_publication_actionable(row: Any) -> bool:
+    """Treat async-LLM held `pending` rows as actionable publication-chain members.
+
+    Without this, each recommender cycle that runs before the async reviewer finishes
+    sees the previous signal as non-actionable and opens a brand new outcome-root.
+    When the reviewer later restores those rows back to recommended/active, the UI
+    and outcome stats show a train of near-identical roots every 1–3 minutes.
+    """
+    status_value = row.get("status") if isinstance(row, dict) else row["status"]
+    status_norm = str(status_value or "").strip().lower()
+    if status_norm in {"recommended", "active", "executed"}:
+        return True
+    if status_norm != "pending":
+        return False
+    reasons_json = row.get("reasons_json") if isinstance(row, dict) else row["reasons_json"]
+    reasons = db._json_loads_mapping_or_default(reasons_json, {})
+    llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
+    target = str(llm_review.get("publish_target_status") or "").strip().lower()
+    return target in LLM_REVIEW_ELIGIBLE_STATUSES
+
+
+
 def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_sec: int) -> dict[str, Any] | None:
     if cooldown_sec <= 0:
         return None
@@ -2235,8 +2257,8 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
     cur = conn.execute(
         """SELECT * FROM recommendations
            WHERE venue=? AND symbol=? AND bot_type=? AND direction=?
-             AND status IN ('recommended','active','executed') AND ts >= ? AND ts < ?
-           ORDER BY ts DESC LIMIT 1""",
+             AND status IN ('recommended','active','executed','pending') AND ts >= ? AND ts < ?
+           ORDER BY ts DESC LIMIT 32""",
         (
             str(rec.get("venue") or ""),
             str(rec.get("symbol") or ""),
@@ -2246,21 +2268,22 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
             int(ts_now),
         ),
     )
-    row = cur.fetchone()
-    if not row:
-        return None
-    publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
-    return {
-        "rec_id": row["rec_id"],
-        "ts": row["ts"],
-        "score": row["score"],
-        "confidence": row["confidence"],
-        "expected_rr": row["expected_rr"],
-        "status": row["status"],
-        "params": db._json_loads_or_default(row["params_json"], {}),
-        "publication_root_rec_id": publication_root_rec_id,
-        "is_outcome_label_root": bool(int(row["is_outcome_label_root"] or 0)),
-    }
+    for row in cur.fetchall():
+        if not _recommendation_row_is_publication_actionable(row):
+            continue
+        publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
+        return {
+            "rec_id": row["rec_id"],
+            "ts": row["ts"],
+            "score": row["score"],
+            "confidence": row["confidence"],
+            "expected_rr": row["expected_rr"],
+            "status": row["status"],
+            "params": db._json_loads_or_default(row["params_json"], {}),
+            "publication_root_rec_id": publication_root_rec_id,
+            "is_outcome_label_root": bool(int(row["is_outcome_label_root"] or 0)),
+        }
+    return None
 
 
 def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fallback_horizon_sec: int) -> dict[str, Any] | None:
@@ -2280,15 +2303,15 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
     cur = conn.execute(
         """SELECT r.rec_id, r.ts, r.features_ref_ts, r.bot_type, r.status,
                   r.score, r.confidence, r.expected_rr,
-                  r.params_json, r.publication_root_rec_id, r.is_outcome_label_root
+                  r.params_json, r.reasons_json, r.publication_root_rec_id, r.is_outcome_label_root
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.venue=? AND r.symbol=? AND r.bot_type=? AND r.direction=?
              AND COALESCE(r.is_outcome_label_root, 1) = 1
              AND o.rec_id IS NULL
-             AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'pending', 'expired', 'ignored')
+             AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'expired', 'ignored')
              AND r.ts < ?
-           ORDER BY r.ts DESC LIMIT 8""",
+           ORDER BY r.ts DESC LIMIT 16""",
         (
             str(rec.get("venue") or ""),
             str(rec.get("symbol") or ""),
@@ -2302,6 +2325,8 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
         return None
 
     for row in rows:
+        if not _recommendation_row_is_publication_actionable(row):
+            continue
         params = db._json_loads_or_default(row["params_json"], {})
         effective_horizon_sec, _ = _resolve_effective_horizon(
             str(row["bot_type"] or rec.get("bot_type") or ""),

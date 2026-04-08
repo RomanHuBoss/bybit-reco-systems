@@ -318,3 +318,174 @@ def test_open_position_lock_releases_chain_after_horizon_elapsed(tmp_path: Path)
         assert dedupe == {}
     finally:
         conn.close()
+
+
+def test_recent_publication_dedupe_reuses_pending_llm_hold_row(tmp_path: Path):
+    """Async LLM hold must still lock the publication-chain for the next cycle."""
+    conn = db.connect(str(tmp_path / "reco_pending_hold_dedupe.db"))
+    db.init_db(conn)
+    try:
+        ts_now = int(time.time())
+        ts_prev = ts_now - 120
+        db.insert_recommendations(
+            conn,
+            [{
+                "rec_id": "R-prev-pending",
+                "ts": ts_prev,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.21,
+                "confidence": 0.61,
+                "expected_rr": 0.22,
+                "risk_score": 0.30,
+                "params": {"trade_plan": {"entry_price": 100.0}},
+                "reasons": {
+                    "llm_review": {
+                        "status": "pending",
+                        "mode": "advisory",
+                        "gate_decision": "pending",
+                        "publish_target_status": "recommended",
+                        "queued_ts": ts_prev,
+                    }
+                },
+                "blocks": [],
+                "status": "pending",
+                "ttl_sec": 1800,
+                "model_version": "test",
+                "features_ref_ts": ts_prev,
+            }],
+        )
+        recs = [{
+            "rec_id": "R-new",
+            "ts": ts_now,
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "bot_type": "futures_grid",
+            "direction": "long",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.24,
+            "confidence": 0.63,
+            "expected_rr": 0.25,
+            "risk_score": 0.28,
+            "params": {"trade_plan": {"entry_price": 100.1}},
+            "reasons": {},
+            "blocks": [],
+            "status": "recommended",
+            "ttl_sec": 1800,
+            "model_version": "test",
+            "features_ref_ts": ts_now,
+        }]
+        settings = SimpleNamespace(reco_republish_cooldown_sec=3600, reco_ttl_sec=1800, outcome_horizon_fallback_sec=6 * 3600)
+
+        recommender_module._apply_recent_publication_dedupe(conn, recs, settings, ts_now)
+
+        assert recs[0]["status"] == "active"
+        assert recs[0]["publication_root_rec_id"] == "R-prev-pending"
+        assert recs[0]["is_outcome_label_root"] is False
+        dedupe = recs[0]["reasons"].get("publication_dedupe") or {}
+        assert dedupe.get("previous_rec_id") == "R-prev-pending"
+        assert dedupe.get("open_position_lock") is True
+    finally:
+        conn.close()
+
+
+
+def test_backfill_repairs_async_llm_pending_duplicate_roots(tmp_path: Path):
+    conn = db.connect(str(tmp_path / "reco_pending_hold_backfill.db"))
+    db.init_db(conn)
+    try:
+        ts0 = int(time.time()) - 15 * 3600
+        first_ref = ts0
+        second_ref = ts0 + 180
+        db.upsert_ohlcv(conn, [
+            {
+                "venue": "linear", "symbol": "BTCUSDT", "tf_sec": 60, "ts": first_ref + 60,
+                "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0,
+            },
+            {
+                "venue": "linear", "symbol": "BTCUSDT", "tf_sec": 60, "ts": second_ref + 60,
+                "open": 100.2, "high": 101.2, "low": 99.2, "close": 100.7, "volume": 12.0,
+            },
+        ])
+        db.insert_recommendations(
+            conn,
+            [
+                {
+                    "rec_id": "R-root-1",
+                    "ts": ts0,
+                    "venue": "linear",
+                    "symbol": "BTCUSDT",
+                    "bot_type": "futures_grid",
+                    "direction": "long",
+                    "account_mode": "one_way",
+                    "margin_mode": "isolated",
+                    "score": 0.20,
+                    "confidence": 0.60,
+                    "expected_rr": 0.22,
+                    "risk_score": 0.30,
+                    "params": {"trade_plan": {"entry_price": 100.0}},
+                    "reasons": {
+                        "llm_review": {
+                            "status": "pending",
+                            "mode": "advisory",
+                            "gate_decision": "pending",
+                            "publish_target_status": "recommended",
+                            "queued_ts": ts0,
+                        }
+                    },
+                    "blocks": [],
+                    "status": "pending",
+                    "ttl_sec": 1800,
+                    "model_version": "test",
+                    "features_ref_ts": first_ref,
+                },
+                {
+                    "rec_id": "R-root-2",
+                    "ts": ts0 + 180,
+                    "venue": "linear",
+                    "symbol": "BTCUSDT",
+                    "bot_type": "futures_grid",
+                    "direction": "long",
+                    "account_mode": "one_way",
+                    "margin_mode": "isolated",
+                    "score": 0.21,
+                    "confidence": 0.61,
+                    "expected_rr": 0.23,
+                    "risk_score": 0.29,
+                    "params": {"trade_plan": {"entry_price": 100.1}},
+                    "reasons": {
+                        "llm_review": {
+                            "status": "ok",
+                            "mode": "advisory",
+                            "gate_decision": "pass",
+                            "execution_direction": "long",
+                            "thesis_direction": "long",
+                            "confidence": 0.72,
+                        }
+                    },
+                    "blocks": [],
+                    "status": "recommended",
+                    "ttl_sec": 1800,
+                    "model_version": "test",
+                    "features_ref_ts": second_ref,
+                },
+            ],
+        )
+
+        repaired = db.repair_async_llm_pending_publication_chains(conn)
+        assert repaired >= 1
+
+        first = db.get_recommendation_by_id(conn, "R-root-1")
+        second = db.get_recommendation_by_id(conn, "R-root-2")
+        assert first is not None and second is not None
+        assert first["publication_root_rec_id"] == "R-root-1"
+        assert first["is_outcome_label_root"] is True
+        assert second["publication_root_rec_id"] == "R-root-1"
+        assert second["is_outcome_label_root"] is False
+    finally:
+        conn.close()
