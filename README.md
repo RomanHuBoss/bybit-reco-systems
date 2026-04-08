@@ -126,6 +126,7 @@ ruff check app tests main.py
 - `LLM_REVIEWER_CANDLES_PER_TF=32`
 - `LLM_REVIEWER_MAX_CANDIDATES=24`
 - `LLM_REVIEWER_MAX_WORKERS=2`
+- `.env.example` синхронизирован с этими runtime-дефолтами; drift между шаблоном env, README и `settings.py` теперь считается регрессией и проверяется тестами.
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
 - `LLM_REVIEWER_CADENCE_SEC=300`
 - `LLM_REVIEWER_TTL_SEC=` — отдельный TTL валидности LLM-review для повторного использования по тому же `(venue, symbol, bot_type, direction)`; оставьте пустым для auto-режима: по умолчанию не короче TTL самой рекомендации

@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-04-08 — release consistency and stop-state determinism
+
+### Исправлено
+- `.env.example` синхронизирован с фактическими runtime-дефолтами LLM-reviewer (`LLM_REVIEWER_MAX_CANDIDATES=24`, `LLM_REVIEWER_MAX_WORKERS=2`);
+- остановка бота теперь использует единый `stopped_ts` для строки `bot_instances` и `state_json`, чтобы audit/state reconciliation был детерминированным.
+
+### Добавлено
+- `docs/AUDIT_REPORT_2026-04-08.md` с итогами red-team-аудита;
+- API-регрессии на синхронность `stopped_ts` для manual stop и `stop_bot=true` при записи trade.
+
+### Тесты
+- расширен регрессионный набор на stop-state timestamp consistency;
+- подтверждена согласованность `.env.example` с runtime/default docs.
+
 ## 2026-04-07 — audit hardening revision
 
 ### Исправлено

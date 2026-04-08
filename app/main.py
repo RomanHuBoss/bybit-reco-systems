@@ -1088,7 +1088,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.10", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.11", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -1587,13 +1587,14 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, request: Request, x_api_key: 
             _rollback_quietly(conn)
             return {"ok": True, "bot_id": bot_id, "status": "stopped", "idempotent": True}
         try:
-            ok = db.stop_bot(conn, bot_id, commit=False)
+            operator = _normalized_optional_text(req.operator, field_name="operator")
+            reason = _normalized_optional_text(req.reason, field_name="reason")
+            stopped_ts = int(time.time())
+            ok = db.stop_bot(conn, bot_id, stopped_ts=stopped_ts, commit=False)
             if not ok:
                 _rollback_quietly(conn)
                 return {"ok": False, "bot_id": bot_id, "status": bot["status"]}
-            operator = _normalized_optional_text(req.operator, field_name="operator")
-            reason = _normalized_optional_text(req.reason, field_name="reason")
-            state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": reason, "stopped_by": operator, "stopped_ts": int(time.time())}, commit=False)
+            state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": reason, "stopped_by": operator, "stopped_ts": stopped_ts}, commit=False)
             if not state_updated:
                 raise RuntimeError("bot state update failed after stop")
             db.log_decision(conn, "BOT_STOPPED", bot.get("origin_rec_id"), operator, {"bot_id": bot_id, "reason": reason}, commit=False)
@@ -1709,10 +1710,11 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
             if not state_updated:
                 raise RuntimeError("bot state update failed after trade")
             if req.stop_bot:
-                stop_ok = db.stop_bot(conn, bot_id, commit=False)
+                stopped_ts = int(time.time())
+                stop_ok = db.stop_bot(conn, bot_id, stopped_ts=stopped_ts, commit=False)
                 if not stop_ok:
                     raise HTTPException(status_code=409, detail="bot status changed during trade finalization")
-                stop_state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": operator, "stopped_ts": int(time.time())}, commit=False)
+                stop_state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": operator, "stopped_ts": stopped_ts}, commit=False)
                 if not stop_state_updated:
                     raise RuntimeError("bot state update failed after trade stop")
             db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot}, commit=False)

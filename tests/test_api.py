@@ -1898,3 +1898,122 @@ def test_api_risk_status_sanitizes_legacy_non_finite_limits_json(client_and_conn
     body = resp.json()
     assert body['limits']['max_concurrent_bots'] == 2
     assert body['limits']['max_daily_dd_usdt'] == pytest.approx(200.0)
+
+
+def test_api_stop_bot_keeps_row_and_state_stopped_ts_in_sync(client_and_conn, monkeypatch):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-stop-ts-sync',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-stop-ts-sync/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert exec_resp.status_code == 200
+    bot_id = exec_resp.json()['bot_id']
+
+    monkeypatch.setattr(time, 'time', lambda: ts_now + 123)
+
+    resp = client.post(
+        f'/api/v1/bots/{bot_id}/stop',
+        json={'operator': 'tester', 'reason': 'manual stop'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert resp.status_code == 200
+
+    bot = db.get_bot_instance(conn, bot_id)
+    assert bot is not None
+    assert bot['status'] == 'stopped'
+    assert bot['stopped_ts'] == ts_now + 123
+    assert bot['state']['stopped_ts'] == ts_now + 123
+
+
+def test_api_trade_stop_bot_keeps_row_and_state_stopped_ts_in_sync(client_and_conn, monkeypatch):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-trade-stop-ts-sync',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.42,
+                'confidence': 0.67,
+                'expected_rr': 1.4,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+            }
+        ],
+    )
+
+    exec_resp = client.post(
+        '/api/v1/recommendations/R-trade-stop-ts-sync/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert exec_resp.status_code == 200
+    bot_id = exec_resp.json()['bot_id']
+
+    monkeypatch.setattr(time, 'time', lambda: ts_now + 456)
+
+    resp = client.post(
+        f'/api/v1/bots/{bot_id}/trades',
+        json={
+            'trade_id': 'T-trade-stop-ts-sync',
+            'ts': ts_now + 60,
+            'pnl': 3.5,
+            'fee': 0.2,
+            'operator': 'tester',
+            'meta': {'fill_count': 1},
+            'stop_bot': True,
+        },
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert resp.status_code == 200
+    assert resp.json()['bot_status'] == 'stopped'
+
+    bot = db.get_bot_instance(conn, bot_id)
+    assert bot is not None
+    assert bot['status'] == 'stopped'
+    assert bot['stopped_ts'] == ts_now + 456
+    assert bot['state']['stopped_ts'] == ts_now + 456

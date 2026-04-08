@@ -755,11 +755,12 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
                 return "duplicate_origin"
         raise
 
-def stop_bot(conn: sqlite3.Connection, bot_id: str, *, commit: bool = True) -> bool:
+def stop_bot(conn: sqlite3.Connection, bot_id: str, *, stopped_ts: int | None = None, commit: bool = True) -> bool:
     cur = conn.execute("""SELECT bot_id FROM bot_instances WHERE bot_id=? AND status='running'""", (bot_id,))
     if not cur.fetchone():
         return False
-    conn.execute("""UPDATE bot_instances SET status='stopped', stopped_ts=? WHERE bot_id=?""", (now_ts(), bot_id))
+    effective_stopped_ts = now_ts() if stopped_ts is None else _require_non_negative_int("stopped_ts", stopped_ts)
+    conn.execute("""UPDATE bot_instances SET status='stopped', stopped_ts=? WHERE bot_id=?""", (effective_stopped_ts, bot_id))
     if commit:
         conn.commit()
     return True
