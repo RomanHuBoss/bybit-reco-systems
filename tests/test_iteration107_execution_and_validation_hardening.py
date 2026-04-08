@@ -331,3 +331,67 @@ def test_validate_trade_plan_detects_mode_and_leverage_constraint_errors(isolate
     assert "LEVERAGE_BELOW_MIN" in error_codes
     assert "LEVERAGE_OFF_STEP" in error_codes
     assert validation["snapped_levels"]["leverage"] == "2.2"
+
+
+# Execute-path не должен держать SQLite write-lock во время сетевого запроса за Bybit metadata.
+# Иначе медленный upstream блокирует collector/recommender и создаёт ложные `database is locked`.
+def test_materialize_prefetches_bybit_meta_before_begin_immediate(isolated_app_and_conn, monkeypatch: pytest.MonkeyPatch):
+    app_main, _client, conn = isolated_app_and_conn
+    now = int(time.time())
+
+    db.upsert_ohlcv(
+        conn,
+        [
+            {
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "tf_sec": 60,
+                "ts": now - 60,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 10.0,
+            }
+        ],
+    )
+    db.insert_tickers(
+        conn,
+        [
+            {
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "ts": now - 15,
+                "last": 100.5,
+                "bid": 100.4,
+                "ask": 100.6,
+                "vol24h": 1000.0,
+                "turnover24h": 100000.0,
+            }
+        ],
+    )
+    db.insert_features(conn, "linear", "BTCUSDT", now - 15, {"volume_z": 0.1})
+
+    _insert_reco(conn, rec_id="R-prefetch", ts_now=now - 5, status="recommended")
+
+    state = {"begin_called": False, "fetch_called": False}
+    orig_begin = app_main.db.begin_immediate
+
+    def tracked_begin(db_conn):
+        state["begin_called"] = True
+        return orig_begin(db_conn)
+
+    def tracked_fetch(venue: str, symbol: str) -> dict[str, object]:
+        state["fetch_called"] = True
+        assert state["begin_called"] is False
+        return {}
+
+    monkeypatch.setattr(app_main.db, "begin_immediate", tracked_begin)
+    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", tracked_fetch)
+
+    bot, idempotent = app_main._materialize_bot_from_rec(conn, "R-prefetch", operator="tester")
+
+    assert state["fetch_called"] is True
+    assert state["begin_called"] is True
+    assert idempotent is False
+    assert bot["origin_rec_id"] == "R-prefetch"

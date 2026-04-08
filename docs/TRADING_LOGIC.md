@@ -39,7 +39,8 @@
 
 ### Рыночные блокировки
 - market shock state не запрещает новый вход;
-- symbol fast-veto не активен.
+- symbol fast-veto не активен;
+- instrument metadata Bybit подгружается до захвата SQLite write-lock, чтобы operator execution не тормозил остальные writer-контуры на сетевой задержке upstream.
 
 ### Геометрия grid-плана
 - `reference_price` внутри диапазона;

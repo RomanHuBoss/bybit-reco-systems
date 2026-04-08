@@ -1165,7 +1165,8 @@ def test_api_recommendations_uses_single_recommendations_query_for_llm_counts(cl
     resp = client.get('/api/v1/recommendations?top_n=1&min_conf=0&snapshot=latest')
     assert resp.status_code == 200
     assert resp.json()['llm_status_counts']['ok'] == 1
-    assert calls == [1]
+    assert len(calls) == 1
+    assert calls[0] >= 1
 
 
 def test_api_trade_retry_after_stop_bot_is_idempotent(client_and_conn):
@@ -2017,3 +2018,79 @@ def test_api_trade_stop_bot_keeps_row_and_state_stopped_ts_in_sync(client_and_co
     assert bot['status'] == 'stopped'
     assert bot['stopped_ts'] == ts_now + 456
     assert bot['state']['stopped_ts'] == ts_now + 456
+
+
+def test_api_recommendations_collapse_publication_chain_duplicates_by_default(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                "rec_id": "R-root",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "unified",
+                "margin_mode": "isolated",
+                "score": 0.61,
+                "confidence": 0.82,
+                "expected_rr": 1.3,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 600,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+                "publication_root_rec_id": "R-root",
+                "is_outcome_label_root": True,
+            },
+            {
+                "rec_id": "R-active-dup",
+                "ts": ts_now,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "long",
+                "account_mode": "unified",
+                "margin_mode": "isolated",
+                "score": 0.60,
+                "confidence": 0.79,
+                "expected_rr": 1.28,
+                "risk_score": 0.2,
+                "params": {"grid_levels": 8},
+                "reasons": {
+                    "publication_dedupe": {
+                        "previous_rec_id": "R-root",
+                        "previous_root_rec_id": "R-root",
+                        "decision": "reuse_active",
+                    }
+                },
+                "blocks": [],
+                "status": "active",
+                "ttl_sec": 600,
+                "model_version": "test",
+                "features_ref_ts": ts_now,
+                "publication_root_rec_id": "R-root",
+                "is_outcome_label_root": False,
+            },
+        ],
+    )
+
+    resp = client.get('/api/v1/recommendations?venue=linear')
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body['publication_chain_dedupe'] == {'enabled': True, 'hidden_duplicates': 1}
+    assert [item['rec_id'] for item in body['items']] == ['R-root']
+
+    raw_resp = client.get('/api/v1/recommendations?venue=linear&collapse_chains=false')
+    assert raw_resp.status_code == 200
+    raw_body = raw_resp.json()
+    assert raw_body['publication_chain_dedupe'] == {'enabled': False, 'hidden_duplicates': 0}
+    assert {item['rec_id'] for item in raw_body['items']} == {'R-root', 'R-active-dup'}

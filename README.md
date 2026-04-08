@@ -145,6 +145,7 @@ ruff check app tests main.py
 ## Основные API
 ### Read-only
 - `GET /api/v1/recommendations`
+  - по умолчанию схлопывает repeated rows одной `publication_chain` и возвращает только один operator-facing сигнал на `publication_root_rec_id`; для raw-аудита можно передать `collapse_chains=false`.
 - `GET /api/v1/recommendations/{rec_id}`
 - `GET /api/v1/risk/status`
 - `GET /api/v1/bots`
@@ -175,7 +176,7 @@ ruff check app tests main.py
 4. если сигнал для persistence-ботов требует подтверждения ещё одним циклом, он получает статус `pending`;
 5. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
 6. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
-7. перед созданием `bot_instance` сервис повторно проверяет текущие риск-лимиты, свежесть candles/ticker, актуальный market shock / fast-veto и базовую Bybit-валидность сетки; при ошибке возвращается `409`, а в `decision_log` пишется `EXECUTION_BLOCKED` или `EXECUTION_PRECHECK_BLOCKED`;
+7. перед созданием `bot_instance` сервис повторно проверяет текущие риск-лимиты, свежесть candles/ticker, актуальный market shock / fast-veto и базовую Bybit-валидность сетки; instrument metadata Bybit подгружается заранее, вне SQLite write-lock, чтобы медленный upstream не блокировал collector/recommender; при ошибке возвращается `409`, а в `decision_log` пишется `EXECUTION_BLOCKED` или `EXECUTION_PRECHECK_BLOCKED`;
 8. если preflight пройден, создаётся `bot_instance`, recommendation переводится в `executed`;
 9. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
 10. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
@@ -188,7 +189,7 @@ ruff check app tests main.py
 - `suppressed` — скрытая альтернатива, проигравшая dedupe/selector и сохранённая только для аудита.
 
 ## Stability notes
-- background loops используют SQLite runtime lock, поэтому активным сборщиком/рекомендером остаётся только один лидер;
+- background loops используют SQLite runtime lock, поэтому активным сборщиком/рекомендером остаётся только один лидер; operator execute-path больше не держит этот же write-контур на внешнем Bybit fetch, что снижает риск каскадных `database is locked` при деградации сети;
 - background loops завершаются по lifespan stop-event и не должны переживать штатный stop/restart процесса как «ложно упавшие» daemon-потоки;
 - collector работает с явными stage-boundary commit, а не с одной гигантской write-транзакцией через весь цикл: это осознанный компромисс ради корректного heartbeat и отсутствия скрытого split-brain under SQLite;
 - SQLite работает в `WAL`-режиме с увеличенным `busy_timeout`;

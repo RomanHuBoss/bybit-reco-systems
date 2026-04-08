@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-04-08 — red-team reliability and operator-signal hygiene
+
+### Исправлено
+- execute-path больше не держит SQLite `BEGIN IMMEDIATE` во время внешнего запроса за instrument metadata Bybit: metadata теперь подгружается заранее, вне write-lock, а внутри критической секции используется уже готовый snapshot проверки;
+- operator-facing `GET /api/v1/recommendations` теперь по умолчанию скрывает дубли одной `publication_chain`, оставляя в списке один лучший элемент на `publication_root_rec_id`, чтобы repeated `active` updates не выглядели как поток одинаковых идей.
+
+### Добавлено
+- ответ `GET /api/v1/recommendations` дополнен блоком `publication_chain_dedupe` с числом скрытых дублей и возможностью отключить collapse через `collapse_chains=false`;
+- регрессионные тесты на отсутствие внешнего Bybit fetch под SQLite write-lock и на схлопывание дублей publication-chain в operator-facing API.
+
+### Тесты
+- добавлен сценарий, который проверяет порядок `Bybit metadata fetch -> BEGIN IMMEDIATE`, чтобы execute-flow не блокировал остальные writer-контуры на сетевых задержках;
+- добавлен API-тест на collapse raw-дублей `recommended/active` внутри одной publication-chain.
+
 ## 2026-04-08 — release consistency and stop-state determinism
 
 ### Исправлено

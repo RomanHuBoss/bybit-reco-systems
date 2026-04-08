@@ -361,6 +361,60 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _collapse_recommendation_items_by_publication_chain(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Скрывает дубли одной publication-chain в operator-facing списке.
+
+    Audit-след в БД сохраняется полностью: каждая рекомендация остаётся отдельной
+    строкой со своим ts/reasons/status. Но операторскому списку почти никогда не
+    нужна вся цепочка near-identical `active` updates поверх одного root — это
+    визуально выглядит как поток повторов и затрудняет разбор живых идей.
+    Поэтому по умолчанию показываем один лучший элемент на publication_root.
+    """
+    if not items:
+        return [], 0
+
+    status_priority = {
+        "recommended": 0,
+        "active": 1,
+        "executed": 2,
+        "ignored": 3,
+        "pending": 4,
+        "blocked": 5,
+        "no_trade": 6,
+        "suppressed": 7,
+        "expired": 8,
+    }
+
+    def _sort_key(rec: dict[str, Any]) -> tuple[int, int, int, float, float]:
+        return (
+            int(rec.get("ts") or 0),
+            -int(status_priority.get(str(rec.get("status") or "").strip().lower(), 99)),
+            1 if bool(rec.get("is_outcome_label_root")) else 0,
+            float(rec.get("confidence") or 0.0),
+            float(rec.get("score") or 0.0),
+        )
+
+    best_by_root: dict[str, dict[str, Any]] = {}
+    for item in items:
+        rec = dict(item)
+        root = str(rec.get("publication_root_rec_id") or rec.get("rec_id") or "").strip() or str(rec.get("rec_id") or "")
+        prev = best_by_root.get(root)
+        if prev is None or _sort_key(rec) > _sort_key(prev):
+            best_by_root[root] = rec
+
+    deduped = list(best_by_root.values())
+    deduped.sort(
+        key=lambda rec: (
+            int(status_priority.get(str(rec.get("status") or "").strip().lower(), 99)),
+            -float(rec.get("confidence") or 0.0),
+            -float(rec.get("score") or 0.0),
+            -int(rec.get("ts") or 0),
+        )
+    )
+    hidden = max(0, len(items) - len(deduped))
+    return deduped, hidden
+
+
 def _finite_float_or_none(value: Any) -> float | None:
     try:
         num = float(value)
@@ -680,7 +734,13 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     }
 
 
-def _execution_preflight(conn, rec: dict[str, Any], *, now_ts: int | None = None) -> dict[str, Any]:
+def _execution_preflight(
+    conn,
+    rec: dict[str, Any],
+    *,
+    now_ts: int | None = None,
+    bybit_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     now = int(now_ts or time.time())
     blocks: list[dict[str, Any]] = []
     blocks.extend(_execution_market_data_blocks(conn, rec, now_ts=now))
@@ -720,10 +780,15 @@ def _execution_preflight(conn, rec: dict[str, Any], *, now_ts: int | None = None
         if isinstance(block, dict):
             blocks.append(dict(block))
 
-    try:
-        bybit_meta = _fetch_bybit_instrument_meta(str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
-    except Exception:
+    if bybit_meta is None:
+        try:
+            bybit_meta = _fetch_bybit_instrument_meta(str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
+        except Exception:
+            bybit_meta = {}
+    elif not isinstance(bybit_meta, dict):
         bybit_meta = {}
+    else:
+        bybit_meta = dict(bybit_meta)
     bybit_validation = _validate_trade_plan_against_bybit_meta(rec, bybit_meta)
     for item in bybit_validation.get("errors") or []:
         if isinstance(item, dict):
@@ -1168,7 +1233,31 @@ def _is_supported_execution_direction(bot_type: str, venue: str, direction: str)
     return False
 
 
+def _prefetch_execution_bybit_meta(conn, rec_id: str) -> dict[str, Any]:
+    """Заранее подтягивает metadata Bybit без удержания write-lock SQLite.
+
+    Execute-path сериализуется через ``BEGIN IMMEDIATE``. Если внутри этой
+    транзакции пойти в сеть за instrument metadata, то медленный Bybit/прокси
+    блокирует все локальные writer-потоки: collector, recommender, sentiment,
+    operator actions. Поэтому внешний fetch делаем до захвата write-lock, а
+    внутри критической секции используем уже готовый snapshot metadata.
+    """
+    rec = db.get_recommendation_by_id(conn, rec_id)
+    if not rec:
+        return {}
+    venue = str(rec.get("venue") or "")
+    symbol = str(rec.get("symbol") or "")
+    if not venue or not symbol:
+        return {}
+    try:
+        meta = _fetch_bybit_instrument_meta(venue, symbol)
+    except Exception:
+        return {}
+    return dict(meta) if isinstance(meta, dict) else {}
+
+
 def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) -> tuple[dict[str, Any], bool]:
+    bybit_meta = _prefetch_execution_bybit_meta(conn, rec_id)
     db.begin_immediate(conn)
     rec = db.get_recommendation_by_id(conn, rec_id)
     if not rec:
@@ -1231,7 +1320,7 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in exec_blocks)
         raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
 
-    preflight = _execution_preflight(conn, rec, now_ts=int(time.time()))
+    preflight = _execution_preflight(conn, rec, now_ts=int(time.time()), bybit_meta=bybit_meta)
     preflight_blocks = list(preflight.get("blocks") or [])
     if preflight_blocks:
         db.log_decision(
@@ -1397,6 +1486,7 @@ def api_recommendations(
     show_no_trade: bool = False,
     show_suppressed: bool = False,
     snapshot: str = "latest_operator",
+    collapse_chains: bool = True,
 ) -> dict[str, Any]:
     top_n = _bounded_limit(top_n, default=20, max_value=200)
     with closing(_get_conn()) as conn:
@@ -1422,15 +1512,21 @@ def api_recommendations(
             strict_min_conf=strict_min_conf,
             requested_statuses=statuses,
         )
-        items = db.get_recommendations(
+        raw_items = db.get_recommendations(
             conn,
             venue=venue,
-            top_n=top_n,
+            top_n=top_n if not collapse_chains else max(top_n * 4, top_n),
             min_conf=effective_min_conf,
             statuses=statuses,
             snapshot_ts=snapshot_ts,
             strict_min_conf=strict_min_conf,
         )
+        if collapse_chains:
+            deduped_items, hidden_duplicates = _collapse_recommendation_items_by_publication_chain(raw_items)
+            items = deduped_items[:top_n]
+        else:
+            hidden_duplicates = 0
+            items = raw_items
 
         no_trade = True
         status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
@@ -1477,6 +1573,10 @@ def api_recommendations(
             "regime": regime,
             "items": items,
             "no_trade": no_trade,
+            "publication_chain_dedupe": {
+                "enabled": bool(collapse_chains),
+                "hidden_duplicates": int(hidden_duplicates),
+            },
             "min_conf": float(effective_min_conf),
             "status_counts": status_counts,
             "llm_status_counts": llm_status_counts,
