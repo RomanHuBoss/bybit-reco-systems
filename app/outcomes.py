@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from . import db
 from .bot_types import GRID_BOT_TYPES, SUPPORTED_BOT_TYPES
+from .settings import load_settings
 import logging
 import math
 
 logger = logging.getLogger(__name__)
+settings = load_settings()
 
 BOT_HORIZONS: dict[str, int] = {
     "spot_grid": 12 * 3600,
@@ -473,10 +475,11 @@ def _grid_outcome(
 def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
     min_horizon = min(BOT_HORIZONS.values())
     fetch_limit = max(int(max_to_process), min(2000, int(max_to_process) * 12))
+    require_llm_verdict = bool(getattr(settings, "llm_reviewer_enabled", False))
 
     cur = conn.execute(
         """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
-                  r.params_json, r.features_ref_ts
+                  r.params_json, r.features_ref_ts, r.status, r.reasons_json
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.ts <= ? AND o.rec_id IS NULL
@@ -491,6 +494,8 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
     for r in rows:
         if done >= int(max_to_process):
             break
+        if require_llm_verdict and not db.is_outcome_eligible_under_llm_mode(r["status"], r["reasons_json"]):
+            continue
         rec_id = r["rec_id"]
         bot_type = r["bot_type"]
         if bot_type not in SUPPORTED_BOT_TYPES:

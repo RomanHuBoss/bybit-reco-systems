@@ -18,6 +18,7 @@ ACTIONABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "
 VISIBLE_RECOMMENDATION_STATUSES: frozenset[str] = ACTIONABLE_RECOMMENDATION_STATUSES
 ACTIVE_PUBLICATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "executed"})
 EXPIRABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "pending"})
+LLM_OUTCOME_READY_STATUSES: frozenset[str] = frozenset({"ok"})
 
 
 def is_actionable_recommendation_status(status: Any) -> bool:
@@ -1273,14 +1274,14 @@ def get_latest_sentiment(conn: sqlite3.Connection, scope: str, key: str) -> dict
     return _decode_sentiment_row(cur.fetchone())
 
 
-def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000) -> list[dict[str, Any]]:
+def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, require_llm_verdict: bool = False) -> list[dict[str, Any]]:
     """Returns outcomes joined with rec score/bot_type/direction/reasons in one query.
     Replaces N+1 pattern of get_outcomes_recent + get_recommendation_by_id per row.
     """
     cur = conn.execute(
         """SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                   o.success, o.ret,
-                  r.score, r.reasons_json, r.publication_root_rec_id, r.is_outcome_label_root
+                  r.score, r.status, r.reasons_json, r.publication_root_rec_id, r.is_outcome_label_root
            FROM reco_outcomes o
            JOIN recommendations r ON r.rec_id = o.rec_id
            WHERE COALESCE(r.is_outcome_label_root, 1) = 1
@@ -1289,6 +1290,8 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000) -> list[
     )
     out = []
     for row in cur.fetchall():
+        if require_llm_verdict and not is_outcome_eligible_under_llm_mode(row["status"], row["reasons_json"]):
+            continue
         try:
             reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
         except Exception:
@@ -1853,6 +1856,23 @@ def _extract_llm_review_snapshot(reasons_json: str | None) -> dict[str, Any] | N
     }
 
 
+def is_outcome_eligible_under_llm_mode(status: Any, reasons_json: str | None) -> bool:
+    """Accept only rows that already have a completed LLM verdict.
+
+    Async LLM mode temporarily parks actionable recommendations in `pending`. Those
+    rows — and rows whose LLM review never completed successfully — must not enter
+    outcome labeling, UI summaries or calibration datasets.
+    """
+    status_norm = str(status or "").strip().lower()
+    if status_norm in {"pending", "blocked", "no_trade", "suppressed"}:
+        return False
+    llm_review = _extract_llm_review_snapshot(reasons_json)
+    if not isinstance(llm_review, dict):
+        return False
+    llm_status = str(llm_review.get("status") or "").strip().lower()
+    return llm_status in LLM_OUTCOME_READY_STATUSES
+
+
 
 def _extract_outcome_directions(outcome_direction: Any, reco_direction: Any, reasons_json: str | None) -> dict[str, Any]:
     raw_direction = None
@@ -1923,7 +1943,7 @@ def _materialize_stat_rows(grouped: dict[tuple[Any, ...], dict[str, Any]], key_n
 
 
 
-def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]]:
+def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200, *, require_llm_verdict: bool = False) -> list[dict[str, Any]]:
     _supported_sql, _supported_params = sql_in_clause("o.bot_type")
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
@@ -1939,6 +1959,8 @@ def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200) -> 
     )
     out: list[dict[str, Any]] = []
     for row in cur.fetchall():
+        if require_llm_verdict and not is_outcome_eligible_under_llm_mode(row["reco_status"], row["reasons_json"]):
+            continue
         dirs = _extract_outcome_directions(row["direction"], row["reco_direction"], row["reasons_json"])
         llm_review = _extract_llm_review_snapshot(row["reasons_json"])
         out.append({
@@ -1966,7 +1988,7 @@ def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200) -> 
 
 
 
-def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
+def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = False) -> dict:
     """Aggregate win-rate / return proxies and expose raw vs execution direction splits.
 
     Neutral execution can hide two very different realities:
@@ -1974,29 +1996,19 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
     The UI needs both axes to avoid mixing them together.
     """
     _supported_sql, _supported_params = sql_in_clause("o.bot_type")
-    raw_total = 0
-    cur_raw_total = conn.execute(
-        f"""SELECT COUNT(*) AS c
-               FROM reco_outcomes o
-               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
-               WHERE {_supported_sql}""",
-        _supported_params,
-    )
-    row_raw_total = cur_raw_total.fetchone()
-    if row_raw_total and row_raw_total["c"] is not None:
-        raw_total = int(row_raw_total["c"] or 0)
-
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                      o.ret, o.success,
-                     r.direction AS reco_direction, r.reasons_json
+                     r.direction AS reco_direction, r.status AS reco_status,
+                     r.reasons_json, r.is_outcome_label_root
               FROM reco_outcomes o
               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
-              WHERE {_supported_sql} AND COALESCE(r.is_outcome_label_root, 1) = 1
+              WHERE {_supported_sql}
               ORDER BY o.ts DESC""",
         _supported_params,
     )
 
+    raw_total = 0
     summary_bucket = {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0}
     by_bot_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_symbol_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -2019,6 +2031,11 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
 
     rows = cur.fetchall()
     for row in rows:
+        if require_llm_verdict and not is_outcome_eligible_under_llm_mode(row["reco_status"], row["reasons_json"]):
+            continue
+        raw_total += 1
+        if row["is_outcome_label_root"] is not None and not bool(int(row["is_outcome_label_root"] or 0)):
+            continue
         dirs = _extract_outcome_directions(row["direction"], row["reco_direction"], row["reasons_json"])
         raw_direction = dirs["raw_direction"]
         execution_direction = dirs["execution_direction"]
@@ -2126,7 +2143,7 @@ def get_outcomes_stats(conn: sqlite3.Connection) -> dict:
         "by_execution_direction": by_execution_direction,
         "direction_pairs": direction_pairs,
         "llm_alignment": llm_alignment,
-        "recent": get_outcomes_recent_enriched(conn, limit=120),
+        "recent": get_outcomes_recent_enriched(conn, limit=120, require_llm_verdict=require_llm_verdict),
     }
 
 

@@ -17,6 +17,7 @@ from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
 from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
 from .collector import RuntimeLockLostError
+from .settings import load_settings
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
@@ -36,6 +37,7 @@ LLM_REVIEWER_DEFAULT_MAX_WORKERS = 2
 LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE = 0.65
 LLM_REVIEWER_DEFAULT_CADENCE_SEC = 300
 LLM_REVIEWER_DEFAULT_TTL_SEC = 900
+settings = load_settings()
 
 
 def _fmt_tf(tf_sec: int) -> str:
@@ -2071,14 +2073,14 @@ def _stabilize_direction_agg(
 
 def _fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
     """Fit global LogReg+Platt calibrator on all outcome rows."""
-    rows = db.get_outcomes_with_recs(conn, limit=6000)
+    rows = db.get_outcomes_with_recs(conn, limit=6000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
     return fit_logreg(rows, min_samples=min_samples)
 
 
 def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
     """Fit one LogReg+Platt per bot_type."""
     from collections import defaultdict
-    rows = db.get_outcomes_with_recs(conn, limit=8000)
+    rows = db.get_outcomes_with_recs(conn, limit=8000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
     data: dict[str, list] = defaultdict(list)
     for row in rows:
         data[row["bot_type"]].append(row)
@@ -2159,7 +2161,7 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     not the signed aggregate score. This preserves symmetry between strong longs
     and strong shorts and makes the resulting value a true probability-like metric.
     """
-    rows = db.get_outcomes_with_recs(conn, limit=5000)
+    rows = db.get_outcomes_with_recs(conn, limit=5000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
     xs, ys = [], []
     for row in rows:
         if row["bot_type"] != "futures_grid":

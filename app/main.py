@@ -1745,7 +1745,7 @@ def api_trades(bot_id: str | None = None, limit: int = 200) -> dict[str, Any]:
 @app.get("/api/v1/outcomes/stats")
 def api_outcomes_stats() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
-        return db.get_outcomes_stats(conn)
+        return db.get_outcomes_stats(conn, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
 
 
 @app.get("/api/v1/health/symbols")
@@ -2256,37 +2256,56 @@ def api_status() -> dict[str, Any]:
         logreg_min_samples = 300
 
         _supported_sql, _supported_params = sql_in_clause("bot_type")
+        require_llm_outcome_verdict = bool(getattr(settings, "llm_reviewer_enabled", False))
         cur = conn.execute(
-            f"""SELECT o.bot_type, COUNT(*) AS total, COALESCE(SUM(o.success), 0) AS wins
+            f"""SELECT o.bot_type, o.success, o.ts, r.status, r.reasons_json, r.is_outcome_label_root
                    FROM reco_outcomes o
                    JOIN recommendations r ON r.rec_id = o.rec_id
-                   WHERE {_supported_sql.replace('bot_type', 'o.bot_type')} AND COALESCE(r.is_outcome_label_root, 1) = 1
-                   GROUP BY o.bot_type""",
+                   WHERE {_supported_sql.replace('bot_type', 'o.bot_type')}""",
             _supported_params,
         )
         outcome_stats_by_bot: dict[str, dict[str, Any]] = {}
+        outcome_stats_7d_by_bot: dict[str, dict[str, int]] = {}
         outcome_count = 0
         for row in cur.fetchall():
-            total = int(row["total"] or 0)
-            wins = int(row["wins"] or 0)
+            if row["is_outcome_label_root"] is not None and not bool(int(row["is_outcome_label_root"] or 0)):
+                continue
+            if require_llm_outcome_verdict and not db.is_outcome_eligible_under_llm_mode(row["status"], row["reasons_json"]):
+                continue
+            bot_type = str(row["bot_type"])
+            success = int(row["success"] or 0)
+            stat = outcome_stats_by_bot.setdefault(bot_type, {"total": 0, "wins": 0})
+            stat["total"] += 1
+            stat["wins"] += success
+            outcome_count += 1
+            if int(row["ts"] or 0) >= db.now_ts() - 7 * 86400:
+                recent = outcome_stats_7d_by_bot.setdefault(bot_type, {"total": 0, "wins": 0, "losses": 0})
+                recent["total"] += 1
+                recent["wins"] += success
+
+        for stat in outcome_stats_by_bot.values():
+            total = int(stat["total"])
+            wins = int(stat["wins"])
             losses = max(0, total - wins)
             minority_class_count = min(wins, losses)
             effective_samples = max(0, 2 * minority_class_count)
-            outcome_count += total
             win_rate = float(wins / total) if total else None
             if win_rate is None or win_rate <= 0.0 or win_rate >= 1.0:
                 class_entropy_bits = 0.0
             else:
                 class_entropy_bits = float(-(win_rate * math.log2(win_rate) + (1.0 - win_rate) * math.log2(1.0 - win_rate)))
-            outcome_stats_by_bot[str(row["bot_type"])] = {
-                "total": total,
-                "wins": wins,
+            stat.update({
                 "losses": losses,
                 "minority_class_count": minority_class_count,
                 "effective_samples": effective_samples,
                 "win_rate": round(win_rate, 4) if win_rate is not None else None,
                 "class_entropy_bits": round(class_entropy_bits, 4),
-            }
+            })
+
+        for stat in outcome_stats_7d_by_bot.values():
+            total = int(stat["total"])
+            wins = int(stat["wins"])
+            stat["losses"] = max(0, total - wins)
 
         def _bot_gate(total: int, wins: int, losses: int, fitted: bool) -> tuple[bool, str | None]:
             if fitted:
@@ -2301,24 +2320,6 @@ def api_status() -> dict[str, Any]:
             if win_rate < 0.15 or win_rate > 0.85:
                 return False, "degenerate_win_rate"
             return True, "pending_refit"
-
-        cur = conn.execute(
-            f"""SELECT o.bot_type, COUNT(*) AS total, COALESCE(SUM(o.success), 0) AS wins
-                   FROM reco_outcomes o
-                   JOIN recommendations r ON r.rec_id = o.rec_id
-                   WHERE o.ts >= ? AND {_supported_sql.replace('bot_type', 'o.bot_type')} AND COALESCE(r.is_outcome_label_root, 1) = 1
-                   GROUP BY o.bot_type""",
-            [db.now_ts() - 7 * 86400, *_supported_params],
-        )
-        outcome_stats_7d_by_bot: dict[str, dict[str, int]] = {}
-        for row in cur.fetchall():
-            total = int(row["total"] or 0)
-            wins = int(row["wins"] or 0)
-            outcome_stats_7d_by_bot[str(row["bot_type"])] = {
-                "total": total,
-                "wins": wins,
-                "losses": max(0, total - wins),
-            }
 
         bot_status = {}
         for bt, key in BOT_CALIB_KEYS.items():

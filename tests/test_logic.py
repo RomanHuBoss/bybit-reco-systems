@@ -2460,6 +2460,181 @@ def test_compute_outcomes_scans_past_stuck_unprocessable_rows(conn):
     assert db.outcome_exists(conn, "R-stuck-old") is False
 
 
+def test_compute_outcomes_requires_completed_llm_verdict_when_llm_mode_enabled(conn, monkeypatch):
+    import app.outcomes as outcomes_module
+
+    now = db.now_ts()
+    base_ts = now - 15 * 3600
+    rec_specs = [
+        ("R-llm-ok", "BTCUSDT", "recommended", {"llm_review": {"status": "ok", "mode": "advisory", "gate_decision": "pass"}}),
+        ("R-llm-pending", "ETHUSDT", "recommended", {"llm_review": {"status": "pending", "mode": "advisory", "gate_decision": "pending"}}),
+        ("R-llm-error", "XRPUSDT", "recommended", {"llm_review": {"status": "error", "mode": "advisory", "gate_decision": "pass", "error": "timeout"}}),
+        ("R-no-llm", "SOLUSDT", "recommended", {}),
+    ]
+
+    recs = []
+    ohlcv_rows = []
+    for idx, (rec_id, symbol, status, reasons) in enumerate(rec_specs):
+        ts = base_ts + idx * 120
+        recs.append({
+            "rec_id": rec_id,
+            "ts": ts,
+            "venue": "linear",
+            "symbol": symbol,
+            "bot_type": "futures_grid",
+            "direction": "neutral",
+            "account_mode": "one_way",
+            "margin_mode": "isolated",
+            "score": 0.2,
+            "confidence": 0.7,
+            "expected_rr": 1.2,
+            "risk_score": 0.1,
+            "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+            "reasons": reasons,
+            "blocks": [],
+            "status": status,
+            "ttl_sec": 1800,
+            "model_version": "test",
+            "features_ref_ts": ts,
+        })
+        entry_ts = ts + 60
+        exit_ts = entry_ts + 12 * 3600
+        ohlcv_rows.extend([
+            {
+                "venue": "linear",
+                "symbol": symbol,
+                "tf_sec": 60,
+                "ts": entry_ts,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.2,
+                "volume": 10.0,
+            },
+            {
+                "venue": "linear",
+                "symbol": symbol,
+                "tf_sec": 60,
+                "ts": exit_ts,
+                "open": 100.1,
+                "high": 100.6,
+                "low": 99.4,
+                "close": 100.0,
+                "volume": 8.0,
+            },
+        ])
+
+    db.insert_recommendations(conn, recs)
+    db.upsert_ohlcv(conn, ohlcv_rows)
+
+    monkeypatch.setattr(outcomes_module, "settings", _settings_for_tests(llm_reviewer_enabled=True))
+
+    processed = outcomes_module.compute_outcomes_once(conn, horizon_sec=30 * 60, max_to_process=10)
+
+    assert processed == 1
+    assert db.outcome_exists(conn, "R-llm-ok") is True
+    assert db.outcome_exists(conn, "R-llm-pending") is False
+    assert db.outcome_exists(conn, "R-llm-error") is False
+    assert db.outcome_exists(conn, "R-no-llm") is False
+
+
+def test_outcome_views_and_training_sets_filter_nonfinal_llm_rows(conn):
+    now = int(time.time())
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                "rec_id": "R-ok",
+                "ts": now - 300,
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "bot_type": "futures_grid",
+                "direction": "neutral",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.3,
+                "confidence": 0.7,
+                "expected_rr": 1.2,
+                "risk_score": 0.1,
+                "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                "reasons": {"llm_review": {"status": "ok", "mode": "advisory", "gate_decision": "pass"}},
+                "blocks": [],
+                "status": "recommended",
+                "ttl_sec": 900,
+                "model_version": "test",
+                "features_ref_ts": now - 300,
+            },
+            {
+                "rec_id": "R-pending",
+                "ts": now - 240,
+                "venue": "linear",
+                "symbol": "ETHUSDT",
+                "bot_type": "futures_grid",
+                "direction": "neutral",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.28,
+                "confidence": 0.69,
+                "expected_rr": 1.15,
+                "risk_score": 0.12,
+                "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                "reasons": {"llm_review": {"status": "pending", "mode": "advisory", "gate_decision": "pending"}},
+                "blocks": [],
+                "status": "pending",
+                "ttl_sec": 900,
+                "model_version": "test",
+                "features_ref_ts": now - 240,
+            },
+            {
+                "rec_id": "R-error",
+                "ts": now - 180,
+                "venue": "linear",
+                "symbol": "SOLUSDT",
+                "bot_type": "futures_grid",
+                "direction": "neutral",
+                "account_mode": "one_way",
+                "margin_mode": "isolated",
+                "score": 0.25,
+                "confidence": 0.68,
+                "expected_rr": 1.1,
+                "risk_score": 0.15,
+                "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                "reasons": {"llm_review": {"status": "error", "mode": "advisory", "gate_decision": "pass", "error": "boom"}},
+                "blocks": [],
+                "status": "active",
+                "ttl_sec": 900,
+                "model_version": "test",
+                "features_ref_ts": now - 180,
+            },
+        ],
+    )
+    for idx, rec_id in enumerate(("R-ok", "R-pending", "R-error")):
+        db.insert_outcome(
+            conn,
+            {
+                "rec_id": rec_id,
+                "ts": now - 300 + idx * 60,
+                "venue": "linear",
+                "symbol": ("BTCUSDT", "ETHUSDT", "SOLUSDT")[idx],
+                "bot_type": "futures_grid",
+                "direction": "neutral",
+                "horizon_sec": 3600,
+                "entry_close": 100.0,
+                "exit_close": 100.4,
+                "ret": 0.01,
+                "success": 1,
+            },
+        )
+
+    stats = db.get_outcomes_stats(conn, require_llm_verdict=True)
+    rows = db.get_outcomes_with_recs(conn, require_llm_verdict=True)
+
+    assert stats["summary"]["total"] == 1
+    assert stats["summary"]["raw_total"] == 1
+    assert [row["rec_id"] for row in stats["recent"]] == ["R-ok"]
+    assert [row["rec_id"] for row in rows] == ["R-ok"]
+
+
 
 def test_fit_logreg_tolerates_malformed_feature_snapshot_values():
     from app.calibration import fit_logreg
