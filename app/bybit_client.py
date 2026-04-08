@@ -80,7 +80,7 @@ class BybitPublicClient:
         return delay
 
     def _is_retryable_http_status(self, status_code: int) -> bool:
-        return int(status_code) == 429 or 500 <= int(status_code) <= 599
+        return int(status_code) in {408, 429} or 500 <= int(status_code) <= 599
 
     def _is_retryable_bybit_error(self, ret_code: int, ret_msg: str) -> bool:
         msg = str(ret_msg or "").lower()
@@ -112,7 +112,13 @@ class BybitPublicClient:
                         continue
                     raise RuntimeError(f"Bybit HTTP {response.status_code}: retryable upstream error")
                 response.raise_for_status()
-                data = response.json()
+                try:
+                    data = response.json()
+                except Exception as exc:
+                    if attempt < self.max_retries:
+                        time.sleep(self._retry_delay(attempt, retry_after))
+                        continue
+                    raise RuntimeError("Bybit response decode error") from exc
                 if not isinstance(data, dict):
                     raise RuntimeError("Bybit response shape error: expected JSON object")
 
@@ -131,10 +137,16 @@ class BybitPublicClient:
             except Exception as exc:
                 last_exc = exc
                 retryable = False
-                if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+                if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
                     retryable = True
                 elif isinstance(exc, RuntimeError):
-                    retryable = "retryable upstream error" in str(exc).lower()
+                    retryable = any(
+                        token in str(exc).lower()
+                        for token in (
+                            "retryable upstream error",
+                            "response decode error",
+                        )
+                    )
                 if attempt >= self.max_retries or not retryable:
                     raise
                 time.sleep(self._retry_delay(attempt))

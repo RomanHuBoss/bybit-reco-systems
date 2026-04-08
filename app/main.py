@@ -415,6 +415,77 @@ def _collapse_recommendation_items_by_publication_chain(items: list[dict[str, An
     return deduped, hidden
 
 
+def _load_recommendations_for_operator_view(
+    conn,
+    *,
+    venue: str | None,
+    top_n: int,
+    min_conf: float,
+    statuses: list[str],
+    snapshot_ts: int | None,
+    strict_min_conf: bool,
+    collapse_chains: bool,
+) -> tuple[list[dict[str, Any]], int]:
+    """Возвращает рекомендации для operator-facing списка без скрытой недовыборки chain'ов.
+
+    Простое чтение `top_n * 4` raw-строк выглядело достаточным, пока одна и та же
+    publication-chain не начинала доминировать десятками `active` updates. Тогда
+    дедуп-проход скрывал почти всё, а API возвращал меньше уникальных идей, чем
+    реально было доступно в том же snapshot. Для оператора это выглядело как
+    "пропавшие" рекомендации и визуально усиливало ощущение repeated-потока.
+
+    Поэтому при включённом collapse_chains адаптивно увеличиваем budget выборки до
+    тех пор, пока не наберём нужное число уникальных roots или пока не исчерпаем
+    разумный scan-cap для одного snapshot.
+    """
+    if top_n <= 0:
+        return [], 0
+
+    if not collapse_chains:
+        raw_items = db.get_recommendations(
+            conn,
+            venue=venue,
+            top_n=top_n,
+            min_conf=min_conf,
+            statuses=statuses,
+            snapshot_ts=snapshot_ts,
+            strict_min_conf=strict_min_conf,
+        )
+        return raw_items, 0
+
+    budget = max(top_n, top_n * 4, 20)
+    scan_cap = min(4000, max(200, top_n * 20))
+    previous_raw_count = -1
+    raw_items: list[dict[str, Any]] = []
+    deduped: list[dict[str, Any]] = []
+    hidden_duplicates = 0
+
+    while True:
+        raw_items = db.get_recommendations(
+            conn,
+            venue=venue,
+            top_n=budget,
+            min_conf=min_conf,
+            statuses=statuses,
+            snapshot_ts=snapshot_ts,
+            strict_min_conf=strict_min_conf,
+        )
+        deduped, hidden_duplicates = _collapse_recommendation_items_by_publication_chain(raw_items)
+        raw_count = len(raw_items)
+        if len(deduped) >= top_n:
+            break
+        if raw_count < budget:
+            break
+        if budget >= scan_cap:
+            break
+        if raw_count == previous_raw_count:
+            break
+        previous_raw_count = raw_count
+        budget = min(scan_cap, budget * 2)
+
+    return deduped[:top_n], hidden_duplicates
+
+
 def _finite_float_or_none(value: Any) -> float | None:
     try:
         num = float(value)
@@ -1512,21 +1583,16 @@ def api_recommendations(
             strict_min_conf=strict_min_conf,
             requested_statuses=statuses,
         )
-        raw_items = db.get_recommendations(
+        items, hidden_duplicates = _load_recommendations_for_operator_view(
             conn,
             venue=venue,
-            top_n=top_n if not collapse_chains else max(top_n * 4, top_n),
+            top_n=top_n,
             min_conf=effective_min_conf,
             statuses=statuses,
             snapshot_ts=snapshot_ts,
             strict_min_conf=strict_min_conf,
+            collapse_chains=collapse_chains,
         )
-        if collapse_chains:
-            deduped_items, hidden_duplicates = _collapse_recommendation_items_by_publication_chain(raw_items)
-            items = deduped_items[:top_n]
-        else:
-            hidden_duplicates = 0
-            items = raw_items
 
         no_trade = True
         status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)

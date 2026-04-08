@@ -54,3 +54,13 @@
 Ожидаемое поведение:
 - recommendation details показывают ошибки валидации;
 - `executed` блокируется, пока идея не исправлена оператором или новым publish cycle.
+
+## 11. Одна publication-chain выпускает длинную серию `active` updates
+Ожидаемое поведение:
+- operator-facing `GET /api/v1/recommendations` не должен возвращать только эту одну идею, если в том же snapshot есть другие уникальные roots;
+- API обязан расширить raw-scan и добрать `top_n` по уникальным `publication_root_rec_id`, пока это разумно по budget.
+
+## 12. Bybit отдаёт 200/OK с битым JSON или protocol-level transport error
+Ожидаемое поведение:
+- публичный клиент делает повторную попытку вместо мгновенного hard-fail первого же цикла;
+- после исчерпания retry возвращается явная transport/decode ошибка, а не partially parsed payload.

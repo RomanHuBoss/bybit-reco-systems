@@ -115,6 +115,7 @@
 ### Что считается источником истины
 - market data snapshot — SQLite tables `ohlcv`, `ticker_snap`, `features`;
 - publication-chain — `recommendations.publication_root_rec_id`;
+- operator-facing recommendation list делает adaptive raw-scan перед collapse, чтобы длинная одна chain не вытесняла остальные уникальные идеи из `top_n`;
 - operator execution state — `bot_instances`;
 - realised operator/audit events — `trades`, `decision_log`.
 

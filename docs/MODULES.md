@@ -5,8 +5,8 @@
 
 Контракт:
 - возвращает уже санитизированные структуры;
-- retry только для transport/retryable upstream cases;
-- не должен прокидывать явно сломанные JSON-shapes как валидные данные.
+- retry для transport/retryable upstream cases, включая transient protocol/decode failures уровня CDN/WAF;
+- не должен прокидывать явно сломанные JSON-shapes как валидные данные и по возможности должен переживать кратковременный 2xx non-JSON шум повторной попыткой.
 
 ## `app/collector.py`
 Сбор market data и backfill.

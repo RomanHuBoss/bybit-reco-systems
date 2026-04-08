@@ -2094,3 +2094,102 @@ def test_api_recommendations_collapse_publication_chain_duplicates_by_default(cl
     raw_body = raw_resp.json()
     assert raw_body['publication_chain_dedupe'] == {'enabled': False, 'hidden_duplicates': 0}
     assert {item['rec_id'] for item in raw_body['items']} == {'R-root', 'R-active-dup'}
+
+
+def test_api_recommendations_collapse_scans_past_large_duplicate_chain_to_fill_unique_top_n(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    duplicate_rows = []
+    for idx in range(18):
+        rec_id = f'R-dup-{idx:02d}'
+        duplicate_rows.append(
+            {
+                'rec_id': rec_id,
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'unified',
+                'margin_mode': 'isolated',
+                'score': 0.95 - (idx * 0.001),
+                'confidence': 0.99 - (idx * 0.001),
+                'expected_rr': 1.5,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {
+                    'publication_dedupe': {
+                        'previous_root_rec_id': 'R-root-btc',
+                        'decision': 'reuse_active',
+                    }
+                },
+                'blocks': [],
+                'status': 'active' if idx else 'recommended',
+                'ttl_sec': 600,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+                'publication_root_rec_id': 'R-root-btc',
+                'is_outcome_label_root': idx == 0,
+            }
+        )
+
+    duplicate_rows.extend(
+        [
+            {
+                'rec_id': 'R-eth',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'ETHUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'short',
+                'account_mode': 'unified',
+                'margin_mode': 'isolated',
+                'score': 0.40,
+                'confidence': 0.40,
+                'expected_rr': 1.2,
+                'risk_score': 0.3,
+                'params': {'grid_levels': 6},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 600,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+                'publication_root_rec_id': 'R-eth',
+                'is_outcome_label_root': True,
+            },
+            {
+                'rec_id': 'R-sol',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'SOLUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'unified',
+                'margin_mode': 'isolated',
+                'score': 0.35,
+                'confidence': 0.35,
+                'expected_rr': 1.1,
+                'risk_score': 0.4,
+                'params': {'grid_levels': 5},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 600,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+                'publication_root_rec_id': 'R-sol',
+                'is_outcome_label_root': True,
+            },
+        ]
+    )
+    db.insert_recommendations(conn, duplicate_rows)
+
+    resp = client.get('/api/v1/recommendations?venue=linear&top_n=3&min_conf=0')
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert [item['rec_id'] for item in body['items']] == ['R-dup-00', 'R-eth', 'R-sol']
+    assert body['publication_chain_dedupe']['enabled'] is True
+    assert body['publication_chain_dedupe']['hidden_duplicates'] >= 17

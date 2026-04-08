@@ -4,6 +4,7 @@ import importlib
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -34,7 +35,10 @@ class _SequenceClient:
         self.calls.append((url, dict(params or {})))
         if not self._responses:
             raise AssertionError("unexpected extra call")
-        return self._responses.pop(0)
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     def close(self) -> None:
         return None
@@ -105,6 +109,46 @@ def test_bybit_client_honors_retry_after_header_for_retryable_http_status(monkey
     assert rows == [{"symbol": "BTCUSDT"}]
     assert len(fake_http.calls) == 2
     assert sleeps == [1.5]
+
+
+def test_bybit_client_retries_remote_protocol_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = BybitPublicClient("https://api.bybit.com", max_retries=1, backoff_base_sec=0.0)
+    fake_http = _SequenceClient(
+        [
+            httpx.RemoteProtocolError("upstream protocol desync"),
+            _FakeResponse(200, {"retCode": 0, "result": {"list": [{"symbol": "BTCUSDT"}]}}),
+        ]
+    )
+    client._client = fake_http  # type: ignore[attr-defined]
+    monkeypatch.setattr("app.bybit_client.time.sleep", lambda *_args, **_kwargs: None)
+
+    rows = client.get_tickers("linear", "BTCUSDT")
+    client.close()
+
+    assert rows == [{"symbol": "BTCUSDT"}]
+    assert len(fake_http.calls) == 2
+
+
+def test_bybit_client_retries_retryable_decode_errors_on_200_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _BrokenJsonResponse(_FakeResponse):
+        def json(self):
+            raise ValueError("malformed json")
+
+    client = BybitPublicClient("https://api.bybit.com", max_retries=1, backoff_base_sec=0.0)
+    fake_http = _SequenceClient(
+        [
+            _BrokenJsonResponse(200, {}),
+            _FakeResponse(200, {"retCode": 0, "result": {"list": [{"symbol": "ETHUSDT"}]}}),
+        ]
+    )
+    client._client = fake_http  # type: ignore[attr-defined]
+    monkeypatch.setattr("app.bybit_client.time.sleep", lambda *_args, **_kwargs: None)
+
+    rows = client.get_tickers("linear", "ETHUSDT")
+    client.close()
+
+    assert rows == [{"symbol": "ETHUSDT"}]
+    assert len(fake_http.calls) == 2
 
 
 def test_docs_describe_loopback_only_admin_fallback_and_auto_llm_ttl() -> None:
