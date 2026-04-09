@@ -635,6 +635,8 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     account_mode = str(rec.get("account_mode") or "").strip().lower()
     margin_mode = str(rec.get("margin_mode") or params.get("margin_mode") or "").strip().lower()
     meta_category = str((meta or {}).get("category") or "").strip().lower()
+    meta_symbol = str((meta or {}).get("symbol") or "").strip().upper()
+    rec_symbol = str(rec.get("symbol") or "").strip().upper()
 
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
@@ -661,19 +663,31 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             errors.append({"code": "SPOT_DIRECTION_INVALID", "msg": f"spot_grid не поддерживает direction={direction or 'unknown'}."})
         if account_mode and account_mode != "spot":
             warnings.append({"code": "ACCOUNT_MODE_UNEXPECTED", "msg": f"spot_grid обычно ожидает account_mode=spot, получено {account_mode}."})
-        if margin_mode and margin_mode != "cash":
+        if not margin_mode:
+            errors.append({"code": "MARGIN_MODE_MISSING", "msg": "spot_grid требует явный margin_mode=cash; без этого recommendation нельзя считать исполнимой."})
+        elif margin_mode != "cash":
             errors.append({"code": "MARGIN_MODE_INVALID", "msg": f"spot_grid ожидает margin_mode=cash, получено {margin_mode}."})
     elif bot_type == "futures_grid":
         if venue != "linear":
             errors.append({"code": "BOT_TYPE_VENUE_MISMATCH", "msg": f"futures_grid допустим только для venue=linear, получено venue={venue or 'unknown'}."})
         if direction not in {"neutral", "long", "short"}:
             errors.append({"code": "FUTURES_DIRECTION_INVALID", "msg": f"futures_grid не поддерживает direction={direction or 'unknown'}."})
-        if account_mode and account_mode not in {"unified", "one_way"}:
-            warnings.append({"code": "ACCOUNT_MODE_UNEXPECTED", "msg": f"futures_grid обычно ожидает account_mode=unified/one_way, получено {account_mode}."})
+        if account_mode == "one_way":
+            warnings.append({"code": "ACCOUNT_MODE_LEGACY_ALIAS", "msg": "account_mode=one_way трактуется как legacy-алиас позиции/position-mode; штатное значение этой ревизии — account_mode=unified."})
+        elif account_mode and account_mode != "unified":
+            warnings.append({"code": "ACCOUNT_MODE_UNEXPECTED", "msg": f"futures_grid обычно ожидает account_mode=unified, получено {account_mode}."})
         # Проектная логика, risk-gates и operator guidance собраны вокруг isolated futures-grid.
         # Поддержку cross/hedge-mode здесь лучше явно блокировать, чем молча притворяться совместимой.
-        if margin_mode and margin_mode != "isolated":
+        if not margin_mode:
+            errors.append({"code": "MARGIN_MODE_MISSING", "msg": "futures_grid требует явный margin_mode=isolated; legacy/manual recommendation без режима исполнения блокируется fail-closed."})
+        elif margin_mode != "isolated":
             errors.append({"code": "MARGIN_MODE_UNSUPPORTED", "msg": f"futures_grid в этом проекте поддерживается только в margin_mode=isolated, получено {margin_mode}."})
+
+    if meta_symbol and rec_symbol and meta_symbol != rec_symbol:
+        errors.append({
+            "code": "BYBIT_META_SYMBOL_MISMATCH",
+            "msg": f"Metadata Bybit получена для symbol={meta_symbol}, тогда как recommendation ожидает symbol={rec_symbol}; применять такие ограничения опасно.",
+        })
 
     if meta_category and venue and meta_category != venue:
         warnings.append({

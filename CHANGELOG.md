@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 2026-04-09 — fail-closed execution validation and upstream shape hardening
+
+### Исправлено
+- execution-time Bybit validation теперь блокирует legacy/manual recommendations без явного `margin_mode` вместо молчаливого допуска исполнения в неявном режиме;
+- validation теперь fail-closed отклоняет рекомендации, если полученная metadata Bybit относится к другому `symbol`, а не к целевому инструменту recommendation;
+- публичный Bybit REST-клиент теперь ретраит не только decode-failures, но и transient `response shape error` сценарии: не-объектный JSON и битый `retCode`.
+
+### Добавлено
+- warning `ACCOUNT_MODE_LEGACY_ALIAS` для исторических futures rows с `account_mode=one_way`, чтобы отделить legacy-совместимость от штатной модели `account_mode=unified`;
+- регрессионные тесты на блокировку missing-`margin_mode`, symbol-mismatch Bybit metadata и retry битых shape-ответов публичного клиента.
+
+### Тесты
+- `pytest -q` → `316 passed`;
+- `python -m py_compile app/*.py tests/*.py main.py` → passed;
+- `ruff check app tests main.py` → passed.
+
 ## 2026-04-08 — red-team reliability and operator-signal hygiene
 
 ### Исправлено

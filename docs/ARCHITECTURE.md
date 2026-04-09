@@ -135,6 +135,8 @@
 - symbol fast-veto;
 - геометрию trade plan относительно Bybit metadata;
 - внутреннюю согласованность bot_type / venue / direction / mode;
+- отсутствие обязательного `margin_mode` для supported execution paths (fail-closed для legacy/manual rows);
+- символическую согласованность Bybit metadata (`symbol/category` не должны относиться к другому инструменту);
 - leverage bounds и alignment по `leverage_step`, если биржа их предоставляет.
 
 ## Ключевой архитектурный вывод

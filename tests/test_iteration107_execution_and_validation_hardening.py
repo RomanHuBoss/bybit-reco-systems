@@ -395,3 +395,86 @@ def test_materialize_prefetches_bybit_meta_before_begin_immediate(isolated_app_a
     assert state["begin_called"] is True
     assert idempotent is False
     assert bot["origin_rec_id"] == "R-prefetch"
+
+
+# Legacy/manual recommendation без margin_mode больше не проходит execution-time validation молча.
+# Для recommendation-only сервиса безопаснее fail-closed, чем исполнить сетку в неявном режиме.
+def test_validate_trade_plan_blocks_missing_margin_mode_for_futures_grid(isolated_app_and_conn):
+    app_main, _client, _conn = isolated_app_and_conn
+
+    rec = {
+        "bot_type": "futures_grid",
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "direction": "long",
+        "account_mode": "unified",
+        "params": {
+            "leverage": 2,
+            "trade_plan": {
+                "reference_price": 100.0,
+                "levels": {
+                    "range": {"lower": 99.0, "upper": 101.0},
+                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+                    "grid_step": {"step_abs": 0.5},
+                },
+            },
+        },
+    }
+    meta = {
+        "category": "linear",
+        "symbol": "BTCUSDT",
+        "tick_size": "0.1",
+        "min_price": "1",
+        "max_price": "1000000",
+        "min_leverage": "1",
+        "max_leverage": "10",
+        "leverage_step": "0.1",
+    }
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, meta)
+    error_codes = {item["code"] for item in validation["errors"]}
+
+    assert validation["ok"] is False
+    assert "MARGIN_MODE_MISSING" in error_codes
+
+
+# Если metadata Bybit относится к другому symbol, ею нельзя валидировать чужую рекомендацию.
+# Такой mismatch должен блокировать execution preflight, иначе ограничения tick/leverage будут недостоверны.
+def test_validate_trade_plan_blocks_bybit_meta_symbol_mismatch(isolated_app_and_conn):
+    app_main, _client, _conn = isolated_app_and_conn
+
+    rec = {
+        "bot_type": "futures_grid",
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "direction": "long",
+        "account_mode": "unified",
+        "margin_mode": "isolated",
+        "params": {
+            "leverage": 2,
+            "trade_plan": {
+                "reference_price": 100.0,
+                "levels": {
+                    "range": {"lower": 99.0, "upper": 101.0},
+                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+                    "grid_step": {"step_abs": 0.5},
+                },
+            },
+        },
+    }
+    meta = {
+        "category": "linear",
+        "symbol": "ETHUSDT",
+        "tick_size": "0.1",
+        "min_price": "1",
+        "max_price": "1000000",
+        "min_leverage": "1",
+        "max_leverage": "10",
+        "leverage_step": "0.1",
+    }
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, meta)
+    error_codes = {item["code"] for item in validation["errors"]}
+
+    assert validation["ok"] is False
+    assert "BYBIT_META_SYMBOL_MISMATCH" in error_codes

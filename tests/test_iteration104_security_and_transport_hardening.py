@@ -161,3 +161,39 @@ def test_docs_describe_loopback_only_admin_fallback_and_auto_llm_ttl() -> None:
     assert "loopback" in readme.lower()
     assert "LLM_REVIEWER_TTL_SEC=" in env_example
     assert "LLM_REVIEWER_TTL_SEC=900" not in env_example
+
+
+def test_bybit_client_retries_non_mapping_json_shape_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = BybitPublicClient("https://api.bybit.com", max_retries=1, backoff_base_sec=0.0)
+    fake_http = _SequenceClient(
+        [
+            _FakeResponse(200, [{"unexpected": True}]),
+            _FakeResponse(200, {"retCode": 0, "result": {"list": [{"symbol": "BTCUSDT"}]}}),
+        ]
+    )
+    client._client = fake_http  # type: ignore[attr-defined]
+    monkeypatch.setattr("app.bybit_client.time.sleep", lambda *_args, **_kwargs: None)
+
+    rows = client.get_tickers("linear", "BTCUSDT")
+    client.close()
+
+    assert rows == [{"symbol": "BTCUSDT"}]
+    assert len(fake_http.calls) == 2
+
+
+def test_bybit_client_retries_invalid_retcode_shape_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = BybitPublicClient("https://api.bybit.com", max_retries=1, backoff_base_sec=0.0)
+    fake_http = _SequenceClient(
+        [
+            _FakeResponse(200, {"retCode": "oops", "result": {"list": []}}),
+            _FakeResponse(200, {"retCode": 0, "result": {"list": [{"symbol": "ETHUSDT"}]}}),
+        ]
+    )
+    client._client = fake_http  # type: ignore[attr-defined]
+    monkeypatch.setattr("app.bybit_client.time.sleep", lambda *_args, **_kwargs: None)
+
+    rows = client.get_tickers("linear", "ETHUSDT")
+    client.close()
+
+    assert rows == [{"symbol": "ETHUSDT"}]
+    assert len(fake_http.calls) == 2

@@ -17,9 +17,10 @@
 - `spot_grid`: `venue=spot`, `account_mode=spot`, `margin_mode=cash`, `leverage=1`
 - `futures_grid`: `venue=linear`, `account_mode=unified`, `margin_mode=isolated`
 
-Поддержка `cross`, `hedge mode`, order-routing и real fill reconciliation в этой ревизии отсутствует.
-Если такие режимы появятся в данных вручную, execution-time validation должна блокировать исполнение,
-а не притворяться, что логика проекта их понимает.
+`account_mode=one_way` допускается только как legacy-алиас старых payload'ов и помечается warning'ом;
+штатной моделью ревизии он не считается. Поддержка `cross`, `hedge mode`, order-routing и real fill reconciliation
+в этой ревизии отсутствует. Если такие режимы или пустой `margin_mode` появятся в данных вручную,
+execution-time validation должна блокировать исполнение, а не притворяться, что логика проекта их понимает.
 
 ## Как строится grid idea
 
@@ -52,8 +53,10 @@
 ### Режимные инварианты
 - `bot_type` согласован с `venue` и `direction`;
 - `account_mode` и `margin_mode` не противоречат модели проекта;
+- для supported execution-path обязательно присутствует явный `margin_mode` (`cash`/`isolated`), иначе recommendation блокируется fail-closed;
 - `leverage` > 0 и укладывается в `min/max leverage`;
-- `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint.
+- `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint;
+- metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу.
 
 ## Что outcome labeling умеет и чего не умеет
 

@@ -99,6 +99,17 @@ class BybitPublicClient:
             )
         )
 
+    def _is_retryable_runtime_error(self, exc: RuntimeError) -> bool:
+        msg = str(exc).lower()
+        return any(
+            token in msg
+            for token in (
+                "retryable upstream error",
+                "response decode error",
+                "response shape error",
+            )
+        )
+
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
         last_exc: Exception | None = None
@@ -120,12 +131,18 @@ class BybitPublicClient:
                         continue
                     raise RuntimeError("Bybit response decode error") from exc
                 if not isinstance(data, dict):
+                    if attempt < self.max_retries:
+                        time.sleep(self._retry_delay(attempt, retry_after))
+                        continue
                     raise RuntimeError("Bybit response shape error: expected JSON object")
 
                 ret_code_raw = data.get("retCode", 0)
                 try:
                     ret_code = int(ret_code_raw or 0)
                 except Exception as exc:
+                    if attempt < self.max_retries:
+                        time.sleep(self._retry_delay(attempt, retry_after))
+                        continue
                     raise RuntimeError(f"Bybit response shape error: invalid retCode={ret_code_raw!r}") from exc
                 if ret_code != 0:
                     ret_msg = str(data.get("retMsg") or "")
@@ -140,13 +157,7 @@ class BybitPublicClient:
                 if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
                     retryable = True
                 elif isinstance(exc, RuntimeError):
-                    retryable = any(
-                        token in str(exc).lower()
-                        for token in (
-                            "retryable upstream error",
-                            "response decode error",
-                        )
-                    )
+                    retryable = self._is_retryable_runtime_error(exc)
                 if attempt >= self.max_retries or not retryable:
                     raise
                 time.sleep(self._retry_delay(attempt))

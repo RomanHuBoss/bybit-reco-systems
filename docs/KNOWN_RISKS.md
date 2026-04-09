@@ -30,3 +30,14 @@ LLM не должен принимать финальное торговое р�
 
 ## 9. Raw publication history по-прежнему хранится полностью
 UI/operator-list теперь по умолчанию схлопывает repeated rows одной publication-chain и адаптивно добирает raw-кандидаты, если одна длинная chain доминирует в snapshot. Audit-след в БД при этом сознательно не удаляется. Это правильно для расследований и калибровки, однако raw SQL-выгрузки без учёта `publication_root_rec_id` всё ещё могут визуально выглядеть как поток похожих сигналов.
+
+
+## 8. Legacy/manual payload compatibility remains partially semantic
+
+Execution-time validation теперь fail-closed блокирует futures/spot recommendations без явного `margin_mode`
+и рекомендации, для которых Bybit metadata относится к другому `symbol`. Это безопаснее, но означает, что
+старые вручную заведённые записи могут перестать быть исполнимыми без миграции payload'а.
+
+`account_mode=one_way` сохраняется как legacy-совместимость старых тестовых/исторических rows, однако
+это не полноценная модель account-mode текущей ревизии и не должно использоваться как основание для
+расширения execution-логики на hedge/cross сценарии.
