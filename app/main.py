@@ -690,9 +690,9 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         })
 
     if meta_category and venue and meta_category != venue:
-        warnings.append({
+        errors.append({
             "code": "BYBIT_META_CATEGORY_MISMATCH",
-            "msg": f"Metadata Bybit получена для category={meta_category}, тогда как recommendation ожидает venue={venue}.",
+            "msg": f"Metadata Bybit получена для category={meta_category}, тогда как recommendation ожидает venue={venue}; применять такие ограничения небезопасно.",
         })
 
     reference_price = _finite_float_or_none(plan.get("reference_price"))
@@ -1723,10 +1723,13 @@ def api_reco_action(rec_id: str, req: RecoActionRequest, request: Request, x_api
     if req.action not in allowed:
         raise HTTPException(status_code=400, detail=f"action must be one of {sorted(allowed)}")
     with closing(_get_conn()) as conn:
-        db.begin_immediate(conn)
         if req.action == "executed":
+            # В execution-path write-lock захватывается внутри `_materialize_bot_from_rec`
+            # уже после prefetch metadata Bybit. Иначе медленный upstream удерживает
+            # SQLite writer-lock и блокирует collector/recommender/operator flows.
             bot, existed = _materialize_bot_from_rec(conn, rec_id, operator)
             return {"ok": True, "rec_id": rec_id, "new_status": "executed", "bot_id": bot["bot_id"], "bot": bot, "idempotent": existed}
+        db.begin_immediate(conn)
         ok = db.update_recommendation_status(conn, rec_id, req.action, operator, commit=False)
         if not ok:
             _rollback_quietly(conn)

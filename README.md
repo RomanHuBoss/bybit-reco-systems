@@ -60,7 +60,7 @@
 - `reasons.direction_agg` — агрегированное направление и структура голосов по ТФ.
 - `reasons.execution_constraints` — что можно, а что нельзя исполнить на выбранном bot_type.
 - `bybit_meta` — metadata инструмента Bybit, доступная UI для операторской сверки диапазона, leverage и шагов.
-- `bybit_plan_validation` — результат execution-time валидации trade plan: ошибки блокируют подтверждение, предупреждения напоминают о неполной проверке qty/min_notional без фактического размера позиции. Дополнительно блокируются рекомендации с `reference_price` вне диапазона, внутренним `kill_switch`, схлопыванием сетки после округления по `tick_size`, отсутствующим или неподдерживаемым `margin_mode`, metadata Bybit от другого `symbol` и некорректным `leverage` относительно `min/max/leverage_step` Bybit.
+- `bybit_plan_validation` — результат execution-time валидации trade plan: ошибки блокируют подтверждение, предупреждения напоминают о неполной проверке qty/min_notional без фактического размера позиции. Дополнительно блокируются рекомендации с `reference_price` вне диапазона, внутренним `kill_switch`, схлопыванием сетки после округления по `tick_size`, отсутствующим или неподдерживаемым `margin_mode`, metadata Bybit от другого `symbol` или другого `category/venue`, а также некорректным `leverage` относительно `min/max/leverage_step` Bybit.
 - `reasons.llm_review` — second opinion LLM, включая источник (`live`, `cache`, `cache_inherited`, `async_live`, `async_inherited`).
 
 ## Документация в репозитории
@@ -69,7 +69,7 @@
 - `docs/TRADING_LOGIC.md` — торгово-логические правила, ограничения и жизненный цикл recommendation/publication-chain.
 - `docs/SCENARIOS.md` — ключевые эксплуатационные сценарии и expected behavior.
 - `docs/KNOWN_RISKS.md` — оставшиеся риски и осознанные ограничения.
-- `docs/AUDIT_REPORT_2026-04-09.md` — сводка red-team-аудита и зафиксированных допущений.
+- `docs/AUDIT_REPORT_2026-04-10.md` — сводка red-team-аудита, исправлений этой ревизии и зафиксированных допущений.
 - `CHANGELOG.md` — журнал существенных исправлений этой ревизии.
 
 ## Быстрый запуск
@@ -95,7 +95,7 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `316 passed`
+- `318 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - `pytest --cov=app --cov-report=term-missing` — запускать в release/dev-контуре; ожидается стабильный coverage baseline не ниже ранее зафиксированного уровня
 - `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения

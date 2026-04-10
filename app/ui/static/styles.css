@@ -246,6 +246,7 @@ body {
   flex: 1;
   min-height: 0;
   margin-top: 2px;
+  scrollbar-gutter: stable both-edges;
 }
 .table-scroll .table thead th {
   position: sticky;
@@ -473,8 +474,10 @@ body {
 /* Only the content area scrolls — header stays fixed */
 .modal-scroll {
   overflow-y: auto;
+  overflow-x: hidden;
   flex: 1;
   min-height: 0;
+  scrollbar-gutter: stable both-edges;
 }
 .modal-body {
   margin: 0;
@@ -542,12 +545,23 @@ body {
 }
 .modal-table-wrap {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: min(48vh, 560px);
   background: #0f172a;
   border: 1px solid var(--border);
   border-radius: 12px;
+  scrollbar-gutter: stable both-edges;
 }
 .modal-table {
   min-width: 100%;
+  table-layout: auto;
+}
+.modal-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #0f172a;
+  box-shadow: 0 1px 0 var(--border);
 }
 .modal-table th,
 .modal-table td {
@@ -558,6 +572,13 @@ body {
 }
 .modal-table .wrap {
   white-space: normal;
+}
+.modal-table.modal-table-compact {
+  font-size: 12px;
+}
+.modal-table.modal-table-compact th,
+.modal-table.modal-table-compact td {
+  padding: 6px 6px;
 }
 .modal-table-empty {
   color: var(--muted);

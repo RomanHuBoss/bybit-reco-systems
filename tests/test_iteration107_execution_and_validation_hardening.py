@@ -478,3 +478,90 @@ def test_validate_trade_plan_blocks_bybit_meta_symbol_mismatch(isolated_app_and_
 
     assert validation["ok"] is False
     assert "BYBIT_META_SYMBOL_MISMATCH" in error_codes
+
+
+# Execution API не должен держать SQLite write-lock во время сетевого prefetch Bybit metadata.
+# Иначе медленный upstream способен подвесить весь writer-контур (collector/recommender/operator actions).
+def test_api_execute_prefetches_bybit_metadata_before_begin_immediate(isolated_app_and_conn, monkeypatch: pytest.MonkeyPatch):
+    app_main, client, conn = isolated_app_and_conn
+    now = int(time.time())
+
+    _insert_reco(conn, rec_id="R-prefetch-lock-order", ts_now=now, status="recommended")
+
+    begin_calls: list[bool] = []
+    seen_in_transaction: list[bool] = []
+    real_begin = app_main.db.begin_immediate
+
+    def tracking_begin(tracked_conn):
+        begin_calls.append(bool(getattr(tracked_conn, "in_transaction", False)))
+        return real_begin(tracked_conn)
+
+    def tracking_prefetch(tracked_conn, rec_id):
+        seen_in_transaction.append(bool(getattr(tracked_conn, "in_transaction", False)))
+        return {}
+
+    monkeypatch.setattr(app_main.db, "begin_immediate", tracking_begin)
+    monkeypatch.setattr(app_main, "_prefetch_execution_bybit_meta", tracking_prefetch)
+    monkeypatch.setattr(
+        app_main,
+        "_execution_preflight",
+        lambda *_args, **_kwargs: {
+            "blocks": [],
+            "market_shock": {"state": "normal"},
+            "fast_veto": {"blocked": False},
+            "bybit_validation": {"ok": True, "errors": [], "warnings": [], "snapped_levels": {}},
+        },
+    )
+
+    response = client.post(
+        "/api/v1/recommendations/R-prefetch-lock-order/action",
+        json={"action": "executed", "operator": "tester"},
+        headers={"X-API-Key": "test-admin-key"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen_in_transaction == [False]
+    assert begin_calls == [False]
+
+
+# Категория metadata Bybit должна совпадать с venue recommendation.
+# Иначе spot-ограничения можно ошибочно применить к linear/futures или наоборот.
+def test_validate_trade_plan_blocks_bybit_category_mismatch(isolated_app_and_conn):
+    app_main, _client, _conn = isolated_app_and_conn
+
+    rec = {
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "bot_type": "futures_grid",
+        "direction": "long",
+        "account_mode": "unified",
+        "margin_mode": "isolated",
+        "params": {
+            "leverage": 2,
+            "trade_plan": {
+                "reference_price": 100.0,
+                "levels": {
+                    "range": {"lower": 99.0, "upper": 101.0},
+                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+                    "grid_step": {"step_abs": 0.25},
+                },
+            },
+        },
+    }
+    meta = {
+        "category": "spot",
+        "symbol": "BTCUSDT",
+        "tick_size": "0.1",
+        "min_price": "1",
+        "max_price": "1000000",
+        "min_notional": "5",
+        "min_leverage": "1",
+        "max_leverage": "10",
+        "leverage_step": "0.1",
+    }
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, meta)
+    error_codes = {item["code"] for item in validation["errors"]}
+
+    assert validation["ok"] is False
+    assert "BYBIT_META_CATEGORY_MISMATCH" in error_codes

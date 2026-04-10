@@ -981,7 +981,7 @@ function renderModalSummaryCards(items = []) {
   `).join("")}</div>`;
 }
 
-function buildModalTable(columns, rows, { emptyText = "Нет данных", rowClass } = {}) {
+function buildModalTable(columns, rows, { emptyText = "Нет данных", rowClass, compact = false, maxHeight } = {}) {
   const head = columns.map(col => `<th>${escapeHtml(col.label || "")}</th>`).join("");
   const body = (rows && rows.length)
     ? rows.map((row, idx) => {
@@ -995,9 +995,15 @@ function buildModalTable(columns, rows, { emptyText = "Нет данных", row
       }).join("")
     : `<tr><td colspan="${columns.length}" class="modal-table-empty">${escapeHtml(emptyText)}</td></tr>`;
 
+  const tableClasses = ["table", "modal-table"];
+  if (compact || columns.length >= 10) tableClasses.push("modal-table-compact");
+  const wrapStyle = Number.isFinite(Number(maxHeight)) && Number(maxHeight) > 0
+    ? ` style="max-height:${Number(maxHeight)}px"`
+    : "";
+
   return `
-    <div class="modal-table-wrap">
-      <table class="table modal-table">
+    <div class="modal-table-wrap"${wrapStyle}>
+      <table class="${tableClasses.join(" ")}">
         <thead><tr>${head}</tr></thead>
         <tbody>${body}</tbody>
       </table>
@@ -1470,7 +1476,7 @@ async function loadOutcomes() {
         { label: "Горизонт", render: row => escapeHtml(formatAgeHuman(row.horizon_sec)) },
         { label: "LLM summary", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.llm_review?.summary || row.llm_review?.error || "—")}</span>` },
         { label: "rec_id", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
-      ], recent, { emptyText: "Исходов пока нет. Данные появятся после созревания label horizon." })}
+      ], recent, { emptyText: "Исходов пока нет. Данные появятся после созревания label horizon.", compact: true, maxHeight: 420 })}
     </div>
   `;
 

@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 2026-04-10 — execution-path lock ordering, stricter Bybit metadata validation and operator UI tables
+
+### Исправлено
+- `POST /api/v1/recommendations/{rec_id}/action` больше не захватывает SQLite `BEGIN IMMEDIATE` до execution-time prefetch metadata Bybit: сетевой preflight снова выполняется вне write-lock, как и задумано архитектурой, поэтому медленный upstream не должен блокировать collector/recommender/operator writer-контур;
+- execution-time Bybit validation теперь fail-closed блокирует несоответствие `metadata.category` и `recommendation.venue`, а не оставляет это предупреждением;
+- модальное окно UI расширено, таблицы внутри модалок получили sticky header + независимую прокрутку тела, а самый широкий журнал исходов переведён в более компактную плотность строк.
+
+### Добавлено
+- регрессионный API-тест на порядок `Bybit prefetch -> BEGIN IMMEDIATE` в execution-path;
+- регрессионный тест на fail-closed блокировку `BYBIT_META_CATEGORY_MISMATCH`;
+- `docs/AUDIT_REPORT_2026-04-10.md` с итогами аудита этой ревизии, списком дефектов и остаточных рисков.
+
+### Тесты
+- `pytest -q` → `318 passed`;
+- `python -m py_compile app/*.py tests/*.py main.py` → passed;
+- `ruff check app tests main.py` → passed.
+
 ## 2026-04-09 — fail-closed execution validation and upstream shape hardening
 
 ### Исправлено
