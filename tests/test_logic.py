@@ -1228,7 +1228,38 @@ def test_fast_veto_release_uses_cooldown():
     assert stable["blocks"][0]["code"] == "FAST_VETO_RELEASE_COOLDOWN"
 
 
+def test_market_shock_release_cooldown_preserves_previous_timestamp():
+    prev = {"ts": 1_700_000_000, "state": "amber_down", "severity": "guarded", "bias": "down"}
+    raw = {"ts": 1_700_000_060, "state": "normal", "severity": "normal", "bias": "neutral", "reasons": []}
 
+    stable = _stabilize_market_shock(raw, prev, now_ts=1_700_000_060, hold_sec=180)
+
+    assert stable["state"] == "amber_down"
+    assert stable["stabilization"]["applied"] is True
+    assert stable["ts"] == prev["ts"]
+
+    released = _stabilize_market_shock(raw, stable, now_ts=1_700_000_100, hold_sec=180)
+
+    assert released["state"] == "normal"
+    assert released["stabilization"]["applied"] is False
+    assert released["ts"] == 1_700_000_100
+
+
+def test_fast_veto_release_cooldown_preserves_previous_timestamp():
+    prev = {"ts": 1_700_000_000, "state": "down_break", "triggered": True}
+    raw = {"state": "normal", "triggered": False, "blocks": [], "metrics": {}}
+
+    stable = _stabilize_fast_veto(raw, prev, now_ts=1_700_000_050, release_sec=60)
+
+    assert stable["triggered"] is True
+    assert stable["stabilization"]["applied"] is True
+    assert stable["ts"] == prev["ts"]
+
+    released = _stabilize_fast_veto(raw, stable, now_ts=1_700_000_061, release_sec=60)
+
+    assert released["triggered"] is False
+    assert released["stabilization"]["applied"] is False
+    assert released["ts"] == 1_700_000_061
 
 
 def _seed_ohlcv_trend(conn, *, venue: str, symbol: str, now_ts: int, tf_sec: int, n: int, base_price: float, drift_per_bar: float) -> None:

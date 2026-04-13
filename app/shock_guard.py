@@ -140,7 +140,8 @@ def _stabilize_market_shock(raw: dict[str, Any], prev: dict[str, Any] | None, no
         "hold_sec": int(max(int(hold_sec), 60)),
         "previous_state": prev_state if prev_fresh else None,
     }
-    out["ts"] = int(now_ts)
+    effective_ts = prev_ts if applied and prev_fresh else now_ts
+    out["ts"] = int(effective_ts)
     return out
 
 
@@ -174,7 +175,8 @@ def _stabilize_fast_veto(raw: dict[str, Any], prev: dict[str, Any] | None, now_t
             "release_sec": int(max(int(release_sec), 60)),
             "previous_state": prev_state if prev_fresh else None,
         }
-    out["ts"] = int(now_ts)
+    effective_ts = prev_ts if bool(out.get("stabilization", {}).get("applied")) and prev_fresh else now_ts
+    out["ts"] = int(effective_ts)
     return out
 
 
@@ -608,7 +610,7 @@ def compute_symbol_fast_veto(conn, venue: str, symbol: str, ts_now: int, directi
     key = (str(venue), str(symbol), str(direction or "neutral"))
     stabilized = _stabilize_fast_veto(raw, _FAST_VETO_STATE.get(key), int(ts_now), release_sec=120)
     _FAST_VETO_STATE[key] = {
-        "ts": int(ts_now),
+        "ts": int(stabilized.get("ts") or ts_now),
         "state": str(stabilized.get("state") or "normal"),
         "triggered": bool(stabilized.get("triggered")),
     }
