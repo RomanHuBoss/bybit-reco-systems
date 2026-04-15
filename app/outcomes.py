@@ -487,11 +487,10 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
     params: list[object] = [db.now_ts() - min_horizon]
 
     if require_llm_verdict:
-        # Filter LLM-eligible rows in SQL before ORDER BY/LIMIT.
-        # Otherwise oldest-first scanning gets permanently clogged by legacy
-        # recommendations whose LLM review never reached an outcome-eligible
-        # terminal state, and the worker keeps re-reading the same ineligible
-        # rows instead of progressing toward newer matured recommendations.
+        # Фильтруем outcome-eligible строки сразу в SQL, до ORDER BY/LIMIT.
+        # Иначе oldest-first окно навсегда забивается legacy/root рекомендациями
+        # без финального llm_review.status='ok', и worker бесконечно перечитывает
+        # один и тот же хвост вместо продвижения к более новым созревшим rec.
         base_sql += """
            AND LOWER(COALESCE(json_extract(r.reasons_json, '$.llm_review.status'), '')) = 'ok'"""
 

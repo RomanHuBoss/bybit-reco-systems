@@ -69,7 +69,7 @@
 - `docs/TRADING_LOGIC.md` — торгово-логические правила, ограничения и жизненный цикл recommendation/publication-chain.
 - `docs/SCENARIOS.md` — ключевые эксплуатационные сценарии и expected behavior.
 - `docs/KNOWN_RISKS.md` — оставшиеся риски и осознанные ограничения.
-- `docs/AUDIT_REPORT_2026-04-10.md` — сводка red-team-аудита, исправлений этой ревизии и зафиксированных допущений.
+- `docs/AUDIT_REPORT_2026-04-15.md` — сводка актуального red-team-аудита, подтверждённых дефектов, исправлений этой ревизии и зафиксированных допущений.
 - `CHANGELOG.md` — журнал существенных исправлений этой ревизии.
 
 ## Быстрый запуск
@@ -95,7 +95,7 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `318 passed`
+- `322 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - `pytest --cov=app --cov-report=term-missing` — запускать в release/dev-контуре; ожидается стабильный coverage baseline не ниже ранее зафиксированного уровня
 - `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения

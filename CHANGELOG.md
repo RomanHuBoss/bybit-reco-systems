@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 2026-04-15 — outcome backlog hardening under LLM mode and audit artifact reconciliation
+
+### Исправлено
+- `compute_outcomes_once()` теперь фильтрует LLM-eligible рекомендации в SQL **до** `ORDER BY ... LIMIT`, поэтому oldest-first окно больше не засоряется legacy/root rows без финального `llm_review.status=ok` и outcome-worker снова доходит до реально созревших рекомендаций;
+- release-документация приведена к фактическому составу поставки: восстановлены audit-report artifacts, README больше не ссылается на отсутствующий документ, baseline тестов обновлён.
+
+### Добавлено
+- `docs/AUDIT_REPORT_2026-04-15.md` с итогами deep audit этой ревизии;
+- архивные `docs/AUDIT_REPORT_2026-04-10.md` и `docs/AUDIT_REPORT_2026-04-08.md`, чтобы historical changelog / README не ссылались на отсутствующие файлы;
+- регрессионные тесты на LLM outcome backlog starvation и на целостность release-doc артефактов.
+
+### Тесты
+- `pytest -q` → `322 passed`;
+- `pytest --cov=app --cov-report=term-missing -q` → passed;
+- `python -m py_compile app/*.py tests/*.py main.py` → passed;
+- `ruff check app tests main.py` → passed.
+
 ## 2026-04-10 — execution-path lock ordering, stricter Bybit metadata validation and operator UI tables
 
 ### Исправлено
