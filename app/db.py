@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 from .bot_types import is_supported_bot_type, sql_in_clause
+from .db_backend import connect as backend_connect, describe_target, is_postgres_target, OPERATIONAL_ERRORS, INTEGRITY_ERRORS, POSTGRES
 import logging
 
 logger = logging.getLogger(__name__)
@@ -32,28 +33,21 @@ def is_expirable_recommendation_status(status: Any) -> bool:
 MIGRATION_INIT_SQL = Path(__file__).resolve().parent.parent / "migrations" / "init.sql"
 
 def runtime_lock_db_path(db_path: str) -> str:
+    if is_postgres_target(db_path):
+        return str(db_path)
     base = Path(str(db_path)).expanduser()
     return str(base.with_name(f"{base.stem}.runtime_locks.sqlite"))
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    # Multiple background threads write concurrently (collector/sentiment/recommender/outcomes).
-    # Use a longer SQLite busy timeout to avoid transient "database is locked" write failures.
-    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=60.0)
-    conn.row_factory = sqlite3.Row
+def connect(db_path: str):
     try:
-        conn.execute("PRAGMA busy_timeout=60000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA temp_store=MEMORY;")
+        return backend_connect(db_path)
     except Exception:
-        logger.debug("PRAGMA setup error", exc_info=True)
-    return conn
+        logger.debug("db connect failed for %s", describe_target(db_path), exc_info=True)
+        raise
 
 
-def connect_runtime_locks(db_path: str) -> sqlite3.Connection:
+def connect_runtime_locks(db_path: str):
     return connect(runtime_lock_db_path(db_path))
 
 
@@ -337,7 +331,10 @@ def repair_async_llm_pending_publication_chains(conn: sqlite3.Connection) -> int
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    sql = MIGRATION_INIT_SQL.read_text(encoding="utf-8")
+    migration_path = MIGRATION_INIT_SQL
+    if getattr(conn, "db_engine", "sqlite") == POSTGRES:
+        migration_path = MIGRATION_INIT_SQL.with_name("init_postgres.sql")
+    sql = migration_path.read_text(encoding="utf-8")
     conn.executescript(sql)
     conn.execute("""CREATE TABLE IF NOT EXISTS runtime_locks (
       lock_key TEXT PRIMARY KEY,
@@ -367,7 +364,7 @@ def _execute_lock_write_with_retry(op, *, attempts: int = 6, sleep_sec: float = 
     for attempt in range(max(1, int(attempts))):
         try:
             return op()
-        except sqlite3.OperationalError as exc:
+        except OPERATIONAL_ERRORS as exc:
             last_exc = exc
             if not _is_lock_retryable_error(exc) or attempt + 1 >= max(1, int(attempts)):
                 raise
@@ -517,7 +514,7 @@ def _commit_write_with_retry(
             result = op()
             conn.commit()
             return result
-        except sqlite3.OperationalError as exc:
+        except OPERATIONAL_ERRORS as exc:
             last_exc = exc
             if not _is_lock_retryable_error(exc) or attempt + 1 >= max(1, int(attempts)):
                 raise
@@ -859,7 +856,7 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
 
     Raises:
       ValueError when the same bot_id already exists with different payload.
-      sqlite3.IntegrityError for other unexpected uniqueness conflicts.
+      integrity/backend error for other unexpected uniqueness conflicts.
     """
     payload = (
         bot["bot_id"],
@@ -911,7 +908,7 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
         if commit:
             conn.commit()
         return "inserted"
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
         origin_rec_id = bot.get("origin_rec_id")
         if origin_rec_id:
             existing = get_bot_by_origin_rec(conn, str(origin_rec_id))
@@ -1298,7 +1295,7 @@ def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, tt
 
     try:
         return bool(_execute_lock_write_with_retry(_op))
-    except sqlite3.OperationalError:
+    except OPERATIONAL_ERRORS:
         try:
             conn.rollback()
         except Exception:

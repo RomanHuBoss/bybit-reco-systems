@@ -32,6 +32,7 @@ from .recommender import run_recommender_once, run_llm_review_sweep_once, LLM_RE
 from .risk import get_risk_limits, compute_risk_status, gate_candidate, normalize_risk_limits
 from .security import is_authorized
 from . import db
+from .db_backend import describe_target
 from .bot_types import sql_in_clause
 import logging
 
@@ -141,8 +142,8 @@ def _bootstrap_db() -> None:
 _bootstrap_db()
 with closing(_get_lock_conn()) as lock_conn:
     db.init_runtime_lock_db(lock_conn)
-logger.info("db_path=%s", Path(settings.db_path).resolve())
-logger.info("runtime_lock_db_path=%s", Path(settings.runtime_lock_db_path).resolve())
+logger.info("db_target=%s", describe_target(settings.db_path))
+logger.info("runtime_lock_target=%s", describe_target(settings.runtime_lock_db_path))
 
 
 def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:

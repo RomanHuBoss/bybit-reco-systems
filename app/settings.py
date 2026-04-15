@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from .llm_review import parse_tf_secs
 from .security import KeyStore
+from .db_backend import POSTGRES, SQLITE
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -157,6 +158,7 @@ class Settings:
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
     runtime_lock_db_path: str = ""
+    db_engine: str = SQLITE
 
     require_conf_gate: bool = False
     llm_reviewer_enabled: bool = False
@@ -251,12 +253,20 @@ def load_settings() -> Settings:
     reco_warmup_min_ready_symbols = _env_int("RECO_WARMUP_MIN_READY_SYMBOLS", 1, minimum=1, maximum=10_000)
     reco_warmup_log_cooldown_sec = _env_int("RECO_WARMUP_LOG_COOLDOWN_SEC", 120, minimum=10, maximum=3600)
 
-    db_path = _resolve_project_path(_env("DB_PATH", "./data/app.db"))
-    runtime_lock_db_path = _resolve_project_path(os.getenv("RUNTIME_LOCK_DB_PATH") or _default_runtime_lock_db_path(db_path))
-    if Path(runtime_lock_db_path) == Path(db_path):
-        raise RuntimeError("RUNTIME_LOCK_DB_PATH must differ from DB_PATH")
+    db_engine_raw = _env("DB_ENGINE", SQLITE).strip().lower()
+    db_engine = POSTGRES if db_engine_raw in {"postgres", "postgresql"} else SQLITE
+
+    if db_engine == POSTGRES:
+        db_path = _env("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/bybit_reco")
+        runtime_lock_db_path = os.getenv("RUNTIME_LOCK_DATABASE_URL") or db_path
+    else:
+        db_path = _resolve_project_path(_env("DB_PATH", "./data/app.db"))
+        runtime_lock_db_path = _resolve_project_path(os.getenv("RUNTIME_LOCK_DB_PATH") or _default_runtime_lock_db_path(db_path))
+        if Path(runtime_lock_db_path) == Path(db_path):
+            raise RuntimeError("RUNTIME_LOCK_DB_PATH must differ from DB_PATH")
 
     return Settings(
+        db_engine=db_engine,
         require_conf_gate=require_conf_gate,
         db_path=db_path,
         runtime_lock_db_path=runtime_lock_db_path,
