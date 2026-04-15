@@ -257,8 +257,10 @@ def load_settings() -> Settings:
     db_engine = POSTGRES if db_engine_raw in {"postgres", "postgresql"} else SQLITE
 
     if db_engine == POSTGRES:
-        db_path = _env("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/bybit_reco")
-        runtime_lock_db_path = os.getenv("RUNTIME_LOCK_DATABASE_URL") or db_path
+        db_path = str(os.getenv("DATABASE_URL") or "").strip()
+        if not db_path:
+            raise RuntimeError("DATABASE_URL is required when DB_ENGINE=postgresql")
+        runtime_lock_db_path = str(os.getenv("RUNTIME_LOCK_DATABASE_URL") or db_path).strip() or db_path
     else:
         db_path = _resolve_project_path(_env("DB_PATH", "./data/app.db"))
         runtime_lock_db_path = _resolve_project_path(os.getenv("RUNTIME_LOCK_DB_PATH") or _default_runtime_lock_db_path(db_path))

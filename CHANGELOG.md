@@ -101,3 +101,11 @@
 ### Тесты
 - добавлены регрессионные тесты на mode/leverage validation;
 - добавлены тесты release-integrity для новых docs/env cross-reference.
+
+## 2026-04-15 — hardening after deep audit
+- PostgreSQL mode теперь требует явно заданный `DATABASE_URL`; unsafe-default на localhost удалён.
+- Сообщение о старте в PostgreSQL-режиме без установленного `psycopg[binary]` сделано явным и операционно полезным.
+- Захват `runtime_locks` в PostgreSQL переведён на atomic UPSERT, чтобы исключить split-brain при конкурентном старте нескольких процессов.
+- Для `bot_instances` введён materialized `publication_root_rec_id` и жёсткий инвариант: не более одного `running`-бота на одну publication-chain.
+- Bootstrap теперь fail-closed обнаруживает исторически повреждённые БД с дублирующими running-ботами в одной chain.
+- Добавлены регрессионные тесты для PostgreSQL bootstrap, runtime-lock safety и publication-chain execution safety.

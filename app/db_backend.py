@@ -39,6 +39,14 @@ def is_postgres_target(target: str | None) -> bool:
     return value.startswith(_POSTGRES_DSN_PREFIXES)
 
 
+def postgres_driver_required_error() -> RuntimeError:
+    return RuntimeError(
+        "PostgreSQL mode requires installed package 'psycopg[binary]'. "
+        "Install runtime dependencies via `pip install -r requirements.txt` "
+        "or switch configuration to DB_ENGINE=sqlite."
+    )
+
+
 if psycopg is not None:
     OPERATIONAL_ERRORS = (sqlite3.OperationalError, psycopg.OperationalError)
     INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
@@ -75,8 +83,8 @@ class PostgresConnection:
     db_engine = POSTGRES
 
     def __init__(self, dsn: str):
-        if psycopg is None:  # pragma: no cover - guarded by dependency installation
-            raise RuntimeError("psycopg is required for PostgreSQL mode")
+        if psycopg is None:  # pragma: no cover - exercised when optional dependency is absent
+            raise postgres_driver_required_error()
         self._dsn = str(dsn)
         self._conn = psycopg.connect(self._dsn, autocommit=False, row_factory=dict_row)
 

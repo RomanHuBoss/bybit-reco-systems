@@ -114,6 +114,85 @@ def _ensure_recommendation_publication_columns(conn: sqlite3.Connection) -> None
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reco_outcome_root_ts ON recommendations(is_outcome_label_root, ts DESC)")
 
 
+def _normalize_bot_publication_root(value: Any) -> str | None:
+    root = str(value or "").strip()
+    return root or None
+
+
+def _ensure_bot_publication_root_columns(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "bot_instances")
+    if "publication_root_rec_id" not in cols:
+        conn.execute("ALTER TABLE bot_instances ADD COLUMN publication_root_rec_id TEXT")
+    _backfill_bot_publication_root(conn)
+    duplicates = _find_running_publication_root_duplicates(conn)
+    if duplicates:
+        raise RuntimeError(
+            "Duplicate running bots detected for publication roots: "
+            + ", ".join(f"{root} (count={count})" for root, count in duplicates)
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_publication_root_status "
+        "ON bot_instances(publication_root_rec_id, status, started_ts DESC)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_running_publication_root_unique "
+        "ON bot_instances(publication_root_rec_id) "
+        "WHERE publication_root_rec_id IS NOT NULL AND status='running'"
+    )
+
+
+def _backfill_bot_publication_root(conn: sqlite3.Connection) -> int:
+    cur = conn.execute(
+        "SELECT bot_id, origin_rec_id, publication_root_rec_id FROM bot_instances ORDER BY started_ts ASC, bot_id ASC"
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return 0
+
+    cache: dict[str, str | None] = {}
+    updates: list[tuple[str | None, str]] = []
+    for row in rows:
+        current_root = _normalize_bot_publication_root(row["publication_root_rec_id"])
+        if current_root is not None:
+            continue
+        origin_rec_id = str(row["origin_rec_id"] or "").strip()
+        root_id: str | None = None
+        if origin_rec_id:
+            if origin_rec_id not in cache:
+                rec = get_recommendation_by_id(conn, origin_rec_id)
+                cache[origin_rec_id] = _normalize_bot_publication_root(
+                    (rec or {}).get("publication_root_rec_id") or origin_rec_id
+                )
+            root_id = cache.get(origin_rec_id)
+        if root_id is None:
+            root_id = origin_rec_id or None
+        updates.append((root_id, row["bot_id"]))
+
+    if updates:
+        conn.executemany(
+            "UPDATE bot_instances SET publication_root_rec_id=? WHERE bot_id=?",
+            updates,
+        )
+    return len(updates)
+
+
+def _find_running_publication_root_duplicates(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+    cur = conn.execute(
+        """SELECT publication_root_rec_id, COUNT(*) AS c
+               FROM bot_instances
+              WHERE status='running'
+                AND publication_root_rec_id IS NOT NULL
+                AND TRIM(publication_root_rec_id) <> ''
+              GROUP BY publication_root_rec_id
+            HAVING COUNT(*) > 1
+              ORDER BY publication_root_rec_id ASC"""
+    )
+    out: list[tuple[str, int]] = []
+    for row in cur.fetchall():
+        out.append((str(row["publication_root_rec_id"]), int(row["c"])))
+    return out
+
+
 def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int:
     cols = _table_columns(conn, "recommendations")
     if "publication_root_rec_id" not in cols or "is_outcome_label_root" not in cols:
@@ -343,6 +422,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     )""")
     _ensure_recommendation_publication_columns(conn)
     backfill_recommendation_publication_lineage(conn)
+    _ensure_bot_publication_root_columns(conn)
     conn.commit()
 
 def init_runtime_lock_db(conn: sqlite3.Connection) -> None:
@@ -356,7 +436,15 @@ def init_runtime_lock_db(conn: sqlite3.Connection) -> None:
 
 def _is_lock_retryable_error(exc: Exception) -> bool:
     msg = str(exc).lower()
-    return "database is locked" in msg or "database table is locked" in msg or "busy" in msg
+    return (
+        "database is locked" in msg
+        or "database table is locked" in msg
+        or "busy" in msg
+        or "deadlock detected" in msg
+        or "could not serialize access" in msg
+        or "lock timeout" in msg
+        or "lock not available" in msg
+    )
 
 
 def _execute_lock_write_with_retry(op, *, attempts: int = 6, sleep_sec: float = 0.05):
@@ -870,11 +958,12 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
         _json_dumps_canonical(bot["state"]),
         bot["status"],
         bot.get("origin_rec_id"),
+        _normalize_bot_publication_root(bot.get("publication_root_rec_id") or bot.get("origin_rec_id")),
     )
 
     cur = conn.execute(
         """SELECT started_ts, stopped_ts, venue, symbol, bot_type,
-                  mode_json, params_json, state_json, status, origin_rec_id
+                  mode_json, params_json, state_json, status, origin_rec_id, publication_root_rec_id
            FROM bot_instances WHERE bot_id=?""",
         (bot["bot_id"],),
     )
@@ -891,6 +980,7 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
             _json_dumps_canonical(_json_loads_mapping_or_default(row["state_json"], {})),
             row["status"],
             row["origin_rec_id"],
+            _normalize_bot_publication_root(row["publication_root_rec_id"]),
         )
         incoming = payload[1:]
         if existing == incoming:
@@ -901,8 +991,8 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
         conn.execute(
             """INSERT INTO bot_instances(
                 bot_id, started_ts, stopped_ts, venue, symbol, bot_type,
-                mode_json, params_json, state_json, status, origin_rec_id
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                mode_json, params_json, state_json, status, origin_rec_id, publication_root_rec_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             payload,
         )
         if commit:
@@ -914,6 +1004,11 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
             existing = get_bot_by_origin_rec(conn, str(origin_rec_id))
             if existing is not None:
                 return "duplicate_origin"
+        publication_root_rec_id = _normalize_bot_publication_root(bot.get("publication_root_rec_id") or origin_rec_id)
+        if publication_root_rec_id and str(bot.get("status") or "").strip().lower() == "running":
+            existing_running = get_bot_by_publication_root(conn, publication_root_rec_id, status="running")
+            if existing_running is not None:
+                return "duplicate_publication_root_running"
         raise
 
 def stop_bot(conn: sqlite3.Connection, bot_id: str, *, stopped_ts: int | None = None, commit: bool = True) -> bool:
@@ -941,6 +1036,7 @@ def _decode_bot_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
         "state": _json_loads_mapping_or_default(r["state_json"], {}),
         "status": r["status"],
         "origin_rec_id": r["origin_rec_id"],
+        "publication_root_rec_id": _normalize_bot_publication_root(r["publication_root_rec_id"]),
     }
 
 
@@ -965,19 +1061,32 @@ def get_bot_by_publication_root(
 ) -> dict[str, Any] | None:
     """Return the newest bot for a publication chain.
 
-    By default this returns the latest historical bot regardless of lifecycle state.
-    Execution-time idempotency should usually scope this to ``status='running'`` so a
-    previously stopped bot does not block a later active chain member from starting a
-    fresh position inside the same publication lineage.
+    Предпочитаем materialized ``publication_root_rec_id`` в ``bot_instances``. Это
+    делает idempotency независимой от join к recommendations и позволяет держать
+    инвариант "не более одного running bot на одну publication-chain" прямо на
+    уровне БД. Для старых БД с ещё не заполненной колонкой оставляем fallback через
+    join к recommendations.
     """
     root_id = str(publication_root_rec_id or "").strip()
     if not root_id:
         return None
+    cols = _table_columns(conn, "bot_instances")
+    if "publication_root_rec_id" in cols:
+        sql = "SELECT * FROM bot_instances WHERE publication_root_rec_id=?"
+        params: list[Any] = [root_id]
+        if status is not None:
+            sql += " AND status=?"
+            params.append(str(status))
+        sql += " ORDER BY started_ts DESC LIMIT 1"
+        cur = conn.execute(sql, params)
+        bot = _decode_bot_row(cur.fetchone())
+        if bot is not None:
+            return bot
     sql = """SELECT b.*
                FROM bot_instances b
                JOIN recommendations r ON r.rec_id = b.origin_rec_id
               WHERE COALESCE(NULLIF(TRIM(r.publication_root_rec_id), ''), r.rec_id) = ?"""
-    params: list[Any] = [root_id]
+    params = [root_id]
     if status is not None:
         sql += " AND b.status=?"
         params.append(str(status))
@@ -1265,8 +1374,41 @@ def update_recommendation_review(
 
 
 def acquire_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str, ttl_sec: int = 90) -> bool:
-    """Cross-process best-effort leader lock backed by SQLite."""
+    """Cross-process best-effort leader lock.
+
+    Для SQLite сериализация достигается через ``BEGIN IMMEDIATE``. Для PostgreSQL
+    одного ``BEGIN`` недостаточно: два лидера могут одновременно прочитать
+    отсутствие lock-row и оба записать себя владельцем. Поэтому в PostgreSQL
+    claim выполняется одной atomic UPSERT-командой с проверкой протухшего
+    heartbeat прямо внутри ``ON CONFLICT ... DO UPDATE ... WHERE``.
+    """
     now = now_ts()
+    if getattr(conn, "db_engine", "sqlite") == POSTGRES:
+        expiry_before = now - max(5, int(ttl_sec))
+
+        def _pg_op() -> bool:
+            cur = conn.execute(
+                """INSERT INTO runtime_locks(lock_key, owner, heartbeat_ts)
+                       VALUES(?,?,?)
+                    ON CONFLICT (lock_key) DO UPDATE
+                          SET owner=EXCLUDED.owner, heartbeat_ts=EXCLUDED.heartbeat_ts
+                        WHERE runtime_locks.owner=EXCLUDED.owner
+                           OR runtime_locks.heartbeat_ts < ?
+                    RETURNING owner""",
+                (lock_key, owner, now, expiry_before),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return row is not None
+
+        try:
+            return bool(_execute_lock_write_with_retry(_pg_op))
+        except OPERATIONAL_ERRORS:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.debug("rollback error", exc_info=True)
+            return False
 
     def _op() -> bool:
         conn.execute("BEGIN IMMEDIATE")

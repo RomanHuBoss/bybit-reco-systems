@@ -105,7 +105,8 @@ CREATE TABLE IF NOT EXISTS bot_instances (
   params_json TEXT NOT NULL,
   state_json TEXT NOT NULL,
   status TEXT NOT NULL,
-  origin_rec_id TEXT
+  origin_rec_id TEXT,
+  publication_root_rec_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bots_status ON bot_instances(status);

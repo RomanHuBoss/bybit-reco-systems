@@ -1455,6 +1455,7 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         },
         "status": "running",
         "origin_rec_id": rec_id,
+        "publication_root_rec_id": publication_root_rec_id,
     }
     try:
         insert_result = db.insert_bot_instance(conn, bot, commit=False)
@@ -1465,6 +1466,16 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
                     db.update_recommendation_status(conn, rec_id, "executed", operator)
                 return existing, True
             raise HTTPException(status_code=409, detail="bot creation conflicted with an existing origin_rec_id")
+        if insert_result == "duplicate_publication_root_running":
+            existing = db.get_bot_by_publication_root(conn, publication_root_rec_id, status="running")
+            if existing:
+                if rec.get("status") != "executed":
+                    db.update_recommendation_status(conn, rec_id, "executed", operator)
+                    conn.commit()
+                else:
+                    _rollback_quietly(conn)
+                return existing, True
+            raise HTTPException(status_code=409, detail="bot creation conflicted with an existing running publication chain")
 
         status_updated = db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
         if not status_updated:

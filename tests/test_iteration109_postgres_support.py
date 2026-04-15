@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from app import db
-from app.db_backend import POSTGRES, translate_sql
+from app.db_backend import POSTGRES, PostgresConnection, postgres_driver_required_error, translate_sql
 
 
 @pytest.fixture()
@@ -28,6 +28,14 @@ def test_load_settings_supports_postgres_mode(monkeypatch: pytest.MonkeyPatch, r
     assert settings.db_engine == POSTGRES
     assert settings.db_path == "postgresql://user:secret@127.0.0.1:5432/bybit_reco"
     assert settings.runtime_lock_db_path == settings.db_path
+
+
+def test_load_settings_requires_explicit_database_url(monkeypatch: pytest.MonkeyPatch, reload_settings_module) -> None:
+    monkeypatch.setenv("DB_ENGINE", "postgresql")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL is required when DB_ENGINE=postgresql"):
+        reload_settings_module.load_settings()
 
 
 def test_load_settings_supports_dedicated_postgres_runtime_lock_db(monkeypatch: pytest.MonkeyPatch, reload_settings_module) -> None:
@@ -76,3 +84,21 @@ def test_translate_sql_converts_sqlite_pragma_table_info_for_postgres() -> None:
     assert params == ()
     assert "information_schema.columns" in sql
     assert "table_name = 'recommendations'" in sql
+
+
+def test_postgres_connection_without_psycopg_has_actionable_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.db_backend.psycopg", None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        PostgresConnection("postgresql://user:secret@127.0.0.1:5432/bybit_reco")
+
+    msg = str(excinfo.value)
+    assert "psycopg[binary]" in msg
+    assert "pip install -r requirements.txt" in msg
+    assert "DB_ENGINE=sqlite" in msg
+
+
+def test_postgres_driver_required_error_mentions_safe_recovery_path() -> None:
+    msg = str(postgres_driver_required_error())
+    assert "psycopg[binary]" in msg
+    assert "DB_ENGINE=sqlite" in msg

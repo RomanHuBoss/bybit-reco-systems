@@ -95,7 +95,7 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `328 passed`
+- `334 passed`
 - `python -m py_compile app/*.py tests/*.py main.py` — passed without errors
 - `pytest --cov=app --cov-report=term-missing` — запускать в release/dev-контуре; ожидается стабильный coverage baseline не ниже ранее зафиксированного уровня
 - `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения
@@ -105,7 +105,7 @@ ruff check app tests main.py
 - `DB_ENGINE` — backend persistence: `sqlite` или `postgresql`;
 - `DB_PATH` — путь к основной SQLite БД. Если указан относительный путь, он автоматически разворачивается относительно корня проекта;
 - `RUNTIME_LOCK_DB_PATH` — путь к отдельной sidecar-БД runtime lock для SQLite; по умолчанию это `*.runtime_locks.sqlite` рядом с основной БД. Значение обязано отличаться от `DB_PATH`, иначе bootstrap завершится ошибкой конфигурации;
-- `DATABASE_URL` — DSN основной PostgreSQL БД в режиме `DB_ENGINE=postgresql`;
+- `DATABASE_URL` — обязательный DSN основной PostgreSQL БД в режиме `DB_ENGINE=postgresql`; теперь он должен быть задан явно, чтобы сервис не пытался молча подключаться к локальному `postgresql://127.0.0.1/...` по unsafe-default;
 - `RUNTIME_LOCK_DATABASE_URL` — опциональный отдельный DSN для runtime lock в PostgreSQL-режиме; если не задан, используется `DATABASE_URL`;
 - `SYMBOLS_SPOT`, `SYMBOLS_LINEAR` — списки символов; дубли теперь автоматически удаляются на bootstrap с сохранением порядка, чтобы один и тот же инструмент не собирался и не скорился несколько раз в рамках одного venue;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
@@ -192,8 +192,13 @@ ruff check app tests main.py
 - `pending` — кандидат ждёт подтверждения persistence-gate и ещё не исполним;
 - `suppressed` — скрытая альтернатива, проигравшая dedupe/selector и сохранённая только для аудита.
 
+### Инварианты исполнения publication-chain
+- в одной `publication_chain` допускается не более одного `running` bot_instance одновременно; этот инвариант теперь удерживается не только логикой API, но и индексом/проверкой на уровне БД;
+- при гонке двух `execute` для разных членов одной chain второй запрос должен идемпотентно переиспользовать уже созданный running-бот, а не создавать дублирующую позицию;
+- если в существующей БД уже обнаружены два `running` bot_instance для одной chain, bootstrap завершится fail-closed с явной ошибкой конфигурационной/исторической целостности.
+
 ## Stability notes
-- background loops используют runtime lock в выбранном backend; в SQLite это отдельная sidecar-БД, в PostgreSQL — тот же DSN либо отдельный `RUNTIME_LOCK_DATABASE_URL`. Активным сборщиком/рекомендером остаётся только один лидер; operator execute-path больше не держит этот же write-контур на внешнем Bybit fetch, что снижает риск каскадных `database is locked` при деградации сети;
+- background loops используют runtime lock в выбранном backend; в SQLite это отдельная sidecar-БД, в PostgreSQL — тот же DSN либо отдельный `RUNTIME_LOCK_DATABASE_URL`. Для PostgreSQL захват лидерства теперь выполняется одной atomic UPSERT-операцией, а не парой `SELECT`→`UPDATE`, чтобы исключить split-brain при одновременном старте двух инстансов; operator execute-path больше не держит этот же write-контур на внешнем Bybit fetch, что снижает риск каскадных `database is locked` при деградации сети;
 - публичный Bybit REST-клиент ретраит не только обычные timeout/network ошибки и HTTP 429/5xx, но и transient transport/protocol сбои уровня `RemoteProtocolError`, `408` и битые 2xx-ответы с невалидным JSON, которые периодически встречаются за CDN/WAF;
 - background loops завершаются по lifespan stop-event и не должны переживать штатный stop/restart процесса как «ложно упавшие» daemon-потоки;
 - collector работает с явными stage-boundary commit, а не с одной гигантской write-транзакцией через весь цикл: это осознанный компромисс ради корректного heartbeat и отсутствия скрытого split-brain;
@@ -227,3 +232,7 @@ ruff check app tests main.py
 - не храните реальные секреты в `.env` внутри репозитория;
 - если нужен полноценный execution layer, его нужно строить отдельно от recommendation engine.
 
+
+## Troubleshooting PostgreSQL bootstrap
+- Ошибка `DATABASE_URL is required when DB_ENGINE=postgresql` означает, что выбран PostgreSQL-режим без явного DSN. Задайте `DATABASE_URL=postgresql://...` в `.env`.
+- Ошибка `PostgreSQL mode requires installed package 'psycopg[binary]'` означает, что окружение собрано без runtime-зависимостей PostgreSQL. Исправление: `pip install -r requirements.txt`. Если PostgreSQL не нужен, переключите `DB_ENGINE=sqlite`.

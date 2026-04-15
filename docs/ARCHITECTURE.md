@@ -144,3 +144,8 @@
 Проект можно считать **production-ready только как recommendation + audit service**.
 Для production-grade auto-execution нужен отдельный OMS/EMS-контур с order/fill state machine,
 идемпотентным order routing, websocket reconciliation и recovery по реальным ордерам.
+
+
+## Дополнительные инварианты этой ревизии
+- `runtime_locks` в PostgreSQL захватываются атомарно через одну UPSERT-операцию; схема `SELECT`→`UPDATE` для leader-election признана небезопасной из-за риска split-brain.
+- `bot_instances.publication_root_rec_id` materialized и используется как DB-level инвариант для запрета двух одновременных `running`-ботов в одной publication-chain.
