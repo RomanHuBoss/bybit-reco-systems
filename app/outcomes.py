@@ -477,17 +477,29 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
     fetch_limit = max(int(max_to_process), min(2000, int(max_to_process) * 12))
     require_llm_verdict = bool(getattr(settings, "llm_reviewer_enabled", False))
 
-    cur = conn.execute(
-        """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
+    base_sql = """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
                   r.params_json, r.features_ref_ts, r.status, r.reasons_json
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.ts <= ? AND o.rec_id IS NULL
            AND COALESCE(r.is_outcome_label_root, 1) = 1
-           AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'pending')
-           ORDER BY r.ts ASC LIMIT ?""",
-        (db.now_ts() - min_horizon, fetch_limit),
-    )
+           AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'pending')"""
+    params: list[object] = [db.now_ts() - min_horizon]
+
+    if require_llm_verdict:
+        # Filter LLM-eligible rows in SQL before ORDER BY/LIMIT.
+        # Otherwise oldest-first scanning gets permanently clogged by legacy
+        # recommendations whose LLM review never reached an outcome-eligible
+        # terminal state, and the worker keeps re-reading the same ineligible
+        # rows instead of progressing toward newer matured recommendations.
+        base_sql += """
+           AND LOWER(COALESCE(json_extract(r.reasons_json, '$.llm_review.status'), '')) = 'ok'"""
+
+    base_sql += """
+           ORDER BY r.ts ASC LIMIT ?"""
+    params.append(fetch_limit)
+
+    cur = conn.execute(base_sql, tuple(params))
     rows = cur.fetchall()
     done = 0
 
