@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 from .bot_types import is_supported_bot_type, sql_in_clause
-from .db_backend import connect as backend_connect, describe_target, is_postgres_target, OPERATIONAL_ERRORS, INTEGRITY_ERRORS, POSTGRES
+from .db_backend import connect as backend_connect, describe_target, is_postgres_target, OPERATIONAL_ERRORS, INTEGRITY_ERRORS, POSTGRES, SQLITE
 import logging
 
 logger = logging.getLogger(__name__)
@@ -1040,8 +1040,14 @@ def _decode_bot_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
     }
 
 
-def get_bot_instance(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any] | None:
-    cur = conn.execute("SELECT * FROM bot_instances WHERE bot_id=?", (bot_id,))
+def get_bot_instance(conn: sqlite3.Connection, bot_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
+    sql = "SELECT * FROM bot_instances WHERE bot_id=?"
+    if for_update and getattr(conn, "db_engine", SQLITE) == POSTGRES:
+        # Для PostgreSQL мутационные API-пути должны блокировать конкретную строку
+        # bot_instances, иначе два одновременных trade/stop запроса могут прочитать
+        # один и тот же state_json и затем перезаписать агрегаты друг друга.
+        sql += " FOR UPDATE"
+    cur = conn.execute(sql, (bot_id,))
     bot = _decode_bot_row(cur.fetchone())
     if bot and not is_supported_bot_type(bot.get("bot_type")):
         return None
@@ -1317,8 +1323,15 @@ def get_recommendations(
             break
     return rows
 
-def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict[str, Any] | None:
-    cur = conn.execute("""SELECT * FROM recommendations WHERE rec_id=?""", (rec_id,))
+def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
+    sql = "SELECT * FROM recommendations WHERE rec_id=?"
+    if for_update and getattr(conn, "db_engine", SQLITE) == POSTGRES:
+        # В PostgreSQL обычный BEGIN не сериализует read-check-write так же жёстко,
+        # как BEGIN IMMEDIATE в SQLite. FOR UPDATE нужен, чтобы concurrent
+        # operator-actions не принимали решения по одному и тому же rec на
+        # разъехавшемся снимке статуса.
+        sql += " FOR UPDATE"
+    cur = conn.execute(sql, (rec_id,))
     r = cur.fetchone()
     if not r or not is_supported_bot_type(r["bot_type"]):
         return None

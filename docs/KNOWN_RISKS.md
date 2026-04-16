@@ -44,3 +44,6 @@ Execution-time validation теперь fail-closed блокирует futures/sp
 `account_mode=one_way` сохраняется как legacy-совместимость старых тестовых/исторических rows, однако
 это не полноценная модель account-mode текущей ревизии и не должно использоваться как основание для
 расширения execution-логики на hedge/cross сценарии.
+
+## 11. Рекомендательный сервис по-прежнему не заменяет внешний reconciliation с биржей
+Даже после усиления row-level locking в PostgreSQL и DB-level инвариантов publication-chain проект видит только операторские `trades`, а не реальный поток ордеров/исполнений Bybit. Поэтому окончательная truth-модель позиции, funding и liquidation всё ещё должна жить во внешнем execution/reconciliation контуре.

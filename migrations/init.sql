@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS bot_instances (
 
 CREATE INDEX IF NOT EXISTS idx_bots_status ON bot_instances(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_origin_rec_unique ON bot_instances(origin_rec_id) WHERE origin_rec_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_bot_publication_root_status ON bot_instances(publication_root_rec_id, status, started_ts DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_running_publication_root_unique ON bot_instances(publication_root_rec_id) WHERE publication_root_rec_id IS NOT NULL AND status='running';
 
 CREATE TABLE IF NOT EXISTS trades (
   trade_id TEXT PRIMARY KEY,

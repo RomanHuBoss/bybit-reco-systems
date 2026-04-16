@@ -8,6 +8,8 @@
 
 ### Добавлено
 - `docs/AUDIT_REPORT_2026-04-15.md` с итогами deep audit этой ревизии;
+- row-level locking (`FOR UPDATE`) для mutating API-путей в PostgreSQL, чтобы concurrent `execute` / `trade` / `stop` не теряли согласованность состояния;
+- выравнивание standalone migration-файлов `init.sql` / `init_postgres.sql` с runtime-bootstrap: добавлены индексы и уникальный инвариант по `publication_root_rec_id` для running-ботов;
 - архивные `docs/AUDIT_REPORT_2026-04-10.md` и `docs/AUDIT_REPORT_2026-04-08.md`, чтобы historical changelog / README не ссылались на отсутствующие файлы;
 - регрессионные тесты на LLM outcome backlog starvation и на целостность release-doc артефактов.
 

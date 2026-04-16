@@ -1345,7 +1345,7 @@ def _prefetch_execution_bybit_meta(conn, rec_id: str) -> dict[str, Any]:
 def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) -> tuple[dict[str, Any], bool]:
     bybit_meta = _prefetch_execution_bybit_meta(conn, rec_id)
     db.begin_immediate(conn)
-    rec = db.get_recommendation_by_id(conn, rec_id)
+    rec = db.get_recommendation_by_id(conn, rec_id, for_update=True)
     if not rec:
         raise HTTPException(status_code=404, detail="rec_id not found")
 
@@ -1353,7 +1353,6 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     ttl_sec = max(0, _safe_int(rec.get("ttl_sec"), 0))
     rec_ts = max(0, _safe_int(rec.get("ts"), 0))
     is_expired = bool(ttl_sec > 0 and rec_ts > 0 and int(time.time()) > rec_ts + ttl_sec)
-
     existing = db.get_bot_by_origin_rec(conn, rec_id)
     if existing:
         if current_status != "executed":
@@ -1742,6 +1741,10 @@ def api_reco_action(rec_id: str, req: RecoActionRequest, request: Request, x_api
             bot, existed = _materialize_bot_from_rec(conn, rec_id, operator)
             return {"ok": True, "rec_id": rec_id, "new_status": "executed", "bot_id": bot["bot_id"], "bot": bot, "idempotent": existed}
         db.begin_immediate(conn)
+        rec = db.get_recommendation_by_id(conn, rec_id, for_update=True)
+        if rec is None:
+            _rollback_quietly(conn)
+            raise HTTPException(status_code=404, detail="rec_id not found")
         ok = db.update_recommendation_status(conn, rec_id, req.action, operator, commit=False)
         if not ok:
             _rollback_quietly(conn)
@@ -1775,7 +1778,7 @@ def api_stop_bot(bot_id: str, req: BotStopRequest, request: Request, x_api_key: 
     _require_admin_key(x_api_key, request)
     with closing(_get_conn()) as conn:
         db.begin_immediate(conn)
-        bot = db.get_bot_instance(conn, bot_id)
+        bot = db.get_bot_instance(conn, bot_id, for_update=True)
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
         if str(bot.get("status") or "") == "stopped":
@@ -1806,7 +1809,7 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
     _ensure_json_payload_has_only_finite_numbers(req.meta, field_name="meta")
     with closing(_get_conn()) as conn:
         db.begin_immediate(conn)
-        bot = db.get_bot_instance(conn, bot_id)
+        bot = db.get_bot_instance(conn, bot_id, for_update=True)
         if not bot:
             raise HTTPException(status_code=404, detail="bot_id not found")
 

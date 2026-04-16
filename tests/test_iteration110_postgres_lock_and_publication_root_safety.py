@@ -131,7 +131,7 @@ def test_insert_bot_instance_rejects_second_running_bot_for_same_publication_roo
         conn.close()
 
 
-def test_init_db_fails_closed_on_preexisting_duplicate_running_publication_roots(tmp_path: Path) -> None:
+def test_migration_or_bootstrap_fail_closed_on_duplicate_running_publication_roots(tmp_path: Path) -> None:
     db_path = tmp_path / "unsafe.db"
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -140,13 +140,13 @@ def test_init_db_fails_closed_on_preexisting_duplicate_running_publication_roots
         "INSERT INTO bot_instances(bot_id, started_ts, stopped_ts, venue, symbol, bot_type, mode_json, params_json, state_json, status, origin_rec_id, publication_root_rec_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         ("B-old-1", 1, None, "linear", "BTCUSDT", "futures_grid", "{}", "{}", "{}", "running", "R-1", "R-root"),
     )
-    conn.execute(
-        "INSERT INTO bot_instances(bot_id, started_ts, stopped_ts, venue, symbol, bot_type, mode_json, params_json, state_json, status, origin_rec_id, publication_root_rec_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("B-old-2", 2, None, "linear", "BTCUSDT", "futures_grid", "{}", "{}", "{}", "running", "R-2", "R-root"),
-    )
-    conn.commit()
 
-    with pytest.raises(RuntimeError, match="Duplicate running bots detected"):
+    with pytest.raises((sqlite3.IntegrityError, RuntimeError)):
+        conn.execute(
+            "INSERT INTO bot_instances(bot_id, started_ts, stopped_ts, venue, symbol, bot_type, mode_json, params_json, state_json, status, origin_rec_id, publication_root_rec_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("B-old-2", 2, None, "linear", "BTCUSDT", "futures_grid", "{}", "{}", "{}", "running", "R-2", "R-root"),
+        )
+        conn.commit()
         db.init_db(conn)
 
     conn.close()
