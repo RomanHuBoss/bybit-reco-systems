@@ -981,6 +981,105 @@ function renderModalSummaryCards(items = []) {
   `).join("")}</div>`;
 }
 
+function renderSampleSizeBadge(total) {
+  const n = Math.max(0, Number(total || 0));
+  let cls = "sample-badge sample-badge-low";
+  let label = "мало";
+  if (n >= 30) {
+    cls = "sample-badge sample-badge-high";
+    label = "устойчиво";
+  } else if (n >= 10) {
+    cls = "sample-badge sample-badge-mid";
+    label = "умеренно";
+  }
+  return `<span class="${cls}">n=${escapeHtml(String(n))} · ${escapeHtml(label)}</span>`;
+}
+
+function formatShare(part, total, digits = 1) {
+  const p = Number(part || 0);
+  const t = Number(total || 0);
+  if (!(t > 0)) return "—";
+  return `${((p / t) * 100).toFixed(digits)}%`;
+}
+
+function compareRowsByOutcome(rows = []) {
+  const total = rows.reduce((acc, row) => acc + Number(row?.total || 0), 0);
+  const wins = rows.reduce((acc, row) => acc + Number(row?.wins || 0), 0);
+  const ret = rows.reduce((acc, row) => acc + (Number(row?.avg_ret || 0) * Number(row?.total || 0)), 0);
+  return {
+    total,
+    wins,
+    winRate: total > 0 ? wins / total : null,
+    avgRet: total > 0 ? ret / total : null,
+  };
+}
+
+function renderOutcomeInsightCards(items = []) {
+  if (!items.length) return '<div class="helper-text">Явных содержательных перекосов по текущим агрегатам не обнаружено.</div>';
+  return `<div class="outcome-insight-grid">${items.map(item => `
+    <div class="outcome-insight-card ${escapeHtml(item.kind || "neutral")}">
+      <div class="outcome-insight-title">${escapeHtml(item.title || "Наблюдение")}</div>
+      <div class="outcome-insight-body">${escapeHtml(item.body || "")}</div>
+    </div>
+  `).join("")}</div>`;
+}
+
+function buildOutcomeDiagnostics(llmByEngine = [], neutralBreakdown = [], summary = {}) {
+  const insights = [];
+  const comparableRows = (Array.isArray(llmByEngine) ? llmByEngine : []).filter(row => {
+    const status = String(row?.llm_status || "").toLowerCase();
+    return status === "ok";
+  });
+
+  const byEngine = new Map();
+  for (const row of comparableRows) {
+    const key = String(row?.engine_execution_direction || "neutral");
+    if (!byEngine.has(key)) byEngine.set(key, []);
+    byEngine.get(key).push(row);
+  }
+
+  for (const [engineDir, rows] of byEngine.entries()) {
+    const agree = compareRowsByOutcome(rows.filter(row => row?.llm_alignment === "agree"));
+    const disagree = compareRowsByOutcome(rows.filter(row => row?.llm_alignment === "disagree"));
+    if (!(agree.total > 0 && disagree.total > 0) || Math.min(agree.total, disagree.total) < 3) continue;
+    const delta = (disagree.winRate ?? 0) - (agree.winRate ?? 0);
+    if (Math.abs(delta) < 0.12) continue;
+    const better = delta > 0 ? "расхождения" : "совпадения";
+    insights.push({
+      kind: delta > 0 ? "warn" : "good",
+      title: `LLM vs algo: ${directionRu(engineDir)}`,
+      body: `${better} выглядят сильнее: ${(agree.winRate * 100).toFixed(1)}% vs ${(disagree.winRate * 100).toFixed(1)}% WR при n=${agree.total}/${disagree.total}. Стоит проверить, не смешаны ли разные подтипы внутри ${directionRu(engineDir).toLowerCase()}.`,
+    });
+  }
+
+  const trueNeutral = (Array.isArray(neutralBreakdown) ? neutralBreakdown : []).filter(row => row?.neutral_source === "true_neutral");
+  const neutralized = (Array.isArray(neutralBreakdown) ? neutralBreakdown : []).filter(row => row?.neutral_source === "spot_short_neutralized");
+  const tn = compareRowsByOutcome(trueNeutral);
+  const sn = compareRowsByOutcome(neutralized);
+  if (tn.total > 0 && sn.total > 0) {
+    const delta = (sn.winRate ?? 0) - (tn.winRate ?? 0);
+    if (Math.abs(delta) >= 0.12) {
+      insights.push({
+        kind: delta < 0 ? "warn" : "neutral",
+        title: "Neutral нужно делить на классы",
+        body: `Истинный neutral и neutralized-short ведут себя по-разному: ${(tn.winRate * 100).toFixed(1)}% vs ${(sn.winRate * 100).toFixed(1)}% WR при n=${tn.total}/${sn.total}. Их нельзя держать в одной строке.`,
+      });
+    }
+  }
+
+  const duplicates = Number(summary?.deduped_duplicates || 0);
+  const rawTotal = Number(summary?.raw_total || 0);
+  if (duplicates > 0 && rawTotal > 0) {
+    insights.push({
+      kind: "neutral",
+      title: "Повторы публикаций отфильтрованы",
+      body: `${duplicates} из ${rawTotal} сырьевых строк исключены из win-rate как подтверждения уже открытой publication-chain. Для оператора это правильно: иначе окно завышало бы уверенность.`,
+    });
+  }
+
+  return insights.slice(0, 6);
+}
+
 function buildModalTable(columns, rows, { emptyText = "Нет данных", rowClass, compact = false, maxHeight } = {}) {
   const head = columns.map(col => `<th>${escapeHtml(col.label || "")}</th>`).join("");
   const body = (rows && rows.length)
@@ -1385,55 +1484,123 @@ async function loadOutcomes() {
 
   const s = data.summary || {};
   const llmSummary = data.llm_summary || {};
+  const byExecution = data.by_execution_direction || [];
+  const byRaw = data.by_raw_direction || [];
   const directionPairs = data.direction_pairs || [];
+  const neutralBreakdown = (data.neutral_breakdown || []).filter(row => String(row?.neutral_source || "") !== "directional");
   const llmAlignment = data.llm_alignment || [];
+  const llmByEngine = data.llm_engine_alignment || [];
+  const llmMatrix = data.llm_engine_matrix || [];
   const byBot = data.by_bot || [];
   const bySymbol = (data.by_symbol || []).slice(0, 30);
   const recent = (data.recent || []).slice(0, 80);
+  const insights = buildOutcomeDiagnostics(llmByEngine, neutralBreakdown, s);
+
+  const total = Number(s.total || 0);
+  const llmReviewed = Number(llmSummary.ok_total || 0);
+  const llmDisagree = Number(llmSummary.disagree_total || 0);
+  const llmDisagreeShare = llmReviewed > 0 ? `${((llmDisagree / llmReviewed) * 100).toFixed(1)}%` : "—";
+  const llmErrorShare = llmReviewed > 0
+    ? `${((Number(llmSummary.error_total || 0) / llmReviewed) * 100).toFixed(1)}%`
+    : (Number(llmSummary.error_total || 0) > 0 ? "есть" : "0%");
 
   const html = `
     ${renderModalSummaryCards([
-      { label: "Всего исходов", value: Number(s.total || 0) },
-      { label: "Сырых строк", value: Number(s.raw_total || s.total || 0) },
-      { label: "Побед", value: Number(s.wins || 0) },
-      { label: "Поражений", value: Number(s.losses || 0) },
+      { label: "Корневых исходов", value: total },
       { label: "Win-rate", value: s.win_rate !== null && s.win_rate !== undefined ? `${(Number(s.win_rate) * 100).toFixed(1)}%` : "—" },
       { label: "Avg ret", value: `${Number(s.avg_ret || 0).toFixed(2)}%` },
+      { label: "Avg |ret|", value: `${Number(s.avg_abs_ret || 0).toFixed(2)}%` },
+      { label: "Повторов убрано", value: Number(s.deduped_duplicates || 0) },
       { label: "Истинный neutral", value: Number(s.true_neutral_total || 0) },
-      { label: "spot-short-neutralized", value: Number(s.spot_short_neutralized_total || 0) },
-      { label: "LLM reviewed", value: Number(llmSummary.ok_total || 0) },
-      { label: "LLM agree", value: Number(llmSummary.agree_total || 0) },
-      { label: "LLM disagree", value: Number(llmSummary.disagree_total || 0) },
-      { label: "LLM errors", value: Number(llmSummary.error_total || 0) },
+      { label: "Short → neutral", value: Number(s.spot_short_neutralized_total || 0) },
+      { label: "LLM reviewed", value: llmReviewed },
+      { label: "LLM disagree", value: `${llmDisagree} · ${llmDisagreeShare}` },
+      { label: "LLM errors", value: `${Number(llmSummary.error_total || 0)} · ${llmErrorShare}` },
     ])}
-    <p class="modal-note">Это proxy-исходы outcome labeling, а не журнал фактически исполненных сделок. Карточка «Всего исходов» считает только корневые публикации одной идеи; повторные active-подтверждения той же publication-chain вынесены в «Сырые строки» и не раздувают win-rate / calibration. Same-direction сигнал по тому же символу теперь не открывает новый outcome-root, пока предыдущая псевдо-сделка этой chain не доживёт до своего horizon. Ниже отдельно показаны raw_direction и execution_direction, чтобы neutral не смешивал истинный neutral с bearish-thesis на споте. Дополнительно показано, что говорил LLM-reviewer и совпадал ли он с алгоритмическим verdict.</p>
+    <p class="modal-note">Это окно должно помогать оператору принимать решения, поэтому вверху вынесено только главное: что реально исполнялось, что было нейтральным по-настоящему, где LLM совпадал или спорил с алгоритмом, и какие подтипы статистически ведут себя по-разному. Proxy-исходы считаются только по корневым публикациям одной идеи, чтобы repeated active-подтверждения не раздували win-rate.</p>
     <div class="modal-section">
-      <div class="modal-section-title">LLM reviewer поверх алгоритма</div>
-      ${buildModalTable([
-        { label: "Статус", render: row => renderLlmStatusBadge(row.llm_status) },
-        { label: "LLM exec", render: row => renderDirectionBadge(row.llm_execution_direction) },
-        { label: "Совпадение", render: row => renderAgreementBadge(row.llm_alignment === "agree" ? true : row.llm_alignment === "disagree" ? false : null) },
-        { label: "Gate", render: row => `<span class="neutral-note">${escapeHtml(row.llm_gate_decision || "pass")}</span>` },
-        { label: "Всего", render: row => escapeHtml(String(row.total)) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
-      ], llmAlignment, { emptyText: "LLM reviewer ещё не оставил следов в созревших исходах." })}
+      <div class="modal-section-title">На что стоит смотреть в первую очередь</div>
+      ${renderOutcomeInsightCards(insights)}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">Сводка по raw / execution direction</div>
+      <div class="modal-section-title">1. Что реально торговалось</div>
       ${buildModalTable([
-        { label: "Raw direction", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Execution direction", render: row => renderDirectionBadge(row.execution_direction) },
-        { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Исполнимое направление", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "Доля", render: row => escapeHtml(formatShare(row.total, total)) },
         { label: "Побед", render: row => escapeHtml(String(row.wins)) },
-        { label: "Поражений", render: row => escapeHtml(String(row.losses)) },
         { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
         { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
+      ], byExecution, { emptyText: "Исходов пока нет." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">2. Что хотел алгоритм и во что это превратилось</div>
+      ${buildModalTable([
+        { label: "Algo raw", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Algo exec", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
       ], directionPairs, { emptyText: "Исходов пока нет." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">По типу бота</div>
+      <div class="modal-section-title">3. Neutral нужно читать раздельно</div>
+      ${buildModalTable([
+        { label: "Класс", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Raw", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Exec", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "Побед", render: row => escapeHtml(String(row.wins)) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
+      ], neutralBreakdown, { emptyText: "Подклассы neutral пока не накопились." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">4. LLM против исполнимого направления алгоритма</div>
+      ${buildModalTable([
+        { label: "Algo exec", render: row => renderDirectionBadge(row.engine_execution_direction) },
+        { label: "Статус", render: row => renderLlmStatusBadge(row.llm_status) },
+        { label: "Совпадение", render: row => renderAgreementBadge(row.llm_alignment === "agree" ? true : row.llm_alignment === "disagree" ? false : null) },
+        { label: "Gate", render: row => `<span class="neutral-note">${escapeHtml(row.llm_gate_decision || "pass")}</span>` },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "Доля внутри algo exec", render: row => escapeHtml(formatShare(row.total, (llmByEngine || []).filter(x => x.engine_execution_direction === row.engine_execution_direction).reduce((acc, x) => acc + Number(x.total || 0), 0))) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
+      ], llmByEngine, { emptyText: "LLM reviewer ещё не оставил следов в созревших исходах." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">5. LLM: детальная матрица algo exec → llm exec</div>
+      ${buildModalTable([
+        { label: "Algo exec", render: row => renderDirectionBadge(row.engine_execution_direction) },
+        { label: "LLM exec", render: row => renderDirectionBadge(row.llm_execution_direction) },
+        { label: "Совпадение", render: row => renderAgreementBadge(row.llm_alignment === "agree" ? true : row.llm_alignment === "disagree" ? false : null) },
+        { label: "Статус", render: row => renderLlmStatusBadge(row.llm_status) },
+        { label: "Gate", render: row => `<span class="neutral-note">${escapeHtml(row.llm_gate_decision || "pass")}</span>` },
+        { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
+      ], llmMatrix, { emptyText: "Детальная матрица LLM пока пуста." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">6. Сырой тезис алгоритма</div>
+      ${buildModalTable([
+        { label: "Algo raw", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Всего", render: row => escapeHtml(String(row.total)) },
+        { label: "Доля", render: row => escapeHtml(formatShare(row.total, total)) },
+        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
+      ], byRaw, { emptyText: "Нет сводки по raw direction." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">7. По типу бота</div>
       ${buildModalTable([
         { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
         { label: "Raw direction", render: row => renderDirectionBadge(row.raw_direction) },
@@ -1442,10 +1609,11 @@ async function loadOutcomes() {
         { label: "Побед", render: row => escapeHtml(String(row.wins)) },
         { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
         { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
       ], byBot, { emptyText: "Нет агрегированных данных по bot_type." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">По символу (топ 30)</div>
+      <div class="modal-section-title">8. По символу (топ 30)</div>
       ${buildModalTable([
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
         { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
@@ -1454,10 +1622,11 @@ async function loadOutcomes() {
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
         { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
         { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
       ], bySymbol, { emptyText: "Нет данных по символам." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">Журнал исходов (последние 80)</div>
+      <div class="modal-section-title">9. Журнал исходов (последние 80)</div>
       ${buildModalTable([
         { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
         { label: "Площадка", render: row => escapeHtml(venueLabel(row.venue)) },

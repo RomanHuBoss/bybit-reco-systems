@@ -543,6 +543,38 @@ body {
   color: var(--muted);
   margin: 0 0 10px;
 }
+.outcome-insight-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+.outcome-insight-card {
+  background: #0f172a;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+.outcome-insight-card.warn {
+  border-color: rgba(255,176,32,0.32);
+  background: linear-gradient(180deg, rgba(255,176,32,0.08), rgba(15,23,42,0.96));
+}
+.outcome-insight-card.good {
+  border-color: rgba(51,209,122,0.28);
+  background: linear-gradient(180deg, rgba(51,209,122,0.07), rgba(15,23,42,0.96));
+}
+.outcome-insight-card.neutral {
+  border-color: rgba(148,163,184,0.28);
+}
+.outcome-insight-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.outcome-insight-body {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
 .modal-table-wrap {
   overflow-x: auto;
   overflow-y: auto;
@@ -679,6 +711,30 @@ body {
   background: rgba(148,163,184,0.08);
 }
 .llm-badge-agree {
+  color: var(--good);
+  border-color: rgba(51,209,122,0.30);
+  background: rgba(51,209,122,0.08);
+}
+.sample-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.sample-badge-low {
+  color: var(--muted);
+  border-color: rgba(148,163,184,0.28);
+  background: rgba(148,163,184,0.08);
+}
+.sample-badge-mid {
+  color: var(--warn);
+  border-color: rgba(255,176,32,0.30);
+  background: rgba(255,176,32,0.08);
+}
+.sample-badge-high {
   color: var(--good);
   border-color: rgba(51,209,122,0.30);
   background: rgba(51,209,122,0.08);

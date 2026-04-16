@@ -2319,7 +2319,10 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
     by_raw_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_execution_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_pair_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_neutral_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_llm_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_llm_engine_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_llm_matrix_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
 
     true_neutral_total = 0
     spot_short_neutralized_total = 0
@@ -2371,13 +2374,37 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
             if llm_gate == "veto":
                 llm_summary["veto_total"] += 1
 
+            llm_execution_direction = _normalize_direction(llm_review.get("execution_direction"), fallback="neutral")
+            llm_alignment = "agree" if llm_agree is True else "disagree" if llm_agree is False else "unknown"
+            llm_gate_decision = llm_gate or "pass"
+
             llm_bucket_key = (
                 llm_status,
-                _normalize_direction(llm_review.get("execution_direction"), fallback="neutral"),
-                "agree" if llm_agree is True else "disagree" if llm_agree is False else "unknown",
-                llm_gate or "pass",
+                llm_execution_direction,
+                llm_alignment,
+                llm_gate_decision,
             )
             stat = by_llm_bucket.setdefault(llm_bucket_key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
+            _accumulate_stat(stat, success, ret)
+
+            llm_engine_key = (
+                execution_direction,
+                llm_status,
+                llm_alignment,
+                llm_gate_decision,
+            )
+            stat = by_llm_engine_bucket.setdefault(llm_engine_key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
+            _accumulate_stat(stat, success, ret)
+
+            llm_matrix_key = (
+                execution_direction,
+                llm_execution_direction,
+                llm_alignment,
+                llm_gate_decision,
+                llm_status,
+                neutral_source or "",
+            )
+            stat = by_llm_matrix_bucket.setdefault(llm_matrix_key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
             _accumulate_stat(stat, success, ret)
 
         _accumulate_stat(summary_bucket, success, ret)
@@ -2391,6 +2418,10 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         ):
             stat = bucket.setdefault(key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
             _accumulate_stat(stat, success, ret)
+
+        neutral_key = (neutral_source or "directional", raw_direction, execution_direction)
+        stat = by_neutral_bucket.setdefault(neutral_key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
+        _accumulate_stat(stat, success, ret)
 
     total = int(summary_bucket["total"])
     wins = int(summary_bucket["wins"])
@@ -2432,10 +2463,41 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         ["raw_direction", "execution_direction", "neutral_source"],
         sort_key=lambda row: (-row["total"], row["raw_direction"], row["execution_direction"], row.get("neutral_source") or ""),
     )
+    neutral_breakdown = _materialize_stat_rows(
+        by_neutral_bucket,
+        ["neutral_source", "raw_direction", "execution_direction"],
+        sort_key=lambda row: (
+            row["neutral_source"] != "true_neutral",
+            row["neutral_source"] != "spot_short_neutralized",
+            row["neutral_source"] != "other_neutralized",
+            row["neutral_source"] != "directional",
+            -row["total"],
+            row["raw_direction"],
+            row["execution_direction"],
+        ),
+    )
     llm_alignment = _materialize_stat_rows(
         by_llm_bucket,
         ["llm_status", "llm_execution_direction", "llm_alignment", "llm_gate_decision"],
         sort_key=lambda row: (-row["total"], row["llm_status"], row["llm_execution_direction"], row["llm_alignment"], row["llm_gate_decision"]),
+    )
+    llm_engine_alignment = _materialize_stat_rows(
+        by_llm_engine_bucket,
+        ["engine_execution_direction", "llm_status", "llm_alignment", "llm_gate_decision"],
+        sort_key=lambda row: (-row["total"], row["engine_execution_direction"], row["llm_status"], row["llm_alignment"], row["llm_gate_decision"]),
+    )
+    llm_engine_matrix = _materialize_stat_rows(
+        by_llm_matrix_bucket,
+        ["engine_execution_direction", "llm_execution_direction", "llm_alignment", "llm_gate_decision", "llm_status", "neutral_source"],
+        sort_key=lambda row: (
+            -row["total"],
+            row["engine_execution_direction"],
+            row["llm_execution_direction"],
+            row["llm_alignment"],
+            row["llm_gate_decision"],
+            row["llm_status"],
+            row.get("neutral_source") or "",
+        ),
     )
 
     return {
@@ -2446,7 +2508,10 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         "by_raw_direction": by_raw_direction,
         "by_execution_direction": by_execution_direction,
         "direction_pairs": direction_pairs,
+        "neutral_breakdown": neutral_breakdown,
         "llm_alignment": llm_alignment,
+        "llm_engine_alignment": llm_engine_alignment,
+        "llm_engine_matrix": llm_engine_matrix,
         "recent": get_outcomes_recent_enriched(conn, limit=120, require_llm_verdict=require_llm_verdict),
     }
 

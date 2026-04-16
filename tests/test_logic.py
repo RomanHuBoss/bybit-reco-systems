@@ -1823,6 +1823,36 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
     assert llm_map[("ok", "short", "disagree", "veto")]["total"] == 1
     assert llm_map[("error", "neutral", "unknown", "pass")]["total"] == 1
 
+    llm_engine_map = {
+        (row["engine_execution_direction"], row["llm_status"], row["llm_alignment"], row["llm_gate_decision"]): row
+        for row in stats["llm_engine_alignment"]
+    }
+    assert llm_engine_map[("neutral", "ok", "agree", "pass")]["total"] == 1
+    assert llm_engine_map[("long", "ok", "disagree", "veto")]["total"] == 1
+    assert llm_engine_map[("neutral", "error", "unknown", "pass")]["total"] == 1
+
+    llm_matrix_map = {
+        (
+            row["engine_execution_direction"],
+            row["llm_execution_direction"],
+            row["llm_alignment"],
+            row["llm_gate_decision"],
+            row["llm_status"],
+            row["neutral_source"],
+        ): row
+        for row in stats["llm_engine_matrix"]
+    }
+    assert llm_matrix_map[("neutral", "neutral", "agree", "pass", "ok", "spot_short_neutralized")]["total"] == 1
+    assert llm_matrix_map[("long", "short", "disagree", "veto", "ok", "")]["total"] == 1
+
+    neutral_breakdown_map = {
+        (row["neutral_source"], row["raw_direction"], row["execution_direction"]): row
+        for row in stats["neutral_breakdown"]
+    }
+    assert neutral_breakdown_map[("true_neutral", "neutral", "neutral")]["wins"] == 1
+    assert neutral_breakdown_map[("spot_short_neutralized", "short", "neutral")]["losses"] == 1
+    assert neutral_breakdown_map[("directional", "long", "long")]["total"] == 1
+
     recent_map = {row["rec_id"]: row for row in stats["recent"]}
     assert recent_map["R-neutralized"]["raw_direction"] == "short"
     assert recent_map["R-neutralized"]["execution_direction"] == "neutral"
