@@ -4,9 +4,8 @@
 Это главный системный риск. Проект не управляет live order lifecycle и не знает реальные open orders/fills.
 Следствие: нельзя считать его завершённой автоторговой системой без внешнего execution layer.
 
-## 2. Qty/min-notional validation неполна без фактического размера позиции
-Сервис знает ограничения инструмента Bybit, но не знает размер leg/ордера, если его не задаёт внешний исполнитель.
-Поэтому `qty_step`, `min_order_qty`, `max_order_qty`, `min_notional` в этой ревизии проверяются только частично.
+## 2. Qty/min-notional validation зависит от фактического размера позиции
+Сервис знает ограничения инструмента Bybit, но не рассчитывает размер leg/ордера самостоятельно. Если внешний исполнитель или операторский payload передаёт явный `trade_plan.sizing.order_qty` / `qty_per_leg` / `base_qty` либо `order_notional`, preflight проверяет его против `qty_step`, `min_order_qty`, `max_order_qty` и `min_notional`. Если размер не передан, остаётся предупреждение `SIZE_INPUT_REQUIRED`, а окончательная проверка размера обязана выполняться внешним execution layer.
 
 ## 3. Outcome labeling остаётся proxy-моделью
 Даже усиленная grid-разметка не заменяет реальные fill/funding/liquidation данные.
@@ -19,7 +18,7 @@
 ## 5. Публичный Bybit REST не гарантирует полную временную согласованность
 Сервис теперь fail-closed отвергает `instruments-info` без точного совпадения `symbol` и блокирует instrument `status != Trading`, что снижает риск валидации чужими/неактивными лимитами, но не отменяет фундаментальное ограничение публичного REST как источника execution truth.
 Сервис делает защитные retry/backoff, transport/decode retry и stale checks, но не получает execution truth.
-Если metadata Bybit временно недоступна, проект в этой ревизии всё ещё деградирует к warning-path, а не к жёсткой блокировке исполнения.
+Если metadata Bybit временно недоступна, проект в этой ревизии всё ещё деградирует к warning-path, а не к жёсткой блокировке исполнения; при этом explicit sizing validation возможна только при наличии metadata с lot/notional фильтрами.
 Это осознанный компромисс ради operator workflow, но он остаётся источником остаточного риска.
 
 ## 6. LLM reviewer может быть полезен только как вторичный фильтр

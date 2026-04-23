@@ -1,23 +1,27 @@
 # CHANGELOG
 
-## 2026-04-24 — live-price execution guard and Bybit status hardening
+## 2026-04-24 — live-price execution guard, Bybit status hardening and explicit sizing validation
 
 ### Исправлено
 - execute-path теперь блокирует operator confirmation, если свежий ticker уже вышел за сохранённый `trade_plan.levels.range` или `kill_switch`; старая grid-рекомендация больше не может быть подтверждена как будто рынок остался в исходном диапазоне;
 - Bybit instrument metadata теперь включает `status`, `baseCoin`, `quoteCoin`, `settleCoin`, `unifiedMarginTrade`; `status != Trading` блокирует подтверждение fail-closed;
 - добавлена проверка `tp_per_leg` на положительность, схлопывание и выравнивание по `tick_size`;
 - добавлен warning при несогласованности `params.grid_levels` и `trade_plan.levels.grid_step.step_abs`;
-- удалён лишний дублирующий assignment PostgreSQL `DATABASE_URL` в `settings.py`.
+- удалён лишний дублирующий assignment PostgreSQL `DATABASE_URL` в `settings.py`;
+- execution-time validation теперь проверяет явный `order_qty` / `qty_per_leg` / `base_qty` и notional-алиасы из `trade_plan.sizing` или `params` против `qty_step`, `min_order_qty`, `max_order_qty` и `min_notional` Bybit; если размер уже задан и проверен, ложные предупреждения `SIZE_INPUT_REQUIRED` / `MIN_NOTIONAL_NOT_CHECKED` не выводятся.
 
 ### Добавлено
 - единый helper ценового контекста `trade_plan`, чтобы Bybit validation и live-price guard не расходились в парсинге payload;
 - `tests/test_iteration114_live_price_and_status_guards.py`;
+- `tests/test_iteration115_order_sizing_validation.py`;
 - `docs/AUDIT_REPORT_2026-04-24.md`;
 - документация по live-price guard, instrument status guard и остаточным рискам.
 
 ### Тесты
-- targeted regression: `8 passed, 1 warning` (`iteration105`, selected `iteration107`, new `iteration114`);
-- AST parse: `main.py + app/*.py + tests/test_iteration114*.py` — passed.
+- `pytest -q` → `348 passed, 1 warning`;
+- targeted docs/integrity + sizing regression → `19 passed, 1 warning`;
+- `python -m py_compile main.py app/*.py tests/*.py` → passed;
+- smoke import `app.main` → passed.
 
 ## 2026-04-23 — startup bootstrap scalability on existing history
 

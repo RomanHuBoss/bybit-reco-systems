@@ -560,6 +560,37 @@ def _format_step_aligned(value: float | None, step: float | None) -> str | None:
     return f"{num:.{max(0, int(decimals))}f}"
 
 
+def _first_finite_from_mapping(mapping: dict[str, Any], keys: tuple[str, ...]) -> tuple[str | None, float | None]:
+    """Возвращает первое finite-число из набора синонимичных полей sizing.
+
+    В проекте размер заявки не рассчитывается автоматически, но ручной/audit payload
+    может уже содержать операторский qty/notional. В таком случае preflight обязан
+    проверить биржевые фильтры Bybit, а не продолжать писать только предупреждение
+    «размер неизвестен». Helper изолирует список legacy/операторских алиасов от
+    основной валидации, чтобы одинаково обрабатывать params и trade_plan.sizing.
+    """
+    if not isinstance(mapping, dict):
+        return None, None
+    for key in keys:
+        if key not in mapping:
+            continue
+        value = _finite_float_or_none(mapping.get(key))
+        if value is not None:
+            return key, value
+    return None, None
+
+
+def _step_aligned(value: float, step: float, *, tolerance: float = 1e-9) -> bool:
+    """Проверяет кратность шагу без ложных ошибок на двоичной арифметике float."""
+    num = _finite_float_or_none(value)
+    tick = _finite_float_or_none(step)
+    if num is None or tick is None or tick <= 0:
+        return False
+    units = num / tick
+    nearest = round(units)
+    return abs(units - nearest) <= max(float(tolerance), abs(units) * float(tolerance))
+
+
 def _active_symbol_disable_state(conn, venue: str, symbol: str, *, now_ts: int | None = None) -> dict[str, Any] | None:
     now = int(now_ts or time.time())
     cur = conn.execute(
@@ -733,6 +764,9 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     tick_size = _finite_float_or_none((meta or {}).get("tick_size"))
     min_price = _finite_float_or_none((meta or {}).get("min_price"))
     max_price = _finite_float_or_none((meta or {}).get("max_price"))
+    qty_step = _finite_float_or_none((meta or {}).get("qty_step"))
+    min_order_qty = _finite_float_or_none((meta or {}).get("min_order_qty"))
+    max_order_qty = _finite_float_or_none((meta or {}).get("max_order_qty"))
     min_notional = _finite_float_or_none((meta or {}).get("min_notional"))
     min_leverage = _finite_float_or_none((meta or {}).get("min_leverage"))
     max_leverage = _finite_float_or_none((meta or {}).get("max_leverage"))
@@ -946,11 +980,83 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     if leverage is not None and venue == "spot" and leverage > 1:
         errors.append({"code": "SPOT_LEVERAGE_INVALID", "msg": f"Для spot leverage должен быть 1, получено {leverage}."})
 
-    warnings.append({
-        "code": "SIZE_INPUT_REQUIRED",
-        "msg": "Проект не рассчитывает order qty/капитал на leg, поэтому qty_step/min_order_qty нельзя проверить без операторского размера позиции.",
-    })
-    if min_notional is not None:
+    sizing = plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {}
+    qty_keys = (
+        "order_qty",
+        "qty",
+        "qty_per_order",
+        "qty_per_leg",
+        "base_qty",
+        "base_qty_per_order",
+        "order_size_qty",
+        "leg_qty",
+    )
+    notional_keys = (
+        "order_notional",
+        "order_notional_usdt",
+        "notional_per_order",
+        "quote_qty",
+        "quote_amount",
+        "capital_per_leg_usdt",
+        "investment_per_grid",
+        "usdt_per_order",
+    )
+    qty_source, order_qty = _first_finite_from_mapping(sizing, qty_keys)
+    if order_qty is None:
+        qty_source, order_qty = _first_finite_from_mapping(params, qty_keys)
+    notional_source, order_notional = _first_finite_from_mapping(sizing, notional_keys)
+    if order_notional is None:
+        notional_source, order_notional = _first_finite_from_mapping(params, notional_keys)
+
+    size_known = order_qty is not None or order_notional is not None
+    notional_checked = False
+    if order_qty is not None:
+        if order_qty <= 0:
+            errors.append({"code": "ORDER_QTY_NON_POSITIVE", "msg": f"{qty_source or 'order_qty'} должен быть > 0, получено {order_qty}."})
+        if min_order_qty is not None and order_qty < min_order_qty:
+            errors.append({"code": "ORDER_QTY_BELOW_MIN", "msg": f"{qty_source or 'order_qty'}={order_qty} ниже Bybit min_order_qty={min_order_qty}."})
+        if max_order_qty is not None and order_qty > max_order_qty:
+            errors.append({"code": "ORDER_QTY_ABOVE_MAX", "msg": f"{qty_source or 'order_qty'}={order_qty} выше Bybit max_order_qty={max_order_qty}."})
+        if qty_step is not None and qty_step > 0:
+            snapped_qty = _quantize_to_step(order_qty, qty_step, mode="nearest")
+            if snapped_qty is not None:
+                snapped["order_qty"] = _format_step_aligned(snapped_qty, qty_step) or str(snapped_qty)
+            if not _step_aligned(order_qty, qty_step):
+                errors.append({
+                    "code": "ORDER_QTY_OFF_STEP",
+                    "msg": f"{qty_source or 'order_qty'}={order_qty} не выровнен по Bybit qty_step={qty_step}; ближайшее значение={snapped.get('order_qty') or snapped_qty}.",
+                })
+        if min_notional is not None:
+            if reference_price is not None and reference_price > 0:
+                qty_notional = order_qty * reference_price
+                notional_checked = True
+                if qty_notional < min_notional:
+                    errors.append({
+                        "code": "ORDER_NOTIONAL_BELOW_MIN",
+                        "msg": f"Расчётный notional={qty_notional:.12g} по {qty_source or 'order_qty'} и reference_price ниже Bybit min_notional={min_notional}.",
+                    })
+            else:
+                warnings.append({
+                    "code": "MIN_NOTIONAL_NOT_CHECKED",
+                    "msg": f"Bybit min_notional={min_notional}, но reference_price отсутствует; notional по order_qty проверить нельзя.",
+                })
+
+    if order_notional is not None:
+        notional_checked = True
+        if order_notional <= 0:
+            errors.append({"code": "ORDER_NOTIONAL_NON_POSITIVE", "msg": f"{notional_source or 'order_notional'} должен быть > 0, получено {order_notional}."})
+        if min_notional is not None and order_notional < min_notional:
+            errors.append({
+                "code": "ORDER_NOTIONAL_BELOW_MIN",
+                "msg": f"{notional_source or 'order_notional'}={order_notional} ниже Bybit min_notional={min_notional}.",
+            })
+
+    if not size_known:
+        warnings.append({
+            "code": "SIZE_INPUT_REQUIRED",
+            "msg": "Проект не рассчитывает order qty/капитал на leg, поэтому qty_step/min_order_qty нельзя проверить без операторского размера позиции.",
+        })
+    if min_notional is not None and not notional_checked:
         warnings.append({
             "code": "MIN_NOTIONAL_NOT_CHECKED",
             "msg": f"Bybit min_notional={min_notional}, но система не знает фактический размер заявки и не может проверить этот лимит автоматически.",

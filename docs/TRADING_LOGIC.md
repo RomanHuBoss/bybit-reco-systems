@@ -61,6 +61,7 @@ execution-time validation должна блокировать исполнени
 - `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint;
 - metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу;
 - instrument `status` должен быть `Trading`; `PreLaunch`, `Delivering`, delisted/other statuses блокируются fail-closed для новых operator confirmations.
+- если payload содержит явный sizing (`order_qty`, `qty_per_leg`, `base_qty`, `order_notional` и совместимые алиасы), preflight блокирует значения ниже `min_order_qty`/`min_notional`, выше `max_order_qty` или не кратные `qty_step` (`ORDER_QTY_OFF_STEP`, `ORDER_QTY_BELOW_MIN`, `ORDER_NOTIONAL_BELOW_MIN`).
 
 ## Что outcome labeling умеет и чего не умеет
 
@@ -78,7 +79,7 @@ execution-time validation должна блокировать исполнени
 ## Что должен делать внешний execution layer
 
 Если проект используется в production-пайплайне, внешний контур обязан:
-- проверять фактический qty, qty_step, min qty и min notional;
+- повторно проверять фактический qty, qty_step, min qty и min notional по live account/instrument данным; проект проверяет эти фильтры только когда явный sizing уже передан в `trade_plan.sizing` или `params`;
 - выставлять/менять/отменять реальные ордера;
 - хранить order/fill state machine;
 - восстанавливать состояние после рестарта по фактическим биржевым данным;
