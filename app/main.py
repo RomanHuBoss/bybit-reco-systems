@@ -185,6 +185,11 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
         meta = {
             "category": str(info.get("category") or category).strip().lower() or category,
             "symbol": str(info.get("symbol") or symbol).strip().upper() or symbol,
+            "status": str(info.get("status") or "").strip(),
+            "base_coin": str(info.get("baseCoin") or "").strip().upper(),
+            "quote_coin": str(info.get("quoteCoin") or "").strip().upper(),
+            "settle_coin": str(info.get("settleCoin") or "").strip().upper(),
+            "unified_margin_trade": info.get("unifiedMarginTrade"),
             "tick_size": price_filter.get("tickSize"),
             "min_price": price_filter.get("minPrice"),
             "max_price": price_filter.get("maxPrice"),
@@ -259,6 +264,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
 def _ensure_json_payload_has_only_finite_numbers(value: Any, *, field_name: str, path: str = "") -> None:
@@ -615,7 +627,15 @@ def _execution_market_data_blocks(conn, rec: dict[str, Any], *, now_ts: int | No
     return blocks
 
 
-def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+
+def _trade_plan_price_context(rec: dict[str, Any]) -> dict[str, Any]:
+    """Достаёт ценовой контекст trade_plan в едином виде для preflight.
+
+    В execution-time проверках нельзя повторять парсинг JSON руками в нескольких
+    местах: любое расхождение между Bybit-валидацией и live-price guard создаёт
+    окно, где один слой считает сетку допустимой, а другой уже не видит её
+    границы. Helper намеренно возвращает только finite-числа или None.
+    """
     params = rec.get("params") if isinstance(rec, dict) else {}
     if not isinstance(params, dict):
         params = {}
@@ -624,6 +644,91 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     range_levels = levels.get("range") if isinstance(levels.get("range"), dict) else {}
     kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
     grid_step = levels.get("grid_step") if isinstance(levels.get("grid_step"), dict) else {}
+    tp_per_leg = levels.get("tp_per_leg") if isinstance(levels.get("tp_per_leg"), dict) else {}
+    return {
+        "params": params,
+        "plan": plan,
+        "levels": levels,
+        "range": range_levels,
+        "kill_switch": kill_switch,
+        "grid_step": grid_step,
+        "tp_per_leg": tp_per_leg,
+        "reference_price": _finite_float_or_none(plan.get("reference_price")),
+        "range_lower": _finite_float_or_none(range_levels.get("lower")),
+        "range_upper": _finite_float_or_none(range_levels.get("upper")),
+        "kill_switch_lower": _finite_float_or_none(kill_switch.get("lower")),
+        "kill_switch_upper": _finite_float_or_none(kill_switch.get("upper")),
+        "grid_step_abs": _finite_float_or_none(grid_step.get("step_abs")),
+        "grid_levels": _safe_int_or_none(params.get("grid_levels")),
+        "tp_per_leg_abs": _finite_float_or_none(tp_per_leg.get("abs")),
+        "tp_per_leg_pct": _finite_float_or_none(tp_per_leg.get("pct")),
+    }
+
+
+def _current_price_from_ticker(ticker: dict[str, Any] | None) -> float | None:
+    """Возвращает консервативный live-price для проверки актуальности сетки."""
+    if not isinstance(ticker, dict):
+        return None
+    last = _finite_float_or_none(ticker.get("last"))
+    bid = _finite_float_or_none(ticker.get("bid"))
+    ask = _finite_float_or_none(ticker.get("ask"))
+    if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
+        return (bid + ask) / 2.0
+    if last is not None and last > 0:
+        return last
+    return None
+
+
+def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fail-closed защита от исполнения сетки по уже уехавшей цене.
+
+    Fresh ticker сам по себе не гарантирует исполнимость рекомендации: цена могла
+    выйти за рекомендованный диапазон между публикацией и действием оператора.
+    Для grid-бота старт вне диапазона — это уже другая сделка с иным профилем
+    риска, поэтому execute-path блокируется до повторного пересчёта рекомендации.
+    """
+    ctx = _trade_plan_price_context(rec)
+    lower = ctx["range_lower"]
+    upper = ctx["range_upper"]
+    lower_ks = ctx["kill_switch_lower"]
+    upper_ks = ctx["kill_switch_upper"]
+    reference = ctx["reference_price"]
+    plan = ctx["plan"]
+    if not isinstance(plan, dict) or not plan:
+        return []
+
+    ticker = db.get_latest_ticker(conn, str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
+    current_price = _current_price_from_ticker(ticker)
+    if current_price is None:
+        return []
+
+    blocks: list[dict[str, Any]] = []
+    if lower_ks is not None and upper_ks is not None and not (lower_ks <= current_price <= upper_ks):
+        blocks.append({
+            "code": "CURRENT_PRICE_OUTSIDE_KILL_SWITCH",
+            "msg": f"Текущая цена {current_price:.12g} находится вне kill_switch [{lower_ks}, {upper_ks}]; запуск сетки запрещён до пересчёта рекомендации.",
+        })
+    if lower is not None and upper is not None and not (lower <= current_price <= upper):
+        blocks.append({
+            "code": "CURRENT_PRICE_OUTSIDE_GRID_RANGE",
+            "msg": f"Текущая цена {current_price:.12g} находится вне рекомендованного диапазона [{lower}, {upper}]; нужен новый расчёт уровней.",
+        })
+    if reference is not None and reference > 0 and lower is not None and upper is not None:
+        span_pct = abs(upper - lower) / reference * 100.0 if reference else 0.0
+        drift_pct = abs(current_price - reference) / reference * 100.0
+        # Даже внутри диапазона слишком большой drift от цены расчёта означает,
+        # что spacing/funding/TP уже относятся к другому рыночному состоянию.
+        if span_pct > 0 and drift_pct > max(0.75 * span_pct, 3.0):
+            blocks.append({
+                "code": "REFERENCE_PRICE_DRIFT_TOO_LARGE",
+                "msg": f"Текущая цена отклонилась от reference_price на {drift_pct:.2f}% при ширине диапазона {span_pct:.2f}%; нужен новый снимок рекомендации.",
+            })
+    return blocks
+
+def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    ctx = _trade_plan_price_context(rec)
+    params = ctx["params"]
+    plan = ctx["plan"]
 
     tick_size = _finite_float_or_none((meta or {}).get("tick_size"))
     min_price = _finite_float_or_none((meta or {}).get("min_price"))
@@ -641,6 +746,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     margin_mode = str(rec.get("margin_mode") or params.get("margin_mode") or "").strip().lower()
     meta_category = str((meta or {}).get("category") or "").strip().lower()
     meta_symbol = str((meta or {}).get("symbol") or "").strip().upper()
+    meta_status = str((meta or {}).get("status") or "").strip()
     rec_symbol = str(rec.get("symbol") or "").strip().upper()
 
     errors: list[dict[str, str]] = []
@@ -700,12 +806,21 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             "msg": f"Metadata Bybit получена для category={meta_category}, тогда как recommendation ожидает venue={venue}; применять такие ограничения небезопасно.",
         })
 
-    reference_price = _finite_float_or_none(plan.get("reference_price"))
-    lower = _finite_float_or_none(range_levels.get("lower"))
-    upper = _finite_float_or_none(range_levels.get("upper"))
-    lower_ks = _finite_float_or_none(kill_switch.get("lower"))
-    upper_ks = _finite_float_or_none(kill_switch.get("upper"))
-    step_abs = _finite_float_or_none(grid_step.get("step_abs"))
+    if meta and meta_status and meta_status.lower() != "trading":
+        errors.append({
+            "code": "BYBIT_INSTRUMENT_NOT_TRADING",
+            "msg": f"Bybit instrument status={meta_status}; запускать новую grid-рекомендацию можно только для status=Trading.",
+        })
+
+    reference_price = ctx["reference_price"]
+    lower = ctx["range_lower"]
+    upper = ctx["range_upper"]
+    lower_ks = ctx["kill_switch_lower"]
+    upper_ks = ctx["kill_switch_upper"]
+    step_abs = ctx["grid_step_abs"]
+    grid_levels = ctx["grid_levels"]
+    tp_abs = ctx["tp_per_leg_abs"]
+    tp_pct = ctx["tp_per_leg_pct"]
 
     named_prices = {
         "reference_price": reference_price,
@@ -784,6 +899,33 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                     "code": "GRID_TOO_FEW_TICK_LEVELS",
                     "msg": f"После выравнивания по tick_size сетка содержит только {intervals} интервал(ов); для grid требуется минимум 2.",
                 })
+            if grid_levels is not None:
+                if grid_levels < 2:
+                    errors.append({"code": "GRID_LEVELS_INVALID", "msg": f"grid_levels должен быть >= 2, получено {grid_levels}."})
+                else:
+                    implied_levels = intervals + 1
+                    if implied_levels + 1 < grid_levels:
+                        warnings.append({
+                            "code": "GRID_STEP_LEVELS_MISMATCH",
+                            "msg": f"Диапазон и step_abs дают примерно {implied_levels} ценовых уровней, а params.grid_levels={grid_levels}; оператор должен сверить число сеток перед запуском Bybit bot.",
+                        })
+
+    if tp_abs is not None:
+        if tp_abs <= 0:
+            errors.append({"code": "TP_PER_LEG_NON_POSITIVE", "msg": f"tp_per_leg.abs должен быть > 0, получено {tp_abs}."})
+        elif tick_size is not None:
+            snapped_tp = _quantize_to_step(tp_abs, tick_size, mode="nearest")
+            if snapped_tp is not None:
+                snapped["tp_per_leg_abs"] = _format_step_aligned(snapped_tp, tick_size) or str(snapped_tp)
+                if snapped_tp <= 0:
+                    errors.append({"code": "TP_PER_LEG_COLLAPSES_AFTER_TICK_ROUNDING", "msg": f"tp_per_leg.abs={tp_abs} схлопывается после округления по tick_size={tick_size}."})
+                elif abs(float(snapped_tp) - float(tp_abs)) > max(1e-12, abs(tick_size) * 1e-6):
+                    warnings.append({
+                        "code": "TP_PER_LEG_OFF_TICK",
+                        "msg": f"tp_per_leg.abs={tp_abs} не выровнен по tick_size={tick_size}; ближайшее допустимое значение={snapped['tp_per_leg_abs']}",
+                    })
+    if tp_pct is not None and tp_pct <= 0:
+        errors.append({"code": "TP_PER_LEG_PCT_NON_POSITIVE", "msg": f"tp_per_leg.pct должен быть > 0, получено {tp_pct}."})
 
     if leverage is not None and leverage <= 0:
         errors.append({"code": "LEVERAGE_NON_POSITIVE", "msg": f"Leverage должен быть > 0, получено {leverage}."})
@@ -834,6 +976,7 @@ def _execution_preflight(
     now = int(now_ts or time.time())
     blocks: list[dict[str, Any]] = []
     blocks.extend(_execution_market_data_blocks(conn, rec, now_ts=now))
+    blocks.extend(_execution_live_price_blocks(conn, rec))
 
     market_shock = _get_app_config_mapping(
         conn,

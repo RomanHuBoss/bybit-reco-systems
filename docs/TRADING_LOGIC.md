@@ -41,14 +41,17 @@ execution-time validation должна блокировать исполнени
 ### Рыночные блокировки
 - market shock state не запрещает новый вход;
 - symbol fast-veto не активен;
-- instrument metadata Bybit подгружается до захвата SQLite write-lock, чтобы operator execution не тормозил остальные writer-контуры на сетевой задержке upstream.
+- instrument metadata Bybit подгружается до захвата SQLite write-lock, чтобы operator execution не тормозил остальные writer-контуры на сетевой задержке upstream;
+- текущий live ticker сверяется с сохранённым `trade_plan.levels.range` и `kill_switch`: если цена уже вышла за диапазон или защитную границу, подтверждение `executed` блокируется до пересчёта рекомендации.
 
 ### Геометрия grid-плана
 - `reference_price` внутри диапазона;
 - kill-switch лежит вне основного диапазона;
 - после округления по `tick_size` диапазон не схлопывается;
 - шаг сетки не меньше `tick_size` и не больше диапазона;
-- сетка содержит минимум 2 интервала после выравнивания.
+- сетка содержит минимум 2 интервала после выравнивания;
+- `grid_step.step_abs` и `params.grid_levels` не должны описывать радикально разные сетки; mismatch помечается warning'ом для ручной сверки перед запуском Bybit bot;
+- `tp_per_leg.abs` должен быть положительным и не схлопываться после округления по `tick_size`; off-tick TP помечается warning'ом с рассчитанным snapped-значением.
 
 ### Режимные инварианты
 - `bot_type` согласован с `venue` и `direction`;
@@ -56,7 +59,8 @@ execution-time validation должна блокировать исполнени
 - для supported execution-path обязательно присутствует явный `margin_mode` (`cash`/`isolated`), иначе recommendation блокируется fail-closed;
 - `leverage` > 0 и укладывается в `min/max leverage`;
 - `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint;
-- metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу.
+- metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу;
+- instrument `status` должен быть `Trading`; `PreLaunch`, `Delivering`, delisted/other statuses блокируются fail-closed для новых operator confirmations.
 
 ## Что outcome labeling умеет и чего не умеет
 

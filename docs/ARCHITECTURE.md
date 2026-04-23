@@ -150,3 +150,10 @@
 - `runtime_locks` в PostgreSQL захватываются атомарно через одну UPSERT-операцию; схема `SELECT`→`UPDATE` для leader-election признана небезопасной из-за риска split-brain.
 - `bot_instances.publication_root_rec_id` materialized и используется как DB-level инвариант для запрета двух одновременных `running`-ботов в одной publication-chain.
 - mutating API-пути в PostgreSQL теперь дополнительно берут row-level lock (`FOR UPDATE`) на целевую `recommendations`/`bot_instances` строку, чтобы concurrent `execute` / `trade` / `stop` не принимали решения по устаревшему snapshot и не теряли агрегаты состояния.
+
+
+## Дополнительный execution-time guard текущей ревизии
+
+Operator execution path теперь содержит отдельный live-price guard между freshness-check и materialization `bot_instance`.
+Он использует последний валидный ticker из persistence-слоя и сохранённый `trade_plan`, чтобы не позволить оператору подтвердить grid-рекомендацию, рассчитанную для уже неактуального диапазона.
+Guard не отправляет и не отменяет ордера; он только блокирует операторское подтверждение в audit/recommendation контуре.
