@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## 2026-04-23 — startup bootstrap scalability on existing history
+
+### Исправлено
+- `db.init_db()` больше не запускает тяжёлый historical publication-lineage backfill на каждом старте. Теперь полный Python backfill выполняется только если в `recommendations` реально найдены legacy-строки без materialized `publication_root_rec_id` / `is_outcome_label_root`;
+- bootstrap `bot_instances` больше не пересканирует всю таблицу на каждом рестарте: backfill `publication_root_rec_id` выполняется только если обнаружены пустые legacy-значения;
+- глубокий retrofit `repair_async_llm_pending_publication_chains()` больше не вызывается автоматически на старте процесса. Это отдельная maintenance-операция для исторической БД, а не обязательный шаг штатного перезапуска.
+
+### Добавлено
+- регрессионные тесты на то, что `init_db()` не делает полный rescanning already-materialized recommendations и bot_instances при обычном рестарте.
+
+### Практический эффект
+- повторный `python main.py` на БД с накопленной историей больше не должен зависать из-за безусловного startup-repair старых рекомендаций.
+
 ## 2026-04-22 — red-team hardening: exact Bybit instrument match, savepoint-safe idempotency and release-audit repair
 
 ### Исправлено

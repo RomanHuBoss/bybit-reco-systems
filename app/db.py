@@ -120,11 +120,31 @@ def _normalize_bot_publication_root(value: Any) -> str | None:
     return root or None
 
 
+def _bot_publication_root_backfill_needed(conn: sqlite3.Connection) -> bool:
+    """Проверяет, есть ли реально незаполненные publication roots у ботов.
+
+    Полный backfill всех bot_instances на каждом старте плохо масштабируется: на
+    живой базе это превращает обычный перезапуск в дорогой исторический re-scan.
+    Для штатного пути достаточно дешёвой проверки `LIMIT 1`; полную ретро-правку
+    запускаем только если действительно нашли legacy-строки без materialized root.
+    """
+    cur = conn.execute(
+        """SELECT 1
+               FROM bot_instances
+              WHERE publication_root_rec_id IS NULL
+                 OR TRIM(COALESCE(publication_root_rec_id, '')) = ''
+              LIMIT 1"""
+    )
+    return cur.fetchone() is not None
+
+
+
 def _ensure_bot_publication_root_columns(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "bot_instances")
     if "publication_root_rec_id" not in cols:
         conn.execute("ALTER TABLE bot_instances ADD COLUMN publication_root_rec_id TEXT")
-    _backfill_bot_publication_root(conn)
+    if _bot_publication_root_backfill_needed(conn):
+        _backfill_bot_publication_root(conn)
     duplicates = _find_running_publication_root_duplicates(conn)
     if duplicates:
         raise RuntimeError(
@@ -194,6 +214,26 @@ def _find_running_publication_root_duplicates(conn: sqlite3.Connection) -> list[
     return out
 
 
+def _recommendation_publication_backfill_needed(conn: sqlite3.Connection) -> bool:
+    """Быстрая проверка, нужен ли legacy-backfill publication lineage.
+
+    На реальной базе рекомендаций исторический полный проход по всем строкам на
+    каждом `python main.py` быстро становится узким местом. Для обычного рестарта
+    нам важно понять только одно: остались ли строки без materialized lineage.
+    Если нет, тяжёлый Python backfill пропускаем.
+    """
+    cur = conn.execute(
+        """SELECT 1
+               FROM recommendations
+              WHERE publication_root_rec_id IS NULL
+                 OR TRIM(COALESCE(publication_root_rec_id, '')) = ''
+                 OR is_outcome_label_root IS NULL
+              LIMIT 1"""
+    )
+    return cur.fetchone() is not None
+
+
+
 def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int:
     cols = _table_columns(conn, "recommendations")
     if "publication_root_rec_id" not in cols or "is_outcome_label_root" not in cols:
@@ -241,8 +281,7 @@ def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int
             "UPDATE recommendations SET publication_root_rec_id=?, is_outcome_label_root=? WHERE rec_id=?",
             updates,
         )
-    repaired = repair_async_llm_pending_publication_chains(conn)
-    return len(updates) + int(repaired)
+    return len(updates)
 
 
 
@@ -422,7 +461,13 @@ def init_db(conn: sqlite3.Connection) -> None:
       heartbeat_ts INTEGER NOT NULL
     )""")
     _ensure_recommendation_publication_columns(conn)
-    backfill_recommendation_publication_lineage(conn)
+    if _recommendation_publication_backfill_needed(conn):
+        # Полный historical lineage backfill может занимать заметное время на живой
+        # БД. На штатном рестарте запускаем его только если реально нашли legacy-
+        # строки без materialized root/is_root. Глубокий async-LLM retrofit больше
+        # не делаем автоматически на старте: он остаётся отдельной maintenance-
+        # операцией через `repair_async_llm_pending_publication_chains()`.
+        backfill_recommendation_publication_lineage(conn)
     _ensure_bot_publication_root_columns(conn)
     conn.commit()
 
