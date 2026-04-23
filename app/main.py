@@ -178,9 +178,13 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
     if info:
         price_filter = info.get("priceFilter") or {}
         lot_filter = info.get("lotSizeFilter") or {}
+        # В кэш и в preflight кладём именно то, что реально пришло от upstream.
+        # Иначе symbol/category mismatch валидация вырождается: если здесь всегда
+        # сохранить запрошенные значения, то downstream никогда не заметит, что
+        # прокси/stub вернул metadata другого инструмента.
         meta = {
-            "category": category,
-            "symbol": symbol,
+            "category": str(info.get("category") or category).strip().lower() or category,
+            "symbol": str(info.get("symbol") or symbol).strip().upper() or symbol,
             "tick_size": price_filter.get("tickSize"),
             "min_price": price_filter.get("minPrice"),
             "max_price": price_filter.get("maxPrice"),

@@ -281,7 +281,19 @@ class BybitPublicClient:
         return rows
 
     def get_instrument_info(self, category: str, symbol: str) -> dict[str, Any] | None:
-        """Metadata for a single instrument (tick size, lot size, etc.)."""
+        """Metadata for a single instrument (tick size, lot size, etc.).
+
+        Bybit normally honours the ``symbol`` filter, но для fail-closed execution
+        validation нельзя опираться только на это предположение. Если upstream,
+        прокси или тестовый stub вернул список без точного совпадения symbol,
+        безопаснее считать metadata непригодной и вернуть ``None``, чем молча
+        взять первый инструмент из списка и валидировать чужими ограничениями.
+        """
         data = self._get("/v5/market/instruments-info", {"category": category, "symbol": symbol})
         items = _result_list(data)
-        return items[0] if items else None
+        target = str(symbol or "").strip().upper()
+        for item in items:
+            item_symbol = str(item.get("symbol") or "").strip().upper()
+            if item_symbol and item_symbol == target:
+                return item
+        return None

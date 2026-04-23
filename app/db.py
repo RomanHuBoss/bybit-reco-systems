@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import secrets
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -566,6 +567,23 @@ def _require_non_negative_int(name: str, value: Any) -> int:
     return int(num)
 
 
+def _savepoint_name(prefix: str = "sp") -> str:
+    token = secrets.token_hex(6)
+    return f"{prefix}_{token}"
+
+
+def _begin_savepoint(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute(f"SAVEPOINT {name}")
+
+
+def _rollback_to_savepoint(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+
+
+def _release_savepoint(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute(f"RELEASE SAVEPOINT {name}")
+
+
 def _decode_sentiment_row(r: sqlite3.Row | None) -> dict[str, Any] | None:
     if not r:
         return None
@@ -987,6 +1005,8 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
             return "duplicate_bot_id"
         raise ValueError(f"bot_id={bot['bot_id']} already exists with different payload")
 
+    savepoint = _savepoint_name("bot_insert")
+    _begin_savepoint(conn, savepoint)
     try:
         conn.execute(
             """INSERT INTO bot_instances(
@@ -995,10 +1015,17 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             payload,
         )
+        _release_savepoint(conn, savepoint)
         if commit:
             conn.commit()
         return "inserted"
     except INTEGRITY_ERRORS:
+        # PostgreSQL после IntegrityError переводит текущую транзакцию в failed
+        # state и не даст даже SELECT до rollback/savepoint-rewind. Нам важно
+        # классифицировать конфликт как duplicate_origin / duplicate_publication_root,
+        # не откатывая всю внешнюю operator-транзакцию.
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
         origin_rec_id = bot.get("origin_rec_id")
         if origin_rec_id:
             existing = get_bot_by_origin_rec(conn, str(origin_rec_id))
@@ -1009,6 +1036,10 @@ def insert_bot_instance(conn: sqlite3.Connection, bot: dict[str, Any], *, commit
             existing_running = get_bot_by_publication_root(conn, publication_root_rec_id, status="running")
             if existing_running is not None:
                 return "duplicate_publication_root_running"
+        raise
+    except Exception:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
         raise
 
 def stop_bot(conn: sqlite3.Connection, bot_id: str, *, stopped_ts: int | None = None, commit: bool = True) -> bool:
@@ -1161,11 +1192,42 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any], *, commit: boo
             return "duplicate"
         raise ValueError(f"trade_id={trade['trade_id']} already exists with different payload")
 
-    conn.execute(
-        """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)
-           VALUES(?,?,?,?,?,?,?)""",
-        payload,
-    )
+    savepoint = _savepoint_name("trade_insert")
+    _begin_savepoint(conn, savepoint)
+    try:
+        conn.execute(
+            """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)
+               VALUES(?,?,?,?,?,?,?)""",
+            payload,
+        )
+        _release_savepoint(conn, savepoint)
+    except INTEGRITY_ERRORS:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        cur = conn.execute(
+            """SELECT bot_id, ts, symbol, pnl, fee, meta_json
+               FROM trades WHERE trade_id=?""",
+            (trade["trade_id"],),
+        )
+        row = cur.fetchone()
+        if row:
+            existing = (
+                row["bot_id"],
+                int(row["ts"]),
+                row["symbol"],
+                float(row["pnl"]),
+                float(row["fee"]),
+                _json_dumps_canonical(_json_loads_mapping_or_default(row["meta_json"], {})),
+            )
+            incoming = payload[1:]
+            if existing == incoming:
+                return "duplicate"
+            raise ValueError(f"trade_id={trade['trade_id']} already exists with different payload")
+        raise
+    except Exception:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        raise
     if commit:
         conn.commit()
     return "inserted"

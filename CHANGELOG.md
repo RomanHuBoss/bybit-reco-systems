@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 2026-04-22 — red-team hardening: exact Bybit instrument match, savepoint-safe idempotency and release-audit repair
+
+### Исправлено
+- `BybitPublicClient.get_instrument_info()` теперь принимает metadata только при точном совпадении `symbol`; если upstream/stub вернул список без целевого инструмента, клиент fail-closed возвращает `None`, а не берёт первый попавшийся элемент;
+- `_fetch_bybit_instrument_meta()` теперь сохраняет в кэш реальные `symbol/category`, пришедшие от upstream, а не безусловно повторяет запрошенные значения. Это возвращает смысл проверкам `BYBIT_META_SYMBOL_MISMATCH` / `BYBIT_META_CATEGORY_MISMATCH`;
+- `db.insert_bot_instance()` и `db.insert_trade()` переведены на `SAVEPOINT`-обёртку вокруг INSERT, чтобы после `IntegrityError` корректно классифицировать дубликаты и не ронять всю внешнюю транзакцию в PostgreSQL aborted-state.
+
+### Добавлено
+- `docs/AUDIT_REPORT_2026-04-22.md` с итогами текущего deep audit;
+- missing historical audit artifacts `docs/AUDIT_REPORT_2026-04-15.md`, `docs/AUDIT_REPORT_2026-04-10.md`, `docs/AUDIT_REPORT_2026-04-08.md` возвращены в release, чтобы README / changelog / тесты не ссылались на отсутствующие документы;
+- регрессионные тесты на exact-symbol instrument metadata, на сохранение фактического upstream symbol в prefetch cache и на savepoint-safe duplicate classification для bot/trade inserts.
+
+### Тесты
+- `pytest -q` → `342 passed`;
+- `python -m py_compile app/*.py tests/*.py main.py` → passed.
+
 ## 2026-04-15 — outcome backlog hardening under LLM mode and audit artifact reconciliation
 
 ### Исправлено

@@ -1,6 +1,7 @@
 # Модули и контракты
 
 ## `app/bybit_client.py`
+- fail-closed публичный REST-клиент Bybit с retry/backoff и exact-symbol проверкой `instruments-info`;
 Публичный REST-клиент Bybit.
 
 Контракт:
@@ -79,6 +80,7 @@ Proxy outcome labeling для grid-рекомендаций.
 - outcome-модель честно считается приближением, а не биржевой truth.
 
 ## `app/db.py`
+- persistence layer, JSON sanitation, runtime-locks и savepoint-safe duplicate classification для `bot_instances` / `trades`;
 Persistence и audit backbone.
 
 Контракт:
