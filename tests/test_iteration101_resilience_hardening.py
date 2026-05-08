@@ -24,7 +24,7 @@ def client_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     app_main.app.router.on_startup.clear()
-    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {})
+    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
 
     conn = db.connect(str(db_path))
     ts_now = int(time.time())

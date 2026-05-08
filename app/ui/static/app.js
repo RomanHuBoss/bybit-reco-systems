@@ -156,7 +156,7 @@ function directionRu(dir) {
 }
 
 function botTypeLabel(botType) {
-  if (botType === "futures_grid") return "futures grid";
+  if (botType === "futures_grid") return "Bybit Linear USDT Futures Grid";
   return botType || "—";
 }
 
@@ -167,8 +167,7 @@ function botTypePillHtml(botType, compact = false) {
 }
 
 function venueLabel(venue) {
-  if (venue === "linear") return "Фьючерсы";
-  if (venue === "linear") return "USDT futures";
+  if (venue === "linear") return "Bybit Linear USDT Perpetual";
   return venue || "—";
 }
 
@@ -180,19 +179,16 @@ function liquidityTierRu(tier) {
 }
 
 function marginModeRu(mode) {
-  if (mode === "isolated") return "Изолированная";
-  if (mode === "cross") return "Кросс";
-  if (mode === "isolated") return "Cash";
+  if (mode === "isolated") return "Изолированная (isolated)";
+  if (mode === "cross") return "Кросс — не поддерживается";
   return mode || "—";
 }
 
 function splitLinearSymbol(symbol) {
   const s = String(symbol || "").toUpperCase();
-  const quotes = ["USDT", "USDC", "BTC", "ETH", "EUR", "BRL", "TRY"];
-  for (const quote of quotes) {
-    if (s.endsWith(quote) && s.length > quote.length) {
-      return { base: s.slice(0, -quote.length), quote };
-    }
+  const quote = "USDT";
+  if (s.endsWith(quote) && s.length > quote.length) {
+    return { base: s.slice(0, -quote.length), quote };
   }
   return null;
 }
@@ -200,7 +196,7 @@ function splitLinearSymbol(symbol) {
 function bybitBotCreateUrl(botType) {
   return botType === "futures_grid"
     ? "https://www.bybit.com/ru-RU/tradingbot/fgrid-create/"
-    : "https://www.bybit.com/ru-RU/tradingbot/create/";
+    : "#";
 }
 
 function bybitChartUrl(venue, symbol) {
@@ -593,7 +589,7 @@ function buildDetailsHtml(it) {
 
       <div class="operator-card primary-launch-card">
         <h3>Поля для Bybit</h3>
-        <div class="helper-text" style="margin-bottom:10px">Только значения, которые реально нужны для ручного заполнения формы Bybit. Все ценовые уровни приведены к виду с точкой и без разделителей тысяч.</div>
+        <div class="helper-text" style="margin-bottom:10px">Только Bybit Linear USDT Perpetual futures grid. Это не обещание прибыли: при blocked/no_trade запуск запрещён, а все уровни должны пройти Bybit tick/lot/min-notional preflight.</div>
         <div class="operator-grid three">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.value, field.mono ? "field-input-mono" : "")).join("")}
         </div>

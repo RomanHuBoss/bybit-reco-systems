@@ -24,7 +24,7 @@ def isolated_app_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     app_main.app.router.on_startup.clear()
-    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {})
+    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
 
     conn = db.connect(str(db_path))
     client = TestClient(app_main.app, raise_server_exceptions=False)
@@ -383,7 +383,22 @@ def test_materialize_prefetches_bybit_meta_before_begin_immediate(isolated_app_a
     def tracked_fetch(venue: str, symbol: str) -> dict[str, object]:
         state["fetch_called"] = True
         assert state["begin_called"] is False
-        return {}
+        return {
+            "category": "linear",
+            "symbol": symbol,
+            "status": "Trading",
+            "contract_type": "LinearPerpetual",
+            "quote_coin": "USDT",
+            "settle_coin": "USDT",
+            "tick_size": "0.1",
+            "qty_step": "0.001",
+            "min_order_qty": "0.001",
+            "max_order_qty": "1000",
+            "min_notional": "5",
+            "min_leverage": "1",
+            "max_leverage": "100",
+            "leverage_step": "0.01",
+        }
 
     monkeypatch.setattr(app_main.db, "begin_immediate", tracked_begin)
     monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", tracked_fetch)
@@ -564,3 +579,53 @@ def test_validate_trade_plan_blocks_bybit_category_mismatch(isolated_app_and_con
 
     assert validation["ok"] is False
     assert "BYBIT_META_CATEGORY_MISMATCH" in error_codes
+
+
+
+def test_execution_preflight_requires_bybit_meta_fail_closed(isolated_app_and_conn):
+    app_main, _client, conn = isolated_app_and_conn
+    ts_now = int(time.time())
+    _insert_reco(conn, rec_id="R-missing-meta", ts_now=ts_now, status="recommended")
+    rec = db.get_recommendation_by_id(conn, "R-missing-meta")
+
+    preflight = app_main._execution_preflight(conn, rec, now_ts=ts_now, bybit_meta={})
+    codes = {item["code"] for item in preflight["blocks"]}
+
+    assert "BYBIT_META_UNAVAILABLE" in codes
+
+
+
+def test_validate_trade_plan_rejects_non_usdt_linear_perpetual_domain(isolated_app_and_conn):
+    app_main, _client, _conn = isolated_app_and_conn
+    rec = {
+        "venue": "linear",
+        "symbol": "BTCUSDC",
+        "bot_type": "futures_grid",
+        "direction": "long",
+        "account_mode": "unified",
+        "margin_mode": "isolated",
+        "params": {"grid_levels": 8, "leverage": 2, "margin_mode": "isolated"},
+    }
+    meta = {
+        "category": "linear",
+        "symbol": "BTCUSDC",
+        "status": "Trading",
+        "contract_type": "LinearFutures",
+        "quote_coin": "USDC",
+        "settle_coin": "USDC",
+        "tick_size": "0.1",
+        "qty_step": "0.001",
+        "min_order_qty": "0.001",
+        "min_notional": "5",
+        "min_leverage": "1",
+        "max_leverage": "100",
+        "leverage_step": "0.01",
+    }
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, meta, require_meta=True)
+    codes = {item["code"] for item in validation["errors"]}
+
+    assert "USDT_PERPETUAL_SYMBOL_REQUIRED" in codes
+    assert "BYBIT_CONTRACT_TYPE_UNSUPPORTED" in codes
+    assert "BYBIT_QUOTE_COIN_UNSUPPORTED" in codes
+    assert "BYBIT_SETTLE_COIN_UNSUPPORTED" in codes

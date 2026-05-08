@@ -78,7 +78,7 @@ def test_execute_recommendation_is_blocked_when_execution_time_market_data_is_mi
     app_main, client, conn = isolated_app_and_conn
     ts_now = int(time.time())
     _insert_recommendation(conn, rec_id="R-iteration105-missing-data", ts_now=ts_now)
-    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {})
+    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
 
     resp = client.post(
         "/api/v1/recommendations/R-iteration105-missing-data/action",
@@ -140,7 +140,7 @@ def test_execute_recommendation_is_blocked_by_current_market_shock_state(isolate
             "metrics": {},
         },
     )
-    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {})
+    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
 
     resp = client.post(
         "/api/v1/recommendations/R-iteration105-market-lock/action",

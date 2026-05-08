@@ -1157,11 +1157,19 @@ def _estimate_cost_model(
     horizon_sec = BOT_HORIZONS.get(bot_type, 0)
     fr = _finite_or_none(funding_rate)
     directional_funding_bps_8h = 0.0
+    neutral_funding_model = None
     if fr is not None:
         if direction == "long":
             directional_funding_bps_8h = fr * 10000.0
         elif direction == "short":
             directional_funding_bps_8h = -fr * 10000.0
+        elif direction == "neutral" and bot_type == "futures_grid" and venue == "linear":
+            # Neutral futures grids can accumulate either long or short inventory as
+            # price moves through the range. A signed funding estimate would mark one
+            # side as free carry even though the bot may end up holding the adverse
+            # side. Use abs(rate) as a conservative expected cost in approvals.
+            directional_funding_bps_8h = abs(fr) * 10000.0
+            neutral_funding_model = "adverse_side_for_neutral_grid"
 
     expected_funding_events = 0
     expected_funding_bps = 0.0
@@ -1201,6 +1209,7 @@ def _estimate_cost_model(
         "funding_rate": fr,
         "direction": direction,
         "directional_funding_bps_8h": float(directional_funding_bps_8h),
+        "neutral_funding_model": neutral_funding_model,
         "next_funding_ts": int(nfts_out) if nfts_out else _safe_int_or_none(next_funding_ts),
         "expected_funding_events": int(expected_funding_events),
         "expected_funding_bps": float(expected_funding_bps),

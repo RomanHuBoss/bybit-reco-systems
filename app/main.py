@@ -190,6 +190,11 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
             "base_coin": str(info.get("baseCoin") or "").strip().upper(),
             "quote_coin": str(info.get("quoteCoin") or "").strip().upper(),
             "settle_coin": str(info.get("settleCoin") or "").strip().upper(),
+            "contract_type": str(info.get("contractType") or "").strip(),
+            "funding_interval_min": info.get("fundingInterval"),
+            "upper_funding_rate": info.get("upperFundingRate"),
+            "lower_funding_rate": info.get("lowerFundingRate"),
+            "is_pre_listing": info.get("isPreListing"),
             "unified_margin_trade": info.get("unifiedMarginTrade"),
             "tick_size": price_filter.get("tickSize"),
             "min_price": price_filter.get("minPrice"),
@@ -757,7 +762,7 @@ def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, An
             })
     return blocks
 
-def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str, Any], *, require_meta: bool = False) -> dict[str, Any]:
     ctx = _trade_plan_price_context(rec)
     params = ctx["params"]
     plan = ctx["plan"]
@@ -782,6 +787,10 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     meta_category = str((meta or {}).get("category") or "").strip().lower()
     meta_symbol = str((meta or {}).get("symbol") or "").strip().upper()
     meta_status = str((meta or {}).get("status") or "").strip()
+    meta_contract_type = str((meta or {}).get("contract_type") or "").strip()
+    meta_quote_coin = str((meta or {}).get("quote_coin") or "").strip().upper()
+    meta_settle_coin = str((meta or {}).get("settle_coin") or "").strip().upper()
+    meta_is_pre_listing = (meta or {}).get("is_pre_listing")
     rec_symbol = str(rec.get("symbol") or "").strip().upper()
 
     errors: list[dict[str, str]] = []
@@ -789,10 +798,17 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     snapped: dict[str, str] = {}
 
     if not meta:
-        warnings.append({
+        missing_meta_item = {
             "code": "BYBIT_META_UNAVAILABLE",
-            "msg": "Не удалось получить metadata инструмента Bybit; точная проверка tick/lot/min-notional недоступна.",
-        })
+            "msg": "Не удалось получить metadata инструмента Bybit; точная проверка contractType/USDT settlement/tick/lot/min-notional недоступна.",
+        }
+        if require_meta:
+            errors.append({
+                "code": "BYBIT_META_UNAVAILABLE",
+                "msg": "Не удалось получить metadata инструмента Bybit; запуск запрещён fail-closed, потому что нельзя подтвердить LinearPerpetual/USDT/tick/lot/min-notional constraints.",
+            })
+        else:
+            warnings.append(missing_meta_item)
     if not plan:
         warnings.append({
             "code": "TRADE_PLAN_MISSING",
@@ -817,6 +833,40 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             errors.append({"code": "MARGIN_MODE_MISSING", "msg": "futures_grid требует явный margin_mode=isolated; legacy/manual recommendation без режима исполнения блокируется fail-closed."})
         elif margin_mode != "isolated":
             errors.append({"code": "MARGIN_MODE_UNSUPPORTED", "msg": f"futures_grid в этом проекте поддерживается только в margin_mode=isolated, получено {margin_mode}."})
+        if rec_symbol and not rec_symbol.endswith("USDT"):
+            errors.append({"code": "USDT_PERPETUAL_SYMBOL_REQUIRED", "msg": f"futures_grid поддерживается только для USDT perpetual symbols, получено symbol={rec_symbol}."})
+
+    if bot_type == "futures_grid" and meta:
+        if meta_contract_type and meta_contract_type != "LinearPerpetual":
+            errors.append({
+                "code": "BYBIT_CONTRACT_TYPE_UNSUPPORTED",
+                "msg": f"Bybit contractType={meta_contract_type}; проект поддерживает только LinearPerpetual USDT futures grid.",
+            })
+        elif not meta_contract_type:
+            warnings.append({
+                "code": "BYBIT_CONTRACT_TYPE_MISSING",
+                "msg": "Bybit metadata не содержит contractType; execution-preflight должен получать полный instruments-info перед запуском.",
+            })
+        if meta_quote_coin and meta_quote_coin != "USDT":
+            errors.append({
+                "code": "BYBIT_QUOTE_COIN_UNSUPPORTED",
+                "msg": f"Bybit quoteCoin={meta_quote_coin}; проект поддерживает только USDT-quoted linear perpetual.",
+            })
+        elif not meta_quote_coin:
+            warnings.append({"code": "BYBIT_QUOTE_COIN_MISSING", "msg": "Bybit metadata не содержит quoteCoin; невозможно подтвердить USDT quote без полного instruments-info."})
+        if meta_settle_coin and meta_settle_coin != "USDT":
+            errors.append({
+                "code": "BYBIT_SETTLE_COIN_UNSUPPORTED",
+                "msg": f"Bybit settleCoin={meta_settle_coin}; проект поддерживает только USDT-settled linear perpetual.",
+            })
+        elif not meta_settle_coin:
+            warnings.append({"code": "BYBIT_SETTLE_COIN_MISSING", "msg": "Bybit metadata не содержит settleCoin; невозможно подтвердить USDT settlement без полного instruments-info."})
+        pre_listing = meta_is_pre_listing is True or str(meta_status).strip().lower() in {"prelaunch", "pre-listing", "prelisting"}
+        if pre_listing:
+            errors.append({
+                "code": "BYBIT_PRELISTING_UNSUPPORTED",
+                "msg": "Pre-market/pre-listing контракты не поддерживаются для production futures grid recommendation.",
+            })
 
     if meta_symbol and rec_symbol and meta_symbol != rec_symbol:
         errors.append({
@@ -1138,7 +1188,7 @@ def _execution_preflight(
         bybit_meta = {}
     else:
         bybit_meta = dict(bybit_meta)
-    bybit_validation = _validate_trade_plan_against_bybit_meta(rec, bybit_meta)
+    bybit_validation = _validate_trade_plan_against_bybit_meta(rec, bybit_meta, require_meta=True)
     for item in bybit_validation.get("errors") or []:
         if isinstance(item, dict):
             blocks.append({"code": str(item.get("code") or "BYBIT_PLAN_INVALID"), "msg": str(item.get("msg") or "Bybit plan validation failed")})

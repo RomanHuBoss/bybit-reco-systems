@@ -1069,6 +1069,10 @@ def test_estimate_cost_model_rolls_stale_funding_forward_and_counts_crossed_even
     short = _estimate_cost_model(next_funding_ts=now + 3600, direction="short", **{k: v for k, v in base_args.items() if k != "direction"})
     assert short["expected_funding_bps"] == pytest.approx(-10.0)
 
+    neutral = _estimate_cost_model(next_funding_ts=now + 3600, direction="neutral", **{k: v for k, v in base_args.items() if k != "direction"})
+    assert neutral["neutral_funding_model"] == "adverse_side_for_neutral_grid"
+    assert neutral["expected_funding_bps"] == pytest.approx(10.0)
+
 
 
 def test_get_first_tradeable_candle_after_uses_next_candle_open(conn):
