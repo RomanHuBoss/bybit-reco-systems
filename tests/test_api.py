@@ -17,7 +17,6 @@ def client_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / 'api.db'
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
-    monkeypatch.setenv('SYMBOLS_SPOT', 'BTCUSDT')
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
 
     sys.modules.pop('app.main', None)
@@ -414,7 +413,6 @@ def test_api_health_uses_explicit_llm_env_config(tmp_path: Path, monkeypatch: py
     db_path = tmp_path / 'api.db'
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
-    monkeypatch.setenv('SYMBOLS_SPOT', 'BTCUSDT')
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
     monkeypatch.setenv('LLM_REVIEWER_ENABLED', '1')
     monkeypatch.setenv('LLM_REVIEWER_MAX_CANDIDATES', '60')
@@ -473,7 +471,7 @@ def test_env_example_llm_reviewer_defaults_match_runtime_defaults():
 
 def test_load_settings_ignores_inactive_venue_symbol_defaults(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('VENUES', 'linear')
-    monkeypatch.delenv('SYMBOLS_SPOT', raising=False)
+    monkeypatch.delenv('SYMBOLS_LINEAR', raising=False)
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT,ETHUSDT')
 
     from app.settings import load_settings
@@ -481,7 +479,7 @@ def test_load_settings_ignores_inactive_venue_symbol_defaults(monkeypatch: pytes
     settings = load_settings()
 
     assert settings.venues == ['linear']
-    assert settings.symbols_spot == []
+    assert settings.symbols_linear == []
     assert settings.symbols_linear == ['BTCUSDT', 'ETHUSDT']
 
 
@@ -490,7 +488,7 @@ def test_api_health_only_reports_active_venues(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
     monkeypatch.setenv('VENUES', 'linear')
-    monkeypatch.delenv('SYMBOLS_SPOT', raising=False)
+    monkeypatch.delenv('SYMBOLS_LINEAR', raising=False)
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
 
     sys.modules.pop('app.main', None)
@@ -1087,7 +1085,6 @@ def test_instrument_meta_failures_are_short_term_cached(tmp_path: Path, monkeypa
     db_path = tmp_path / 'meta-cache.db'
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
-    monkeypatch.setenv('SYMBOLS_SPOT', 'BTCUSDT')
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
 
     sys.modules.pop('app.main', None)
@@ -1473,7 +1470,7 @@ def test_api_health_applies_boot_grace_to_pre_restart_stale_rows(tmp_path: Path,
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
-    monkeypatch.setenv('SYMBOLS_SPOT', '')
+    monkeypatch.setenv('SYMBOLS_LINEAR', '')
     monkeypatch.setenv('VENUES', 'linear')
     monkeypatch.setenv('STALE_DATA_MAX_SEC', '300')
     monkeypatch.setenv('COLLECT_INTERVAL_SEC', '120')
@@ -1518,7 +1515,7 @@ def test_api_health_boot_grace_does_not_mask_very_old_rows(tmp_path: Path, monke
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
-    monkeypatch.setenv('SYMBOLS_SPOT', '')
+    monkeypatch.setenv('SYMBOLS_LINEAR', '')
     monkeypatch.setenv('VENUES', 'linear')
     monkeypatch.setenv('STALE_DATA_MAX_SEC', '300')
     monkeypatch.setenv('COLLECT_INTERVAL_SEC', '120')

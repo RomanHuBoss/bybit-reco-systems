@@ -7,16 +7,15 @@ from typing import Any, Callable
 from .bybit_client import BybitPublicClient
 from . import db
 
-# Symbols that Bybit rejects (e.g., futures-only symbols passed into spot collector).
+# Symbols that Bybit rejects (e.g., futures-only symbols passed into linear collector).
 # Keep a retry TTL instead of poisoning the symbol forever: listings can appear later,
 # config may be corrected at runtime, and transient exchange-side validation glitches should self-heal.
-_DISABLED_SYMBOLS: dict[str, dict[str, int]] = {"spot": {}, "linear": {}}
+_DISABLED_SYMBOLS: dict[str, dict[str, int]] = {"linear": {}}
 DISABLED_SYMBOL_RETRY_TTL_SEC = 6 * 60 * 60
 MISSING_TICKER_LOG_TTL_SEC = 60 * 60
 _MISSING_TICKER_LOG_TS: dict[tuple[str, str], int] = {}
 
 VENUE_TO_CATEGORY = {
-    "spot": "spot",
     "linear": "linear",
 }
 
@@ -343,7 +342,6 @@ def _fetch_ticker_payloads(
                     conn,
                     "SYMBOL_DISABLED",
                     None,
-                    None,
                     {
                         "venue": venue,
                         "symbol": sym,
@@ -650,7 +648,6 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
             db.log_decision(
                 conn,
                 "COLLECT_ERROR",
-                None,
                 None,
                 {"venue": venue, "symbol": sym, "field": "ticker_missing", "err": "ticker payload empty"},
                 commit=False,

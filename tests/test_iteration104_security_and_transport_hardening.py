@@ -49,7 +49,6 @@ def client_no_admin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "api_no_admin.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.delenv("ADMIN_API_KEY", raising=False)
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
 
     sys.modules.pop("app.main", None)

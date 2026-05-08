@@ -17,7 +17,6 @@ def isolated_client_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "iteration91.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
 
     sys.modules.pop("app.main", None)
@@ -182,7 +181,7 @@ def test_release_artifacts_are_present_and_cross_referenced() -> None:
     assert (root / "docs" / "instrukciya_operatora_bybit_recommender.pdf").exists()
     assert "ADMIN_API_KEY" in env_example
     assert "RUNTIME_LOCK_DB_PATH" in env_example
-    assert "SYMBOLS_SPOT=BTCUSDT,ETHUSDT" in env_example
+    assert "SYMBOLS_LINEAR=BTCUSDT,ETHUSDT" in env_example
     assert (root / "docs" / "ARCHITECTURE.md").exists()
     assert (root / "docs" / "MODULES.md").exists()
     assert (root / "docs" / "TRADING_LOGIC.md").exists()

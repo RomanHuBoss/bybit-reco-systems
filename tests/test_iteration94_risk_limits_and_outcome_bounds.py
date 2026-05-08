@@ -18,7 +18,6 @@ def client_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "iter94.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
 
     sys.modules.pop("app.main", None)
@@ -40,7 +39,6 @@ def test_bootstrap_persists_effective_normalized_risk_limits(tmp_path: Path, mon
     db_path = tmp_path / "bootstrap-risk.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv(
         "RISK_LIMITS_JSON",
@@ -152,7 +150,6 @@ def test_grid_outcome_ignores_poisoned_top_level_range_bounds_and_uses_trade_pla
             "linear",
             "BTCUSDT",
             100.0,
-            100.0,
             base_ts + 60,
             base_ts + 60 + 360 * 60,
             "neutral",
@@ -162,7 +159,6 @@ def test_grid_outcome_ignores_poisoned_top_level_range_bounds_and_uses_trade_pla
             conn,
             "linear",
             "BTCUSDT",
-            100.0,
             100.0,
             base_ts + 60,
             base_ts + 60 + 360 * 60,

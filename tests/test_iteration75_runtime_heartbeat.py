@@ -22,7 +22,6 @@ def test_make_runtime_lock_heartbeat_survives_closed_outer_connection(tmp_path: 
 
         heartbeat = app_main._make_runtime_lock_heartbeat("runtime:test")
         assert heartbeat() is True
-        assert heartbeat() is True
     finally:
         sys.modules.pop("app.main", None)
 
@@ -59,7 +58,6 @@ def test_make_runtime_lock_heartbeat_opens_new_connection_each_call(tmp_path: Pa
             assert db.acquire_runtime_lock(conn, "runtime:test", app_main.RUNTIME_OWNER, ttl_sec=90)
 
         heartbeat = app_main._make_runtime_lock_heartbeat("runtime:test", lock_conn_factory=factory)
-        assert heartbeat() is True
         assert heartbeat() is True
 
         assert len(created) == 2

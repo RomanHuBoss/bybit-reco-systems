@@ -19,7 +19,6 @@ def isolated_app_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "iteration107.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
 
     sys.modules.pop("app.main", None)
@@ -525,7 +524,7 @@ def test_api_execute_prefetches_bybit_metadata_before_begin_immediate(isolated_a
 
 
 # Категория metadata Bybit должна совпадать с venue recommendation.
-# Иначе spot-ограничения можно ошибочно применить к linear/futures или наоборот.
+# Иначе linear-ограничения можно ошибочно применить к linear/futures или наоборот.
 def test_validate_trade_plan_blocks_bybit_category_mismatch(isolated_app_and_conn):
     app_main, _client, _conn = isolated_app_and_conn
 
@@ -549,7 +548,7 @@ def test_validate_trade_plan_blocks_bybit_category_mismatch(isolated_app_and_con
         },
     }
     meta = {
-        "category": "spot",
+        "category": "linear",
         "symbol": "BTCUSDT",
         "tick_size": "0.1",
         "min_price": "1",

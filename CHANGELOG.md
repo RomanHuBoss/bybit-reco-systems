@@ -143,7 +143,7 @@
   - добавлена проверка `account_mode` / `margin_mode` против фактической модели проекта;
   - добавлена проверка `min_leverage`, `max_leverage`, `leverage_step`;
   - validation теперь явно показывает `snapped` leverage при off-step значении;
-- шаблон `.env.example` теперь явно содержит `SYMBOLS_SPOT`, а не только закомментированный пример.
+- шаблон `.env.example` теперь явно содержит `SYMBOLS_LINEAR`, а не только закомментированный пример.
 
 ### Добавлено
 - `docs/ARCHITECTURE.md`

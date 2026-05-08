@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 
 BOT_HORIZONS: dict[str, int] = {
-    "spot_grid": 12 * 3600,
     "futures_grid": 12 * 3600,
 }
 HORIZON_SEC_DEFAULT = 30 * 60
@@ -32,7 +31,6 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
 
     def _bounded_hours(hours: float) -> float:
         bounds = {
-            "spot_grid": (6.0, 48.0),
             "futures_grid": (6.0, 48.0),
         }
         lo, hi = bounds.get(bot_type, (0.5, 72.0))
@@ -69,8 +67,6 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
 def _is_supported_direction(bot_type: str, venue: str, direction: str) -> bool:
     venue_norm = str(venue or "").strip().lower()
     direction_norm = str(direction or "").strip().lower()
-    if bot_type == "spot_grid":
-        return venue_norm == "spot" and direction_norm in ("neutral", "long")
     if bot_type == "futures_grid":
         return venue_norm == "linear" and direction_norm in ("neutral", "long", "short")
     return False

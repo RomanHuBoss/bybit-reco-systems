@@ -227,15 +227,15 @@ def _pick_best_symbol_snapshot(conn, symbol: str, venues: list[str], ts_now: int
         if best is None:
             best = snap
             continue
-        # Fresher snapshot wins. On age tie prefer spot for benchmark symbols because
-        # spot BTC/ETH usually represent the underlying move more cleanly than perps.
+        # Fresher snapshot wins. On age tie prefer linear for benchmark symbols because
+        # linear BTC/ETH usually represent the underlying move more cleanly than perps.
         age = int(snap.get("age_sec") or 10**9)
         best_age = int(best.get("age_sec") or 10**9)
         if age < best_age:
             best = snap
             continue
         if age == best_age:
-            if symbol in {"BTCUSDT", "ETHUSDT"} and snap.get("venue") == "spot" and best.get("venue") != "spot":
+            if symbol in {"BTCUSDT", "ETHUSDT"} and snap.get("venue") == "linear" and best.get("venue") != "linear":
                 best = snap
     return best
 
@@ -271,7 +271,6 @@ def compute_market_shock(
     configured_by_symbol: dict[str, list[str]] = {}
     ordered_symbols: list[str] = []
     for venue, symbols in (
-        ("spot", list(getattr(settings, "symbols_spot", []) or [])),
         ("linear", list(getattr(settings, "symbols_linear", []) or [])),
     ):
         for sym in symbols:
@@ -313,7 +312,7 @@ def compute_market_shock(
 
     snaps: list[dict[str, Any]] = []
     for sym in ordered_symbols:
-        snap = _pick_best_symbol_snapshot(conn, sym, configured_by_symbol.get(sym) or ["linear", "spot"], ts_now, max_age_sec)
+        snap = _pick_best_symbol_snapshot(conn, sym, configured_by_symbol.get(sym) or ["linear", "linear"], ts_now, max_age_sec)
         if not snap:
             continue
         feat = _feature_for_symbol(symbol_feature_map, str(snap.get("venue") or ""), sym)

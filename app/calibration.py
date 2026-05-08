@@ -605,7 +605,6 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 #     + recency weighting in fit_logreg/fit_platt → forces refit of all saved models
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "spot_grid":    "logreg_spot_grid_v3",
     "futures_grid": "logreg_futures_grid_v3",
 }
 GLOBAL_LOGREG_KEY = "logreg_global_v3"

@@ -83,7 +83,7 @@ def test_lifespan_does_not_start_disabled_llm_reviewer_thread(tmp_path: Path, mo
     db_path = tmp_path / "lifespan_llm_disabled.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     monkeypatch.setenv("VENUES", "linear")
     monkeypatch.setenv("LLM_REVIEWER_ENABLED", "0")
     sys.modules.pop("app.main", None)
@@ -127,7 +127,7 @@ def test_lifespan_starts_backfill_thread(tmp_path: Path, monkeypatch: pytest.Mon
     db_path = tmp_path / "lifespan_backfill.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
@@ -161,7 +161,7 @@ def test_api_health_symbols_exposes_warmup_payload(tmp_path: Path, monkeypatch: 
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")

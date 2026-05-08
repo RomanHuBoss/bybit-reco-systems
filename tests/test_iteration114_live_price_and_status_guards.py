@@ -16,7 +16,6 @@ def isolated_app_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("RUNTIME_LOCK_DB_PATH", str(tmp_path / "iteration114_runtime_lock.db"))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv("STALE_DATA_MAX_SEC", "120")
 

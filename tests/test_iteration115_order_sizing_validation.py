@@ -11,7 +11,6 @@ import pytest
 def app_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "iteration115.db"))
     monkeypatch.setenv("RUNTIME_LOCK_DB_PATH", str(tmp_path / "iteration115_runtime_lock.db"))
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     sys.modules.pop("app.main", None)
     module = importlib.import_module("app.main")

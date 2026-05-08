@@ -138,14 +138,12 @@ class Settings:
     top_n: int
 
     venues: list[str]
-    symbols_spot: list[str]
     symbols_linear: list[str]
 
     risk_limits: dict
     min_score_to_recommend: float
     min_conf_to_recommend: float
 
-    taker_fee_bps_spot: float
     taker_fee_bps_linear: float
 
     master_key: str | None
@@ -188,19 +186,17 @@ class Settings:
 
 def load_settings() -> Settings:
     _maybe_load_dotenv()
-    supported_venues = {"spot", "linear"}
+    supported_venues = {"linear"}
     venues: list[str] = []
-    for raw_venue in _env("VENUES", "spot,linear").split(","):
+    for raw_venue in _env("VENUES", "linear").split(","):
         venue = str(raw_venue or "").strip().lower()
         if not venue or venue not in supported_venues or venue in venues:
             continue
         venues.append(venue)
     if not venues:
-        venues = ["spot", "linear"]
+        venues = ["linear"]
 
-    symbols_spot_default = "BTCUSDT,ETHUSDT" if "spot" in venues else ""
     symbols_linear_default = "BTCUSDT,ETHUSDT" if "linear" in venues else ""
-    symbols_spot = _csv_symbols_unique(_env("SYMBOLS_SPOT", symbols_spot_default)) if "spot" in venues else []
     symbols_linear = _csv_symbols_unique(_env("SYMBOLS_LINEAR", symbols_linear_default)) if "linear" in venues else []
 
     risk_limits = _env_json_dict(
@@ -280,12 +276,10 @@ def load_settings() -> Settings:
         futures_collect_max_workers=_env_int("FUTURES_COLLECT_MAX_WORKERS", 8, minimum=1, maximum=16),
         top_n=_env_int("TOP_N", 20, minimum=1, maximum=500),
         venues=venues,
-        symbols_spot=symbols_spot,
         symbols_linear=symbols_linear,
         risk_limits=risk_limits,
         min_score_to_recommend=_env_float("MIN_SCORE_TO_RECOMMEND", 0.08, minimum=-1.0, maximum=1.0),
         min_conf_to_recommend=_env_float("MIN_CONF_TO_RECOMMEND", 0.52, minimum=0.0, maximum=1.0),
-        taker_fee_bps_spot=_env_float("TAKER_FEE_BPS_SPOT", 10.0, minimum=0.0, maximum=500.0),
         taker_fee_bps_linear=_env_float("TAKER_FEE_BPS_LINEAR", 6.0, minimum=0.0, maximum=500.0),
         master_key=master_key,
         admin_api_key=admin_api_key,

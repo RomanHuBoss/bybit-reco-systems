@@ -146,7 +146,6 @@ def test_bybit_client_get_instrument_info_requires_exact_symbol_match(monkeypatc
 def test_prefetched_bybit_meta_keeps_actual_upstream_symbol(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "meta-actual-symbol.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
 
     sys.modules.pop("app.main", None)

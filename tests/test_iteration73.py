@@ -20,7 +20,7 @@ def test_get_latest_ticker_ts_ignores_invalid_newer_fallback_rows(tmp_path: Path
         db.insert_tickers(
             conn,
             [{
-                "venue": "spot",
+                "venue": "linear",
                 "symbol": "BTCUSDT",
                 "ts": 1_700_000_000,
                 "last": 100.0,
@@ -33,24 +33,24 @@ def test_get_latest_ticker_ts_ignores_invalid_newer_fallback_rows(tmp_path: Path
         conn.execute(
             """INSERT INTO ticker_snap(venue,symbol,ts,last,bid,ask,vol24h,turnover24h)
                VALUES(?,?,?,?,?,?,?,?)""",
-            ("spot", "BTCUSDT", 1_700_000_060, 101.0, 102.0, 101.0, 9.0, 900.0),
+            ("linear", "BTCUSDT", 1_700_000_060, 101.0, 102.0, 101.0, 9.0, 900.0),
         )
         conn.commit()
 
-        latest = db.get_latest_ticker(conn, "spot", "BTCUSDT")
+        latest = db.get_latest_ticker(conn, "linear", "BTCUSDT")
         assert latest is not None
         assert int(latest["ts"]) == 1_700_000_000
-        assert db.get_latest_ticker_ts(conn, "spot", "BTCUSDT") == 1_700_000_000
+        assert db.get_latest_ticker_ts(conn, "linear", "BTCUSDT") == 1_700_000_000
 
         conn.execute(
-            "DELETE FROM ticker_snap WHERE venue='spot' AND symbol='BTCUSDT' AND ts=?",
+            "DELETE FROM ticker_snap WHERE venue='linear' AND symbol='BTCUSDT' AND ts=?",
             (1_700_000_000,),
         )
         conn.commit()
-        fallback = db.get_latest_ticker(conn, "spot", "BTCUSDT")
+        fallback = db.get_latest_ticker(conn, "linear", "BTCUSDT")
         assert fallback is not None
         assert fallback["bid"] is None and fallback["ask"] is None
-        assert db.get_latest_ticker_ts(conn, "spot", "BTCUSDT") is None
+        assert db.get_latest_ticker_ts(conn, "linear", "BTCUSDT") is None
     finally:
         conn.close()
 

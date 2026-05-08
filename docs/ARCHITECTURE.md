@@ -9,7 +9,7 @@
 Система должна:
 - собирать и нормализовать market data Bybit;
 - вычислять признаки и multi-timeframe directional/regime контекст;
-- публиковать рекомендации для `spot_grid` и `futures_grid`;
+- публиковать рекомендации для `futures_grid`;
 - блокировать очевидно опасные идеи через risk gate / market shock / fast-veto / LLM-review;
 - сохранять audit trail, publication lineage, operator actions и proxy-outcomes.
 

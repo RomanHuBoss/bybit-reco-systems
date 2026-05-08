@@ -13,7 +13,7 @@ def test_collect_backfill_cycle_uses_full_sweep_budget_while_warmup_not_ready(tm
     db_path = tmp_path / "cycle_budget.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT,ETHUSDT,SOLUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
@@ -39,7 +39,7 @@ def test_backfill_thread_does_not_call_futures_meta_inline(tmp_path: Path, monke
     db_path = tmp_path / "backfill_inline.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     monkeypatch.setenv("VENUES", "linear")
     monkeypatch.setenv("COLLECT_INTERVAL_SEC", "5")
     monkeypatch.setenv("FUTURES_COLLECT_INTERVAL_SEC", "60")

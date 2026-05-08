@@ -55,8 +55,8 @@ def test_get_latest_ticker_ts_ignores_invalid_fallback_only_rows(tmp_path: Path)
 def test_sentiment_thread_does_not_persist_after_runtime_lock_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "sentiment_lock_loss.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("VENUES", "spot")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
+    monkeypatch.setenv("VENUES", "linear")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")

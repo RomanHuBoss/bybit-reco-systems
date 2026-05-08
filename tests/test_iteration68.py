@@ -20,7 +20,6 @@ def client_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "api_iter68.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
 
     sys.modules.pop("app.main", None)
@@ -104,12 +103,10 @@ def _settings_for_tests(**overrides):
         reco_interval_sec=20,
         top_n=20,
         venues=["linear"],
-        symbols_spot=[],
         symbols_linear=["BTCUSDT"],
         risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
         min_score_to_recommend=0.08,
         min_conf_to_recommend=0.52,
-        taker_fee_bps_spot=10.0,
         taker_fee_bps_linear=6.0,
         master_key=None,
         admin_api_key=None,

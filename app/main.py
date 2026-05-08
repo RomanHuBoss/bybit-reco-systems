@@ -129,7 +129,6 @@ def _bootstrap_db() -> None:
                 conn,
                 "OUTCOME_LABEL_VERSION_RESET",
                 None,
-                None,
                 {
                     "version": OUTCOME_LABEL_VERSION,
                     "previous_version": current_label_version,
@@ -147,7 +146,7 @@ logger.info("runtime_lock_target=%s", describe_target(settings.runtime_lock_db_p
 
 
 def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
-    category = "linear" if str(venue or "").lower() == "linear" else "spot"
+    category = "linear"
     cache_key = (str(venue or "").lower(), str(symbol or "").upper())
     now = time.time()
     with _instrument_meta_lock:
@@ -801,18 +800,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     # Эта система рекомендует только ограниченный набор режимов. Если рекомендация
     # в БД/legacy payload уже противоречит собственной доменной модели, её нельзя
     # считать исполнимой даже до похода в Bybit API.
-    if bot_type == "spot_grid":
-        if venue != "spot":
-            errors.append({"code": "BOT_TYPE_VENUE_MISMATCH", "msg": f"spot_grid допустим только для venue=spot, получено venue={venue or 'unknown'}."})
-        if direction not in {"neutral", "long"}:
-            errors.append({"code": "SPOT_DIRECTION_INVALID", "msg": f"spot_grid не поддерживает direction={direction or 'unknown'}."})
-        if account_mode and account_mode != "spot":
-            warnings.append({"code": "ACCOUNT_MODE_UNEXPECTED", "msg": f"spot_grid обычно ожидает account_mode=spot, получено {account_mode}."})
-        if not margin_mode:
-            errors.append({"code": "MARGIN_MODE_MISSING", "msg": "spot_grid требует явный margin_mode=cash; без этого recommendation нельзя считать исполнимой."})
-        elif margin_mode != "cash":
-            errors.append({"code": "MARGIN_MODE_INVALID", "msg": f"spot_grid ожидает margin_mode=cash, получено {margin_mode}."})
-    elif bot_type == "futures_grid":
+    if bot_type == "futures_grid":
         if venue != "linear":
             errors.append({"code": "BOT_TYPE_VENUE_MISMATCH", "msg": f"futures_grid допустим только для venue=linear, получено venue={venue or 'unknown'}."})
         if direction not in {"neutral", "long", "short"}:
@@ -977,8 +965,8 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                     "msg": f"Leverage {leverage} не выровнен по leverage_step={leverage_step}; ближайшее допустимое значение={snapped['leverage']}",
                 })
 
-    if leverage is not None and venue == "spot" and leverage > 1:
-        errors.append({"code": "SPOT_LEVERAGE_INVALID", "msg": f"Для spot leverage должен быть 1, получено {leverage}."})
+    if leverage is not None and venue == "linear" and leverage > 1:
+        errors.append({"code": "LINEAR_LEVERAGE_INVALID", "msg": f"Для linear leverage должен быть 1, получено {leverage}."})
 
     sizing = plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {}
     qty_keys = (
@@ -1358,7 +1346,6 @@ def _collect_backfill_cycle(conn, client: BybitPublicClient, venue: str, symbols
 def _collector_warmup_status(conn) -> dict[str, Any]:
     status = db.get_recommender_warmup_status(
         conn,
-        settings.symbols_spot,
         settings.symbols_linear,
         stale_sec=int(settings.stale_data_max_sec),
         min_rows_per_tf=80,
@@ -1430,7 +1417,6 @@ def _load_symbol_health(conn) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     collector_last_cycle = _get_app_config_mapping(conn, "collector_last_cycle", default={})
     items = db.get_symbol_health(
         conn,
-        settings.symbols_spot,
         settings.symbols_linear,
         stale_sec=settings.stale_data_max_sec,
         active_venues=active_venues,
@@ -1565,11 +1551,7 @@ def _require_admin_key(x_api_key: str | None, request: Request | None = None) ->
 
 
 def _is_supported_execution_direction(bot_type: str, venue: str, direction: str) -> bool:
-    if bot_type == "spot_grid":
-        return venue == "spot" and direction in ("neutral", "long")
-    if bot_type == "futures_grid":
-        return venue == "linear" and direction in ("neutral", "long", "short")
-    return False
+    return bot_type == "futures_grid" and venue == "linear" and direction in ("neutral", "long", "short")
 
 
 def _prefetch_execution_bybit_meta(conn, rec_id: str) -> dict[str, Any]:
@@ -1968,7 +1950,6 @@ def api_update_risk_limits(req: UpdateRiskLimitsRequest, request: Request, x_api
                 conn,
                 "UPDATE_LIMITS",
                 None,
-                None,
                 {"version": version, "limits": effective_limits, "raw_limits": req.limits},
                 commit=False,
             )
@@ -2315,7 +2296,7 @@ def _collector_thread():
                 with closing(_get_conn()) as conn:
                     heartbeat = _make_runtime_lock_heartbeat(lock_key)
                     for venue in settings.venues:
-                        symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
+                        symbols = settings.symbols_linear
                         try:
                             cycle_stats["venues"].append(
                                 _collect_hot_once(
@@ -2375,7 +2356,7 @@ def _backfill_thread():
                 with closing(_get_conn()) as conn:
                     heartbeat = _make_runtime_lock_heartbeat(lock_key)
                     for venue in settings.venues:
-                        symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
+                        symbols = settings.symbols_linear
                         try:
                             cycle_stats["venues"].append(
                                 _collect_backfill_cycle(

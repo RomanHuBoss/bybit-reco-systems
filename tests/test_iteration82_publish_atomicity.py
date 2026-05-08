@@ -52,7 +52,6 @@ def _settings() -> Settings:
         reco_interval_sec=20,
         top_n=20,
         venues=["linear"],
-        symbols_spot=[],
         symbols_linear=["BTCUSDT"],
         risk_limits={
             "max_concurrent_bots": 4,
@@ -62,7 +61,6 @@ def _settings() -> Settings:
         },
         min_score_to_recommend=0.08,
         min_conf_to_recommend=0.52,
-        taker_fee_bps_spot=10.0,
         taker_fee_bps_linear=6.0,
         master_key=None,
         admin_api_key=None,

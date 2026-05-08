@@ -5,11 +5,10 @@
 Проект рассчитан прежде всего на **операторский / полуавтоматический контур**: система формирует интерпретируемую рекомендацию, показывает причины, ограничения и риск-контекст, а оператор уже принимает решение о запуске бота на бирже.
 
 ## Поддерживаемые bot_type
-- `spot_grid`
 - `futures_grid`
 
 ## Что делает система
-- собирает `spot` / `linear` тикеры и OHLCV по нескольким таймфреймам;
+- собирает `linear` / `linear` тикеры и OHLCV по нескольким таймфреймам;
 - собирает `funding rate` и `open interest` для perpetual linear;
 - ведёт эвристический sentiment pipeline (`global`, `symbol`, `topic` scopes);
 - определяет direction/regime на нескольких ТФ;
@@ -42,8 +41,8 @@
 Это **не execution engine биржевого уровня** и не полноценный симулятор исполнения. Сервис оценивает пригодность сетапа и его качество, но не заменяет отдельный production-grade execution layer. Ордеры на Bybit из этого проекта не отправляются: `bot_instances` и `trades` отражают операторский / audit-контур, а не живой OMS/EMS.
 
 ## Что входит в проект
-- сбор spot/linear тикеров и OHLCV;
-- сбор funding и open interest для linear;
+- сбор USDT linear futures тикеров и OHLCV;
+- сбор funding и open interest для USDT linear futures;
 - sentiment pipeline с global и symbol scopes;
 - multi-timeframe direction/regime inference;
 - scoring + risk gating + calibration;
@@ -120,7 +119,7 @@ ruff check app tests main.py
 - `RUNTIME_LOCK_DB_PATH` — путь к отдельной sidecar-БД runtime lock для SQLite; по умолчанию это `*.runtime_locks.sqlite` рядом с основной БД. Значение обязано отличаться от `DB_PATH`, иначе bootstrap завершится ошибкой конфигурации;
 - `DATABASE_URL` — обязательный DSN основной PostgreSQL БД в режиме `DB_ENGINE=postgresql`; теперь он должен быть задан явно, чтобы сервис не пытался молча подключаться к локальному `postgresql://127.0.0.1/...` по unsafe-default;
 - `RUNTIME_LOCK_DATABASE_URL` — опциональный отдельный DSN для runtime lock в PostgreSQL-режиме; если не задан, используется `DATABASE_URL`;
-- `SYMBOLS_SPOT`, `SYMBOLS_LINEAR` — списки символов; дубли теперь автоматически удаляются на bootstrap с сохранением порядка, чтобы один и тот же инструмент не собирался и не скорился несколько раз в рамках одного venue;
+- `SYMBOLS_LINEAR` — списки символов; дубли теперь автоматически удаляются на bootstrap с сохранением порядка, чтобы один и тот же инструмент не собирался и не скорился несколько раз в рамках одного venue;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
 - `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;

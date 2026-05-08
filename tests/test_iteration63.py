@@ -88,7 +88,6 @@ def test_bybit_client_open_interest_forwards_start_and_end_params(monkeypatch: p
 
 
 def test_collect_futures_once_backfills_open_interest_gap_with_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
 
     conn = db.connect(str(tmp_path / "oi_gap.db"))
@@ -129,7 +128,6 @@ def test_collect_futures_once_backfills_open_interest_gap_with_window(tmp_path: 
 
 
 def test_collector_bootstraps_derived_timeframes_on_cold_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -195,10 +193,10 @@ def test_collector_bootstraps_derived_timeframes_on_cold_start(tmp_path: Path, m
     client = BootstrapClient()
     monkeypatch.setattr(db, "now_ts", lambda: base_ts)
 
-    stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    stats = collector.collect_once(conn, client, "linear", ["BTCUSDT"])
 
-    tf15 = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 900, limit=120)
-    tf30 = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 1800, limit=120)
+    tf15 = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 900, limit=120)
+    tf30 = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 1800, limit=120)
     assert len(tf15) >= 80
     assert len(tf30) >= 80
     assert stats["derived_tf_bootstrap_fetches"] == {"900": 1, "1800": 1}
@@ -216,7 +214,6 @@ def test_get_symbol_health_clears_disabled_after_retry_window(tmp_path: Path, mo
     db.log_decision(
         conn,
         "SYMBOL_DISABLED",
-        None,
         None,
         {
             "venue": "linear",
@@ -269,7 +266,7 @@ def test_db_latest_ohlcv_ts_ignores_historical_invalid_newest_rows(tmp_path: Pat
     db.upsert_ohlcv(
         conn,
         [{
-            "venue": "spot",
+            "venue": "linear",
             "symbol": "BTCUSDT",
             "tf_sec": 60,
             "ts": 1_700_000_000,
@@ -284,12 +281,12 @@ def test_db_latest_ohlcv_ts_ignores_historical_invalid_newest_rows(tmp_path: Pat
     conn.execute(
         """INSERT OR REPLACE INTO ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)
            VALUES(?,?,?,?,?,?,?,?,?)""",
-        ("spot", "BTCUSDT", 60, 1_800_000_000, 0.0, 0.0, 0.0, 0.0, 1.0),
+        ("linear", "BTCUSDT", 60, 1_800_000_000, 0.0, 0.0, 0.0, 0.0, 1.0),
     )
     conn.commit()
 
-    assert db.get_latest_ohlcv_ts(conn, "spot", "BTCUSDT", 60) == 1_700_000_000
-    latest_rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 60, limit=5)
+    assert db.get_latest_ohlcv_ts(conn, "linear", "BTCUSDT", 60) == 1_700_000_000
+    latest_rows = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 60, limit=5)
     assert [int(row["ts"]) for row in latest_rows] == [1_700_000_000]
     conn.close()
 
@@ -335,7 +332,6 @@ def test_db_filters_invalid_funding_and_open_interest_rows(tmp_path: Path):
 
 
 def test_collector_skips_redundant_4h_bootstrap_when_1h_history_is_sufficient(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -383,11 +379,11 @@ def test_collector_skips_redundant_4h_bootstrap_when_1h_history_is_sufficient(tm
     monkeypatch.setattr(db, "now_ts", lambda: base_ts)
     client = Client()
 
-    stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    stats = collector.collect_once(conn, client, "linear", ["BTCUSDT"])
 
     assert "240" not in client.intervals
     assert stats["derived_tf_bootstrap_fetches"] == {}
-    tf4h = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 14400, limit=120)
+    tf4h = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 14400, limit=120)
     assert len(tf4h) >= 96
     conn.close()
 

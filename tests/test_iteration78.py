@@ -12,9 +12,9 @@ from app import collector
 def test_background_supervisor_records_collector_crash_and_restart_state(tmp_path: Path, monkeypatch):
     db_path = tmp_path / "supervisor.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "")
-    monkeypatch.setenv("VENUES", "spot")
+    monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:
@@ -57,7 +57,7 @@ def test_background_supervisor_records_collector_crash_and_restart_state(tmp_pat
 def test_status_recomputes_warmup_when_cached_snapshot_is_missing(tmp_path: Path, monkeypatch):
     db_path = tmp_path / "status_warmup.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)

@@ -12,7 +12,6 @@ from app import collector, db
 
 
 def test_collect_once_backfills_long_kline_gap_without_losing_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -24,7 +23,7 @@ def test_collect_once_backfills_long_kline_gap_without_losing_history(tmp_path: 
     db.upsert_ohlcv(
         conn,
         [{
-            "venue": "spot",
+            "venue": "linear",
             "symbol": "BTCUSDT",
             "tf_sec": 60,
             "ts": base_ts,
@@ -70,13 +69,13 @@ def test_collect_once_backfills_long_kline_gap_without_losing_history(tmp_path: 
             return rows
 
     client = GapClient(now_ts)
-    stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    stats = collector.collect_once(conn, client, "linear", ["BTCUSDT"])
 
     assert stats["api_tf_fetches"] == {"60": 1}
     assert len(client.kline_calls) >= 3
     assert all(call["end"] is not None for call in client.kline_calls)
 
-    rows = list(reversed(db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 60, limit=900)))
+    rows = list(reversed(db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 60, limit=900)))
     ts_values = [int(r["ts"]) for r in rows if int(r["ts"]) >= base_ts]
     assert ts_values[0] == base_ts
     assert ts_values[-1] == now_ts
@@ -87,7 +86,6 @@ def test_collect_once_backfills_long_kline_gap_without_losing_history(tmp_path: 
 
 
 def test_collect_futures_once_paginates_open_interest_cursor_for_long_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
 
     conn = db.connect(str(tmp_path / "oi_cursor_gap.db"))
@@ -129,7 +127,6 @@ def test_collect_futures_once_paginates_open_interest_cursor_for_long_gap(tmp_pa
 
 
 def test_collect_once_does_not_commit_partial_stage_when_lock_is_lost_after_buffered_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -155,7 +152,7 @@ def test_collect_once_does_not_commit_partial_stage_when_lock_is_lost_after_buff
             raise RuntimeError("simulated kline failure")
 
     with pytest.raises(collector.RuntimeLockLostError):
-        collector.collect_once(conn, MixedClient(), "spot", ["BTCUSDT"], heartbeat=lambda: False)
+        collector.collect_once(conn, MixedClient(), "linear", ["BTCUSDT"], heartbeat=lambda: False)
 
     # Nothing should be committed: stage writes and buffered error logs are still in-memory until the stage ends.
     ticker_count = int(conn.execute("SELECT COUNT(*) AS c FROM ticker_snap").fetchone()["c"])
@@ -219,18 +216,17 @@ def test_bybit_client_open_interest_page_forwards_cursor(monkeypatch: pytest.Mon
 def test_collector_thread_rolls_back_partial_cycle_on_runtime_lock_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "collector_lock_loss_rollback.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "")
-    monkeypatch.setenv("VENUES", "spot")
+    monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:
         app_main.settings = replace(
             app_main.settings,
-            venues=["spot"],
-            symbols_spot=["BTCUSDT"],
-            symbols_linear=[],
-            collect_interval_sec=5,
+            venues=["linear"],
+            symbols_linear=["BTCUSDT"],
+                collect_interval_sec=5,
             futures_collect_interval_sec=3600,
         )
 

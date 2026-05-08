@@ -333,7 +333,6 @@ def _backfill_effective_horizon_sec(bot_type: str, params: dict[str, Any] | None
 
     def _bounded_hours(hours: float) -> float:
         bounds = {
-            "spot_grid": (6.0, 48.0),
             "futures_grid": (6.0, 48.0),
         }
         lo, hi = bounds.get(bot_type, (0.5, 72.0))
@@ -351,7 +350,7 @@ def _backfill_effective_horizon_sec(bot_type: str, params: dict[str, Any] | None
     if explicit_sec is not None:
         return int(_bounded_hours(explicit_sec / 3600.0) * 3600)
 
-    builtin = {"spot_grid": 12 * 3600, "futures_grid": 12 * 3600}.get(bot_type)
+    builtin = {"futures_grid": 12 * 3600}.get(bot_type)
     if builtin is not None:
         return int(builtin)
 
@@ -1904,7 +1903,6 @@ def get_recommendation_status_counts(
 
 def get_recommender_warmup_status(
     conn: sqlite3.Connection,
-    symbols_spot: list[str],
     symbols_linear: list[str],
     *,
     stale_sec: int = 300,
@@ -1925,7 +1923,7 @@ def get_recommender_warmup_status(
     now = now_ts()
     min_rows_per_tf = max(1, int(min_rows_per_tf or 1))
     tf_list = tuple(dict.fromkeys(int(tf) for tf in (required_tfs or (60, 900, 1800, 3600, 14400, 86400)) if int(tf) > 0))
-    active = {str(v or '').strip().lower() for v in (active_venues or ['spot', 'linear']) if str(v or '').strip()}
+    active = {str(v or '').strip().lower() for v in (active_venues or ['linear', 'linear']) if str(v or '').strip()}
 
     def _iter_symbols(items: list[str]) -> list[str]:
         out: list[str] = []
@@ -1939,7 +1937,7 @@ def get_recommender_warmup_status(
         return out
 
     per_venue: list[dict[str, Any]] = []
-    for venue, raw_symbols in (("spot", symbols_spot), ("linear", symbols_linear)):
+    for venue, raw_symbols in (("linear", symbols_linear), ("linear", symbols_linear)):
         if venue not in active:
             continue
         symbols = _iter_symbols(raw_symbols)
@@ -2325,7 +2323,7 @@ def _extract_outcome_directions(outcome_direction: Any, reco_direction: Any, rea
     execution_direction = _normalize_direction(execution_direction, fallback=_normalize_direction(outcome_direction))
 
     if execution_direction == "neutral" and raw_direction == "short":
-        neutral_source = "spot_short_neutralized"
+        neutral_source = "futures_neutral"
     elif execution_direction == "neutral" and raw_direction == "neutral":
         neutral_source = "true_neutral"
     elif execution_direction == "neutral":
@@ -2416,7 +2414,7 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
     """Aggregate win-rate / return proxies and expose raw vs execution direction splits.
 
     Neutral execution can hide two very different realities:
-    true neutral thesis and spot short neutralisation (raw short -> execution neutral).
+    true neutral thesis and linear short neutralisation (raw short -> execution neutral).
     The UI needs both axes to avoid mixing them together.
     """
     _supported_sql, _supported_params = sql_in_clause("o.bot_type")
@@ -2445,7 +2443,7 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
     by_llm_matrix_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
 
     true_neutral_total = 0
-    spot_short_neutralized_total = 0
+    futures_neutral_total = 0
     llm_summary = {
         "present_total": 0,
         "ok_total": 0,
@@ -2473,8 +2471,8 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
 
         if neutral_source == "true_neutral":
             true_neutral_total += 1
-        elif neutral_source == "spot_short_neutralized":
-            spot_short_neutralized_total += 1
+        elif neutral_source == "futures_neutral":
+            futures_neutral_total += 1
 
         if llm_review:
             llm_summary["present_total"] += 1
@@ -2555,7 +2553,7 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         "avg_ret": round((float(summary_bucket["ret_sum"]) / total) * 100.0, 3) if total else 0.0,
         "avg_abs_ret": round((float(summary_bucket["abs_ret_sum"]) / total) * 100.0, 3) if total else 0.0,
         "true_neutral_total": int(true_neutral_total),
-        "spot_short_neutralized_total": int(spot_short_neutralized_total),
+        "futures_neutral_total": int(futures_neutral_total),
     }
 
     by_bot = _materialize_stat_rows(
@@ -2588,7 +2586,7 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         ["neutral_source", "raw_direction", "execution_direction"],
         sort_key=lambda row: (
             row["neutral_source"] != "true_neutral",
-            row["neutral_source"] != "spot_short_neutralized",
+            row["neutral_source"] != "futures_neutral",
             row["neutral_source"] != "other_neutralized",
             row["neutral_source"] != "directional",
             -row["total"],
@@ -2640,7 +2638,6 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
 
 def get_symbol_health(
     conn: sqlite3.Connection,
-    symbols_spot: list[str],
     symbols_linear: list[str],
     stale_sec: int = 300,
     *,
@@ -2734,10 +2731,10 @@ def get_symbol_health(
         except Exception:
             logger.debug("health: disabled_syms parse error", exc_info=True)
 
-    active_set = {str(v or "").strip().lower() for v in (active_venues or ["spot", "linear"])}
+    active_set = {str(v or "").strip().lower() for v in (active_venues or ["linear", "linear"])}
     venue_symbols: list[tuple[str, list[str]]] = []
-    if "spot" in active_set:
-        venue_symbols.append(("spot", symbols_spot))
+    if "linear" in active_set:
+        venue_symbols.append(("linear", symbols_linear))
     if "linear" in active_set:
         venue_symbols.append(("linear", symbols_linear))
 

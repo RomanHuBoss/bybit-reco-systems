@@ -49,12 +49,10 @@ def _settings_for_tests(**overrides):
         reco_interval_sec=20,
         top_n=20,
         venues=["linear"],
-        symbols_spot=[],
         symbols_linear=["BTCUSDT"],
         risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
         min_score_to_recommend=0.08,
         min_conf_to_recommend=0.52,
-        taker_fee_bps_spot=10.0,
         taker_fee_bps_linear=6.0,
         master_key=None,
         admin_api_key=None,
@@ -79,12 +77,12 @@ def conn(tmp_path: Path):
 
 
 
-def test_parse_review_content_handles_json_fence_and_spot_short_execution_neutralization():
+def test_parse_review_content_handles_json_fence_and_linear_short_execution_neutralization():
     content = """```json
-    {"thesis_direction":"short","execution_direction":"short","confidence":0.81,"regime_view":"bearish_range","risk_flags":["carry_risk"],"summary":"bearish but spot cannot short"}
+    {"thesis_direction":"short","execution_direction":"short","confidence":0.81,"regime_view":"bearish_range","risk_flags":["carry_risk"],"summary":"bearish but linear cannot short"}
     ```"""
 
-    parsed = parse_review_content(content, bot_type="spot_grid", engine_direction="neutral")
+    parsed = parse_review_content(content, bot_type="futures_grid", engine_direction="neutral")
 
     assert parsed["thesis_direction"] == "short"
     assert parsed["execution_direction"] == "neutral"
@@ -132,7 +130,6 @@ def test_alert_cooldown_is_not_consumed_when_send_fails(monkeypatch: pytest.Monk
     monkeypatch.setattr(alerts, "send_telegram", _fake_send)
 
     payload = [{"status": "ok"}, {"status": "missing"}]
-    alerts.check_and_alert("token", "chat", payload, collect_errors_10m=7, reco_count=0)
     alerts.check_and_alert("token", "chat", payload, collect_errors_10m=7, reco_count=0)
 
     assert len(attempts) == 6
@@ -238,7 +235,7 @@ def test_apply_llm_reviewer_gate_vetoes_direction_mismatch(conn):
         "reasons": {
             "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
             "direction_agg": {"direction": "long", "raw_direction": "long", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
-            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "spot_short_neutralized": False},
+            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "futures_neutral": False},
             "decision_layers": {"final_status": "recommended"},
             "symbol_sentiment": {"effective": 0.1, "global": 0.1},
         },
@@ -300,7 +297,7 @@ def test_apply_llm_reviewer_advisory_keeps_status_and_records_alignment(conn):
         "reasons": {
             "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
             "direction_agg": {"direction": "long", "raw_direction": "long", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
-            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "spot_short_neutralized": False},
+            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "futures_neutral": False},
             "decision_layers": {"final_status": "recommended"},
             "symbol_sentiment": {"effective": 0.1, "global": 0.1},
         },
@@ -369,16 +366,16 @@ def test_apply_llm_reviewer_does_not_reuse_cache_across_venue_or_bot_type(conn):
             "reasons": {
                 "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
                 "direction_agg": {"direction": "short", "raw_direction": "short", "regime": "range", "coherence": 0.72, "trendiness": 0.18},
-                "execution_constraints": {"raw_direction": "short", "executable_direction": "short", "spot_short_neutralized": False},
+                "execution_constraints": {"raw_direction": "short", "executable_direction": "short", "futures_neutral": False},
                 "decision_layers": {"final_status": "recommended"},
                 "symbol_sentiment": {"effective": -0.1, "global": -0.1},
             },
         },
         {
             "rec_id": "R-llm-cache-2",
-            "venue": "spot",
+            "venue": "linear",
             "symbol": "BTCUSDT",
-            "bot_type": "spot_grid",
+            "bot_type": "futures_grid",
             "direction": "neutral",
             "status": "recommended",
             "score": 0.38,
@@ -389,7 +386,7 @@ def test_apply_llm_reviewer_does_not_reuse_cache_across_venue_or_bot_type(conn):
             "reasons": {
                 "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
                 "direction_agg": {"direction": "neutral", "raw_direction": "short", "regime": "range", "coherence": 0.72, "trendiness": 0.18},
-                "execution_constraints": {"raw_direction": "short", "executable_direction": "neutral", "spot_short_neutralized": True},
+                "execution_constraints": {"raw_direction": "short", "executable_direction": "neutral", "futures_neutral": True},
                 "decision_layers": {"final_status": "recommended"},
                 "symbol_sentiment": {"effective": -0.1, "global": -0.1},
             },
@@ -400,8 +397,8 @@ def test_apply_llm_reviewer_does_not_reuse_cache_across_venue_or_bot_type(conn):
         conn,
         recs,
         settings,
-        symbol_feature_map={("linear", "BTCUSDT"): {"_direction_agg": {"direction": "short"}}, ("spot", "BTCUSDT"): {"_direction_agg": {"direction": "neutral"}}},
-        symbol_llm_candle_map={("linear", "BTCUSDT"): {900: [[1, 1, 1, 1, 1, 1.0]]}, ("spot", "BTCUSDT"): {900: [[1, 1, 1, 1, 1, 1.0]]}},
+        symbol_feature_map={("linear", "BTCUSDT"): {"_direction_agg": {"direction": "short"}}, ("linear", "BTCUSDT"): {"_direction_agg": {"direction": "neutral"}}},
+        symbol_llm_candle_map={("linear", "BTCUSDT"): {900: [[1, 1, 1, 1, 1, 1.0]]}, ("linear", "BTCUSDT"): {900: [[1, 1, 1, 1, 1, 1.0]]}},
         sent_agg={"effective_score": -0.1},
         market_shock={"state": "normal"},
         reviewer=reviewer,
@@ -515,7 +512,7 @@ def test_cached_llm_review_preserves_execution_direction_from_live_result(conn):
         "params": {"grid_levels": 8},
         "reasons": {
             "direction_agg": {"direction": "short", "raw_direction": "short"},
-            "execution_constraints": {"raw_direction": "short", "executable_direction": "short", "spot_short_neutralized": False},
+            "execution_constraints": {"raw_direction": "short", "executable_direction": "short", "futures_neutral": False},
         },
         "blocks": [],
         "status": "recommended",
@@ -579,7 +576,7 @@ def test_mark_llm_reviews_async_reuses_fresh_cache_for_new_rec_ids(conn):
         "params": {"grid_levels": 8},
         "reasons": {
             "direction_agg": {"direction": "long", "raw_direction": "long"},
-            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "spot_short_neutralized": False},
+            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "futures_neutral": False},
         },
         "blocks": [],
         "status": "recommended",
@@ -1089,7 +1086,7 @@ def test_get_first_tradeable_candle_after_uses_next_candle_open(conn):
 
 
 def test_persistence_gate_enabled_for_grid_bots():
-    assert {"spot_grid", "futures_grid"}.issubset(PERSISTENCE_BOTS)
+    assert {"futures_grid"}.issubset(PERSISTENCE_BOTS)
 
 
 def test_stable_range_score_prefers_multi_tf_context_over_noisy_1m_proxy():
@@ -1300,12 +1297,10 @@ def test_market_shock_downgrades_weak_guard_when_symbol_coverage_is_too_low(conn
         reco_interval_sec=20,
         top_n=20,
         venues=["linear"],
-        symbols_spot=[],
         symbols_linear=["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"],
         risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
         min_score_to_recommend=0.08,
         min_conf_to_recommend=0.52,
-        taker_fee_bps_spot=10.0,
         taker_fee_bps_linear=6.0,
         master_key=None,
         admin_api_key=None,
@@ -1344,12 +1339,10 @@ def test_market_shock_resets_to_normal_when_1m_data_is_stale(conn):
         reco_interval_sec=20,
         top_n=20,
         venues=["linear"],
-        symbols_spot=[],
         symbols_linear=["BTCUSDT"],
         risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
         min_score_to_recommend=0.08,
         min_conf_to_recommend=0.52,
-        taker_fee_bps_spot=10.0,
         taker_fee_bps_linear=6.0,
         master_key=None,
         admin_api_key=None,
@@ -1503,12 +1496,10 @@ def test_run_recommender_once_smoke_generates_recommendations_without_runtime_na
         reco_interval_sec=20,
         top_n=20,
         venues=[venue],
-        symbols_spot=[],
         symbols_linear=[symbol],
         risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
         min_score_to_recommend=0.08,
         min_conf_to_recommend=0.52,
-        taker_fee_bps_spot=10.0,
         taker_fee_bps_linear=6.0,
         master_key=None,
         admin_api_key=None,
@@ -1535,7 +1526,7 @@ def test_run_recommender_once_emits_long_for_bullish_range_market(conn):
     symbol = "BTCUSDT"
     base_price = 50_000.0
 
-    for venue in ("spot", "linear"):
+    for venue in ("linear", "linear"):
         for tf_sec, n in ((60, 220), (900, 120), (1800, 120), (3600, 120), (14_400, 100), (86_400, 100)):
             _seed_ohlcv_bullish_range(conn, venue=venue, symbol=symbol, now_ts=now, tf_sec=tf_sec, n=n, base_price=base_price)
         db.insert_tickers(conn, [{
@@ -1565,13 +1556,11 @@ def test_run_recommender_once_emits_long_for_bullish_range_market(conn):
         stale_data_max_sec=3600,
         reco_interval_sec=20,
         top_n=20,
-        venues=["spot", "linear"],
-        symbols_spot=[symbol],
+        venues=["linear", "linear"],
         symbols_linear=[symbol],
         risk_limits={"max_concurrent_bots": 4, "max_daily_dd_usdt": 200.0, "cooldown_after_loss_min": 30, "max_symbol_bots": 1},
         min_score_to_recommend=0.08,
         min_conf_to_recommend=0.52,
-        taker_fee_bps_spot=10.0,
         taker_fee_bps_linear=6.0,
         master_key=None,
         admin_api_key=None,
@@ -1591,12 +1580,12 @@ def test_run_recommender_once_emits_long_for_bullish_range_market(conn):
     assert rows
     by_key = {(row["venue"], row["bot_type"]): row for row in rows}
 
-    spot_row = by_key[("spot", "spot_grid")]
-    spot_reasons = json.loads(spot_row["reasons_json"])
-    assert spot_row["direction"] == "long"
-    assert spot_reasons["direction_agg"]["direction"] == "long"
-    assert spot_reasons["direction_agg"]["regime"] == "range"
-    assert spot_reasons["direction_agg"]["direction_mode"] == "range_biased"
+    linear_row = by_key[("linear", "futures_grid")]
+    linear_reasons = json.loads(linear_row["reasons_json"])
+    assert linear_row["direction"] == "long"
+    assert linear_reasons["direction_agg"]["direction"] == "long"
+    assert linear_reasons["direction_agg"]["regime"] == "range"
+    assert linear_reasons["direction_agg"]["direction_mode"] == "range_biased"
 
     fut_row = by_key[("linear", "futures_grid")]
     fut_reasons = json.loads(fut_row["reasons_json"])
@@ -1642,7 +1631,7 @@ def _reco_row(*, rec_id: str, ts: int, venue: str, symbol: str, bot_type: str, d
         "bot_type": bot_type,
         "direction": direction,
         "account_mode": "demo",
-        "margin_mode": "cash" if venue == "spot" else "isolated",
+        "margin_mode": "isolated" if venue == "linear" else "isolated",
         "score": 0.42,
         "confidence": 0.61,
         "expected_rr": 1.4,
@@ -1657,15 +1646,15 @@ def _reco_row(*, rec_id: str, ts: int, venue: str, symbol: str, bot_type: str, d
     }
 
 
-def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
+def test_outcomes_stats_separate_true_neutral_from_futures_neutral(conn):
     now = int(time.time())
     db.insert_recommendations(conn, [
         _reco_row(
             rec_id="R-neutralized",
             ts=now - 200,
-            venue="spot",
+            venue="linear",
             symbol="ETHUSDT",
-            bot_type="spot_grid",
+            bot_type="futures_grid",
             direction="neutral",
             reasons={
                 "execution_constraints": {
@@ -1684,16 +1673,16 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
                     "execution_direction": "neutral",
                     "regime_view": "bearish_range",
                     "risk_flags": ["carry_risk"],
-                    "summary": "spot short neutralized",
+                    "summary": "linear short neutralized",
                 },
             },
         ),
         _reco_row(
             rec_id="R-true-neutral",
             ts=now - 180,
-            venue="spot",
+            venue="linear",
             symbol="BTCUSDT",
-            bot_type="spot_grid",
+            bot_type="futures_grid",
             direction="neutral",
             reasons={
                 "execution_constraints": {
@@ -1750,9 +1739,9 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
     db.insert_outcome(conn, {
         "rec_id": "R-neutralized",
         "ts": now - 200,
-        "venue": "spot",
+        "venue": "linear",
         "symbol": "ETHUSDT",
-        "bot_type": "spot_grid",
+        "bot_type": "futures_grid",
         "direction": "neutral",
         "horizon_sec": 3600,
         "entry_close": 100.0,
@@ -1763,9 +1752,9 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
     db.insert_outcome(conn, {
         "rec_id": "R-true-neutral",
         "ts": now - 180,
-        "venue": "spot",
+        "venue": "linear",
         "symbol": "BTCUSDT",
-        "bot_type": "spot_grid",
+        "bot_type": "futures_grid",
         "direction": "neutral",
         "horizon_sec": 3600,
         "entry_close": 100.0,
@@ -1791,7 +1780,7 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
 
     assert stats["summary"]["total"] == 3
     assert stats["summary"]["true_neutral_total"] == 1
-    assert stats["summary"]["spot_short_neutralized_total"] == 1
+    assert stats["summary"]["futures_neutral_total"] == 1
     assert stats["llm_summary"]["present_total"] == 3
     assert stats["llm_summary"]["ok_total"] == 2
     assert stats["llm_summary"]["agree_total"] == 1
@@ -1803,7 +1792,7 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
         (row["raw_direction"], row["execution_direction"], row["neutral_source"]): row
         for row in stats["direction_pairs"]
     }
-    assert pair_map[("short", "neutral", "spot_short_neutralized")]["total"] == 1
+    assert pair_map[("short", "neutral", "futures_neutral")]["total"] == 1
     assert pair_map[("neutral", "neutral", "true_neutral")]["total"] == 1
     assert pair_map[("long", "long", "")]["total"] == 1
 
@@ -1811,8 +1800,8 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
         (row["bot_type"], row["raw_direction"], row["execution_direction"]): row
         for row in stats["by_bot"]
     }
-    assert by_bot_map[("spot_grid", "short", "neutral")]["total"] == 1
-    assert by_bot_map[("spot_grid", "neutral", "neutral")]["wins"] == 1
+    assert by_bot_map[("futures_grid", "short", "neutral")]["total"] == 1
+    assert by_bot_map[("futures_grid", "neutral", "neutral")]["wins"] == 1
     assert by_bot_map[("futures_grid", "long", "long")]["wins"] == 1
 
     llm_map = {
@@ -1842,7 +1831,7 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
         ): row
         for row in stats["llm_engine_matrix"]
     }
-    assert llm_matrix_map[("neutral", "neutral", "agree", "pass", "ok", "spot_short_neutralized")]["total"] == 1
+    assert llm_matrix_map[("neutral", "neutral", "agree", "pass", "ok", "futures_neutral")]["total"] == 1
     assert llm_matrix_map[("long", "short", "disagree", "veto", "ok", "")]["total"] == 1
 
     neutral_breakdown_map = {
@@ -1850,13 +1839,13 @@ def test_outcomes_stats_separate_true_neutral_from_spot_short_neutralized(conn):
         for row in stats["neutral_breakdown"]
     }
     assert neutral_breakdown_map[("true_neutral", "neutral", "neutral")]["wins"] == 1
-    assert neutral_breakdown_map[("spot_short_neutralized", "short", "neutral")]["losses"] == 1
+    assert neutral_breakdown_map[("futures_neutral", "short", "neutral")]["losses"] == 1
     assert neutral_breakdown_map[("directional", "long", "long")]["total"] == 1
 
     recent_map = {row["rec_id"]: row for row in stats["recent"]}
     assert recent_map["R-neutralized"]["raw_direction"] == "short"
     assert recent_map["R-neutralized"]["execution_direction"] == "neutral"
-    assert recent_map["R-neutralized"]["neutral_source"] == "spot_short_neutralized"
+    assert recent_map["R-neutralized"]["neutral_source"] == "futures_neutral"
     assert recent_map["R-neutralized"]["llm_review"]["status"] == "ok"
     assert recent_map["R-neutralized"]["llm_review"]["agree_with_engine"] is True
     assert recent_map["R-futures-long"]["llm_review"]["gate_decision"] == "veto"
@@ -1935,7 +1924,7 @@ def test_run_llm_review_sweep_once_updates_latest_snapshot_asynchronously(conn, 
         "reasons": {
             "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
             "direction_agg": {"direction": "neutral", "raw_direction": "neutral", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
-            "execution_constraints": {"raw_direction": "neutral", "executable_direction": "neutral", "spot_short_neutralized": False},
+            "execution_constraints": {"raw_direction": "neutral", "executable_direction": "neutral", "futures_neutral": False},
             "decision_layers": {"final_status": "recommended"},
             "symbol_sentiment": {"effective": 0.1, "global": 0.1},
             "market_shock": {"state": "normal"},
@@ -2913,7 +2902,6 @@ def test_db_get_latest_ohlcv_overfetches_past_invalid_newest_rows(conn):
 def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
     from app import collector
 
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
 
     class BadPayloadClient:
@@ -2945,11 +2933,11 @@ def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
     db.init_db(conn)
     client = BadPayloadClient()
 
-    collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    collector.collect_once(conn, client, "linear", ["BTCUSDT"])
     collector.collect_futures_once(conn, client, ["BTCUSDT"])
 
-    ticker = db.get_latest_ticker(conn, "spot", "BTCUSDT")
-    rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 60, limit=10)
+    ticker = db.get_latest_ticker(conn, "linear", "BTCUSDT")
+    rows = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 60, limit=10)
     oi_rows = db.get_oi_series(conn, "BTCUSDT", limit=10)
     funding = db.get_latest_funding_rate(conn, "BTCUSDT")
 
@@ -2967,7 +2955,6 @@ def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
 def test_collector_sanitizes_crossed_quotes(tmp_path: Path):
     from app import collector
 
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
 
     class CrossedQuoteClient:
@@ -2986,9 +2973,9 @@ def test_collector_sanitizes_crossed_quotes(tmp_path: Path):
     conn = db.connect(str(tmp_path / "collector_crossed_quotes.db"))
     db.init_db(conn)
 
-    collector.collect_once(conn, CrossedQuoteClient(), "spot", ["BTCUSDT"])
+    collector.collect_once(conn, CrossedQuoteClient(), "linear", ["BTCUSDT"])
 
-    ticker = db.get_latest_ticker(conn, "spot", "BTCUSDT")
+    ticker = db.get_latest_ticker(conn, "linear", "BTCUSDT")
     assert ticker is not None
     assert ticker["last"] == 100.0
     assert ticker["bid"] is None
@@ -3007,7 +2994,6 @@ def test_collector_sanitizes_crossed_quotes(tmp_path: Path):
 def test_collector_retries_temporarily_disabled_symbol_after_ttl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from app import collector
 
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
 
     conn = db.connect(str(tmp_path / "collector.db"))
@@ -3016,20 +3002,20 @@ def test_collector_retries_temporarily_disabled_symbol_after_ttl(tmp_path: Path,
     base_ts = 1_700_000_000
 
     monkeypatch.setattr(db, "now_ts", lambda: base_ts)
-    collector.collect_once(conn, client, "spot", ["btcusdt"])
+    collector.collect_once(conn, client, "linear", ["btcusdt"])
     assert client.ticker_calls == ["BTCUSDT"]
-    assert collector._DISABLED_SYMBOLS["spot"]["BTCUSDT"] == base_ts + collector.DISABLED_SYMBOL_RETRY_TTL_SEC
+    assert collector._DISABLED_SYMBOLS["linear"]["BTCUSDT"] == base_ts + collector.DISABLED_SYMBOL_RETRY_TTL_SEC
 
     monkeypatch.setattr(db, "now_ts", lambda: base_ts + 60)
-    collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    collector.collect_once(conn, client, "linear", ["BTCUSDT"])
     assert client.ticker_calls == ["BTCUSDT"]
 
     monkeypatch.setattr(db, "now_ts", lambda: base_ts + collector.DISABLED_SYMBOL_RETRY_TTL_SEC + 1)
-    collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    collector.collect_once(conn, client, "linear", ["BTCUSDT"])
 
     assert client.ticker_calls == ["BTCUSDT", "BTCUSDT"]
     assert any(symbol == "BTCUSDT" and interval == "1" for symbol, interval in client.kline_calls)
-    assert db.get_latest_ticker(conn, "spot", "BTCUSDT") is not None
+    assert db.get_latest_ticker(conn, "linear", "BTCUSDT") is not None
 
     conn.close()
 
@@ -3204,7 +3190,6 @@ def test_db_heartbeat_runtime_lock_extends_existing_owner_ttl(conn, monkeypatch:
 def test_collector_uses_linear_batch_tickers_for_ticker_and_funding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from app import collector
 
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -3278,7 +3263,6 @@ def test_collector_uses_linear_batch_tickers_for_ticker_and_funding(tmp_path: Pa
 def test_collector_uses_incremental_hot_path_and_local_tf_derivation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from app import collector
 
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -3358,27 +3342,27 @@ def test_collector_uses_incremental_hot_path_and_local_tf_derivation(tmp_path: P
     client = IncrementalClient()
 
     monkeypatch.setattr(db, "now_ts", lambda: base_ts)
-    first_stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    first_stats = collector.collect_once(conn, client, "linear", ["BTCUSDT"])
     first_call_intervals = [interval for interval, _start, _limit in client.kline_calls]
 
     assert first_call_intervals == ["1", "60", "D", "15", "30", "240"]
     assert first_stats["api_tf_fetches"] == {"60": 1, "3600": 1, "86400": 1}
     assert first_stats["derived_tf_bootstrap_fetches"] == {"900": 1, "1800": 1, "14400": 1}
-    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 900, limit=5)
-    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 1800, limit=5)
-    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 14400, limit=5)
+    assert db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 900, limit=5)
+    assert db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 1800, limit=5)
+    assert db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 14400, limit=5)
 
     before_second = len(client.kline_calls)
     monkeypatch.setattr(db, "now_ts", lambda: base_ts + 20)
-    second_stats = collector.collect_once(conn, client, "spot", ["BTCUSDT"])
+    second_stats = collector.collect_once(conn, client, "linear", ["BTCUSDT"])
     second_calls = client.kline_calls[before_second:]
 
     assert [interval for interval, _start, _limit in second_calls] == ["1"]
     assert second_calls[0][1] is not None
     assert second_stats["api_tf_fetches"] == {"60": 1}
-    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 900, limit=5)
-    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 1800, limit=5)
-    assert db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 14400, limit=5)
+    assert db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 900, limit=5)
+    assert db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 1800, limit=5)
+    assert db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 14400, limit=5)
 
     conn.close()
 

@@ -89,7 +89,7 @@ def test_collector_thread_hot_loop_does_not_run_futures_meta(tmp_path: Path, mon
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("VENUES", "linear")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:
@@ -97,8 +97,7 @@ def test_collector_thread_hot_loop_does_not_run_futures_meta(tmp_path: Path, mon
             app_main.settings,
             venues=["linear"],
             symbols_linear=["BTCUSDT"],
-            symbols_spot=[],
-            collect_interval_sec=5,
+                collect_interval_sec=5,
             futures_collect_interval_sec=60,
         )
         futures_calls = {"count": 0}
@@ -126,7 +125,7 @@ def test_futures_meta_thread_runs_outside_hot_and_backfill_loops(tmp_path: Path,
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("VENUES", "linear")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:
@@ -134,8 +133,7 @@ def test_futures_meta_thread_runs_outside_hot_and_backfill_loops(tmp_path: Path,
             app_main.settings,
             venues=["linear"],
             symbols_linear=["BTCUSDT"],
-            symbols_spot=[],
-            collect_interval_sec=5,
+                collect_interval_sec=5,
             futures_collect_interval_sec=60,
         )
         futures_calls = {"count": 0}

@@ -24,7 +24,6 @@ class _TickerOnlyClient:
 
 
 def test_collect_once_uses_non_committing_decision_logs_for_symbol_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -52,7 +51,7 @@ def test_collect_once_uses_non_committing_decision_logs_for_symbol_errors(tmp_pa
 
     monkeypatch.setattr(collector.db, "log_decision", _fake_log_decision)
 
-    stats = collector.collect_once(conn, BrokenClient(), "spot", ["BTCUSDT"])
+    stats = collector.collect_once(conn, BrokenClient(), "linear", ["BTCUSDT"])
 
     assert stats["tickers_written"] == 1
     assert commit_flags
@@ -62,7 +61,6 @@ def test_collect_once_uses_non_committing_decision_logs_for_symbol_errors(tmp_pa
 
 
 def test_collect_once_aborts_when_runtime_lock_is_lost(tmp_path: Path):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -70,13 +68,12 @@ def test_collect_once_aborts_when_runtime_lock_is_lost(tmp_path: Path):
     db.init_db(conn)
 
     with pytest.raises(collector.RuntimeLockLostError):
-        collector.collect_once(conn, _TickerOnlyClient(), "spot", ["BTCUSDT"], heartbeat=lambda: False)
+        collector.collect_once(conn, _TickerOnlyClient(), "linear", ["BTCUSDT"], heartbeat=lambda: False)
     conn.close()
 
 
 
 def test_collect_once_parallel_mode_survives_multi_cycle_soak(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -126,11 +123,11 @@ def test_collect_once_parallel_mode_survives_multi_cycle_soak(tmp_path: Path, mo
     for idx in range(5):
         current_cycle["idx"] = idx
         monkeypatch.setattr(db, "now_ts", lambda idx=idx: base_ts + idx * 60)
-        stats = collector.collect_once(conn, client, "spot", symbols, max_workers=4)
+        stats = collector.collect_once(conn, client, "linear", symbols, max_workers=4)
         assert stats["tickers_written"] == len(symbols)
         assert stats["api_tf_fetches"].get("60", 0) == len(symbols)
 
-    rows = db.get_latest_ohlcv(conn, "spot", symbols[0], 60, limit=400)
+    rows = db.get_latest_ohlcv(conn, "linear", symbols[0], 60, limit=400)
     latest_ts = max(int(r["ts"]) for r in rows)
     assert latest_ts == base_ts + 4 * 60
     assert len(rows) == 364

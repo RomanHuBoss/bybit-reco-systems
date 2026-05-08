@@ -11,7 +11,6 @@ from app import collector, db
 
 
 def test_collect_once_commits_bootstrap_stage_before_lock_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -51,9 +50,9 @@ def test_collect_once_commits_bootstrap_stage_before_lock_loss(tmp_path: Path, m
         return heartbeat_calls["count"] < 3
 
     with pytest.raises(collector.RuntimeLockLostError):
-        collector.collect_once(conn, BootstrapClient(), "spot", ["BTCUSDT"], heartbeat=heartbeat)
+        collector.collect_once(conn, BootstrapClient(), "linear", ["BTCUSDT"], heartbeat=heartbeat)
 
-    tf15 = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", 900, limit=120)
+    tf15 = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 900, limit=120)
     assert len(tf15) >= 96
     conn.close()
 
@@ -68,7 +67,7 @@ def test_get_symbol_health_ignores_future_poisoned_rows(tmp_path: Path, monkeypa
     db.upsert_ohlcv(
         conn,
         [{
-            "venue": "spot",
+            "venue": "linear",
             "symbol": "BTCUSDT",
             "tf_sec": 60,
             "ts": base_ts - 60,
@@ -82,7 +81,7 @@ def test_get_symbol_health_ignores_future_poisoned_rows(tmp_path: Path, monkeypa
     db.insert_tickers(
         conn,
         [{
-            "venue": "spot",
+            "venue": "linear",
             "symbol": "BTCUSDT",
             "ts": base_ts - 30,
             "last": 100.0,
@@ -96,16 +95,16 @@ def test_get_symbol_health_ignores_future_poisoned_rows(tmp_path: Path, monkeypa
     conn.execute(
         """INSERT OR REPLACE INTO ohlcv(venue, symbol, tf_sec, ts, open, high, low, close, volume)
            VALUES(?,?,?,?,?,?,?,?,?)""",
-        ("spot", "BTCUSDT", 60, base_ts + 86400, 200.0, 201.0, 199.0, 200.5, 10.0),
+        ("linear", "BTCUSDT", 60, base_ts + 86400, 200.0, 201.0, 199.0, 200.5, 10.0),
     )
     conn.execute(
         """INSERT OR REPLACE INTO ticker_snap(venue, symbol, ts, last, bid, ask, vol24h, turnover24h)
            VALUES(?,?,?,?,?,?,?,?)""",
-        ("spot", "BTCUSDT", base_ts + 86400, 200.0, 199.0, 201.0, 1000.0, 100000.0),
+        ("linear", "BTCUSDT", base_ts + 86400, 200.0, 199.0, 201.0, 1000.0, 100000.0),
     )
     conn.commit()
 
-    items = db.get_symbol_health(conn, ["BTCUSDT"], [], stale_sec=300, active_venues=["spot"])
+    items = db.get_symbol_health(conn, ["BTCUSDT"], [], stale_sec=300, active_venues=["linear"])
     assert items[0]["status"] == "ok"
     assert items[0]["last_candle_ts"] == base_ts - 60
     assert items[0]["last_ticker_ts"] == base_ts - 30
@@ -122,7 +121,7 @@ def test_get_latest_ticker_prefers_valid_row_over_future_poisoned_newest(tmp_pat
     db.insert_tickers(
         conn,
         [{
-            "venue": "spot",
+            "venue": "linear",
             "symbol": "BTCUSDT",
             "ts": base_ts - 15,
             "last": 100.0,
@@ -135,11 +134,11 @@ def test_get_latest_ticker_prefers_valid_row_over_future_poisoned_newest(tmp_pat
     conn.execute(
         """INSERT OR REPLACE INTO ticker_snap(venue, symbol, ts, last, bid, ask, vol24h, turnover24h)
            VALUES(?,?,?,?,?,?,?,?)""",
-        ("spot", "BTCUSDT", base_ts + 7200, 200.0, 199.0, 201.0, 1000.0, 100000.0),
+        ("linear", "BTCUSDT", base_ts + 7200, 200.0, 199.0, 201.0, 1000.0, 100000.0),
     )
     conn.commit()
 
-    latest = db.get_latest_ticker(conn, "spot", "BTCUSDT")
+    latest = db.get_latest_ticker(conn, "linear", "BTCUSDT")
     assert latest is not None
     assert int(latest["ts"]) == base_ts - 15
     conn.close()
@@ -147,7 +146,6 @@ def test_get_latest_ticker_prefers_valid_row_over_future_poisoned_newest(tmp_pat
 
 
 def test_collect_once_falls_back_to_per_symbol_tickers_when_batch_fetch_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    collector._DISABLED_SYMBOLS["spot"].clear()
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -175,7 +173,7 @@ def test_collect_once_falls_back_to_per_symbol_tickers_when_batch_fetch_fails(tm
             }]
 
     client = FallbackClient()
-    stats = collector.collect_once(conn, client, "spot", ["BTCUSDT", "ETHUSDT"])
+    stats = collector.collect_once(conn, client, "linear", ["BTCUSDT", "ETHUSDT"])
 
     assert stats["tickers_written"] == 2
     assert client.calls[0] is None
@@ -192,9 +190,9 @@ def test_collect_once_falls_back_to_per_symbol_tickers_when_batch_fetch_fails(tm
 def test_collector_thread_uses_dedicated_heartbeat_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "collector_hb_conn.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "")
-    monkeypatch.setenv("VENUES", "spot")
+    monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:

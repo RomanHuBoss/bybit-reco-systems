@@ -19,7 +19,6 @@ def client_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "iter101.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
 
     sys.modules.pop("app.main", None)
@@ -69,7 +68,7 @@ def client_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 # Outcome-cycle должен переживать legacy/manual JSON с неверной формой trade_plan.
 def test_resolve_effective_horizon_ignores_non_mapping_trade_plan_shapes() -> None:
     effective_horizon, used_fallback = _resolve_effective_horizon(
-        "spot_grid",
+        "futures_grid",
         {
             "trade_plan": "broken-shape",
             "label_horizon_hours": "NaN",

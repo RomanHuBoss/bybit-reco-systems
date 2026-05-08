@@ -37,7 +37,7 @@ UI/operator-list теперь по умолчанию схлопывает repea
 всё ещё могут визуально выглядеть как поток похожих сигналов.
 
 ## 10. Legacy/manual payload compatibility остаётся частично семантической
-Execution-time validation теперь fail-closed блокирует futures/spot recommendations без явного `margin_mode`,
+Execution-time validation теперь fail-closed блокирует futures/linear recommendations без явного `margin_mode`,
 а также рекомендации, для которых Bybit metadata относится к другому `symbol` или другой `category/venue`.
 Это безопаснее, но означает, что старые вручную заведённые записи могут перестать быть исполнимыми без миграции payload'а.
 

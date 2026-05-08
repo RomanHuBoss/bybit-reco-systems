@@ -157,7 +157,6 @@ function directionRu(dir) {
 
 function botTypeLabel(botType) {
   if (botType === "futures_grid") return "futures grid";
-  if (botType === "spot_grid") return "spot grid";
   return botType || "—";
 }
 
@@ -169,7 +168,7 @@ function botTypePillHtml(botType, compact = false) {
 
 function venueLabel(venue) {
   if (venue === "linear") return "Фьючерсы";
-  if (venue === "spot") return "Спот";
+  if (venue === "linear") return "USDT futures";
   return venue || "—";
 }
 
@@ -183,11 +182,11 @@ function liquidityTierRu(tier) {
 function marginModeRu(mode) {
   if (mode === "isolated") return "Изолированная";
   if (mode === "cross") return "Кросс";
-  if (mode === "cash") return "Cash";
+  if (mode === "isolated") return "Cash";
   return mode || "—";
 }
 
-function splitSpotSymbol(symbol) {
+function splitLinearSymbol(symbol) {
   const s = String(symbol || "").toUpperCase();
   const quotes = ["USDT", "USDC", "BTC", "ETH", "EUR", "BRL", "TRY"];
   for (const quote of quotes) {
@@ -205,9 +204,9 @@ function bybitBotCreateUrl(botType) {
 }
 
 function bybitChartUrl(venue, symbol) {
-  if (venue === "spot") {
-    const parts = splitSpotSymbol(symbol);
-    if (parts) return `https://www.bybit.com/ru-RU/trade/spot/${encodeURIComponent(parts.base)}/${encodeURIComponent(parts.quote)}`;
+  if (venue === "linear") {
+    const parts = splitLinearSymbol(symbol);
+    if (parts) return `https://www.bybit.com/ru-RU/trade/linear/${encodeURIComponent(parts.base)}/${encodeURIComponent(parts.quote)}`;
   }
   return `https://www.bybit.com/trade/usdt/${encodeURIComponent(symbol || "")}`;
 }
@@ -418,12 +417,12 @@ function buildOperatorValues(it) {
   const tpLegPct = formatPercentDot(tpPerLeg.pct, 4, false);
   const leverage = it.venue === "linear" ? String(params.leverage ?? 1) : "—";
   const marginMode = it.venue === "linear" ? marginModeRu(params.margin_mode || "isolated") : "—";
-  const isSpotBot = it.bot_type === "spot_grid";
+  const isLinearBot = it.bot_type === "futures_grid";
   const isNeutralFutures = it.venue === "linear" && it.direction === "neutral";
-  const stopLossLabel = isSpotBot ? "Стоп-лосс" : it.direction === "short" ? "Стоп-лосс (верх)" : it.direction === "long" ? "Стоп-лосс (низ)" : "Нижняя стоп-цена";
-  const takeProfitLabel = isSpotBot ? "Тейк-профит" : it.direction === "short" ? "Тейк-профит (низ)" : it.direction === "long" ? "Тейк-профит (верх)" : "Верхняя стоп-цена";
-  const stopLossValue = (isSpotBot || isNeutralFutures || it.direction === "long") ? killLower : killUpper;
-  const takeProfitValue = (isSpotBot || isNeutralFutures || it.direction === "long") ? killUpper : killLower;
+  const stopLossLabel = isLinearBot ? "Стоп-лосс" : it.direction === "short" ? "Стоп-лосс (верх)" : it.direction === "long" ? "Стоп-лосс (низ)" : "Нижняя стоп-цена";
+  const takeProfitLabel = isLinearBot ? "Тейк-профит" : it.direction === "short" ? "Тейк-профит (низ)" : it.direction === "long" ? "Тейк-профит (верх)" : "Верхняя стоп-цена";
+  const stopLossValue = (isLinearBot || isNeutralFutures || it.direction === "long") ? killLower : killUpper;
+  const takeProfitValue = (isLinearBot || isNeutralFutures || it.direction === "long") ? killUpper : killLower;
   return {
     rangeLower,
     rangeUpper,
@@ -460,7 +459,7 @@ function buildOperatorFieldSpecs(it, ov) {
   fields.push({ label: "Прибыль/сетка, %", value: ov.tpLegPct });
   if (ov.tpLegAbs !== "—") fields.push({ label: "Прибыль/сетка, цена", value: ov.tpLegAbs, mono: true });
 
-  if (it.bot_type === "spot_grid") {
+  if (it.bot_type === "futures_grid") {
     fields.push({ label: "Стоп-лосс", value: ov.stopLossValue, mono: true });
     fields.push({ label: "Тейк-профит", value: ov.takeProfitValue, mono: true });
   } else if (it.direction === "neutral") {
@@ -862,8 +861,8 @@ function renderOutcomeResult(success) {
 
 function renderNeutralSourceTag(source) {
   if (!source) return "—";
-  if (source === "spot_short_neutralized") {
-    return `<span class="neutral-note neutral-note-neutralized">spot-short-neutralized</span>`;
+  if (source === "futures_neutral") {
+    return `<span class="neutral-note neutral-note-neutralized">futures-neutral</span>`;
   }
   if (source === "true_neutral") {
     return `<span class="neutral-note neutral-note-true">true neutral</span>`;
@@ -1053,7 +1052,7 @@ function buildOutcomeDiagnostics(llmByEngine = [], neutralBreakdown = [], summar
   }
 
   const trueNeutral = (Array.isArray(neutralBreakdown) ? neutralBreakdown : []).filter(row => row?.neutral_source === "true_neutral");
-  const neutralized = (Array.isArray(neutralBreakdown) ? neutralBreakdown : []).filter(row => row?.neutral_source === "spot_short_neutralized");
+  const neutralized = (Array.isArray(neutralBreakdown) ? neutralBreakdown : []).filter(row => row?.neutral_source === "futures_neutral");
   const tn = compareRowsByOutcome(trueNeutral);
   const sn = compareRowsByOutcome(neutralized);
   if (tn.total > 0 && sn.total > 0) {
@@ -1512,7 +1511,7 @@ async function loadOutcomes() {
       { label: "Avg |ret|", value: `${Number(s.avg_abs_ret || 0).toFixed(2)}%` },
       { label: "Повторов убрано", value: Number(s.deduped_duplicates || 0) },
       { label: "Истинный neutral", value: Number(s.true_neutral_total || 0) },
-      { label: "Short → neutral", value: Number(s.spot_short_neutralized_total || 0) },
+      { label: "Short → neutral", value: Number(s.futures_neutral_total || 0) },
       { label: "LLM reviewed", value: llmReviewed },
       { label: "LLM disagree", value: `${llmDisagree} · ${llmDisagreeShare}` },
       { label: "LLM errors", value: `${Number(llmSummary.error_total || 0)} · ${llmErrorShare}` },

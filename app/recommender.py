@@ -369,14 +369,12 @@ def _build_cached_review_dict(
     inherited_from_rec_id: str | None = None,
 ) -> dict[str, Any]:
     thesis_direction = normalize_direction(meta.get("thesis_direction"), allow_short=True)
-    allow_short_exec = str(rec.get("bot_type") or "") != "spot_grid"
+    allow_short_exec = True
     execution_direction_raw = meta.get("execution_direction")
     if execution_direction_raw in (None, ""):
         execution_direction_raw = thesis_direction
     execution_direction = normalize_direction(execution_direction_raw, allow_short=allow_short_exec)
     if thesis_direction == "neutral":
-        execution_direction = "neutral"
-    if str(rec.get("bot_type") or "") == "spot_grid" and thesis_direction == "short":
         execution_direction = "neutral"
     review_ts_raw = meta.get("ts")
     try:
@@ -480,12 +478,10 @@ def _make_pending_llm_review(rec: dict[str, Any], mode: str, reviewer: OllamaCan
 
 def _sanitize_llm_review_dict(rec: dict[str, Any], review_dict: dict[str, Any]) -> dict[str, Any]:
     out = dict(review_dict or {})
-    allow_short_exec = str(rec.get("bot_type") or "") != "spot_grid"
+    allow_short_exec = True
     thesis_direction = normalize_direction(out.get("thesis_direction"), allow_short=True)
     execution_direction = normalize_direction(out.get("execution_direction"), allow_short=allow_short_exec)
     if thesis_direction == "neutral":
-        execution_direction = "neutral"
-    if str(rec.get("bot_type") or "") == "spot_grid" and thesis_direction == "short":
         execution_direction = "neutral"
     out["thesis_direction"] = thesis_direction
     out["execution_direction"] = execution_direction
@@ -1147,7 +1143,7 @@ def _estimate_cost_model(
     spread_bps = _finite_or_none(f.get("spread_bps"))
 
     if spread_bps is None:
-        fallback_spread = 10.0 if venue == "spot" else 8.0
+        fallback_spread = 10.0 if venue == "linear" else 8.0
         spread_bps_used = fallback_spread
         spread_missing = True
     else:
@@ -1155,7 +1151,7 @@ def _estimate_cost_model(
         spread_missing = False
 
     fee_bps_round_trip = max(0.0, _finite_float(taker_fee_bps, 0.0)) * 2.0
-    slippage_bps = max(1.0 if venue == "spot" else 0.8, spread_bps_used * (0.35 if bot_type in ("spot_grid", "futures_grid") else 0.50))
+    slippage_bps = max(1.0 if venue == "linear" else 0.8, spread_bps_used * (0.35 if bot_type == "futures_grid" else 0.50))
 
     horizon_sec = BOT_HORIZONS.get(bot_type, 0)
     fr = _finite_or_none(funding_rate)
@@ -1468,14 +1464,8 @@ def _make_factor(feature: str, value: Any, weight: float, msg: str) -> dict[str,
 
 def _direction(bot_type: str, agg: dict[str, Any]) -> str:
     raw_direction = str((agg or {}).get("direction") or "neutral").lower()
-    if bot_type == "spot_grid":
-        if raw_direction == "long":
-            return "long"
-        return "neutral"
-    if bot_type == "futures_grid":
-        if raw_direction in ("long", "short", "neutral"):
-            return raw_direction
-        return "neutral"
+    if bot_type == "futures_grid" and raw_direction in ("long", "short", "neutral"):
+        return raw_direction
     return "neutral"
 
 
@@ -1555,49 +1545,7 @@ def _score(
         neg.append(_make_factor(feature, value, weight, msg))
 
     raw = 0.0
-    if bot_type == "spot_grid":
-        raw += 1.55 * range_score
-        raw += 0.25 * coherence
-        raw += 0.18 * regime_conf
-        raw -= 1.15 * trend_strength
-        raw -= 0.65 * atr_penalty
-        raw -= 0.35 * cost_penalty
-
-        if direction == "long":
-            raw += 0.10 * effective_sent
-            raw += 0.08 * direction_strength
-        elif sentiment_has_data:
-            raw += 0.04 * (1.0 - min(1.0, abs(effective_sent)))
-        else:
-            raw -= 0.04
-
-        if range_score > 0.0:
-            add_pos("range_score", range_score, 1.55 * range_score, "выраженный диапазон подходит для spot grid")
-        if coherence > 0.0:
-            add_pos("coherence", coherence, 0.25 * coherence, "таймфреймы согласованы")
-        if regime_conf > 0.0:
-            add_pos("regime_confidence", regime_conf, 0.18 * regime_conf, "режим оценён с приемлемой уверенностью")
-        if direction == "long" and effective_sent > 0.0:
-            add_pos("effective_sentiment", effective_sent, 0.10 * effective_sent, "сентимент поддерживает long bias")
-        elif direction == "long" and effective_sent < 0.0:
-            add_neg("effective_sentiment", abs(effective_sent), 0.10 * effective_sent, "сентимент против long bias")
-        elif direction == "neutral" and sentiment_has_data:
-            add_pos("effective_sentiment", 1.0 - min(1.0, abs(effective_sent)), 0.04 * (1.0 - min(1.0, abs(effective_sent))), "сентимент не мешает нейтральной сетке")
-        elif direction == "neutral":
-            add_neg("sentiment_data_availability", 0, -0.04, "нет сентимент-данных — нейтральный bias менее надёжен")
-        if direction == "long" and direction_strength > 0.0:
-            add_pos("direction_strength", direction_strength, 0.08 * direction_strength, "есть умеренный directional bias без потери grid-логики")
-
-        if trend_strength > 0.0:
-            add_neg("trend_strength", trend_strength, -1.15 * trend_strength, "сильный тренд ухудшает grid")
-        if atr_pct > 0.0:
-            add_neg("atr_pct", atr_pct, -0.65 * atr_penalty, "повышенная волатильность делает диапазон менее устойчивым")
-        if execution_cost_bps > 0.0:
-            add_neg("execution_cost_bps", execution_cost_bps, -0.35 * cost_penalty, "издержки исполнения снижают net capture")
-        if spread > 0.0:
-            add_neg("spread_bps", spread, -0.15 * min(1.0, spread / 5.0), "спред уменьшает эффективность сетки")
-
-    elif bot_type == "futures_grid":
+    if bot_type == "futures_grid":
         raw += 1.35 * range_score
         raw += 0.22 * coherence
         raw += 0.16 * regime_conf
@@ -1705,8 +1653,8 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
 
 
 def _mode(venue: str, direction: str) -> tuple[str, str]:
-    if venue == "spot":
-        return "spot", "cash"
+    if venue == "linear":
+        return "linear", "isolated"
     if venue == "linear":
         return "unified", "isolated"
     return venue, "default"
@@ -1804,7 +1752,7 @@ def _params(
         params["margin_mode"] = "isolated"
     else:
         params["leverage"] = 1
-        params["margin_mode"] = "cash"
+        params["margin_mode"] = "isolated"
 
     return params
 
@@ -1815,7 +1763,7 @@ def _params(
 # We include direction in the signature and require a consecutive-cycle hit within
 # an interval-derived freshness window.
 _prev_recommended: dict[tuple, dict[str, int]] = {}
-PERSISTENCE_BOTS: set[str] = {"spot_grid", "futures_grid"}
+PERSISTENCE_BOTS: set[str] = {"futures_grid"}
 PERSISTENCE_STATE_APP_KEY = "reco_persistence_gate_v1"
 DIRECTION_STATE_APP_KEY = "reco_direction_stability_v1"
 
@@ -2468,7 +2416,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     ts_now = db.now_ts()  # set here for stale gate use inside feature loop
 
     # Load BTC 1h closes once — used for beta/correlation calculation per symbol
-    btc_1h_rows = db.get_latest_ohlcv(conn, "spot", "BTCUSDT", tf_sec=3600, limit=50)
+    btc_1h_rows = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", tf_sec=3600, limit=50)
     btc_1h_rows = _drop_open_candle(btc_1h_rows, tf_sec=3600, ts_now=ts_now)
     if not btc_1h_rows:
         btc_1h_rows = db.get_latest_ohlcv(conn, "linear", "BTCUSDT", tf_sec=3600, limit=50)
@@ -2477,7 +2425,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     btc_1h_closes = [float(r["close"]) for r in reversed(btc_1h_rows)] if btc_1h_rows else []
 
     for venue in settings.venues:
-        symbols = settings.symbols_spot if venue == "spot" else settings.symbols_linear
+        symbols = settings.symbols_linear if venue == "linear" else settings.symbols_linear
         for sym in symbols:
             _check_heartbeat()
             rows = db.get_latest_ohlcv(conn, venue, sym, tf_sec=60, limit=220)
@@ -2603,11 +2551,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     _cached_risk_status = _compute_risk_status(conn, limits)
 
     for (venue, sym), f in symbol_feature_map.items():
-        taker_fee_bps = settings.taker_fee_bps_spot if venue == "spot" else settings.taker_fee_bps_linear
+        taker_fee_bps = settings.taker_fee_bps_linear if venue == "linear" else settings.taker_fee_bps_linear
 
         for bot_type in BOT_TYPES_BYBIT:
-            if bot_type == "spot_grid" and venue != "spot":
-                continue
             if bot_type == "futures_grid" and venue != "linear":
                 continue
 
@@ -2636,7 +2582,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             oi_sig   = oi_trend(oi_rows)
             raw_direction = str((f.get('_direction_agg', {}) or {}).get('direction') or 'neutral')
             direction = _direction(bot_type, f.get('_direction_agg', {}))
-            spot_short_neutralized = bool(bot_type == "spot_grid" and raw_direction == "short" and direction == "neutral")
+            futures_neutral = False
             cost_model = _estimate_cost_model(
                 bot_type=bot_type,
                 venue=venue,
@@ -2719,7 +2665,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 if funding_block is not None:
                     feasibility_blocks.append(funding_block)
 
-            if bot_type in ("spot_grid","futures_grid") and spread is not None and spread > 14.0:
+            if bot_type == "futures_grid" and spread is not None and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
             # If symbol is highly correlated to BTC, direction is less independent
             beta_info = f.get("_btc_beta", {})
@@ -2815,10 +2761,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
 
             # Heuristic-only confidence must stay visibly conservative.
             if _active_cal is None:
-                _heur_cap = {
-                    "spot_grid": 0.72,
-                    "futures_grid": 0.70,
-                }.get(bot_type, 0.70)
+                _heur_cap = {"futures_grid": 0.70}.get(bot_type, 0.70)
                 conf = float(min(conf, _heur_cap))
 
             # Context completeness penalty — reduce confidence when key signals are missing.
@@ -2841,10 +2784,6 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             # OI unwinding → reduce confidence
             if venue == "linear" and oi_sig["signal"] == "caution":
                 conf = float(_clamp(conf * 0.88, 0.0, 1.0))
-            if spot_short_neutralized:
-                # The model had bearish directional intent, but spot execution cannot express
-                # a naked short. Make that loss of executable expressiveness visible.
-                conf = float(_clamp(conf * 0.90, 0.0, 1.0))
             if str((market_shock or {}).get("severity") or "normal") == "guarded":
                 conf = float(_clamp(conf * 0.93, 0.0, 1.0))
 
@@ -2952,13 +2891,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             dtmp["direction_confidence_model"] = {"type":"platt_scaling","fitted": dir_calibrator.fitted, "a": getattr(dir_calibrator,"a",None), "b": getattr(dir_calibrator,"b",None)}
             reasons2["direction_agg"] = dtmp
             reasons2["execution_constraints"] = {
-                "spot_short_neutralized": bool(spot_short_neutralized),
                 "raw_direction": raw_direction,
                 "executable_direction": direction,
-                "note": (
-                    "spot_grid не может выразить naked short на spot; bearish bias сохранён только как контекст"
-                    if spot_short_neutralized else None
-                ),
+                "note": None,
             }
             # confidence_model reflects the calibrator ACTUALLY used (_cal_source set above).
             # Previously used _bot_cal_info presence to fill fields, which gave wrong
@@ -3126,7 +3061,6 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
         db.log_decision(
             conn,
             "PUBLISH",
-            None,
             None,
             {
                 "count_all": len(recs),

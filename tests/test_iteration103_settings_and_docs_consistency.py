@@ -19,14 +19,14 @@ def test_load_settings_deduplicates_symbol_lists_preserving_order(
     reload_settings_module: None,
 ) -> None:
     """Конфиг не должен раздувать collector/recommender дублями символов."""
-    monkeypatch.setenv("VENUES", "spot,linear")
-    monkeypatch.setenv("SYMBOLS_SPOT", " btcusdt , ETHUSDT,btcUSDT , , ethusdt ,SOLUSDT ")
+    monkeypatch.setenv("VENUES", "linear")
+    monkeypatch.setenv("SYMBOLS_LINEAR", " btcusdt , ETHUSDT,btcUSDT , , ethusdt ,SOLUSDT ")
     monkeypatch.setenv("SYMBOLS_LINEAR", "ETHUSDT,BTCUSDT,ETHUSDT,BTCUSDT,SOLUSDT")
 
     settings_module = importlib.import_module("app.settings")
     settings = settings_module.load_settings()
 
-    assert settings.symbols_spot == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert settings.symbols_linear == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     assert settings.symbols_linear == ["ETHUSDT", "BTCUSDT", "SOLUSDT"]
 
 

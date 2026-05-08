@@ -20,7 +20,7 @@ SYSTEM_PROMPT = (
     "Используй только переданные данные. Верни только JSON, без markdown и пояснений. "
     "Если картина неоднозначна, предпочитай neutral. "
     "Сильный однонаправленный пробой обычно плох для grid-ботов. "
-    "Для spot_grid поле execution_direction может быть только long или neutral; если thesis_direction=short, то execution_direction обязан быть neutral. "
+    "Для futures_grid поле execution_direction может быть long, short или neutral. "
     "Значения thesis_direction и execution_direction возвращай только как long, short или neutral. "
     "Поля regime_view, risk_flags и summary пиши по-русски. "
     "summary должен быть коротким, понятным и читабельным для оператора. "
@@ -283,7 +283,7 @@ def parse_review_content(text: str, *, bot_type: str, engine_direction: str) -> 
     if obj is None:
         raise ValueError(f"cannot parse LLM JSON: {last_error or 'no json object found'}")
 
-    allow_short_exec = bot_type != "spot_grid"
+    allow_short_exec = True
     thesis_direction = normalize_direction(
         obj.get("thesis_direction") or obj.get("direction") or obj.get("verdict"),
         allow_short=True,
@@ -292,8 +292,6 @@ def parse_review_content(text: str, *, bot_type: str, engine_direction: str) -> 
         obj.get("execution_direction") or obj.get("verdict") or thesis_direction,
         allow_short=allow_short_exec,
     )
-    if bot_type == "spot_grid" and thesis_direction == "short":
-        execution_direction = "neutral"
 
     confidence = _clamp(obj.get("confidence", 0.0), 0.0, 1.0)
     regime_view = str(obj.get("regime_view") or obj.get("regime") or "unknown").strip() or "unknown"
@@ -386,7 +384,6 @@ def build_review_payload(
                 "oi_24h_chg_pct": oi.get("oi_24h_chg_pct"),
             },
             "execution_constraints": {
-                "spot_short_neutralized": bool(execution_constraints.get("spot_short_neutralized")),
                 "fast_veto_state": fast_veto.get("state"),
             },
             "candles_by_tf": {tf_label(tf): rows for tf, rows in sorted(candles_by_tf.items()) if rows},

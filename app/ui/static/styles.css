@@ -320,8 +320,8 @@ body {
   color: var(--muted);
   white-space: nowrap;
 }
-.venue-spot,
-.bot-type-pill.spot_grid {
+.venue-linear,
+.bot-type-pill.futures_grid {
   border-color: rgba(90,167,255,0.35);
   color: var(--accent);
   background: rgba(90,167,255,0.06);

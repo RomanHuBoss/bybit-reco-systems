@@ -37,18 +37,17 @@ def test_oi_trend_requires_true_lookback_history() -> None:
 def test_collector_thread_stops_when_post_collect_heartbeat_loses_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "collector_post_heartbeat_loss.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "")
-    monkeypatch.setenv("VENUES", "spot")
+    monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:
         app_main.settings = replace(
             app_main.settings,
-            venues=["spot"],
-            symbols_spot=["BTCUSDT"],
-            symbols_linear=[],
-            collect_interval_sec=5,
+            venues=["linear"],
+            symbols_linear=["BTCUSDT"],
+                collect_interval_sec=5,
             futures_collect_interval_sec=3600,
         )
 
@@ -102,18 +101,17 @@ def test_collector_thread_stops_when_post_collect_heartbeat_loses_lock(tmp_path:
 def test_reco_thread_skips_followup_work_after_runtime_lock_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "reco_lock_loss.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("VENUES", "spot")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
+    monkeypatch.setenv("VENUES", "linear")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     try:
         app_main.settings = replace(
             app_main.settings,
-            venues=["spot"],
-            symbols_spot=["BTCUSDT"],
-            symbols_linear=[],
-            reco_interval_sec=5,
+            venues=["linear"],
+            symbols_linear=["BTCUSDT"],
+                reco_interval_sec=5,
             telegram_token=None,
         )
         post_calls = {"expire": 0, "prune": 0}
@@ -164,7 +162,6 @@ def test_metrics_only_counts_active_venues(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
     monkeypatch.setenv("VENUES", "linear")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
     app_main.app.router.on_startup.clear()
@@ -175,14 +172,12 @@ def test_metrics_only_counts_active_venues(tmp_path: Path, monkeypatch: pytest.M
         db.upsert_ohlcv(
             conn,
             [
-                {"venue": "spot", "symbol": "BTCUSDT", "tf_sec": 60, "ts": ts_now, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0},
                 {"venue": "linear", "symbol": "BTCUSDT", "tf_sec": 60, "ts": ts_now, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0},
             ],
         )
         db.insert_tickers(
             conn,
             [
-                {"venue": "spot", "symbol": "BTCUSDT", "ts": ts_now, "last": 100.5, "bid": 100.0, "ask": 101.0, "vol24h": 1000.0, "turnover24h": 100000.0},
                 {"venue": "linear", "symbol": "BTCUSDT", "ts": ts_now, "last": 100.5, "bid": 100.0, "ask": 101.0, "vol24h": 1000.0, "turnover24h": 100000.0},
             ],
         )

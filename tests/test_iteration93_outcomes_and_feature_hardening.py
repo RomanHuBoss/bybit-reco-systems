@@ -25,7 +25,7 @@ def _make_recommendation(rec_id: str, ts: int, params: dict) -> dict:
         "reasons": {
             "feature_snapshot": {"atr_pct": 0.01, "range_score": 0.76},
             "direction_agg": {"direction": "neutral", "raw_direction": "neutral", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
-            "execution_constraints": {"raw_direction": "neutral", "executable_direction": "neutral", "spot_short_neutralized": False},
+            "execution_constraints": {"raw_direction": "neutral", "executable_direction": "neutral", "futures_neutral": False},
             "decision_layers": {"final_status": "recommended"},
             "symbol_sentiment": {"effective": 0.1, "global": 0.1},
             "market_shock": {"state": "normal"},

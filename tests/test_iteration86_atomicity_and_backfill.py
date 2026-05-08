@@ -20,7 +20,7 @@ def test_collect_backfill_cycle_keeps_legacy_stub_fallback(tmp_path: Path, monke
     db_path = tmp_path / "backfill_legacy_stub.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
@@ -50,7 +50,7 @@ def test_collect_backfill_cycle_reraises_internal_typeerror(tmp_path: Path, monk
     db_path = tmp_path / "backfill_typeerror.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
-    monkeypatch.setenv("SYMBOLS_SPOT", "")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "")
     monkeypatch.setenv("VENUES", "linear")
     sys.modules.pop("app.main", None)
     app_main = importlib.import_module("app.main")
@@ -81,7 +81,6 @@ def isolated_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "atomicity.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("SYMBOLS_SPOT", "BTCUSDT")
     monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT")
 
     sys.modules.pop("app.main", None)

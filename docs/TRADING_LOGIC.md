@@ -6,15 +6,12 @@
 Он формирует рекомендации для запуска бота оператором и ведёт audit-контур вокруг этого решения.
 
 ## Поддерживаемые рекомендации
-- `spot_grid`
 - `futures_grid`
 
 ## Разрешённые направления
-- `spot_grid`: `neutral`, `long`
 - `futures_grid`: `neutral`, `long`, `short`
 
 ## Режимы, которые система считает поддержанными
-- `spot_grid`: `venue=spot`, `account_mode=spot`, `margin_mode=cash`, `leverage=1`
 - `futures_grid`: `venue=linear`, `account_mode=unified`, `margin_mode=isolated`
 
 `account_mode=one_way` допускается только как legacy-алиас старых payload'ов и помечается warning'ом;
@@ -56,7 +53,7 @@ execution-time validation должна блокировать исполнени
 ### Режимные инварианты
 - `bot_type` согласован с `venue` и `direction`;
 - `account_mode` и `margin_mode` не противоречат модели проекта;
-- для supported execution-path обязательно присутствует явный `margin_mode` (`cash`/`isolated`), иначе recommendation блокируется fail-closed;
+- для supported execution-path обязательно присутствует явный `margin_mode` (`isolated`/`isolated`), иначе recommendation блокируется fail-closed;
 - `leverage` > 0 и укладывается в `min/max leverage`;
 - `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint;
 - metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу;
