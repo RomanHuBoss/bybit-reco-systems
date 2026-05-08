@@ -1,4 +1,4 @@
-# Торговая логика и реальные ограничения
+# Торговая логика Bybit Linear USDT Futures grid
 
 ## Важная граница
 
@@ -6,7 +6,7 @@
 Он формирует рекомендации для запуска бота оператором и ведёт audit-контур вокруг этого решения.
 
 ## Поддерживаемые рекомендации
-- `futures_grid`
+- `futures_grid` только для Bybit `category=linear`, USDT perpetual. Расчёты PnL/margin/funding ведутся в USDT по linear-модели.
 
 ## Разрешённые направления
 - `futures_grid`: `neutral`, `long`, `short`
@@ -26,7 +26,9 @@ execution-time validation должна блокировать исполнени
 3. По тому же контексту выбирается число уровней `grid_levels`.
 4. Строится основной диапазон `price_range_lower/upper`.
 5. Вокруг диапазона строится `kill_switch` через padding от старшего ATR.
-6. Для UI и operator guidance формируется `trade_plan`.
+6. Рассчитывается `params.economics`: gross/net profit per grid, execution cost, funding impact, minimum viable order notional, estimated margin required и approximate liquidation buffer.
+7. Если net profit per grid после fees/spread/slippage/funding <= 0 или слишком тонкий, рекомендация получает блок `GRID_NET_PROFIT_*` и не должна запускаться.
+8. Для UI и operator guidance формируется `trade_plan`.
 
 ## Что именно проверяется перед `executed`
 
@@ -55,10 +57,18 @@ execution-time validation должна блокировать исполнени
 - `account_mode` и `margin_mode` не противоречат модели проекта;
 - для supported execution-path обязательно присутствует явный `margin_mode` (`isolated`/`isolated`), иначе recommendation блокируется fail-closed;
 - `leverage` > 0 и укладывается в `min/max leverage`;
-- `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint;
+- `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint; leverage > 1 допускается только с явным estimated liquidation buffer и блокируется, если buffer слишком мал;
 - metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу;
 - instrument `status` должен быть `Trading`; `PreLaunch`, `Delivering`, delisted/other statuses блокируются fail-closed для новых operator confirmations.
 - если payload содержит явный sizing (`order_qty`, `qty_per_leg`, `base_qty`, `order_notional` и совместимые алиасы), preflight блокирует значения ниже `min_order_qty`/`min_notional`, выше `max_order_qty` или не кратные `qty_step` (`ORDER_QTY_OFF_STEP`, `ORDER_QTY_BELOW_MIN`, `ORDER_NOTIONAL_BELOW_MIN`).
+
+## Linear-USDT PnL, funding и liquidation
+
+- Long PnL: `qty * (exit_price - entry_price)` USDT.
+- Short PnL: `qty * (entry_price - exit_price)` USDT.
+- Round-trip fee и execution friction вычитаются из каждой сетки до публикации рекомендации.
+- Funding учитывается direction-aware: положительный funding penalizes long и может поддерживать short; отрицательный funding наоборот.
+- Liquidation price в проекте считается только как conservative approximation для preflight/UI. Точная ликвидация зависит от risk tier, mark price, wallet margin и текущей позиции на Bybit.
 
 ## Что outcome labeling умеет и чего не умеет
 

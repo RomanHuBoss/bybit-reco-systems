@@ -245,7 +245,7 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
     range_biased = False
     range_bias_direction = "neutral"
     if regime == "range" and all_sign != 0 and struct_sign == all_sign:
-        # Requirements are intentionally stricter than for ordinary trend-following
+        # Requirements are intentionally stricter than for ordinary directional breakout
         # direction: directional range is only allowed when the bias is visible on
         # both tactical and structural TFs and the multi-TF stack is coherent.
         if strength_all >= 0.15 and strength_struct >= 0.10 and coherence >= 0.62:

@@ -1,14 +1,16 @@
-# Bybit Recommender — grid-only build
+# Bybit Recommender — Bybit Linear USDT Futures grid-only build
 
-Сервис собирает рыночные данные Bybit, рассчитывает multi-timeframe признаки, строит рекомендации только для grid-стратегий, дополнительно может подключать локальный LLM-reviewer по свечам и хранит полный журнал решений и состояний в выбранном backend: SQLite или PostgreSQL.
+Сервис собирает рыночные данные Bybit Linear USDT Futures / USDT Perpetual, рассчитывает multi-timeframe признаки и строит рекомендации только для `futures_grid`. Любые другие классы ботов и стратегий в этой сборке не поддерживаются. Дополнительно может подключаться локальный LLM-reviewer по свечам; полный журнал решений и состояний хранится в выбранном backend: SQLite или PostgreSQL.
 
 Проект рассчитан прежде всего на **операторский / полуавтоматический контур**: система формирует интерпретируемую рекомендацию, показывает причины, ограничения и риск-контекст, а оператор уже принимает решение о запуске бота на бирже.
 
 ## Поддерживаемые bot_type
-- `futures_grid`
+- `futures_grid` — только Bybit `category=linear`, USDT perpetual, settlement/margin/PnL в USDT.
+
+Неподдерживаемые стратегии не должны появляться в API, UI, тестах или конфигурациях. Если legacy/manual payload содержит иной `bot_type` или несовместимый `venue`, он фильтруется/блокируется.
 
 ## Что делает система
-- собирает `linear` / `linear` тикеры и OHLCV по нескольким таймфреймам;
+- собирает только `linear` тикеры и OHLCV по нескольким таймфреймам;
 - собирает `funding rate` и `open interest` для perpetual linear;
 - ведёт эвристический sentiment pipeline (`global`, `symbol`, `topic` scopes);
 - определяет direction/regime на нескольких ТФ;
@@ -41,8 +43,8 @@
 Это **не execution engine биржевого уровня** и не полноценный симулятор исполнения. Сервис оценивает пригодность сетапа и его качество, но не заменяет отдельный production-grade execution layer. Ордеры на Bybit из этого проекта не отправляются: `bot_instances` и `trades` отражают операторский / audit-контур, а не живой OMS/EMS.
 
 ## Что входит в проект
-- сбор USDT linear futures тикеров и OHLCV;
-- сбор funding и open interest для USDT linear futures;
+- сбор Bybit Linear USDT Futures тикеров и OHLCV;
+- сбор funding и open interest для Bybit USDT perpetual;
 - sentiment pipeline с global и symbol scopes;
 - multi-timeframe direction/regime inference;
 - scoring + risk gating + calibration;
@@ -53,6 +55,10 @@
 - краткая инструкция оператора в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`.
 
 ## Ограничения дизайна
+- рекомендации не являются финансовым советом и не гарантируют доходность;
+- grid опасен на трендовом рынке: система обязана уметь вернуть `blocked`/`no_trade`, если range-edge слабый;
+- leverage увеличивает риск ликвидации; estimated liquidation buffer в UI — консервативный preflight-сигнал, а не точная формула биржи;
+- комиссии, spread, slippage и funding могут полностью уничтожить прибыль на сетку;
 - sentiment pipeline остаётся **эвристическим**, а не newsroom/LLM/NER-уровня;
 - отсутствие sentiment-данных трактуется как неопределённость, а не как «истинный neutral»;
 - grid outcomes остаются приближённой path-approximation, а не биржевой truth-моделью исполнения;
@@ -69,7 +75,8 @@
 - `reasons.direction_agg` — агрегированное направление и структура голосов по ТФ.
 - `reasons.execution_constraints` — что можно, а что нельзя исполнить на выбранном bot_type.
 - `bybit_meta` — metadata инструмента Bybit, доступная UI для операторской сверки диапазона, leverage и шагов.
-- `bybit_plan_validation` — результат execution-time валидации trade plan: ошибки блокируют подтверждение, предупреждения напоминают о неполной проверке qty/min_notional без фактического размера позиции; если `trade_plan.sizing` или `params` уже содержит явный `order_qty`/`qty_per_leg`/`base_qty` либо `order_notional`, эти значения проверяются против Bybit `qty_step`, `min_order_qty`, `max_order_qty` и `min_notional`. Дополнительно блокируются рекомендации с `reference_price` вне диапазона, внутренним `kill_switch`, схлопыванием сетки после округления по `tick_size`, отсутствующим или неподдерживаемым `margin_mode`, metadata Bybit от другого `symbol` или другого `category/venue`, instrument `status` отличным от `Trading`, несогласованным `grid_levels`/`grid_step`, off-tick `tp_per_leg`, а также некорректным `leverage` относительно `min/max/leverage_step` Bybit. Execute-path дополнительно блокирует подтверждение, если текущий ticker уже вышел за сохранённый диапазон сетки или `kill_switch`, даже при свежих candles/ticker. Metadata инструмента теперь берётся только при точном совпадении `symbol`, чтобы preflight не валидировал идею ограничениями чужого инструмента.
+- `params.economics` / `reasons.grid_economics` — net-of-fees экономика одной сетки: gross/net bps, estimated execution cost, funding impact, estimated order notional, margin required и liquidation buffer. Если net profit per grid не положителен или слишком тонкий, рекомендация блокируется.
+- `bybit_plan_validation` — результат execution-time валидации trade plan: ошибки блокируют подтверждение, предупреждения напоминают о неполной проверке qty/min_notional без фактического размера позиции; если `trade_plan.sizing` или `params` уже содержит явный `order_qty`/`qty_per_leg`/`base_qty` либо `order_notional`, эти значения проверяются против Bybit `qty_step`, `min_order_qty`, `max_order_qty` и `min_notional`. Дополнительно блокируются рекомендации с `reference_price` вне диапазона, внутренним `kill_switch`, схлопыванием сетки после округления по `tick_size`, отсутствующим или неподдерживаемым `margin_mode`, metadata Bybit от другого `symbol` или другого `category/venue`, instrument `status` отличным от `Trading`, несогласованным `grid_levels`/`grid_step`, off-tick `tp_per_leg`, некорректным `leverage` относительно `min/max/leverage_step` Bybit, а также слишком малым estimated liquidation buffer при leverage > 1. Execute-path дополнительно блокирует подтверждение, если текущий ticker уже вышел за сохранённый диапазон сетки или `kill_switch`, даже при свежих candles/ticker. Metadata инструмента теперь берётся только при точном совпадении `symbol`, чтобы preflight не валидировал идею ограничениями чужого инструмента.
 - `reasons.llm_review` — second opinion LLM, включая источник (`live`, `cache`, `cache_inherited`, `async_live`, `async_inherited`).
 
 ## Документация в репозитории
@@ -78,6 +85,7 @@
 - `docs/TRADING_LOGIC.md` — торгово-логические правила, ограничения и жизненный цикл recommendation/publication-chain.
 - `docs/SCENARIOS.md` — ключевые эксплуатационные сценарии и expected behavior.
 - `docs/KNOWN_RISKS.md` — оставшиеся риски и осознанные ограничения.
+- `docs/AUDIT_REPORT_2026-05-08.md` — текущий аудит linear USDT futures grid-only hardening, net grid economics и risk/preflight исправлений.
 - `docs/AUDIT_REPORT_2026-04-24.md` — сводка текущего red-team-аудита, исправлений execution-time guards и остаточных рисков.
 - `docs/AUDIT_REPORT_2026-04-22.md` — архивная сводка предыдущего red-team-аудита, подтверждённых дефектов, исправлений и остаточных рисков.
 - `docs/AUDIT_REPORT_2026-04-15.md` — архивный аудит предыдущей релизной ревизии.

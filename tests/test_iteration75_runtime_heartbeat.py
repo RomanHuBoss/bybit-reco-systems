@@ -60,7 +60,7 @@ def test_make_runtime_lock_heartbeat_opens_new_connection_each_call(tmp_path: Pa
         heartbeat = app_main._make_runtime_lock_heartbeat("runtime:test", lock_conn_factory=factory)
         assert heartbeat() is True
 
-        assert len(created) == 2
+        assert len(created) == 1
         assert all(conn.closed for conn in created)
     finally:
         sys.modules.pop("app.main", None)

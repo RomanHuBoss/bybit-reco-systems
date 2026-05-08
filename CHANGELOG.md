@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 2026-05-08 — Bybit Linear USDT Futures grid-only economics and risk hardening
+
+### Исправлено
+- Добавлен `app/grid_math.py` с Decimal-based расчётами linear PnL, fees, funding cashflow, margin requirement и conservative liquidation buffer.
+- Recommender теперь публикует `params.sizing` / `params.economics` и блокирует grid, если net profit per grid после execution friction/funding неположителен или слишком тонкий.
+- Execution preflight больше не запрещает любой leverage > 1; вместо этого проверяет Bybit min/max/leverage_step и liquidation buffer.
+- Health/warmup контуры больше не считают `linear` дважды.
+- UI деталей рекомендации показывает net/gross per grid, estimated margin, order notional, qty/order, liquidation buffer и risk profile.
+
+### Добавлено
+- `docs/AUDIT_REPORT_2026-05-08.md`.
+- `tests/test_grid_linear_economics.py`.
+
+### Тесты
+- segmented `pytest` suite → `353 passed`;
+- `python -m py_compile app/*.py tests/*.py main.py` → passed;
+- `node --check app/ui/static/app.js` → passed.
+
 ## 2026-04-24 — live-price execution guard, Bybit status hardening and explicit sizing validation
 
 ### Исправлено

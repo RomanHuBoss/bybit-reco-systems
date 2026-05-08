@@ -145,7 +145,7 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
 # vol24h in USD (turnover24h from ticker)
 
 LIQUIDITY_TIERS = {
-    "high":   20_000_000,   # > $20M/day  — all bots OK
+    "high":   20_000_000,   # > $20M/day  — futures grid liquidity OK
     "medium":  2_000_000,   # > $2M/day   — grid OK
     "low":       500_000,   # > $500K/day — futures grid only, small params
     # below $500K → "micro": grid forbidden

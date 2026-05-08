@@ -77,15 +77,15 @@ def conn(tmp_path: Path):
 
 
 
-def test_parse_review_content_handles_json_fence_and_linear_short_execution_neutralization():
+def test_parse_review_content_handles_json_fence_and_preserves_linear_short_execution():
     content = """```json
-    {"thesis_direction":"short","execution_direction":"short","confidence":0.81,"regime_view":"bearish_range","risk_flags":["carry_risk"],"summary":"bearish but linear cannot short"}
+    {"thesis_direction":"short","execution_direction":"short","confidence":0.81,"regime_view":"bearish_range","risk_flags":["carry_risk"],"summary":"bearish range with directional futures grid"}
     ```"""
 
     parsed = parse_review_content(content, bot_type="futures_grid", engine_direction="neutral")
 
     assert parsed["thesis_direction"] == "short"
-    assert parsed["execution_direction"] == "neutral"
+    assert parsed["execution_direction"] == "short"
     assert parsed["confidence"] == pytest.approx(0.81)
     assert parsed["risk_flags"] == ["carry_risk"]
 
@@ -132,7 +132,7 @@ def test_alert_cooldown_is_not_consumed_when_send_fails(monkeypatch: pytest.Monk
     payload = [{"status": "ok"}, {"status": "missing"}]
     alerts.check_and_alert("token", "chat", payload, collect_errors_10m=7, reco_count=0)
 
-    assert len(attempts) == 6
+    assert len(attempts) == 3
     assert alerts._last_sent == {}
 
 
@@ -408,7 +408,7 @@ def test_apply_llm_reviewer_does_not_reuse_cache_across_venue_or_bot_type(conn):
     assert stats["reviewed"] == 2
     assert stats["cached"] == 0
     assert recs[1]["reasons"]["llm_review"].get("cached") is not True
-    assert recs[1]["reasons"]["llm_review"]["execution_direction"] == "neutral"
+    assert recs[1]["reasons"]["llm_review"]["execution_direction"] == "short"
 
 
 def test_async_llm_sweep_gate_persists_veto_status_in_db(conn, monkeypatch):
@@ -1573,7 +1573,7 @@ def test_run_recommender_once_emits_long_for_bullish_range_market(conn):
 
     result = run_recommender_once(conn, settings)
 
-    assert result["count"] >= 2
+    assert result["count"] >= 1
     rows = conn.execute(
         "SELECT venue, bot_type, direction, reasons_json FROM recommendations ORDER BY venue, bot_type"
     ).fetchall()

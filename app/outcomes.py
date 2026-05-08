@@ -394,7 +394,7 @@ def _grid_outcome(
     gross_proxy = completed_steps * gross_leg_pct
     net_proxy = gross_proxy - (max(1, completed_steps) * cost_floor)
 
-    # A grid is meant to harvest oscillation, not trend-following drift. Penalise any
+    # A grid is meant to harvest oscillation, not directional drift. Penalise any
     # unresolved displacement that remains at the end of the label horizon.
     raw_end_drift = abs((exitp - entry) / entry) if entry else 0.0
     signed_drift = _signed_return(entry, exitp, direction)

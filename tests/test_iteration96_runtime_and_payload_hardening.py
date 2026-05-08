@@ -159,11 +159,11 @@ def test_estimate_cost_model_falls_back_from_non_finite_spread_and_funding() -> 
     )
 
     assert cost_model["spread_missing"] is True
-    assert cost_model["spread_bps"] == 8.0
+    assert cost_model["spread_bps"] == 10.0
     assert cost_model["funding_rate"] is None
     assert cost_model["directional_funding_bps_8h"] == 0.0
     assert cost_model["expected_funding_bps"] == 0.0
-    assert cost_model["net_cost_bps"] == pytest.approx(10.92)
+    assert cost_model["net_cost_bps"] == pytest.approx(13.62)
     assert math.isfinite(float(cost_model["net_cost_bps"]))
 
 

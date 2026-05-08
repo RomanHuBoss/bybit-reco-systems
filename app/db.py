@@ -773,12 +773,18 @@ def log_decision(
     conn: sqlite3.Connection,
     action: str,
     rec_id: str | None,
-    operator: str | None,
-    details: dict[str, Any],
+    operator: str | None | dict[str, Any],
+    details: dict[str, Any] | None = None,
     *,
     commit: bool = True,
 ) -> None:
-    params = (now_ts(), action, rec_id, operator, _json_dumps_safe(details))
+    # Backward-compatible guard: older call-sites used
+    # log_decision(conn, action, rec_id, details). Treat that as operator=None
+    # instead of failing during bootstrap/recovery paths.
+    if details is None and isinstance(operator, dict):
+        details = operator
+        operator = None
+    params = (now_ts(), action, rec_id, operator if isinstance(operator, str) else None, _json_dumps_safe(details or {}))
     if commit:
         _commit_write_with_retry(
             conn,
@@ -1904,6 +1910,7 @@ def get_recommendation_status_counts(
 def get_recommender_warmup_status(
     conn: sqlite3.Connection,
     symbols_linear: list[str],
+    legacy_symbols_linear: list[str] | None = None,
     *,
     stale_sec: int = 300,
     min_rows_per_tf: int = 80,
@@ -1920,10 +1927,13 @@ def get_recommender_warmup_status(
     Slow timeframes are checked for history depth only, not freshness, because a
     closed daily candle can be <24h old and still be fully valid.
     """
+    if isinstance(legacy_symbols_linear, list) and legacy_symbols_linear:
+        symbols_linear = [str(item) for item in legacy_symbols_linear]
+
     now = now_ts()
     min_rows_per_tf = max(1, int(min_rows_per_tf or 1))
     tf_list = tuple(dict.fromkeys(int(tf) for tf in (required_tfs or (60, 900, 1800, 3600, 14400, 86400)) if int(tf) > 0))
-    active = {str(v or '').strip().lower() for v in (active_venues or ['linear', 'linear']) if str(v or '').strip()}
+    active = {str(v or '').strip().lower() for v in (active_venues or ['linear']) if str(v or '').strip()}
 
     def _iter_symbols(items: list[str]) -> list[str]:
         out: list[str] = []
@@ -1937,7 +1947,7 @@ def get_recommender_warmup_status(
         return out
 
     per_venue: list[dict[str, Any]] = []
-    for venue, raw_symbols in (("linear", symbols_linear), ("linear", symbols_linear)):
+    for venue, raw_symbols in (("linear", symbols_linear),):
         if venue not in active:
             continue
         symbols = _iter_symbols(raw_symbols)
@@ -2639,6 +2649,7 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
 def get_symbol_health(
     conn: sqlite3.Connection,
     symbols_linear: list[str],
+    legacy_symbols_or_stale_sec: list[str] | int = 300,
     stale_sec: int = 300,
     *,
     active_venues: list[str] | None = None,
@@ -2654,6 +2665,16 @@ def get_symbol_health(
       error_count_10m: COLLECT_ERRORs for this symbol in last 10 min
       disabled:       True if SYMBOL_DISABLED is still inside retry window
     """
+    if isinstance(legacy_symbols_or_stale_sec, list):
+        # Compatibility with the former two-symbol-list signature
+        # get_symbol_health(conn, symbols_spot, symbols_linear, ...). The product
+        # now has only linear symbols, so prefer the second positional list when
+        # it is provided and otherwise keep the first positional list.
+        if legacy_symbols_or_stale_sec:
+            symbols_linear = [str(item) for item in legacy_symbols_or_stale_sec]
+    else:
+        stale_sec = int(legacy_symbols_or_stale_sec or stale_sec)
+
     now = now_ts()
     result: list[dict] = []
 
@@ -2731,10 +2752,8 @@ def get_symbol_health(
         except Exception:
             logger.debug("health: disabled_syms parse error", exc_info=True)
 
-    active_set = {str(v or "").strip().lower() for v in (active_venues or ["linear", "linear"])}
+    active_set = {str(v or "").strip().lower() for v in (active_venues or ["linear"])}
     venue_symbols: list[tuple[str, list[str]]] = []
-    if "linear" in active_set:
-        venue_symbols.append(("linear", symbols_linear))
     if "linear" in active_set:
         venue_symbols.append(("linear", symbols_linear))
 

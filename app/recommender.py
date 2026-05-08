@@ -16,6 +16,7 @@ from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_
 from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
 from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
+from .grid_math import grid_leg_economics, margin_required_usdt, estimate_linear_liq_price, liquidation_buffer_pct
 from .collector import RuntimeLockLostError
 from .settings import load_settings
 from .calibration import (
@@ -1384,6 +1385,8 @@ def _build_trade_plan(
         "venue": venue,
         "direction": direction,
         "cost_model": _sanitize_json_numbers(dict(cost_model or {})),
+        "sizing": _sanitize_json_numbers(dict(params.get("sizing") or {})),
+        "economics": _sanitize_json_numbers(dict(params.get("economics") or {})),
         "levels": {
             "range": {
                 "lower": _round_price(float(lower), decimals=10) if lower is not None else None,
@@ -1654,8 +1657,6 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
 
 def _mode(venue: str, direction: str) -> tuple[str, str]:
     if venue == "linear":
-        return "linear", "isolated"
-    if venue == "linear":
         return "unified", "isolated"
     return venue, "default"
 
@@ -1753,6 +1754,72 @@ def _params(
     else:
         params["leverage"] = 1
         params["margin_mode"] = "isolated"
+
+    # Conservative minimum viable sizing. The project does not know the operator's
+    # wallet balance, so this is an exchange-preflightable default, not a position
+    # sizing promise. Execution preflight revalidates against live minNotional/qtyStep.
+    order_notional_usdt = 25.0
+    order_qty = order_notional_usdt / price if price > 0 else 0.0
+    active_grid_intervals = max(1, int(grid_levels) - 1)
+    total_order_notional = order_notional_usdt * active_grid_intervals
+    leverage_used = max(1, int(params.get("leverage") or 1))
+    margin_required = float(margin_required_usdt(total_order_notional, leverage_used))
+    grid_econ = grid_leg_economics(
+        reference_price=price,
+        step_pct=params.get("grid_spacing_pct"),
+        order_notional=order_notional_usdt,
+        taker_fee_bps=taker_fee_bps,
+        execution_cost_bps=cost_model.get("execution_cost_bps") or execution_cost_bps,
+        expected_funding_bps=cost_model.get("expected_funding_bps") or 0.0,
+        fill_efficiency="0.70",
+    )
+
+    liq_side = direction if direction in ("long", "short") else "long"
+    liq_price = estimate_linear_liq_price(liq_side, price, leverage_used) if venue == "linear" else None
+    liq_buffer = liquidation_buffer_pct(liq_side, price, liq_price) if liq_price is not None else None
+    if direction == "neutral" and venue == "linear":
+        liq_long = estimate_linear_liq_price("long", price, leverage_used)
+        liq_short = estimate_linear_liq_price("short", price, leverage_used)
+        buf_long = liquidation_buffer_pct("long", price, liq_long) if liq_long is not None else None
+        buf_short = liquidation_buffer_pct("short", price, liq_short) if liq_short is not None else None
+        buffers = [float(x) for x in (buf_long, buf_short) if x is not None]
+        params["economics"] = {
+            **grid_econ,
+            "order_notional_usdt": float(order_notional_usdt),
+            "qty_per_order": _round_price(order_qty, decimals=10),
+            "estimated_active_orders": int(active_grid_intervals),
+            "estimated_total_order_notional_usdt": float(total_order_notional),
+            "estimated_margin_required_usdt": float(margin_required),
+            "estimated_max_position_notional_usdt": float(total_order_notional),
+            "estimated_liquidation_price_long": float(liq_long) if liq_long is not None else None,
+            "estimated_liquidation_price_short": float(liq_short) if liq_short is not None else None,
+            "liquidation_buffer_pct": min(buffers) if buffers else None,
+            "liquidation_model": "approx_linear_isolated; exact Bybit liq depends on risk tier, mark price and wallet margin",
+            "risk_profile": "conservative" if leverage_used <= 1 and float(grid_econ.get("net_profit_bps") or 0.0) >= 4.0 else ("moderate" if leverage_used <= 2 else "aggressive"),
+        }
+    else:
+        params["economics"] = {
+            **grid_econ,
+            "order_notional_usdt": float(order_notional_usdt),
+            "qty_per_order": _round_price(order_qty, decimals=10),
+            "estimated_active_orders": int(active_grid_intervals),
+            "estimated_total_order_notional_usdt": float(total_order_notional),
+            "estimated_margin_required_usdt": float(margin_required),
+            "estimated_max_position_notional_usdt": float(total_order_notional),
+            "estimated_liquidation_price": float(liq_price) if liq_price is not None else None,
+            "liquidation_buffer_pct": float(liq_buffer) if liq_buffer is not None else None,
+            "liquidation_model": "approx_linear_isolated; exact Bybit liq depends on risk tier, mark price and wallet margin",
+            "risk_profile": "conservative" if leverage_used <= 1 and float(grid_econ.get("net_profit_bps") or 0.0) >= 4.0 else ("moderate" if leverage_used <= 2 else "aggressive"),
+        }
+    params["sizing"] = {
+        "basis": "minimum_viable_operator_default",
+        "order_notional_usdt": float(order_notional_usdt),
+        "qty_per_order": _round_price(order_qty, decimals=10),
+        "estimated_active_orders": int(active_grid_intervals),
+        "estimated_total_order_notional_usdt": float(total_order_notional),
+        "estimated_margin_required_usdt": float(margin_required),
+        "note": "Размер заявки — безопасный минимальный ориентир. Перед запуском preflight сверяет Bybit minNotional/qtyStep, оператор должен сверить доступную маржу.",
+    }
 
     return params
 
@@ -2832,6 +2899,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "margin_mode": params.get("margin_mode"),
                 "kill_switch": (params.get("trade_plan") or {}).get("levels", {}).get("kill_switch", {}),
                 "tp_per_leg": (params.get("trade_plan") or {}).get("levels", {}).get("tp_per_leg", {}),
+                "sizing": params.get("sizing"),
+                "economics": params.get("economics"),
                 "market_shock_state": (market_shock or {}).get("state"),
                 "market_shock_title": (market_shock or {}).get("title"),
                 "operator_note": (market_shock or {}).get("operator_note"),
@@ -2843,10 +2912,32 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "fast_veto_state": (fast_veto or {}).get("state"),
             }
 
+            econ = params.get("economics") if isinstance(params.get("economics"), dict) else {}
+            net_profit_bps = _finite_or_none(econ.get("net_profit_bps"))
+            gross_profit_bps = _finite_or_none(econ.get("gross_profit_bps"))
+            liq_buffer_pct = _finite_or_none(econ.get("liquidation_buffer_pct"))
+            execution_cost_bps = _finite_or_none(cost_model.get("execution_cost_bps")) or _finite_or_none(cost_model.get("total_cost_bps")) or 0.0
+            if bot_type == "futures_grid":
+                if net_profit_bps is None:
+                    blocks.append({"code": "GRID_ECONOMICS_MISSING", "msg": "нет net profit per grid — рекомендация не исполнима без экономики сетки"})
+                elif net_profit_bps <= 0.0:
+                    blocks.append({"code": "GRID_NET_PROFIT_NON_POSITIVE", "msg": f"net_profit_per_grid={net_profit_bps:.2f} bps после fees/spread/slippage/funding <= 0"})
+                elif net_profit_bps < 2.0:
+                    blocks.append({"code": "GRID_NET_PROFIT_TOO_THIN", "msg": f"net_profit_per_grid={net_profit_bps:.2f} bps слишком мал; комиссии/проскальзывание легко съедят прибыль"})
+                if gross_profit_bps is not None and execution_cost_bps > 0 and gross_profit_bps <= execution_cost_bps * 1.10:
+                    blocks.append({"code": "GRID_GROSS_EDGE_BELOW_COSTS", "msg": f"gross_profit_per_grid={gross_profit_bps:.2f} bps почти не покрывает execution_cost={execution_cost_bps:.2f} bps"})
+                if venue == "linear" and liq_buffer_pct is not None and liq_buffer_pct < 12.0:
+                    blocks.append({"code": "LIQUIDATION_BUFFER_TOO_LOW", "msg": f"estimated liquidation buffer={liq_buffer_pct:.2f}% < 12%"})
+
+            if blocks:
+                status = "blocked"
+
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)
             reasons2["regime"] = regime
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
+            reasons2["grid_economics"] = params.get("economics")
+            reasons2["sizing"] = params.get("sizing")
             thesis_ok = bool(score >= settings.min_score_to_recommend and (not confidence_gate_applied or conf >= settings.min_conf_to_recommend))
             reasons2["decision_layers"] = {
                 "thesis_status": "favored" if thesis_ok else "unfavorable",
@@ -3061,6 +3152,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
         db.log_decision(
             conn,
             "PUBLISH",
+            None,
             None,
             {
                 "count_all": len(recs),

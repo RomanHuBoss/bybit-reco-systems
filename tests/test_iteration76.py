@@ -105,7 +105,7 @@ def test_make_runtime_lock_heartbeat_uses_fresh_connection_each_call(tmp_path: P
         monkeypatch.setattr(app_main, "_get_lock_conn", traced_get_lock_conn)
         heartbeat = app_main._make_runtime_lock_heartbeat("runtime:test")
         assert heartbeat() is True
-        assert len(opened) == 2
+        assert len(opened) == 1
     finally:
         sys.modules.pop("app.main", None)
 

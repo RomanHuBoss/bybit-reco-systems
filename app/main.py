@@ -34,6 +34,7 @@ from .security import is_authorized
 from . import db
 from .db_backend import describe_target
 from .bot_types import sql_in_clause
+from .grid_math import estimate_linear_liq_price, liquidation_buffer_pct
 import logging
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ def _bootstrap_db() -> None:
             db.log_decision(
                 conn,
                 "OUTCOME_LABEL_VERSION_RESET",
+                None,
                 None,
                 {
                     "version": OUTCOME_LABEL_VERSION,
@@ -965,8 +967,28 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                     "msg": f"Leverage {leverage} не выровнен по leverage_step={leverage_step}; ближайшее допустимое значение={snapped['leverage']}",
                 })
 
+    # Linear USDT perpetual supports leverage. Do not blanket-block leverage > 1;
+    # instead enforce Bybit leverageFilter above and require an explicit liquidation
+    # buffer estimate in the recommendation payload when leverage materially raises risk.
     if leverage is not None and venue == "linear" and leverage > 1:
-        errors.append({"code": "LINEAR_LEVERAGE_INVALID", "msg": f"Для linear leverage должен быть 1, получено {leverage}."})
+        economics = params.get("economics") if isinstance(params.get("economics"), dict) else {}
+        liq = _finite_float_or_none(economics.get("estimated_liquidation_price"))
+        liq_buffer_pct = _finite_float_or_none(economics.get("liquidation_buffer_pct"))
+        if liq is None and reference_price is not None:
+            estimated = estimate_linear_liq_price(direction, reference_price, leverage)
+            liq = float(estimated) if estimated is not None else None
+            buf = liquidation_buffer_pct(direction, reference_price, liq) if liq is not None else None
+            liq_buffer_pct = float(buf) if buf is not None else liq_buffer_pct
+        if liq_buffer_pct is None:
+            warnings.append({
+                "code": "LIQUIDATION_BUFFER_NOT_ESTIMATED",
+                "msg": "Leverage > 1 требует оценки liquidation buffer; точная ликвидация зависит от risk tier и маржи аккаунта.",
+            })
+        elif liq_buffer_pct < 12.0:
+            errors.append({
+                "code": "LIQUIDATION_BUFFER_TOO_LOW",
+                "msg": f"Оценочный liquidation buffer={liq_buffer_pct:.2f}% слишком мал для запуска futures grid с leverage={leverage}.",
+            })
 
     sizing = plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {}
     qty_keys = (

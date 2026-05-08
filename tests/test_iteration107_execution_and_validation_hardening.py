@@ -524,7 +524,7 @@ def test_api_execute_prefetches_bybit_metadata_before_begin_immediate(isolated_a
 
 
 # Категория metadata Bybit должна совпадать с venue recommendation.
-# Иначе linear-ограничения можно ошибочно применить к linear/futures или наоборот.
+# Иначе linear-ограничения можно ошибочно применить к чужой категории инструмента.
 def test_validate_trade_plan_blocks_bybit_category_mismatch(isolated_app_and_conn):
     app_main, _client, _conn = isolated_app_and_conn
 
@@ -548,7 +548,7 @@ def test_validate_trade_plan_blocks_bybit_category_mismatch(isolated_app_and_con
         },
     }
     meta = {
-        "category": "linear",
+        "category": "nonlinear",
         "symbol": "BTCUSDT",
         "tick_size": "0.1",
         "min_price": "1",

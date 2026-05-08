@@ -455,7 +455,13 @@ function buildOperatorFieldSpecs(it, ov) {
   if (it.venue === "linear") {
     fields.push({ label: "Плечо", value: ov.leverage });
     fields.push({ label: "Режим маржи", value: ov.marginMode });
+    const economics = params.economics || {};
+    const sizing = params.sizing || {};
+    fields.push({ label: "Order notional", value: formatUsdValue(sizing.order_notional_usdt ?? economics.order_notional_usdt) });
+    fields.push({ label: "Qty/order", value: formatDotNumber(sizing.qty_per_order ?? economics.qty_per_order, 10, false), mono: true });
+    fields.push({ label: "Margin est.", value: formatUsdValue(sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt) });
   }
+  fields.push({ label: "Net/сетка", value: formatBps((params.economics || {}).net_profit_bps, 2, true) });
   fields.push({ label: "Прибыль/сетка, %", value: ov.tpLegPct });
   if (ov.tpLegAbs !== "—") fields.push({ label: "Прибыль/сетка, цена", value: ov.tpLegAbs, mono: true });
 
@@ -545,6 +551,8 @@ function buildDetailsHtml(it) {
   const oi = reasons.open_interest || {};
   const liquidity = reasons.liquidity || {};
   const costModel = reasons.cost_model || {};
+  const economics = reasons.grid_economics || params.economics || {};
+  const sizing = reasons.sizing || params.sizing || {};
   const symbolSent = reasons.symbol_sentiment || {};
   const volatility = plan.volatility || {};
   const btcBeta = reasons.btc_beta || {};
@@ -634,6 +642,12 @@ function buildDetailsHtml(it) {
           ${fieldBox("Издержки всего", formatBps(costModel.total_cost_bps, 2, false))}
           ${fieldBox("Комиссия taker", formatBps(costModel.taker_fee_bps, 2, false))}
           ${fieldBox("Ожид. funding", formatBps(costModel.expected_funding_bps, 2, true))}
+          ${fieldBox("Gross/сетка", formatBps(economics.gross_profit_bps, 2, false))}
+          ${fieldBox("Net/сетка", formatBps(economics.net_profit_bps, 2, true))}
+          ${fieldBox("Net USDT/сетка", formatUsdValue(economics.net_profit_usdt))}
+          ${fieldBox("Margin est.", formatUsdValue(sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt))}
+          ${fieldBox("Liq buffer", economics.liquidation_buffer_pct !== undefined && economics.liquidation_buffer_pct !== null ? formatPercentDot(economics.liquidation_buffer_pct, 2, false) : "—")}
+          ${fieldBox("Risk profile", economics.risk_profile || "—")}
         </div>
         <div class="section-actions">
           <button class="ghost-chip" data-act="show-tech">Техподробности</button>

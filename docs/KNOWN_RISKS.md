@@ -5,7 +5,7 @@
 Следствие: нельзя считать его завершённой автоторговой системой без внешнего execution layer.
 
 ## 2. Qty/min-notional validation зависит от фактического размера позиции
-Сервис знает ограничения инструмента Bybit, но не рассчитывает размер leg/ордера самостоятельно. Если внешний исполнитель или операторский payload передаёт явный `trade_plan.sizing.order_qty` / `qty_per_leg` / `base_qty` либо `order_notional`, preflight проверяет его против `qty_step`, `min_order_qty`, `max_order_qty` и `min_notional`. Если размер не передан, остаётся предупреждение `SIZE_INPUT_REQUIRED`, а окончательная проверка размера обязана выполняться внешним execution layer.
+Сервис формирует minimum viable `params.sizing` с order notional/qty/margin estimate, чтобы UI показывал капитал и preflight мог проверить явные значения. Это не заменяет sizing от баланса аккаунта: внешний исполнитель обязан повторно сверять `qty_step`, `min_order_qty`, `max_order_qty`, `min_notional`, available balance и фактическую маржу перед созданием Bybit grid bot.
 
 ## 3. Outcome labeling остаётся proxy-моделью
 Даже усиленная grid-разметка не заменяет реальные fill/funding/liquidation данные.
@@ -24,8 +24,8 @@
 ## 6. LLM reviewer может быть полезен только как вторичный фильтр
 LLM не должен принимать финальное торговое решение вместо scoring/risk/shock логики.
 
-## 7. Cross margin / hedge mode / live liquidation modeling не поддержаны
-В этой ревизии проект исходит из `futures_grid + isolated` как из безопасного operational minimum.
+## 7. Cross margin / hedge mode / exact live liquidation modeling не поддержаны
+В этой ревизии проект исходит из `futures_grid + isolated` как из безопасного operational minimum. Leverage поддерживается только как Bybit Linear USDT Futures leverage с проверкой `leverageFilter` и conservative liquidation buffer. Точный liquidation price должен подтверждаться внешним execution/reconciliation контуром или Bybit calculator/API account data.
 
 ## 8. Telegram alerts best-effort
 Оповещения не гарантируют доставку и не заменяют внешний мониторинг / process supervisor.

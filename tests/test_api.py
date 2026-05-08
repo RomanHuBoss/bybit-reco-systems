@@ -479,7 +479,6 @@ def test_load_settings_ignores_inactive_venue_symbol_defaults(monkeypatch: pytes
     settings = load_settings()
 
     assert settings.venues == ['linear']
-    assert settings.symbols_linear == []
     assert settings.symbols_linear == ['BTCUSDT', 'ETHUSDT']
 
 
@@ -1446,14 +1445,14 @@ def test_metrics_endpoint_reports_core_gauges_and_status_collector_workers(clien
     metrics_resp = client.get('/metrics')
     assert metrics_resp.status_code == 200
     body = metrics_resp.text
-    assert 'bybit_reco_symbols_total 2' in body
+    assert 'bybit_reco_symbols_total 1' in body
     assert 'bybit_reco_symbols_ok 1' in body
-    assert 'bybit_reco_symbols_missing 1' in body
+    assert 'bybit_reco_symbols_missing 0' in body
     assert 'bybit_reco_collect_errors_10m 1' in body
     assert 'bybit_reco_recommendations_active 1' in body
     assert 'bybit_reco_collector_cycle_duration_ms 4321' in body
     assert 'bybit_reco_warmup_ready 0' in body
-    assert 'bybit_reco_warmup_symbols_total 2' in body
+    assert 'bybit_reco_warmup_symbols_total 1' in body
     assert 'bybit_reco_collector_max_workers 8' in body
     assert 'bybit_reco_futures_collect_max_workers 8' in body
 
@@ -1470,7 +1469,6 @@ def test_api_health_applies_boot_grace_to_pre_restart_stale_rows(tmp_path: Path,
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
-    monkeypatch.setenv('SYMBOLS_LINEAR', '')
     monkeypatch.setenv('VENUES', 'linear')
     monkeypatch.setenv('STALE_DATA_MAX_SEC', '300')
     monkeypatch.setenv('COLLECT_INTERVAL_SEC', '120')
@@ -1515,7 +1513,6 @@ def test_api_health_boot_grace_does_not_mask_very_old_rows(tmp_path: Path, monke
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
-    monkeypatch.setenv('SYMBOLS_LINEAR', '')
     monkeypatch.setenv('VENUES', 'linear')
     monkeypatch.setenv('STALE_DATA_MAX_SEC', '300')
     monkeypatch.setenv('COLLECT_INTERVAL_SEC', '120')
