@@ -1134,12 +1134,17 @@ def _estimate_cost_model(
     funding_rate: float | None = None,
     next_funding_ts: int | None = None,
     ts_now: int | None = None,
+    funding_interval_min: float | int | None = None,
 ) -> dict[str, Any]:
     """Approximate round-trip execution costs used in scoring/params/outcomes.
 
     Funding is direction-sensitive and event-based. We do not pro-rate abs(rate)
     over the whole horizon because that creates fake carry costs on trades that exit
     before the next funding timestamp and gets long/short economics backwards.
+
+    Bybit exposes funding interval per linear contract. If the interval is missing
+    from collected ticker/instrument metadata, keep a conservative explicit fallback
+    source in the payload so approval logic can fail closed when funding is material.
     """
     spread_bps = _finite_or_none(f.get("spread_bps"))
 
@@ -1174,10 +1179,17 @@ def _estimate_cost_model(
     expected_funding_events = 0
     expected_funding_bps = 0.0
     nfts_out: int | None = None
+    funding_interval_source = "not_applicable"
+    funding_interval_raw = _finite_or_none(funding_interval_min)
+    if funding_interval_raw is not None and funding_interval_raw > 0:
+        funding_interval_sec = max(60, int(round(float(funding_interval_raw) * 60.0)))
+        funding_interval_source = "ticker_or_instrument_info"
+    else:
+        funding_interval_sec = 8 * 3600
+        funding_interval_source = "fallback_8h_missing_interval"
     if venue == "linear" and fr is not None and horizon_sec > 0:
         now = int(ts_now or 0)
         nfts = int(next_funding_ts or 0)
-        funding_interval_sec = 8 * 3600
         # Defensive normalization for legacy/state payloads that may still carry
         # Bybit's millisecond timestamp even if the client was already fixed.
         if nfts > 10**11:
@@ -1213,6 +1225,9 @@ def _estimate_cost_model(
         "next_funding_ts": int(nfts_out) if nfts_out else _safe_int_or_none(next_funding_ts),
         "expected_funding_events": int(expected_funding_events),
         "expected_funding_bps": float(expected_funding_bps),
+        "funding_interval_min": int(round(funding_interval_sec / 60.0)) if venue == "linear" else None,
+        "funding_interval_source": funding_interval_source if venue == "linear" else "not_applicable",
+        "funding_interval_uncertain": bool(venue == "linear" and funding_interval_source.startswith("fallback") and fr is not None),
         # Canonical cost floor for scoring / RR / labels must reflect unavoidable
         # execution friction only. Funding carry stays explicit in net_cost_bps.
         "total_cost_bps": float(execution_cost_bps),
@@ -2668,6 +2683,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 funding_rate=(fr_data["funding_rate"] if fr_data else None),
                 next_funding_ts=(fr_data["next_funding_ts"] if fr_data else None),
                 ts_now=ts_now,
+                funding_interval_min=(fr_data.get("funding_interval_min") if isinstance(fr_data, dict) else None),
             )
 
             # Compute calibrated direction confidence once and reuse it everywhere
@@ -2740,6 +2756,11 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 funding_block = _extreme_funding_block(direction, fr_sig, cost_model)
                 if funding_block is not None:
                     feasibility_blocks.append(funding_block)
+                if bool(cost_model.get("funding_interval_uncertain")) and abs(float(cost_model.get("expected_funding_bps") or 0.0)) >= 3.0:
+                    feasibility_blocks.append({
+                        "code": "FUNDING_INTERVAL_UNCONFIRMED",
+                        "msg": "funding interval не подтверждён Bybit ticker/instrument metadata; funding impact может быть недооценён",
+                    })
 
             if bot_type == "futures_grid" and spread is not None and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
@@ -2994,6 +3015,14 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "raw_direction": raw_direction,
                 "executable_direction": direction,
                 "note": None,
+            }
+            reasons2["funding"] = {
+                **(reasons2.get("funding") if isinstance(reasons2.get("funding"), dict) else {}),
+                "funding_interval_min": cost_model.get("funding_interval_min"),
+                "funding_interval_source": cost_model.get("funding_interval_source"),
+                "funding_interval_uncertain": bool(cost_model.get("funding_interval_uncertain")),
+                "expected_funding_events": cost_model.get("expected_funding_events"),
+                "expected_funding_bps": cost_model.get("expected_funding_bps"),
             }
             # confidence_model reflects the calibrator ACTUALLY used (_cal_source set above).
             # Previously used _bot_cal_info presence to fill fields, which gave wrong

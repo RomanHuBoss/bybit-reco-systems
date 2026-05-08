@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS funding_rate (
   ts INTEGER NOT NULL,
   funding_rate REAL NOT NULL,
   next_funding_ts INTEGER,
+  funding_interval_min REAL,
   PRIMARY KEY (symbol, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_funding_ts ON funding_rate(ts DESC);

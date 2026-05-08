@@ -139,6 +139,12 @@ def _bot_publication_root_backfill_needed(conn: sqlite3.Connection) -> bool:
 
 
 
+def _ensure_funding_rate_columns(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "funding_rate")
+    if "funding_interval_min" not in cols:
+        conn.execute("ALTER TABLE funding_rate ADD COLUMN funding_interval_min REAL")
+
+
 def _ensure_bot_publication_root_columns(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "bot_instances")
     if "publication_root_rec_id" not in cols:
@@ -460,6 +466,7 @@ def init_db(conn: sqlite3.Connection) -> None:
       heartbeat_ts INTEGER NOT NULL
     )""")
     _ensure_recommendation_publication_columns(conn)
+    _ensure_funding_rate_columns(conn)
     if _recommendation_publication_backfill_needed(conn):
         # Полный historical lineage backfill может занимать заметное время на живой
         # БД. На штатном рестарте запускаем его только если реально нашли legacy-
@@ -2043,11 +2050,21 @@ def _normalize_funding_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str
         next_funding_ts = None
     if next_funding_ts is not None and next_funding_ts <= 0:
         next_funding_ts = None
+    funding_interval_min = None
+    raw_interval = payload.get("funding_interval_min")
+    if raw_interval not in (None, ""):
+        try:
+            interval = float(raw_interval)
+        except Exception:
+            interval = float("nan")
+        if math.isfinite(interval) and interval > 0:
+            funding_interval_min = int(round(interval))
     return {
         "symbol": str(payload.get("symbol") or ""),
         "ts": ts,
         "funding_rate": funding_rate,
         "next_funding_ts": next_funding_ts,
+        "funding_interval_min": funding_interval_min,
     }
 
 
@@ -2060,9 +2077,12 @@ def upsert_funding_rate(conn: sqlite3.Connection, rows: list[dict], *, commit: b
     if not valid_rows:
         return
     conn.executemany(
-        """INSERT OR REPLACE INTO funding_rate(symbol, ts, funding_rate, next_funding_ts)
-           VALUES(?,?,?,?)""",
-        [(r["symbol"], r["ts"], r["funding_rate"], r.get("next_funding_ts")) for r in valid_rows],
+        """INSERT OR REPLACE INTO funding_rate(symbol, ts, funding_rate, next_funding_ts, funding_interval_min)
+           VALUES(?,?,?,?,?)""",
+        [
+            (r["symbol"], r["ts"], r["funding_rate"], r.get("next_funding_ts"), r.get("funding_interval_min"))
+            for r in valid_rows
+        ],
     )
     if commit:
         conn.commit()
@@ -2667,7 +2687,7 @@ def get_symbol_health(
     """
     if isinstance(legacy_symbols_or_stale_sec, list):
         # Compatibility with the former two-symbol-list signature
-        # get_symbol_health(conn, symbols_spot, symbols_linear, ...). The product
+        # get_symbol_health(conn, symbols_linear, ...). The product
         # now has only linear symbols, so prefer the second positional list when
         # it is provided and otherwise keep the first positional list.
         if legacy_symbols_or_stale_sec:

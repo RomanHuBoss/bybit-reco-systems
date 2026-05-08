@@ -310,6 +310,7 @@ def test_db_filters_invalid_funding_and_open_interest_rows(tmp_path: Path):
         "ts": 1_700_000_000,
         "funding_rate": 0.0001,
         "next_funding_ts": 1_700_002_400,
+        "funding_interval_min": None,
     }
 
     db.upsert_open_interest(

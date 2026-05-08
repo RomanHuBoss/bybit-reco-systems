@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS funding_rate (
   ts BIGINT NOT NULL,
   funding_rate DOUBLE PRECISION NOT NULL,
   next_funding_ts BIGINT,
+  funding_interval_min DOUBLE PRECISION,
   PRIMARY KEY (symbol, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_funding_ts ON funding_rate(ts DESC);

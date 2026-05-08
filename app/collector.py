@@ -247,11 +247,21 @@ def _extract_funding_row(symbol: str, ticker: dict[str, Any], fallback_ts: int) 
         next_funding_ts = nft if nft > 0 else None
     except Exception:
         next_funding_ts = None
+
+    # Bybit linear tickers expose fundingIntervalHour. Store minutes so the
+    # recommender counts actual funding events instead of assuming 8h for every
+    # USDT perpetual.
+    funding_interval_min = None
+    interval_hours = _to_float(ticker.get("fundingIntervalHour"), minimum=0.0)
+    if interval_hours is not None and interval_hours > 0:
+        funding_interval_min = int(round(interval_hours * 60.0))
+
     return {
         "symbol": symbol,
         "ts": _remote_ticker_ts(ticker, fallback_ts),
         "funding_rate": funding_rate,
         "next_funding_ts": next_funding_ts,
+        "funding_interval_min": funding_interval_min,
     }
 
 

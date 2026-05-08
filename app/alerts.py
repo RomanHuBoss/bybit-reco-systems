@@ -104,7 +104,7 @@ def check_and_alert(
 
     # 3. No recommendations at all
     # Only meaningful when at least part of the market-data layer is healthy.
-    # Otherwise warm-up / data outages would generate a misleading strategy alert.
+    # Otherwise warm-up / data outages would generate a misleading grid alert.
     if reco_count == 0 and has_healthy_symbol and _can_send(no_recos_key):
         if send_telegram(token, chat_id,
             f"⚠️ <b>{bot_name}</b>\n"

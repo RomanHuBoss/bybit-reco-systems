@@ -18,8 +18,7 @@
 ## 5. Публичный Bybit REST не гарантирует полную временную согласованность
 Сервис теперь fail-closed отвергает `instruments-info` без точного совпадения `symbol` и блокирует instrument `status != Trading`, что снижает риск валидации чужими/неактивными лимитами, но не отменяет фундаментальное ограничение публичного REST как источника execution truth.
 Сервис делает защитные retry/backoff, transport/decode retry и stale checks, но не получает execution truth.
-Если metadata Bybit временно недоступна, проект в этой ревизии всё ещё деградирует к warning-path, а не к жёсткой блокировке исполнения; при этом explicit sizing validation возможна только при наличии metadata с lot/notional фильтрами.
-Это осознанный компромисс ради operator workflow, но он остаётся источником остаточного риска.
+Если metadata Bybit временно недоступна на execution-path, подтверждение fail-closed блокируется, а не превращается в warning-only запуск. В recommendation-path funding interval берётся из Bybit ticker/instrument metadata; если interval отсутствует и ожидаемый funding impact материален, рекомендация получает блок `FUNDING_INTERVAL_UNCONFIRMED`. Explicit sizing validation остаётся возможной только при наличии metadata с lot/notional фильтрами.
 
 ## 6. LLM reviewer может быть полезен только как вторичный фильтр
 LLM не должен принимать финальное торговое решение вместо scoring/risk/shock логики.

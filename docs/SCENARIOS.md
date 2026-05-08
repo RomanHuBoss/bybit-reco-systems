@@ -72,3 +72,9 @@
 2. Перед тем как оператор подтвердил `executed`, свежий ticker показывает mid/last price вне диапазона или вне `kill_switch`.
 3. `/api/v1/recommendations/{rec_id}/action` возвращает `409`, не создаёт `bot_instance` и пишет audit-событие блокировки.
 4. Оператор должен дождаться нового цикла recommender или вручную пересчитать уровни; запуск старой сетки считается другой сделкой с другим риск-профилем.
+
+## 14. Funding interval отсутствует при материальном funding
+Ожидаемое поведение:
+- recommendation-path не должен молча считать все USDT perpetual как 8h funding;
+- если Bybit ticker/instrument metadata не дала interval, а expected funding impact материален, рекомендация получает `FUNDING_INTERVAL_UNCONFIRMED`;
+- UI/API должны показать причину отказа и funding interval source.

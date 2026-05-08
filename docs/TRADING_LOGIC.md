@@ -55,7 +55,7 @@ execution-time validation должна блокировать исполнени
 ### Режимные инварианты
 - `bot_type` согласован с `venue` и `direction`;
 - `account_mode` и `margin_mode` не противоречат модели проекта;
-- для supported execution-path обязательно присутствует явный `margin_mode` (`isolated`/`isolated`), иначе recommendation блокируется fail-closed;
+- для supported execution-path обязательно присутствует явный `margin_mode=isolated`, иначе recommendation блокируется fail-closed;
 - `leverage` > 0 и укладывается в `min/max leverage`;
 - `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint; leverage > 1 допускается только с явным estimated liquidation buffer и блокируется, если buffer слишком мал;
 - metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу;
@@ -67,7 +67,7 @@ execution-time validation должна блокировать исполнени
 - Long PnL: `qty * (exit_price - entry_price)` USDT.
 - Short PnL: `qty * (entry_price - exit_price)` USDT.
 - Round-trip fee и execution friction вычитаются из каждой сетки до публикации рекомендации.
-- Funding учитывается direction-aware: положительный funding penalizes long и может поддерживать short; отрицательный funding наоборот.
+- Funding учитывается direction-aware: положительный funding penalizes long и может поддерживать short; отрицательный funding наоборот. Количество funding events считается по Bybit `fundingIntervalHour`/instrument metadata; если interval отсутствует и funding material, рекомендация блокируется как `FUNDING_INTERVAL_UNCONFIRMED`, а не молча использует неподтверждённое допущение.
 - Liquidation price в проекте считается только как conservative approximation для preflight/UI. Точная ликвидация зависит от risk tier, mark price, wallet margin и текущей позиции на Bybit.
 
 ## Что outcome labeling умеет и чего не умеет

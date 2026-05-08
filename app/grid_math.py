@@ -137,7 +137,11 @@ def grid_leg_economics(
     notional = max(ZERO, dec(order_notional))
     fill_eff = min(ONE, max(ZERO, dec(fill_efficiency, "0.70")))
     gross_bps = step_frac * BPS * fill_eff
-    exec_bps = max(ZERO, dec(execution_cost_bps))
+    # Conservative guard: execution_cost_bps should already include round-trip
+    # fees, spread and slippage. If a caller accidentally passes a lower value,
+    # never let displayed grid economics ignore the configured taker fee floor.
+    fee_floor_bps = max(ZERO, dec(taker_fee_bps)) * Decimal("2")
+    exec_bps = max(max(ZERO, dec(execution_cost_bps)), fee_floor_bps)
     funding_bps = dec(expected_funding_bps)
     net_bps = gross_bps - exec_bps - funding_bps
     gross_usdt = notional * gross_bps / BPS

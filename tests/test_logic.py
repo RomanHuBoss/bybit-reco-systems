@@ -1073,6 +1073,17 @@ def test_estimate_cost_model_rolls_stale_funding_forward_and_counts_crossed_even
     assert neutral["neutral_funding_model"] == "adverse_side_for_neutral_grid"
     assert neutral["expected_funding_bps"] == pytest.approx(10.0)
 
+    four_hour = _estimate_cost_model(next_funding_ts=now + 3600, funding_interval_min=240, **base_args)
+    assert four_hour["expected_funding_events"] == 3
+    assert four_hour["expected_funding_bps"] == pytest.approx(15.0)
+    assert four_hour["funding_interval_min"] == 240
+    assert four_hour["funding_interval_source"] == "ticker_or_instrument_info"
+    assert four_hour["funding_interval_uncertain"] is False
+
+    missing_interval = _estimate_cost_model(next_funding_ts=now + 3600, **base_args)
+    assert missing_interval["funding_interval_min"] == 480
+    assert missing_interval["funding_interval_source"] == "fallback_8h_missing_interval"
+    assert missing_interval["funding_interval_uncertain"] is True
 
 
 def test_get_first_tradeable_candle_after_uses_next_candle_open(conn):
@@ -3220,6 +3231,7 @@ def test_collector_uses_linear_batch_tickers_for_ticker_and_funding(tmp_path: Pa
                         "turnover24h": "100000",
                         "fundingRate": "0.0001",
                         "nextFundingTime": str((base_ts + 3600) * 1000),
+                        "fundingIntervalHour": "4",
                     },
                     {
                         "symbol": "ETHUSDT",
@@ -3230,6 +3242,7 @@ def test_collector_uses_linear_batch_tickers_for_ticker_and_funding(tmp_path: Pa
                         "turnover24h": "200000",
                         "fundingRate": "0.0002",
                         "nextFundingTime": str((base_ts + 7200) * 1000),
+                        "fundingIntervalHour": "8",
                     },
                 ]
             self.symbol_calls.append(symbol)
@@ -3257,8 +3270,12 @@ def test_collector_uses_linear_batch_tickers_for_ticker_and_funding(tmp_path: Pa
     assert stats["tickers_written"] == 2
     assert stats["funding_written"] == 2
     assert db.get_latest_ticker(conn, "linear", "BTCUSDT") is not None
-    assert db.get_latest_funding_rate(conn, "BTCUSDT") is not None
-    assert db.get_latest_funding_rate(conn, "ETHUSDT") is not None
+    btc_funding = db.get_latest_funding_rate(conn, "BTCUSDT")
+    eth_funding = db.get_latest_funding_rate(conn, "ETHUSDT")
+    assert btc_funding is not None
+    assert eth_funding is not None
+    assert btc_funding["funding_interval_min"] == 240
+    assert eth_funding["funding_interval_min"] == 480
 
     conn.close()
 

@@ -305,7 +305,7 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
         "bias": bias,                              # long/short
         "direction_mode": (
             "range_biased" if range_biased and direction in ("long", "short") else (
-                "trend_following" if direction in ("long", "short") else "neutral"
+                "directional_grid_bias" if direction in ("long", "short") else "neutral"
             )
         ),
         "direction_confidence": direction_confidence,

@@ -11,7 +11,7 @@
 
 ## Что делает система
 - собирает только `linear` тикеры и OHLCV по нескольким таймфреймам;
-- собирает `funding rate` и `open interest` для perpetual linear;
+- собирает `funding rate`, `fundingIntervalHour` и `open interest` для perpetual linear;
 - ведёт эвристический sentiment pipeline (`global`, `symbol`, `topic` scopes);
 - определяет direction/regime на нескольких ТФ;
 - считает score / confidence / expected RR / risk score;
@@ -75,7 +75,7 @@
 - `reasons.direction_agg` — агрегированное направление и структура голосов по ТФ.
 - `reasons.execution_constraints` — что можно, а что нельзя исполнить на выбранном bot_type.
 - `bybit_meta` — metadata инструмента Bybit, доступная UI для операторской сверки диапазона, leverage и шагов.
-- `params.economics` / `reasons.grid_economics` — net-of-fees экономика одной сетки: gross/net bps, estimated execution cost, funding impact, estimated order notional, margin required и liquidation buffer. Если net profit per grid не положителен или слишком тонкий, рекомендация блокируется.
+- `params.economics` / `reasons.grid_economics` — net-of-fees экономика одной сетки: gross/net bps, estimated execution cost, funding impact, estimated order notional, margin required и liquidation buffer. Если net profit per grid не положителен или слишком тонкий, рекомендация блокируется. `reasons.funding.funding_interval_source` показывает, был ли funding interval получен из Bybit ticker/instrument metadata; при материальном funding и неизвестном interval рекомендация блокируется fail-closed.
 - `bybit_plan_validation` — результат execution-time валидации trade plan: ошибки блокируют подтверждение, предупреждения напоминают о неполной проверке qty/min_notional без фактического размера позиции; если `trade_plan.sizing` или `params` уже содержит явный `order_qty`/`qty_per_leg`/`base_qty` либо `order_notional`, эти значения проверяются против Bybit `qty_step`, `min_order_qty`, `max_order_qty` и `min_notional`. Дополнительно блокируются рекомендации с `reference_price` вне диапазона, внутренним `kill_switch`, схлопыванием сетки после округления по `tick_size`, отсутствующим или неподдерживаемым `margin_mode`, metadata Bybit от другого `symbol` или другого `category/venue`, instrument `status` отличным от `Trading`, несогласованным `grid_levels`/`grid_step`, off-tick `tp_per_leg`, некорректным `leverage` относительно `min/max/leverage_step` Bybit, а также слишком малым estimated liquidation buffer при leverage > 1. Execute-path дополнительно блокирует подтверждение, если текущий ticker уже вышел за сохранённый диапазон сетки или `kill_switch`, даже при свежих candles/ticker. Metadata инструмента теперь берётся только при точном совпадении `symbol`, чтобы preflight не валидировал идею ограничениями чужого инструмента.
 - `reasons.llm_review` — second opinion LLM, включая источник (`live`, `cache`, `cache_inherited`, `async_live`, `async_inherited`).
 
@@ -85,7 +85,8 @@
 - `docs/TRADING_LOGIC.md` — торгово-логические правила, ограничения и жизненный цикл recommendation/publication-chain.
 - `docs/SCENARIOS.md` — ключевые эксплуатационные сценарии и expected behavior.
 - `docs/KNOWN_RISKS.md` — оставшиеся риски и осознанные ограничения.
-- `docs/AUDIT_REPORT_2026-05-08.md` — текущий аудит linear USDT futures grid-only hardening, net grid economics и risk/preflight исправлений.
+- `docs/AUDIT_REPORT_2026-05-09.md` — текущий аудит funding interval, net grid economics и grid-only hardening.
+- `docs/AUDIT_REPORT_2026-05-08.md` — предыдущий аудит linear USDT futures grid-only hardening, net grid economics и risk/preflight исправлений.
 - `docs/AUDIT_REPORT_2026-04-24.md` — сводка текущего red-team-аудита, исправлений execution-time guards и остаточных рисков.
 - `docs/AUDIT_REPORT_2026-04-22.md` — архивная сводка предыдущего red-team-аудита, подтверждённых дефектов, исправлений и остаточных рисков.
 - `docs/AUDIT_REPORT_2026-04-15.md` — архивный аудит предыдущей релизной ревизии.
@@ -105,9 +106,8 @@ API поднимется на `127.0.0.1:8000`.
 ## Минимальная проверка после установки
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
-pytest -q
-pytest --cov=app --cov-report=term-missing -q
-python -m py_compile app/*.py tests/*.py main.py
+PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile app/*.py main.py
 ruff check app tests main.py
 ```
 

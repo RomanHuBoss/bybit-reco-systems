@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 2026-05-09 — funding interval and net grid economics audit hardening
+
+### Исправлено
+- Funding cost model больше не считает все Bybit Linear USDT perpetual как 8h funding: collector сохраняет `fundingIntervalHour`, DB хранит `funding_interval_min`, recommender считает funding events по фактическому interval.
+- Если funding interval отсутствует и ожидаемый funding impact материален, recommendation получает fail-closed блок `FUNDING_INTERVAL_UNCONFIRMED`.
+- `grid_leg_economics()` теперь имеет внутренний round-trip taker fee floor, чтобы net profit per grid не мог случайно игнорировать комиссии.
+- Удалены остаточные неподдерживаемые strategy/product термины из комментариев и внутренних labels.
+- Обновлены README / trading logic / known risks / scenario docs.
+
+### Добавлено
+- `docs/AUDIT_REPORT_2026-05-09.md`.
+- Regression tests на fee floor, funding interval event count и сохранение `fundingIntervalHour`.
+
+### Тесты
+- Targeted regression suite: `10 passed`.
+- `python -m py_compile app/*.py main.py` → passed.
+
 ## 2026-05-08 — Bybit Linear USDT Futures grid-only economics and risk hardening
 
 ### Исправлено

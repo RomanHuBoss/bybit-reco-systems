@@ -49,6 +49,22 @@ def test_grid_leg_economics_rejects_fee_dominated_grid() -> None:
     assert econ["breakeven"] is False
 
 
+
+def test_grid_leg_economics_applies_taker_fee_floor_when_execution_cost_is_missing() -> None:
+    econ = grid_leg_economics(
+        reference_price="100",
+        step_pct="0.20",
+        order_notional="100",
+        taker_fee_bps="6",
+        execution_cost_bps="0",
+        expected_funding_bps="0",
+        fill_efficiency="1",
+    )
+    assert econ["gross_profit_bps"] == pytest.approx(20.0)
+    assert econ["execution_cost_bps"] == pytest.approx(12.0)
+    assert econ["net_profit_bps"] == pytest.approx(8.0)
+
+
 def test_funding_cashflow_is_directional_for_linear_contracts() -> None:
     assert float(funding_cashflow_usdt("long", "1000", "0.0001", 2)) == pytest.approx(0.2)
     assert float(funding_cashflow_usdt("short", "1000", "0.0001", 2)) == pytest.approx(-0.2)
