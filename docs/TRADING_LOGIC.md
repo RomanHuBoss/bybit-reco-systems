@@ -41,6 +41,7 @@ execution-time validation должна блокировать исполнени
 - market shock state не запрещает новый вход;
 - symbol fast-veto не активен;
 - instrument metadata Bybit подгружается до захвата SQLite write-lock, чтобы operator execution не тормозил остальные writer-контуры на сетевой задержке upstream;
+- execution-preflight fail-closed блокирует запуск, если metadata не подтверждает `contractType=LinearPerpetual`, `quoteCoin=USDT` и `settleCoin=USDT`;
 - текущий live ticker сверяется с сохранённым `trade_plan.levels.range` и `kill_switch`: если цена уже вышла за диапазон или защитную границу, подтверждение `executed` блокируется до пересчёта рекомендации.
 
 ### Геометрия grid-плана
@@ -86,7 +87,7 @@ execution-time validation должна блокировать исполнени
 ## Что должен делать внешний execution layer
 
 Если проект используется в production-пайплайне, внешний контур обязан:
-- повторно проверять фактический qty, qty_step, min qty и min notional по live account/instrument данным; проект проверяет эти фильтры только когда явный sizing уже передан в `trade_plan.sizing` или `params`;
+- повторно проверять фактический qty, qty_step, min qty и min notional по live account/instrument данным; проект проверяет эти фильтры для рекомендованного minimum viable sizing и любых операторских overrides в `trade_plan.sizing` или `params`;
 - выставлять/менять/отменять реальные ордера;
 - хранить order/fill state machine;
 - восстанавливать состояние после рестарта по фактическим биржевым данным;

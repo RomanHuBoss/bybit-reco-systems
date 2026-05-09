@@ -1,3 +1,10 @@
+# 2026-05-09 audit patch
+
+- Execution preflight now fails closed when Bybit instrument metadata lacks `contractType`, `quoteCoin` or `settleCoin`; UI details may still show warnings for partial metadata, but operator execution cannot proceed without confirmed LinearPerpetual / USDT quote / USDT settlement.
+- `BybitPublicClient.get_funding_rate()` now preserves `fundingIntervalHour` as `funding_interval_min`, so code paths using the helper do not silently fall back to 8h funding intervals.
+- Operator UI details now expose Bybit validation errors/warnings directly instead of hiding them in the technical JSON payload.
+- Restored release audit report artifacts referenced by README/CHANGELOG/tests.
+
 # CHANGELOG
 
 ## 2026-05-09 — audit archive repair and funding interval hardening

@@ -833,9 +833,10 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 "msg": f"Bybit contractType={meta_contract_type}; проект поддерживает только LinearPerpetual USDT futures grid.",
             })
         elif not meta_contract_type:
-            warnings.append({
+            target = errors if require_meta else warnings
+            target.append({
                 "code": "BYBIT_CONTRACT_TYPE_MISSING",
-                "msg": "Bybit metadata не содержит contractType; execution-preflight должен получать полный instruments-info перед запуском.",
+                "msg": "Bybit metadata не содержит contractType; невозможно подтвердить LinearPerpetual. Execution-preflight блокирует запуск fail-closed.",
             })
         if meta_quote_coin and meta_quote_coin != "USDT":
             errors.append({
@@ -843,14 +844,16 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 "msg": f"Bybit quoteCoin={meta_quote_coin}; проект поддерживает только USDT-quoted linear perpetual.",
             })
         elif not meta_quote_coin:
-            warnings.append({"code": "BYBIT_QUOTE_COIN_MISSING", "msg": "Bybit metadata не содержит quoteCoin; невозможно подтвердить USDT quote без полного instruments-info."})
+            target = errors if require_meta else warnings
+            target.append({"code": "BYBIT_QUOTE_COIN_MISSING", "msg": "Bybit metadata не содержит quoteCoin; невозможно подтвердить USDT quote. Execution-preflight блокирует запуск fail-closed."})
         if meta_settle_coin and meta_settle_coin != "USDT":
             errors.append({
                 "code": "BYBIT_SETTLE_COIN_UNSUPPORTED",
                 "msg": f"Bybit settleCoin={meta_settle_coin}; проект поддерживает только USDT-settled linear perpetual.",
             })
         elif not meta_settle_coin:
-            warnings.append({"code": "BYBIT_SETTLE_COIN_MISSING", "msg": "Bybit metadata не содержит settleCoin; невозможно подтвердить USDT settlement без полного instruments-info."})
+            target = errors if require_meta else warnings
+            target.append({"code": "BYBIT_SETTLE_COIN_MISSING", "msg": "Bybit metadata не содержит settleCoin; невозможно подтвердить USDT settlement. Execution-preflight блокирует запуск fail-closed."})
         pre_listing = meta_is_pre_listing is True or str(meta_status).strip().lower() in {"prelaunch", "pre-listing", "prelisting"}
         if pre_listing:
             errors.append({

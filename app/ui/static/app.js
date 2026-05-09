@@ -527,6 +527,7 @@ function buildTechPayload(it) {
     direction_agg: reasons.direction_agg || {},
     sentiment_agg: reasons.sentiment_agg || {},
     bybit_meta: it.bybit_meta || {},
+    bybit_plan_validation: it.bybit_plan_validation || {},
     factors: {
       positive: reasons.top_positive_factors || [],
       negative: reasons.top_negative_factors || [],
@@ -556,6 +557,10 @@ function buildDetailsHtml(it) {
   const scoreUi = it.ui_score_meta || ensureUiScoreMeta(it);
   const llmReview = reasons.llm_review || null;
   const blocks = it.blocks || [];
+  const bybitValidation = it.bybit_plan_validation || {};
+  const bybitErrors = Array.isArray(bybitValidation.errors) ? bybitValidation.errors : [];
+  const bybitWarnings = Array.isArray(bybitValidation.warnings) ? bybitValidation.warnings : [];
+  const bybitValidationItems = bybitErrors.concat(bybitWarnings).slice(0, 8);
   const ov = buildOperatorValues(it);
   const operatorFields = buildOperatorFieldSpecs(it, ov);
   const alertClass = (shock.severity || "normal") === "lockdown" ? "lock" : (shock.severity || "normal") === "guarded" ? "guard" : "";
@@ -568,6 +573,9 @@ function buildDetailsHtml(it) {
 
   const reasonList = (shock.reasons || []).length ? `<ul class="reason-list">${(shock.reasons || []).slice(0, 4).map(r => `<li><code>${escapeHtml(r.code || "signal")}</code> — ${escapeHtml(r.msg || "")}</li>`).join("")}</ul>` : "";
   const blockCards = blocks.length ? `<div class="small-blocks">${blocks.map(b => `<div class="small-block"><code>${escapeHtml(b.code || "BLOCK")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>` : `<div class="helper-text">Активных блоков нет.</div>`;
+  const bybitValidationCards = bybitValidationItems.length
+    ? `<div class="small-blocks">${bybitValidationItems.map(b => `<div class="small-block ${bybitErrors.includes(b) ? "small-block-critical" : ""}"><code>${escapeHtml(b.code || "BYBIT_VALIDATION")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>`
+    : `<div class="helper-text">Bybit metadata/preflight warnings отсутствуют. Перед запуском execution-preflight всё равно сверит live tick/lot/min-notional.</div>`;
   const fastVetoBlock = fastVeto.triggered ? `<div class="small-blocks"><div class="small-block"><code>${escapeHtml((fastVeto.blocks || [])[0]?.code || "FAST_VETO")}</code><br>${escapeHtml((fastVeto.blocks || [])[0]?.msg || "")}</div></div>` : `<div class="helper-text">Fast-veto не сработал.</div>`;
 
   return `
@@ -651,6 +659,12 @@ function buildDetailsHtml(it) {
       </div>
 
       ${buildLlmReviewCardHtml(llmReview, it.direction)}
+
+      <div class="operator-card">
+        <h3>Bybit validation</h3>
+        <div class="helper-text" style="margin-bottom:8px">Проверка соответствия LinearPerpetual/USDT, tick size, qty step, minQty и minNotional. Ошибки здесь означают, что запуск должен быть заблокирован до пересчёта или ручной корректировки размера.</div>
+        ${bybitValidationCards}
+      </div>
 
       <div class="operator-card">
         <h3>Блоки и предостережения</h3>

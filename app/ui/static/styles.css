@@ -1244,3 +1244,5 @@ body {
 .field-input-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+
+.small-block.small-block-critical { border-color: rgba(255,90,122,0.55); background: rgba(255,90,122,0.10); }

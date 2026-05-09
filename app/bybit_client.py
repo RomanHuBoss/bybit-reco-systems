@@ -206,10 +206,15 @@ class BybitPublicClient:
         next_funding_raw = _safe_int(ticker.get("nextFundingTime") or 0)
         next_funding_ts = next_funding_raw // 1000 if next_funding_raw > 10**11 else next_funding_raw
         funding_rate = _safe_float(ticker.get("fundingRate"))
+        funding_interval_min = None
+        interval_hours = _safe_float(ticker.get("fundingIntervalHour"))
+        if interval_hours is not None and interval_hours > 0:
+            funding_interval_min = int(round(interval_hours * 60.0))
         return {
             "symbol": symbol,
             "funding_rate": funding_rate,
             "next_funding_ts": next_funding_ts,
+            "funding_interval_min": funding_interval_min,
         }
 
     def get_open_interest_page(
