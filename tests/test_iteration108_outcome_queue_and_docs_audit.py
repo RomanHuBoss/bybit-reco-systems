@@ -114,18 +114,12 @@ def test_compute_outcomes_llm_sql_prefilter_reaches_newer_matured_row(tmp_path: 
         conn.close()
 
 
-def test_release_docs_reference_existing_audit_reports() -> None:
+def test_release_docs_do_not_reference_external_audit_report_artifacts() -> None:
     root = Path(__file__).resolve().parent.parent
     readme = (root / 'README.md').read_text(encoding='utf-8')
     changelog = (root / 'CHANGELOG.md').read_text(encoding='utf-8')
 
-    current_report = root / 'docs' / 'AUDIT_REPORT_2026-04-15.md'
-    historical_20260410 = root / 'docs' / 'AUDIT_REPORT_2026-04-10.md'
-    historical_20260408 = root / 'docs' / 'AUDIT_REPORT_2026-04-08.md'
-
-    assert '`docs/AUDIT_REPORT_2026-04-15.md`' in readme
-    assert current_report.exists()
-    assert historical_20260410.exists()
-    assert historical_20260408.exists()
-    assert 'docs/AUDIT_REPORT_2026-04-10.md' in changelog
-    assert 'docs/AUDIT_REPORT_2026-04-08.md' in changelog
+    for payload in (readme, changelog):
+        assert 'AUDIT_REPORT_' not in payload
+        assert 'docs/AUDIT_REPORT_' not in payload
+        assert 'docs/audit_' not in payload.lower()

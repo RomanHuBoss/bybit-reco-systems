@@ -92,8 +92,9 @@ def test_standalone_migrations_include_publication_root_running_guards() -> None
         assert "publication_root_rec_id" in payload
 
 
-def test_audit_reports_exist_for_release_history() -> None:
+def test_release_history_does_not_require_audit_report_artifacts() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert (root / "docs" / "AUDIT_REPORT_2026-04-15.md").exists()
-    assert (root / "docs" / "AUDIT_REPORT_2026-04-10.md").exists()
-    assert (root / "docs" / "AUDIT_REPORT_2026-04-08.md").exists()
+    for path in (root / "README.md", root / "CHANGELOG.md"):
+        payload = path.read_text(encoding="utf-8")
+        assert "AUDIT_REPORT_" not in payload
+        assert "docs/AUDIT_REPORT_" not in payload

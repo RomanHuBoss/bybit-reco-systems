@@ -650,7 +650,8 @@ function buildDetailsHtml(it) {
           ${fieldBox("Net/сетка", formatBps(economics.net_profit_bps, 2, true))}
           ${fieldBox("Net USDT/сетка", formatUsdValue(economics.net_profit_usdt))}
           ${fieldBox("Margin est.", formatUsdValue(sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt))}
-          ${fieldBox("Liq buffer", economics.liquidation_buffer_pct !== undefined && economics.liquidation_buffer_pct !== null ? formatPercentDot(economics.liquidation_buffer_pct, 2, false) : "—")}
+          ${fieldBox("Liq buffer worst", economics.liquidation_buffer_pct !== undefined && economics.liquidation_buffer_pct !== null ? formatPercentDot(economics.liquidation_buffer_pct, 2, false) : "—")}
+          ${fieldBox("Liq buffer edge", economics.liquidation_buffer_pct_adverse_boundary !== undefined && economics.liquidation_buffer_pct_adverse_boundary !== null ? formatPercentDot(economics.liquidation_buffer_pct_adverse_boundary, 2, false) : "—")}
           ${fieldBox("Risk profile", economics.risk_profile || "—")}
         </div>
         <div class="section-actions">

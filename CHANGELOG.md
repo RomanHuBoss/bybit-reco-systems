@@ -1,3 +1,12 @@
+# 2026-05-09 strict docs cleanup and worst-boundary liquidation guard
+
+- Документация больше не ссылается на отсутствующие внешние report artifacts; регрессионные проверки обновлены на запрет таких ссылок.
+- `BybitPublicClient.get_funding_rate()` теперь принимает ticker funding только при точном совпадении `symbol`, как уже делал instrument-info client.
+- `params.economics.liquidation_buffer_pct` для grid теперь считается как худшая дистанция до liquidation между reference price и adverse range/kill-switch boundary; UI показывает worst/edge buffer отдельно.
+- Execution preflight для leveraged neutral legacy payload проверяет худший long/short liquidation side, а не молча трактует neutral как long.
+- Добавлены regression tests на exact-symbol funding ticker и worst-boundary liquidation buffer.
+- Full regression suite: `365 passed`; `python -m compileall -q app tests` and `node --check app/ui/static/app.js` passed; `ruff` was not installed in the execution environment.
+
 # 2026-05-09 strict grid-only execution preflight follow-up
 
 - `_fetch_bybit_instrument_meta()` больше не делает linear-metadata fetch для нецелевого `venue`; unsupported payload не может выглядеть валидным из-за случайно подобранной linear metadata.
@@ -5,25 +14,23 @@
 - Добавлен `tests/test_iteration117_grid_only_strict_preflight.py`; существующий execution-preflight fixture исправлен на tick-aligned grid step.
 - Full regression suite after strict preflight hardening: `363 passed`; `python -m py_compile main.py app/*.py tests/*.py` and `node --check app/ui/static/app.js` passed; `ruff` was not available in the execution environment.
 
-# 2026-05-09 audit patch
+# 2026-05-09 metadata and funding patch
 
 - Execution preflight now fails closed when Bybit instrument metadata lacks `contractType`, `quoteCoin` or `settleCoin`; UI details may still show warnings for partial metadata, but operator execution cannot proceed without confirmed LinearPerpetual / USDT quote / USDT settlement.
 - `BybitPublicClient.get_funding_rate()` now preserves `fundingIntervalHour` as `funding_interval_min`, so code paths using the helper do not silently fall back to 8h funding intervals.
 - Operator UI details now expose Bybit validation errors/warnings directly instead of hiding them in the technical JSON payload.
-- Restored release audit report artifacts referenced by README/CHANGELOG/tests.
 - Confidence calibration no longer imports optional sklearn/native ML runtimes during `fit_logreg()`; it uses deterministic in-repo weighted logistic regression with chronological out-of-fold logits, eliminating full-suite hangs and preserving reproducible calibration gates.
 - Full regression suite after archive repair: `360 passed`; `python -m py_compile main.py app/*.py` and `node --check app/ui/static/app.js` passed; `ruff` was not available in the execution environment.
 
 # CHANGELOG
 
-## 2026-05-09 — audit archive repair and funding interval hardening
+## 2026-05-09 — docs cleanup and funding interval hardening
 
 - `funding_signal()` теперь annualizes funding по фактическому `funding_interval_min`, а не жёстко по 8h; UI/API получают тот же сигнал, что и event-aware cost model.
 - Execution preflight округляет цены/объёмы через Decimal-based `quantize_step()`, чтобы избежать float artifacts на tick/qty step.
-- Восстановлены отсутствующие `docs/AUDIT_REPORT_2026-04-08.md`, `docs/AUDIT_REPORT_2026-04-10.md`, `docs/AUDIT_REPORT_2026-04-15.md`, `docs/AUDIT_REPORT_2026-04-22.md`, `docs/AUDIT_REPORT_2026-04-24.md`, `docs/AUDIT_REPORT_2026-05-08.md`, `docs/AUDIT_REPORT_2026-05-09.md`.
 - Тестовые проверки неподдерживаемых payload переименованы без legacy-strategy wording: используется нейтральный `invalid_bot_type`.
 
-## 2026-05-09 — funding interval and net grid economics audit hardening
+## 2026-05-09 — funding interval and net grid economics hardening
 
 ### Исправлено
 - Funding cost model больше не считает все Bybit Linear USDT perpetual как 8h funding: collector сохраняет `fundingIntervalHour`, DB хранит `funding_interval_min`, recommender считает funding events по фактическому interval.
@@ -33,7 +40,6 @@
 - Обновлены README / trading logic / known risks / scenario docs.
 
 ### Добавлено
-- `docs/AUDIT_REPORT_2026-05-09.md`.
 - Regression tests на fee floor, funding interval event count и сохранение `fundingIntervalHour`.
 
 ### Тесты
@@ -50,7 +56,6 @@
 - UI деталей рекомендации показывает net/gross per grid, estimated margin, order notional, qty/order, liquidation buffer и risk profile.
 
 ### Добавлено
-- `docs/AUDIT_REPORT_2026-05-08.md`.
 - `tests/test_grid_linear_economics.py`.
 
 ### Тесты
@@ -72,7 +77,6 @@
 - единый helper ценового контекста `trade_plan`, чтобы Bybit validation и live-price guard не расходились в парсинге payload;
 - `tests/test_iteration114_live_price_and_status_guards.py`;
 - `tests/test_iteration115_order_sizing_validation.py`;
-- `docs/AUDIT_REPORT_2026-04-24.md`;
 - документация по live-price guard, instrument status guard и остаточным рискам.
 
 ### Тесты
@@ -94,7 +98,7 @@
 ### Практический эффект
 - повторный `python main.py` на БД с накопленной историей больше не должен зависать из-за безусловного startup-repair старых рекомендаций.
 
-## 2026-04-22 — red-team hardening: exact Bybit instrument match, savepoint-safe idempotency and release-audit repair
+## 2026-04-22 — red-team hardening: exact Bybit instrument match and savepoint-safe idempotency
 
 ### Исправлено
 - `BybitPublicClient.get_instrument_info()` теперь принимает metadata только при точном совпадении `symbol`; если upstream/stub вернул список без целевого инструмента, клиент fail-closed возвращает `None`, а не берёт первый попавшийся элемент;
@@ -102,25 +106,21 @@
 - `db.insert_bot_instance()` и `db.insert_trade()` переведены на `SAVEPOINT`-обёртку вокруг INSERT, чтобы после `IntegrityError` корректно классифицировать дубликаты и не ронять всю внешнюю транзакцию в PostgreSQL aborted-state.
 
 ### Добавлено
-- `docs/AUDIT_REPORT_2026-04-22.md` с итогами текущего deep audit;
-- missing historical audit artifacts `docs/AUDIT_REPORT_2026-04-15.md`, `docs/AUDIT_REPORT_2026-04-10.md`, `docs/AUDIT_REPORT_2026-04-08.md` возвращены в release, чтобы README / changelog / тесты не ссылались на отсутствующие документы;
 - регрессионные тесты на exact-symbol instrument metadata, на сохранение фактического upstream symbol в prefetch cache и на savepoint-safe duplicate classification для bot/trade inserts.
 
 ### Тесты
 - `pytest -q` → `342 passed`;
 - `python -m py_compile app/*.py tests/*.py main.py` → passed.
 
-## 2026-04-15 — outcome backlog hardening under LLM mode and audit artifact reconciliation
+## 2026-04-15 — outcome backlog hardening under LLM mode
 
 ### Исправлено
 - `compute_outcomes_once()` теперь фильтрует LLM-eligible рекомендации в SQL **до** `ORDER BY ... LIMIT`, поэтому oldest-first окно больше не засоряется legacy/root rows без финального `llm_review.status=ok` и outcome-worker снова доходит до реально созревших рекомендаций;
-- release-документация приведена к фактическому составу поставки: восстановлены audit-report artifacts, README больше не ссылается на отсутствующий документ, baseline тестов обновлён.
+- release-документация приведена к фактическому составу поставки: README больше не ссылается на отсутствующие документы, baseline тестов обновлён.
 
 ### Добавлено
-- `docs/AUDIT_REPORT_2026-04-15.md` с итогами deep audit этой ревизии;
 - row-level locking (`FOR UPDATE`) для mutating API-путей в PostgreSQL, чтобы concurrent `execute` / `trade` / `stop` не теряли согласованность состояния;
 - выравнивание standalone migration-файлов `init.sql` / `init_postgres.sql` с runtime-bootstrap: добавлены индексы и уникальный инвариант по `publication_root_rec_id` для running-ботов;
-- архивные `docs/AUDIT_REPORT_2026-04-10.md` и `docs/AUDIT_REPORT_2026-04-08.md`, чтобы historical changelog / README не ссылались на отсутствующие файлы;
 - регрессионные тесты на LLM outcome backlog starvation и на целостность release-doc артефактов.
 
 ### Тесты
@@ -139,7 +139,6 @@
 ### Добавлено
 - регрессионный API-тест на порядок `Bybit prefetch -> BEGIN IMMEDIATE` в execution-path;
 - регрессионный тест на fail-closed блокировку `BYBIT_META_CATEGORY_MISMATCH`;
-- `docs/AUDIT_REPORT_2026-04-10.md` с итогами аудита этой ревизии, списком дефектов и остаточных рисков.
 
 ### Тесты
 - `pytest -q` → `318 passed`;
@@ -186,14 +185,13 @@
 - остановка бота теперь использует единый `stopped_ts` для строки `bot_instances` и `state_json`, чтобы audit/state reconciliation был детерминированным.
 
 ### Добавлено
-- `docs/AUDIT_REPORT_2026-04-08.md` с итогами red-team-аудита;
 - API-регрессии на синхронность `stopped_ts` для manual stop и `stop_bot=true` при записи trade.
 
 ### Тесты
 - расширен регрессионный набор на stop-state timestamp consistency;
 - подтверждена согласованность `.env.example` с runtime/default docs.
 
-## 2026-04-07 — audit hardening revision
+## 2026-04-07 — hardening revision
 
 ### Исправлено
 - усилена execution-time Bybit validation:
@@ -214,7 +212,7 @@
 - добавлены регрессионные тесты на mode/leverage validation;
 - добавлены тесты release-integrity для новых docs/env cross-reference.
 
-## 2026-04-15 — hardening after deep audit
+## 2026-04-15 — hardening after deep review
 - PostgreSQL mode теперь требует явно заданный `DATABASE_URL`; unsafe-default на localhost удалён.
 - Сообщение о старте в PostgreSQL-режиме без установленного `psycopg[binary]` сделано явным и операционно полезным.
 - Захват `runtime_locks` в PostgreSQL переведён на atomic UPSERT, чтобы исключить split-brain при конкурентном старте нескольких процессов.

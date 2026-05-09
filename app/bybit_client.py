@@ -202,7 +202,15 @@ class BybitPublicClient:
         items = _result_list(data)
         if not items:
             return None
-        ticker = items[0]
+        target = str(symbol or "").strip().upper()
+        ticker = None
+        for item in items:
+            item_symbol = str(item.get("symbol") or "").strip().upper()
+            if item_symbol == target:
+                ticker = item
+                break
+        if ticker is None:
+            return None
         next_funding_raw = _safe_int(ticker.get("nextFundingTime") or 0)
         next_funding_ts = next_funding_raw // 1000 if next_funding_raw > 10**11 else next_funding_raw
         funding_rate = _safe_float(ticker.get("fundingRate"))

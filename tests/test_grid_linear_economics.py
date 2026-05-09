@@ -85,3 +85,30 @@ def test_funding_signal_annualizes_by_bybit_interval() -> None:
     assert one_hour["funding_interval_min"] == 60
     assert one_hour["annualized_pct"] == pytest.approx(87.6)
     assert eight_hour["annualized_pct"] == pytest.approx(10.95)
+
+
+def test_recommender_liquidation_buffer_uses_adverse_grid_boundary() -> None:
+    from app.recommender import _params
+
+    params = _params(
+        "futures_grid",
+        "linear",
+        {
+            "price": 100.0,
+            "atr_pct": 0.02,
+            "_atr_pct_1h": 0.02,
+            "_direction_agg": {"trendiness": 0.12, "coherence": 0.70, "regime": "range"},
+        },
+        global_sent=0.0,
+        direction="long",
+        taker_fee_bps=4.0,
+        direction_bias="long",
+        direction_bias_strength=0.50,
+        atr_pct_for_grid=0.02,
+        cost_model={"execution_cost_bps": 8.0, "expected_funding_bps": 0.0},
+    )
+
+    econ = params["economics"]
+    assert params["leverage"] == 3
+    assert econ["liquidation_buffer_pct_adverse_boundary"] < econ["liquidation_buffer_pct_reference"]
+    assert econ["liquidation_buffer_pct"] == pytest.approx(econ["liquidation_buffer_pct_adverse_boundary"])

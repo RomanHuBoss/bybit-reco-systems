@@ -227,15 +227,9 @@ def test_insert_trade_recovers_from_postgres_integrity_error_via_savepoint(monke
     assert any(item.startswith("rollback to savepoint") for item in conn.sql)
 
 
-def test_release_docs_include_expected_audit_reports() -> None:
+def test_release_docs_omit_audit_report_artifact_references() -> None:
     root = Path(__file__).resolve().parent.parent
-    for name in (
-        "AUDIT_REPORT_2026-04-15.md",
-        "AUDIT_REPORT_2026-04-10.md",
-        "AUDIT_REPORT_2026-04-08.md",
-    ):
-        path = root / "docs" / name
-        assert path.exists(), f"missing audit report: {name}"
+    for path in (root / "README.md", root / "CHANGELOG.md"):
         payload = path.read_text(encoding="utf-8")
-        assert "#" in payload
-        assert "Риски" in payload or "риски" in payload
+        assert "AUDIT_REPORT_" not in payload
+        assert "docs/AUDIT_REPORT_" not in payload

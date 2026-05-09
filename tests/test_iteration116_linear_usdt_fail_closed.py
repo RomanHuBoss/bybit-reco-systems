@@ -127,3 +127,36 @@ def test_public_funding_helper_preserves_bybit_funding_interval(monkeypatch: pyt
     assert row["funding_rate"] == pytest.approx(0.0001)
     assert row["next_funding_ts"] == 1710000000
     assert row["funding_interval_min"] == 240
+
+
+def test_public_funding_helper_requires_exact_symbol_match(monkeypatch: pytest.MonkeyPatch):
+    class DummyResponse:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "retCode": 0,
+                "result": {
+                    "list": [
+                        {
+                            "symbol": "ETHUSDT",
+                            "fundingRate": "0.0001",
+                            "nextFundingTime": "1710000000000",
+                            "fundingIntervalHour": "8",
+                        }
+                    ]
+                },
+            }
+
+    client = BybitPublicClient("https://example.invalid")
+    monkeypatch.setattr(client._client, "get", lambda *args, **kwargs: DummyResponse())
+    try:
+        row = client.get_funding_rate("BTCUSDT")
+    finally:
+        client.close()
+
+    assert row is None

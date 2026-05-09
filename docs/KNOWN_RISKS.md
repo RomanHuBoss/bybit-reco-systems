@@ -24,7 +24,7 @@
 LLM не должен принимать финальное торговое решение вместо scoring/risk/shock логики.
 
 ## 7. Cross margin / hedge mode / exact live liquidation modeling не поддержаны
-В этой ревизии проект исходит из `futures_grid + isolated` как из безопасного operational minimum. Leverage поддерживается только как Bybit Linear USDT Futures leverage с проверкой `leverageFilter` и conservative liquidation buffer. Точный liquidation price должен подтверждаться внешним execution/reconciliation контуром или Bybit calculator/API account data.
+В этой ревизии проект исходит из `futures_grid + isolated` как из безопасного operational minimum. Leverage поддерживается только как Bybit Linear USDT Futures leverage с проверкой `leverageFilter` и conservative worst-boundary liquidation buffer. Точный liquidation price должен подтверждаться внешним execution/reconciliation контуром или Bybit calculator/API account data.
 
 ## 8. Telegram alerts best-effort
 Оповещения не гарантируют доставку и не заменяют внешний мониторинг / process supervisor.
