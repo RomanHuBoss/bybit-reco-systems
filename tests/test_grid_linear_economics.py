@@ -66,6 +66,27 @@ def test_grid_leg_economics_applies_taker_fee_floor_when_execution_cost_is_missi
     assert econ["net_profit_bps"] == pytest.approx(8.0)
 
 
+
+
+def test_grid_leg_economics_does_not_approve_from_funding_receipt_windfall() -> None:
+    econ = grid_leg_economics(
+        reference_price="100",
+        step_pct="0.10",
+        order_notional="100",
+        taker_fee_bps="5.5",
+        execution_cost_bps="16",
+        expected_funding_bps="-10",
+        fill_efficiency="1",
+    )
+
+    assert econ["gross_profit_bps"] == pytest.approx(10.0)
+    assert econ["funding_benefit_excluded_bps"] == pytest.approx(10.0)
+    assert econ["funding_cost_bps"] == pytest.approx(0.0)
+    assert econ["net_profit_with_signed_funding_bps"] == pytest.approx(4.0)
+    assert econ["net_profit_bps"] == pytest.approx(-6.0)
+    assert econ["breakeven"] is False
+
+
 def test_funding_cashflow_is_directional_for_linear_contracts() -> None:
     assert float(funding_cashflow_usdt("long", "1000", "0.0001", 2)) == pytest.approx(0.2)
     assert float(funding_cashflow_usdt("short", "1000", "0.0001", 2)) == pytest.approx(-0.2)

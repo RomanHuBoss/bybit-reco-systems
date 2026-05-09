@@ -152,22 +152,41 @@ def grid_leg_economics(
     # never let displayed grid economics ignore the configured taker fee floor.
     fee_floor_bps = max(ZERO, dec(taker_fee_bps)) * Decimal("2")
     exec_bps = max(max(ZERO, dec(execution_cost_bps)), fee_floor_bps)
-    funding_bps = dec(expected_funding_bps)
-    net_bps = gross_bps - exec_bps - funding_bps
+
+    # ``expected_funding_bps`` is signed: positive means this side pays funding,
+    # negative means it may receive funding. A recommendation must not become
+    # executable merely because it assumes a funding receipt that can flip at the
+    # next event or disappear with inventory changes. Keep the signed value for
+    # diagnostics, but use only adverse funding cost in the canonical net edge.
+    signed_funding_bps = dec(expected_funding_bps)
+    funding_cost_bps = max(ZERO, signed_funding_bps)
+    funding_benefit_excluded_bps = max(ZERO, -signed_funding_bps)
+
+    net_bps = gross_bps - exec_bps - funding_cost_bps
+    signed_net_bps = gross_bps - exec_bps - signed_funding_bps
     gross_usdt = notional * gross_bps / BPS
     exec_cost_usdt = notional * exec_bps / BPS
-    funding_usdt = notional * funding_bps / BPS
-    net_usdt = gross_usdt - exec_cost_usdt - funding_usdt
+    funding_cost_usdt = notional * funding_cost_bps / BPS
+    signed_funding_usdt = notional * signed_funding_bps / BPS
+    funding_benefit_excluded_usdt = notional * funding_benefit_excluded_bps / BPS
+    net_usdt = gross_usdt - exec_cost_usdt - funding_cost_usdt
+    signed_net_usdt = gross_usdt - exec_cost_usdt - signed_funding_usdt
     step_abs = ref * step_frac if ref > ZERO else ZERO
     return {
         "step_abs": as_float(step_abs),
         "gross_profit_bps": as_float(gross_bps),
         "execution_cost_bps": as_float(exec_bps),
-        "expected_funding_bps": as_float(funding_bps),
+        "expected_funding_bps": as_float(signed_funding_bps),
+        "funding_cost_bps": as_float(funding_cost_bps),
+        "funding_benefit_excluded_bps": as_float(funding_benefit_excluded_bps),
         "net_profit_bps": as_float(net_bps),
+        "net_profit_with_signed_funding_bps": as_float(signed_net_bps),
         "gross_profit_usdt": as_float(gross_usdt),
         "execution_cost_usdt": as_float(exec_cost_usdt),
-        "expected_funding_usdt": as_float(funding_usdt),
+        "expected_funding_usdt": as_float(signed_funding_usdt),
+        "funding_cost_usdt": as_float(funding_cost_usdt),
+        "funding_benefit_excluded_usdt": as_float(funding_benefit_excluded_usdt),
         "net_profit_usdt": as_float(net_usdt),
+        "net_profit_with_signed_funding_usdt": as_float(signed_net_usdt),
         "breakeven": bool(net_bps > ZERO and net_usdt > ZERO),
     }

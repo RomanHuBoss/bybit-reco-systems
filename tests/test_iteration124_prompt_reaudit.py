@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import time
 
+from pathlib import Path
+
 from app import db
 from app.recommender import _sync_recommendation_metadata, run_recommender_once
 from app.settings import Settings
@@ -97,3 +99,12 @@ def test_recommender_blocks_futures_grid_when_mtf_history_is_insufficient(tmp_pa
     assert "INSUFFICIENT_MTF_HISTORY_FOR_GRID" in codes
     assert params["risk_report"]["decision"] == "not_recommended"
     conn.close()
+
+
+def test_ui_exposes_conservative_funding_edge_labels() -> None:
+    app_js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
+
+    assert "Net/сетка conservative" in app_js
+    assert "Funding cost для допуска" in app_js
+    assert "Funding benefit исключён" in app_js
+    assert "net_profit_with_signed_funding_bps" in app_js

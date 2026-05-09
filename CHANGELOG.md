@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-10 — Conservative funding approval edge
+- Fixed grid-leg economics so signed funding receipts no longer inflate the canonical `net_profit_bps` used for approval/rejection. Positive funding remains a cost; negative funding is exposed separately as `funding_benefit_excluded_bps` and `net_profit_with_signed_funding_bps`.
+- Risk reports now surface the conservative funding-cost basis, excluded funding benefit and signed-funding diagnostic, with a warning when an apparent funding receipt was not counted in approval edge.
+- Operator UI now labels conservative net edge separately from signed-funding diagnostics, making it visible that a grid is not approved only because funding is currently favorable.
+- README/TRADING_LOGIC updated to document the no-funding-windfall rule.
+- Added regression coverage for funding-receipt windfall rejection and UI labels.
+- Validation after this pass: `399 passed`; `python -m py_compile app/*.py main.py`; `node --check app/ui/static/app.js`.
+
 ## 2026-05-09 — Prompt re-audit: MTF fail-closed and risk-report sync
 - Added an explicit `INSUFFICIENT_MTF_HISTORY_FOR_GRID` block: futures-grid recommendations now require at least 3 closed multi-timeframe histories for direction/regime validation, instead of relying on 1m features plus confidence penalty.
 - Risk report `decision` is now synchronized whenever recommendation metadata is resynced, so persistence/LLM gates cannot leave a `pending` or `blocked` row with a stale `recommended` risk-report decision.

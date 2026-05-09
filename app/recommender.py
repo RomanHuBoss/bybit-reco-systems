@@ -3102,20 +3102,30 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             if blocks:
                 status = "blocked"
 
+            funding_benefit_excluded_bps = _finite_or_none(econ.get("funding_benefit_excluded_bps")) if isinstance(econ, dict) else None
+            signed_net_profit_bps = _finite_or_none(econ.get("net_profit_with_signed_funding_bps")) if isinstance(econ, dict) else None
+            risk_warnings = [str(x.get("msg") or x.get("code") or "") for x in (reasons.get("top_negative_factors") or [])[:5] if isinstance(x, dict)]
+            if funding_benefit_excluded_bps is not None and funding_benefit_excluded_bps > 0:
+                risk_warnings.append(
+                    f"funding receipt {funding_benefit_excluded_bps:.2f} bps не засчитан в approval-edge: funding может измениться или стать расходом при накоплении inventory"
+                )
             params["risk_report"] = {
                 "decision": _risk_report_decision_for_status(status),
                 "risk_profile": (econ.get("risk_profile") if isinstance(econ, dict) else None) or ("conservative" if risk_score < 0.35 else ("moderate" if risk_score < 0.70 else "aggressive")),
                 "expected_net_profit_per_grid_bps": net_profit_bps,
                 "expected_net_profit_per_grid_usdt": _finite_or_none(econ.get("net_profit_usdt")) if isinstance(econ, dict) else None,
+                "net_profit_with_signed_funding_bps": signed_net_profit_bps,
                 "estimated_execution_cost_bps": _finite_or_none(cost_model.get("execution_cost_bps")),
                 "estimated_funding_impact_bps": _finite_or_none(cost_model.get("expected_funding_bps")),
+                "funding_cost_bps_for_approval": _finite_or_none(econ.get("funding_cost_bps")) if isinstance(econ, dict) else None,
+                "funding_benefit_excluded_bps": funding_benefit_excluded_bps,
                 "funding_interval_min": cost_model.get("funding_interval_min"),
                 "liquidation_buffer_pct": liq_buffer_pct,
                 "capital_required_usdt": _finite_or_none((params.get("sizing") or {}).get("estimated_margin_required_usdt")) if isinstance(params.get("sizing"), dict) else None,
                 "max_adverse_scenario": "цена выходит за range/kill-switch, сетка накапливает направленную позицию против движения; funding/fees продолжают ухудшать equity",
                 "approval_reasons": [str(x.get("msg") or x.get("code") or "") for x in (reasons.get("top_positive_factors") or [])[:5] if isinstance(x, dict)],
                 "rejection_reasons": [str(x.get("msg") or x.get("code") or "") for x in blocks[:8] if isinstance(x, dict)],
-                "warnings": [str(x.get("msg") or x.get("code") or "") for x in (reasons.get("top_negative_factors") or [])[:5] if isinstance(x, dict)],
+                "warnings": risk_warnings,
             }
 
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"

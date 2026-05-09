@@ -77,7 +77,7 @@ execution-time validation должна блокировать исполнени
 - Long PnL: `qty * (exit_price - entry_price)` USDT.
 - Short PnL: `qty * (entry_price - exit_price)` USDT.
 - Round-trip fee и execution friction вычитаются из каждой сетки до публикации рекомендации.
-- Funding учитывается direction-aware: положительный funding penalizes long и может поддерживать short; отрицательный funding наоборот. Для Linear USDT perpetual отсутствие актуального funding rate теперь блокирует рекомендацию как `FUNDING_RATE_UNKNOWN`, чтобы UI/API не показывали net-profit без funding-компонента. Количество funding events считается по Bybit `fundingIntervalHour`/instrument metadata; если interval отсутствует и funding material, рекомендация блокируется как `FUNDING_INTERVAL_UNCONFIRMED`, а не молча использует неподтверждённое допущение.
+- Funding учитывается direction-aware: положительный funding penalizes long и может поддерживать short; отрицательный funding наоборот. При этом canonical `net_profit_bps` для допуска считает только adverse funding cost (`funding_cost_bps=max(expected_funding_bps, 0)`), а потенциальное получение funding выводится отдельно как `funding_benefit_excluded_bps` и `net_profit_with_signed_funding_bps`; рекомендация не должна становиться исполнимой только из-за funding receipt. Для Linear USDT perpetual отсутствие актуального funding rate теперь блокирует рекомендацию как `FUNDING_RATE_UNKNOWN`, чтобы UI/API не показывали net-profit без funding-компонента. Количество funding events считается по Bybit `fundingIntervalHour`/instrument metadata; если interval отсутствует и funding material, рекомендация блокируется как `FUNDING_INTERVAL_UNCONFIRMED`, а не молча использует неподтверждённое допущение.
 - Liquidation price в проекте считается только как conservative approximation для preflight/UI. Для risk gate используется минимальный buffer между reference price и adverse boundary/kill-switch, чтобы не завышать безопасность leveraged grid у края диапазона. Точная ликвидация зависит от risk tier, mark price, wallet margin и текущей позиции на Bybit.
 
 ## Риск-отчёт в recommendation payload
@@ -85,7 +85,8 @@ execution-time validation должна блокировать исполнени
 Каждая рекомендация получает `params.risk_report`:
 - `decision`: `recommended` или `not_recommended`;
 - `risk_profile`: conservative/moderate/aggressive;
-- `expected_net_profit_per_grid_bps` и `expected_net_profit_per_grid_usdt`;
+- `expected_net_profit_per_grid_bps` и `expected_net_profit_per_grid_usdt` — conservative edge без зачёта funding receipt;
+- `net_profit_with_signed_funding_bps`, `funding_cost_bps_for_approval`, `funding_benefit_excluded_bps`;
 - estimated execution cost, funding impact, funding interval;
 - liquidation buffer, required capital;
 - adverse scenario, rejection reasons, warnings и approval factors.

@@ -652,8 +652,11 @@ function buildDetailsHtml(it) {
           ${fieldBox("Издержки всего", formatBps(costModel.total_cost_bps, 2, false))}
           ${fieldBox("Комиссия taker", formatBps(costModel.taker_fee_bps, 2, false))}
           ${fieldBox("Ожид. funding", formatBps(costModel.expected_funding_bps, 2, true))}
+          ${fieldBox("Funding cost для допуска", formatBps(economics.funding_cost_bps, 2, false))}
+          ${fieldBox("Funding benefit исключён", formatBps(economics.funding_benefit_excluded_bps, 2, false))}
           ${fieldBox("Gross/сетка", formatBps(economics.gross_profit_bps, 2, false))}
-          ${fieldBox("Net/сетка", formatBps(economics.net_profit_bps, 2, true))}
+          ${fieldBox("Net/сетка conservative", formatBps(economics.net_profit_bps, 2, true))}
+          ${fieldBox("Net signed funding", formatBps(economics.net_profit_with_signed_funding_bps, 2, true))}
           ${fieldBox("Net USDT/сетка", formatUsdValue(economics.net_profit_usdt))}
           ${fieldBox("Margin est.", formatUsdValue(sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt))}
           ${fieldBox("Grid type", economics.grid_type || sizing.grid_type || params.grid_type || "arithmetic")}
@@ -673,8 +676,11 @@ function buildDetailsHtml(it) {
         <div class="operator-grid">
           ${fieldBox("Решение", riskReport.decision || (blocks.length ? "not_recommended" : "recommended"))}
           ${fieldBox("Профиль", riskReport.risk_profile || economics.risk_profile || "—")}
-          ${fieldBox("Net/сетка", formatBps(riskReport.expected_net_profit_per_grid_bps ?? economics.net_profit_bps, 2, true))}
+          ${fieldBox("Net/сетка conservative", formatBps(riskReport.expected_net_profit_per_grid_bps ?? economics.net_profit_bps, 2, true))}
+          ${fieldBox("Net signed funding", formatBps(riskReport.net_profit_with_signed_funding_bps ?? economics.net_profit_with_signed_funding_bps, 2, true))}
           ${fieldBox("Funding", formatBps(riskReport.estimated_funding_impact_bps ?? costModel.expected_funding_bps, 2, true))}
+          ${fieldBox("Funding cost для допуска", formatBps(riskReport.funding_cost_bps_for_approval ?? economics.funding_cost_bps, 2, false))}
+          ${fieldBox("Funding benefit исключён", formatBps(riskReport.funding_benefit_excluded_bps ?? economics.funding_benefit_excluded_bps, 2, false))}
           ${fieldBox("Издержки исполнения", formatBps(riskReport.estimated_execution_cost_bps ?? costModel.execution_cost_bps, 2, false))}
           ${fieldBox("Требуемый капитал", formatUsdValue(riskReport.capital_required_usdt ?? sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt))}
           ${fieldBox("Буфер ликвидации", riskReport.liquidation_buffer_pct !== undefined && riskReport.liquidation_buffer_pct !== null ? formatPercentDot(riskReport.liquidation_buffer_pct, 2, false) : "—")}
