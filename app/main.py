@@ -148,8 +148,15 @@ logger.info("runtime_lock_target=%s", describe_target(settings.runtime_lock_db_p
 
 
 def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
+    # Product boundary: this service must only validate Bybit Linear USDT Futures.
+    # Do not silently fetch linear metadata for a non-linear venue because that can
+    # make legacy/unsupported payloads look execution-ready.
+    venue_norm = str(venue or "").strip().lower()
+    symbol_norm = str(symbol or "").strip().upper()
+    if venue_norm != "linear" or not symbol_norm:
+        return {}
     category = "linear"
-    cache_key = (str(venue or "").lower(), str(symbol or "").upper())
+    cache_key = (venue_norm, symbol_norm)
     now = time.time()
     with _instrument_meta_lock:
         cached = _instrument_meta_cache.get(cache_key)
@@ -166,7 +173,7 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
     cache_ok = False
     meta: dict[str, Any] = {}
     try:
-        info = client.get_instrument_info(category, symbol)
+        info = client.get_instrument_info(category, symbol_norm)
     except Exception as exc:
         logger.warning("instrument meta fetch failed for %s/%s: %s", venue, symbol, exc)
         info = None
@@ -185,7 +192,7 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
         # прокси/stub вернул metadata другого инструмента.
         meta = {
             "category": str(info.get("category") or category).strip().lower() or category,
-            "symbol": str(info.get("symbol") or symbol).strip().upper() or symbol,
+            "symbol": str(info.get("symbol") or symbol_norm).strip().upper() or symbol_norm,
             "status": str(info.get("status") or "").strip(),
             "base_coin": str(info.get("baseCoin") or "").strip().upper(),
             "quote_coin": str(info.get("quoteCoin") or "").strip().upper(),
@@ -805,12 +812,21 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             "msg": "У рекомендации нет полного trade_plan; execution-time preflight не может полноценно проверить диапазон и шаг сетки.",
         })
 
-    # Эта система рекомендует только ограниченный набор режимов. Если рекомендация
+    # Эта система рекомендует только один продуктовый режим. Если рекомендация
     # в БД/legacy payload уже противоречит собственной доменной модели, её нельзя
     # считать исполнимой даже до похода в Bybit API.
+    if bot_type != "futures_grid":
+        errors.append({
+            "code": "BOT_TYPE_UNSUPPORTED",
+            "msg": f"Поддерживается только bot_type=futures_grid для Bybit Linear USDT Futures, получено bot_type={bot_type or 'unknown'}.",
+        })
+    if venue != "linear":
+        errors.append({
+            "code": "VENUE_UNSUPPORTED",
+            "msg": f"Поддерживается только venue=linear / USDT perpetual, получено venue={venue or 'unknown'}.",
+        })
+
     if bot_type == "futures_grid":
-        if venue != "linear":
-            errors.append({"code": "BOT_TYPE_VENUE_MISMATCH", "msg": f"futures_grid допустим только для venue=linear, получено venue={venue or 'unknown'}."})
         if direction not in {"neutral", "long", "short"}:
             errors.append({"code": "FUTURES_DIRECTION_INVALID", "msg": f"futures_grid не поддерживает direction={direction or 'unknown'}."})
         if account_mode == "one_way":
@@ -907,7 +923,8 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         if snapped_value is not None:
             snapped[field_name] = _format_step_aligned(snapped_value, tick_size) or str(snapped_value)
             if abs(float(snapped_value) - float(value)) > max(1e-12, abs(tick_size or 0.0) * 1e-6):
-                warnings.append({
+                target = errors if require_meta else warnings
+                target.append({
                     "code": "PRICE_OFF_TICK",
                     "msg": f"{field_name}={value} не выровнен по tick_size={tick_size}; ближайшее допустимое значение={snapped[field_name]}",
                 })
@@ -944,6 +961,12 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         snapped_step = _quantize_to_step(step_abs, tick_size, mode="nearest") if tick_size is not None else step_abs
         if snapped_step is not None:
             snapped["grid_step_abs"] = _format_step_aligned(snapped_step, tick_size if tick_size is not None else snapped_step) or str(snapped_step)
+            if tick_size is not None and tick_size > 0 and not _step_aligned(step_abs, tick_size):
+                target = errors if require_meta else warnings
+                target.append({
+                    "code": "GRID_STEP_OFF_TICK",
+                    "msg": f"grid_step_abs={step_abs} не выровнен по tick_size={tick_size}; ближайшее допустимое значение={snapped['grid_step_abs']}",
+                })
 
     snapped_lower = _quantize_to_step(lower, tick_size, mode="nearest") if lower is not None and tick_size is not None else lower
     snapped_upper = _quantize_to_step(upper, tick_size, mode="nearest") if upper is not None and tick_size is not None else upper
@@ -987,7 +1010,8 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 if snapped_tp <= 0:
                     errors.append({"code": "TP_PER_LEG_COLLAPSES_AFTER_TICK_ROUNDING", "msg": f"tp_per_leg.abs={tp_abs} схлопывается после округления по tick_size={tick_size}."})
                 elif abs(float(snapped_tp) - float(tp_abs)) > max(1e-12, abs(tick_size) * 1e-6):
-                    warnings.append({
+                    target = errors if require_meta else warnings
+                    target.append({
                         "code": "TP_PER_LEG_OFF_TICK",
                         "msg": f"tp_per_leg.abs={tp_abs} не выровнен по tick_size={tick_size}; ближайшее допустимое значение={snapped['tp_per_leg_abs']}",
                     })

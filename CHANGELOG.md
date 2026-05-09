@@ -1,3 +1,10 @@
+# 2026-05-09 strict grid-only execution preflight follow-up
+
+- `_fetch_bybit_instrument_meta()` больше не делает linear-metadata fetch для нецелевого `venue`; unsupported payload не может выглядеть валидным из-за случайно подобранной linear metadata.
+- `_validate_trade_plan_against_bybit_meta(..., require_meta=True)` теперь прямо блокирует любой `bot_type` кроме `futures_grid`, любой `venue` кроме `linear`, а также off-tick price/grid-step/tp-per-leg параметры как execution errors. В detail/UI режиме эти off-tick условия остаются предупреждениями для операторской диагностики.
+- Добавлен `tests/test_iteration117_grid_only_strict_preflight.py`; существующий execution-preflight fixture исправлен на tick-aligned grid step.
+- Full regression suite after strict preflight hardening: `363 passed`; `python -m py_compile main.py app/*.py tests/*.py` and `node --check app/ui/static/app.js` passed; `ruff` was not available in the execution environment.
+
 # 2026-05-09 audit patch
 
 - Execution preflight now fails closed when Bybit instrument metadata lacks `contractType`, `quoteCoin` or `settleCoin`; UI details may still show warnings for partial metadata, but operator execution cannot proceed without confirmed LinearPerpetual / USDT quote / USDT settlement.

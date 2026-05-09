@@ -70,7 +70,7 @@ def _insert_reco(
                         "levels": {
                             "range": {"lower": 99.0, "upper": 101.0},
                             "kill_switch": {"lower": 98.5, "upper": 101.5},
-                            "grid_step": {"step_abs": 0.25},
+                            "grid_step": {"step_abs": 0.2},
                         },
                     },
                 },
