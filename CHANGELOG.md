@@ -4,6 +4,8 @@
 - `BybitPublicClient.get_funding_rate()` now preserves `fundingIntervalHour` as `funding_interval_min`, so code paths using the helper do not silently fall back to 8h funding intervals.
 - Operator UI details now expose Bybit validation errors/warnings directly instead of hiding them in the technical JSON payload.
 - Restored release audit report artifacts referenced by README/CHANGELOG/tests.
+- Confidence calibration no longer imports optional sklearn/native ML runtimes during `fit_logreg()`; it uses deterministic in-repo weighted logistic regression with chronological out-of-fold logits, eliminating full-suite hangs and preserving reproducible calibration gates.
+- Full regression suite after archive repair: `360 passed`; `python -m py_compile main.py app/*.py` and `node --check app/ui/static/app.js` passed; `ruff` was not available in the execution environment.
 
 # CHANGELOG
 

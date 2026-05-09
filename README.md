@@ -114,7 +114,7 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `python -m pytest -q` — `357 passed`;
+- `PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q` — `360 passed`;
 - `python -m py_compile app/*.py main.py` — passed;
 - `ruff check app tests main.py` — quality-gate команда из `requirements-dev.txt`;
 - `pytest --cov=app --cov-report=term-missing` — запускать в release/dev-контуре при изменениях покрытия;

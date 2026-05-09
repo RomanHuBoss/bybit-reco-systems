@@ -303,11 +303,11 @@ def _extract_factor_value(reasons: dict, feature: str) -> float | None:
     return None
 
 
-# ── LogisticRegression wrapper ────────────────────────────────────────────────
+# ── Logistic regression wrapper ────────────────────────────────────────────────
 
 @dataclass
 class LogRegScaler:
-    """Thin wrapper around sklearn LogisticRegression with Platt on top."""
+    """Deterministic in-repo logistic regression wrapper with optional Platt on top."""
     coef: list[float] = field(default_factory=list)
     intercept: float = 0.0
     platt: PlattScaler = field(default_factory=PlattScaler)
@@ -336,6 +336,156 @@ class LogRegScaler:
         if self.platt.fitted:
             return self.platt.predict(score)
         return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, score * 2.5))))
+
+
+def _sigmoid(z: float) -> float:
+    z = max(-60.0, min(60.0, z))
+    if z >= 0.0:
+        e = math.exp(-z)
+        return 1.0 / (1.0 + e)
+    e = math.exp(z)
+    return e / (1.0 + e)
+
+
+def _weighted_mean_std(X: list[list[float]], ws: list[float]) -> tuple[list[float], list[float]]:
+    if not X:
+        return [], []
+    m = len(X[0])
+    w_sum = max(1e-12, sum(max(0.0, float(w)) for w in ws))
+    means = [0.0] * m
+    for row, w in zip(X, ws):
+        weight = max(0.0, float(w))
+        for j in range(m):
+            means[j] += weight * float(row[j])
+    means = [v / w_sum for v in means]
+
+    vars_ = [0.0] * m
+    for row, w in zip(X, ws):
+        weight = max(0.0, float(w))
+        for j in range(m):
+            d = float(row[j]) - means[j]
+            vars_[j] += weight * d * d
+    stds = [max(1e-6, math.sqrt(v / w_sum)) for v in vars_]
+    return means, stds
+
+
+def _fit_weighted_logreg_raw(
+    X: list[list[float]],
+    ys: list[int],
+    ws: list[float],
+    *,
+    iters: int = 450,
+    lr: float = 0.12,
+    l2: float = 0.08,
+) -> tuple[list[float], float]:
+    """Fit a compact weighted logistic regression without optional ML runtimes.
+
+    Calibration runs during scheduler/API maintenance paths, so it must be
+    deterministic and should not depend on importing large native libraries. The
+    optimizer works on standardized features, applies recency weights plus
+    balanced class weights, then converts coefficients back to raw feature units.
+    """
+    if not X or not ys or len(X) != len(ys):
+        return [], 0.0
+    m = len(X[0])
+    if m == 0:
+        return [], 0.0
+
+    cleaned: list[tuple[list[float], int, float]] = []
+    for row, y, w in zip(X, ys, ws):
+        if len(row) != m:
+            continue
+        vals = [float(v) for v in row]
+        if not all(math.isfinite(v) for v in vals):
+            continue
+        if int(y) not in (0, 1):
+            continue
+        weight = float(w) if math.isfinite(float(w)) and float(w) > 0.0 else 1.0
+        cleaned.append((vals, int(y), weight))
+
+    if not cleaned:
+        return [0.0] * m, 0.0
+
+    Xc = [row for row, _y, _w in cleaned]
+    yc = [int(y) for _row, y, _w in cleaned]
+    wc = [float(w) for _row, _y, w in cleaned]
+    pos = sum(yc)
+    neg = len(yc) - pos
+    if pos == 0 or neg == 0:
+        base = min(0.98, max(0.02, pos / max(1, len(yc))))
+        return [0.0] * m, math.log(base / (1.0 - base))
+
+    means, stds = _weighted_mean_std(Xc, wc)
+    Xs = [[(row[j] - means[j]) / stds[j] for j in range(m)] for row in Xc]
+
+    class_weights = {0: len(yc) / (2.0 * neg), 1: len(yc) / (2.0 * pos)}
+    eff_w = [wc[i] * class_weights[yc[i]] for i in range(len(yc))]
+    w_sum = max(1e-12, sum(eff_w))
+    pos_rate = min(0.98, max(0.02, sum(eff_w[i] * yc[i] for i in range(len(yc))) / w_sum))
+
+    coef = [0.0] * m
+    intercept = math.log(pos_rate / (1.0 - pos_rate))
+
+    for step in range(max(1, int(iters))):
+        grad = [0.0] * m
+        g_b = 0.0
+        for row, y, weight in zip(Xs, yc, eff_w):
+            z = intercept + sum(coef[j] * row[j] for j in range(m))
+            err = _sigmoid(z) - y
+            g_b += weight * err
+            for j in range(m):
+                grad[j] += weight * err * row[j]
+        shrink = lr / math.sqrt(1.0 + step / 75.0)
+        intercept -= shrink * (g_b / w_sum)
+        for j in range(m):
+            coef[j] -= shrink * ((grad[j] / w_sum) + l2 * coef[j])
+
+    coef_raw = [coef[j] / stds[j] for j in range(m)]
+    intercept_raw = intercept - sum(coef[j] * means[j] / stds[j] for j in range(m))
+
+    if not math.isfinite(intercept_raw) or not all(math.isfinite(v) for v in coef_raw):
+        return [0.0] * m, 0.0
+    return coef_raw, float(intercept_raw)
+
+
+def _time_series_oof_logits(
+    X: list[list[float]],
+    ys: list[int],
+    ws: list[float],
+    *,
+    min_samples: int,
+) -> tuple[list[float], list[int], list[float]]:
+    """Chronological out-of-fold logits for Platt-on-top without look-ahead."""
+    n = len(X)
+    if n < max(6, min_samples * 2):
+        return [], [], []
+    n_splits = min(5, max(2, n // max(1, min_samples)))
+    fold = max(1, n // (n_splits + 1))
+    logits: list[float] = []
+    y_out: list[int] = []
+    w_out: list[float] = []
+
+    for split in range(fold, n, fold):
+        end = min(n, split + fold)
+        if split < min_samples or end <= split:
+            continue
+        train_y = ys[:split]
+        if min(sum(train_y), len(train_y) - sum(train_y)) * 2 < min_samples:
+            continue
+        coef, intercept = _fit_weighted_logreg_raw(X[:split], train_y, ws[:split], iters=260)
+        if not coef:
+            continue
+        for row, y, weight in zip(X[split:end], ys[split:end], ws[split:end]):
+            if len(row) != len(coef):
+                continue
+            z = intercept + sum(coef[j] * float(row[j]) for j in range(len(coef)))
+            if math.isfinite(z):
+                logits.append(float(max(-60.0, min(60.0, z))))
+                y_out.append(int(y))
+                w_out.append(float(weight))
+        if end >= n:
+            break
+    return logits, y_out, w_out
 
 
 def fit_logreg(
@@ -420,63 +570,21 @@ def fit_logreg(
         )
 
     try:
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.preprocessing import StandardScaler as SkScaler
-        import numpy as np
+        ordered = sorted(zip(ts_used, X, y_used, w_used), key=lambda item: item[0])
+        X_ord = [item[1] for item in ordered]
+        y_ord = [item[2] for item in ordered]
+        w_ord = [item[3] for item in ordered]
 
-        Xnp  = np.array(X, dtype=float)
-        ynp  = np.array(y_used, dtype=int)
-        wnp  = np.array(w_used, dtype=float)
-
-        order = np.argsort(np.array(ts_used, dtype=int)) if len(ts_used) == len(X) else np.arange(len(X))
-        if len(X) == len(order):
-            Xnp = Xnp[order]
-            ynp = ynp[order]
-            wnp = wnp[order]
-
-        oof_logits: list[float] = []
-        oof_y: list[int] = []
-        oof_w: list[float] = []
-
-        from sklearn.model_selection import TimeSeriesSplit
-
-        n_splits = min(5, max(2, len(X) // max(1, min_samples)))
-        if len(X) >= (n_splits + 1) * 2:
-            splitter = TimeSeriesSplit(n_splits=n_splits)
-            for train_idx, val_idx in splitter.split(Xnp):
-                if len(train_idx) < min_samples or len(val_idx) == 0:
-                    continue
-                y_train = ynp[train_idx]
-                if len(set(int(v) for v in y_train.tolist())) < 2:
-                    continue
-                scaler_fold = SkScaler()
-                X_train = scaler_fold.fit_transform(Xnp[train_idx])
-                X_val = scaler_fold.transform(Xnp[val_idx])
-                clf_fold = LogisticRegression(
-                    C=1.0, max_iter=500, solver="lbfgs",
-                    class_weight="balanced",
-                )
-                clf_fold.fit(X_train, y_train, sample_weight=wnp[train_idx])
-                logits_fold = clf_fold.decision_function(X_val)
-                oof_logits.extend(float(x) for x in logits_fold.tolist())
-                oof_y.extend(int(x) for x in ynp[val_idx].tolist())
-                oof_w.extend(float(x) for x in wnp[val_idx].tolist())
-
-        scaler = SkScaler()
-        Xs = scaler.fit_transform(Xnp)
-
-        clf = LogisticRegression(
-            C=1.0, max_iter=500, solver="lbfgs",
-            class_weight="balanced",
+        oof_logits, oof_y, oof_w = _time_series_oof_logits(
+            X_ord, y_ord, w_ord, min_samples=min_samples
         )
-        clf.fit(Xs, ynp, sample_weight=wnp)
+        coef_raw, intercept_raw = _fit_weighted_logreg_raw(X_ord, y_ord, w_ord)
 
-        std  = scaler.scale_
-        mean = scaler.mean_
-        coef_raw      = (clf.coef_[0] / std).tolist()
-        intercept_raw = float(clf.intercept_[0] - (clf.coef_[0] / std).dot(mean))
-
-        platt_top = fit_platt(oof_logits, oof_y, min_samples=min_samples, ws=oof_w) if len(oof_logits) >= min_samples else PlattScaler(fitted=False)
+        platt_top = (
+            fit_platt(oof_logits, oof_y, min_samples=min_samples, ws=oof_w)
+            if len(oof_logits) >= min_samples
+            else PlattScaler(fitted=False)
+        )
 
         return LogRegScaler(
             coef=coef_raw, intercept=intercept_raw, platt=platt_top,
