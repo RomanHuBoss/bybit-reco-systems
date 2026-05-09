@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -469,11 +470,28 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     venue = str(out.get("venue") or "")
     symbol = str(out.get("symbol") or "")
     try:
-        out["bybit_meta"] = _fetch_bybit_instrument_meta(venue, symbol) if venue and symbol else {}
+        bybit_meta = _fetch_bybit_instrument_meta(venue, symbol) if venue and symbol else {}
     except Exception:
-        out["bybit_meta"] = {}
-    out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, out.get("bybit_meta") or {})
-    out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, out.get("bybit_meta") or {}, require_meta=True)
+        bybit_meta = {}
+    if not isinstance(out.get("params"), dict) or not out.get("params"):
+        out["bybit_meta"] = bybit_meta
+        out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
+        out["bybit_operator_guard"] = {
+            "ok": True,
+            "critical": False,
+            "errors": [],
+            "warnings": [{
+                "code": "PAYLOAD_UNAVAILABLE_FOR_OPERATOR_GUARD",
+                "msg": "params_json пустой или повреждён; operator guard не меняет audit-status в списке, но execution-preflight всё равно заблокирует запуск без полного trade_plan.",
+            }],
+            "meta_checked": bool(bybit_meta),
+            "snapped_levels": {},
+        }
+        return out
+    out = _snap_reco_payload_to_bybit_meta(out, bybit_meta)
+    out["bybit_meta"] = bybit_meta
+    out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
+    out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True)
     _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
     return out
 
@@ -696,6 +714,214 @@ def _format_step_aligned(value: float | None, step: float | None) -> str | None:
     decimals = _count_step_decimals(step if tick is not None and tick > 0 else num) or 0
     return f"{num:.{max(0, int(decimals))}f}"
 
+
+
+
+def _as_aligned_float(value: float | None, step: float | None) -> float | None:
+    """Return a float whose decimal string is explicitly aligned to the step."""
+    formatted = _format_step_aligned(value, step)
+    if formatted is None:
+        return _finite_float_or_none(value)
+    try:
+        return float(formatted)
+    except Exception:
+        return _finite_float_or_none(value)
+
+
+def _update_float_key(mapping: Any, key: str, value: float | None) -> None:
+    if isinstance(mapping, dict) and value is not None:
+        mapping[key] = float(value)
+
+
+def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Return a recommendation copy with operator-facing levels snapped to Bybit filters.
+
+    The recommender builds grid levels from ATR/percent formulas before live exchange
+    filters are fetched. The strict operator guard must stay fail-closed for manual or
+    malformed payloads, but the operator UI/execution path should validate the exchange-
+    executable values that the payload itself already exposes as ``snapped_levels``.
+    """
+    if not isinstance(rec, dict):
+        return {}
+    out = copy.deepcopy(rec)
+    if not isinstance(meta, dict) or not meta:
+        return out
+
+    tick_size = _finite_float_or_none(meta.get("tick_size"))
+    qty_step = _finite_float_or_none(meta.get("qty_step"))
+    min_order_qty = _finite_float_or_none(meta.get("min_order_qty"))
+    min_notional = _finite_float_or_none(meta.get("min_notional"))
+    leverage_step = _finite_float_or_none(meta.get("leverage_step"))
+
+    params = out.get("params") if isinstance(out.get("params"), dict) else {}
+    if not isinstance(out.get("params"), dict):
+        out["params"] = params
+    plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    if not isinstance(params.get("trade_plan"), dict):
+        params["trade_plan"] = plan
+    levels = plan.get("levels") if isinstance(plan.get("levels"), dict) else {}
+    if not isinstance(plan.get("levels"), dict):
+        plan["levels"] = levels
+    operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
+    if not isinstance(params.get("operator_sheet"), dict) and operator_sheet:
+        params["operator_sheet"] = operator_sheet
+
+    sizing_candidates = [
+        params.get("sizing") if isinstance(params.get("sizing"), dict) else {},
+        plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {},
+        operator_sheet.get("sizing") if isinstance(operator_sheet, dict) and isinstance(operator_sheet.get("sizing"), dict) else {},
+    ]
+    auto_snap_allowed = any(
+        str(candidate.get("basis") or "").strip() == "minimum_viable_operator_default"
+        or (
+            isinstance(candidate.get("exchange_filter_assumption"), dict)
+            and str(candidate["exchange_filter_assumption"].get("mode") or "").strip() == "fallback_qty_step_until_bybit_preflight"
+        )
+        for candidate in sizing_candidates
+    )
+    if not auto_snap_allowed:
+        return out
+
+    def snap(value: Any, step: float | None, *, mode: str = "nearest") -> float | None:
+        snapped = _quantize_to_step(_finite_float_or_none(value), step, mode=mode)
+        return _as_aligned_float(snapped, step) if snapped is not None else None
+
+    snapped_price: dict[str, float] = {}
+    if tick_size is not None and tick_size > 0:
+        price_paths: dict[str, tuple[tuple[dict[str, Any], str], ...]] = {
+            "reference_price": ((plan, "reference_price"), (params, "price_ref"), (operator_sheet, "price_ref")),
+            "range_lower": ((levels.setdefault("range", {}), "lower"), (params, "price_range_lower"), (operator_sheet, "range_lower")),
+            "range_upper": ((levels.setdefault("range", {}), "upper"), (params, "price_range_upper"), (operator_sheet, "range_upper")),
+            "kill_switch_lower": ((levels.setdefault("kill_switch", {}), "lower"),),
+            "kill_switch_upper": ((levels.setdefault("kill_switch", {}), "upper"),),
+        }
+        if operator_sheet:
+            ks = operator_sheet.get("kill_switch") if isinstance(operator_sheet.get("kill_switch"), dict) else {}
+            if isinstance(ks, dict):
+                price_paths["kill_switch_lower"] = (*price_paths["kill_switch_lower"], (ks, "lower"))
+                price_paths["kill_switch_upper"] = (*price_paths["kill_switch_upper"], (ks, "upper"))
+
+        source_values = {
+            "reference_price": plan.get("reference_price", params.get("price_ref")),
+            "range_lower": (levels.get("range") or {}).get("lower", params.get("price_range_lower")) if isinstance(levels.get("range"), dict) else params.get("price_range_lower"),
+            "range_upper": (levels.get("range") or {}).get("upper", params.get("price_range_upper")) if isinstance(levels.get("range"), dict) else params.get("price_range_upper"),
+            "kill_switch_lower": (levels.get("kill_switch") or {}).get("lower") if isinstance(levels.get("kill_switch"), dict) else None,
+            "kill_switch_upper": (levels.get("kill_switch") or {}).get("upper") if isinstance(levels.get("kill_switch"), dict) else None,
+        }
+        for name, raw in source_values.items():
+            snapped = snap(raw, tick_size, mode="nearest")
+            if snapped is None:
+                continue
+            snapped_price[name] = snapped
+            for mapping, key in price_paths.get(name, ()):  # update all aliases
+                _update_float_key(mapping, key, snapped)
+
+        grid_step = levels.get("grid_step") if isinstance(levels.get("grid_step"), dict) else {}
+        if not isinstance(levels.get("grid_step"), dict):
+            levels["grid_step"] = grid_step
+        raw_step = grid_step.get("step_abs")
+        snapped_step = snap(raw_step, tick_size, mode="nearest")
+        if snapped_step is not None and snapped_step > 0:
+            grid_step["step_abs"] = snapped_step
+            ref = snapped_price.get("reference_price") or _finite_float_or_none(plan.get("reference_price"))
+            if ref and ref > 0:
+                step_pct = snapped_step / ref * 100.0
+                grid_step["step_pct"] = float(step_pct)
+                params["grid_spacing_pct"] = float(step_pct)
+                if operator_sheet:
+                    operator_sheet["grid_spacing_pct"] = float(step_pct)
+
+        tp_per_leg = levels.get("tp_per_leg") if isinstance(levels.get("tp_per_leg"), dict) else {}
+        if not isinstance(levels.get("tp_per_leg"), dict):
+            levels["tp_per_leg"] = tp_per_leg
+        snapped_tp = snap(tp_per_leg.get("abs"), tick_size, mode="nearest")
+        if snapped_tp is not None and snapped_tp > 0:
+            tp_per_leg["abs"] = snapped_tp
+            ref = snapped_price.get("reference_price") or _finite_float_or_none(plan.get("reference_price"))
+            if ref and ref > 0:
+                tp_per_leg["pct"] = float(snapped_tp / ref * 100.0)
+            if operator_sheet and isinstance(operator_sheet.get("tp_per_leg"), dict):
+                operator_sheet["tp_per_leg"]["abs"] = snapped_tp
+                if ref and ref > 0:
+                    operator_sheet["tp_per_leg"]["pct"] = float(snapped_tp / ref * 100.0)
+
+    leverage = _finite_float_or_none(params.get("leverage"))
+    if leverage is not None and leverage_step is not None and leverage_step > 0:
+        snapped_lev = snap(leverage, leverage_step, mode="nearest")
+        if snapped_lev is not None and snapped_lev > 0:
+            params["leverage"] = float(snapped_lev)
+            if operator_sheet:
+                operator_sheet["leverage"] = float(snapped_lev)
+
+    sizing_maps: list[dict[str, Any]] = []
+    for candidate in (
+        params.get("sizing"),
+        plan.get("sizing"),
+        params.get("economics"),
+        plan.get("economics"),
+        operator_sheet.get("sizing") if isinstance(operator_sheet, dict) else None,
+        operator_sheet.get("economics") if isinstance(operator_sheet, dict) else None,
+    ):
+        if isinstance(candidate, dict):
+            sizing_maps.append(candidate)
+
+    qty_keys = (
+        "order_qty",
+        "qty",
+        "qty_per_order",
+        "qty_per_leg",
+        "base_qty",
+        "base_qty_per_order",
+        "order_size_qty",
+        "leg_qty",
+    )
+    _, order_qty = _first_finite_from_mapping(plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {}, qty_keys)
+    if order_qty is None:
+        _, order_qty = _first_finite_from_mapping(params.get("sizing") if isinstance(params.get("sizing"), dict) else {}, qty_keys)
+    if order_qty is None:
+        _, order_qty = _first_finite_from_mapping(params, qty_keys)
+    if order_qty is None:
+        _, order_qty = _first_finite_from_mapping(params.get("economics") if isinstance(params.get("economics"), dict) else {}, qty_keys)
+
+    reference_price = _finite_float_or_none(plan.get("reference_price")) or _finite_float_or_none(params.get("price_ref"))
+    lower_price = _finite_float_or_none((levels.get("range") or {}).get("lower")) if isinstance(levels.get("range"), dict) else None
+    notional_price = _grid_min_notional_price(reference_price, lower_price, _finite_float_or_none((levels.get("range") or {}).get("upper")) if isinstance(levels.get("range"), dict) else None)
+
+    if qty_step is not None and qty_step > 0:
+        min_required_qty = max(0.0, float(min_order_qty or 0.0))
+        if min_notional is not None and notional_price is not None and notional_price > 0:
+            min_required_qty = max(min_required_qty, float(min_notional) / float(notional_price))
+        raw_qty = max(float(order_qty or 0.0), min_required_qty)
+        snapped_qty = snap(raw_qty, qty_step, mode="up")
+        if snapped_qty is not None and snapped_qty > 0:
+            for mapping in sizing_maps:
+                for key in ("qty_per_order", "order_qty"):
+                    if key in mapping or key == "qty_per_order":
+                        mapping[key] = float(snapped_qty)
+            if reference_price is not None and reference_price > 0:
+                order_notional = float(snapped_qty) * float(reference_price)
+                grid_count = int(_safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")) or _safe_int_or_none(plan.get("grid_count")) or 1)
+                leverage_used = float(params.get("leverage") or 1.0) or 1.0
+                total_notional = order_notional * max(1, grid_count)
+                margin_required = total_notional / max(1.0, leverage_used)
+                for mapping in sizing_maps:
+                    for key in ("order_notional_usdt", "order_notional"):
+                        if key in mapping or key == "order_notional_usdt":
+                            mapping[key] = float(order_notional)
+                    if "estimated_total_order_notional_usdt" in mapping:
+                        mapping["estimated_total_order_notional_usdt"] = float(total_notional)
+                    if "estimated_margin_required_usdt" in mapping:
+                        mapping["estimated_margin_required_usdt"] = float(margin_required)
+                    if "estimated_max_position_notional_usdt" in mapping:
+                        mapping["estimated_max_position_notional_usdt"] = float(total_notional)
+                risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else None
+                if risk_report is not None:
+                    risk_report["capital_required_usdt"] = float(margin_required)
+                if isinstance(operator_sheet, dict) and isinstance(operator_sheet.get("economics"), dict):
+                    operator_sheet["economics"]["capital_required_usdt"] = float(margin_required)
+
+    out["params"] = params
+    return out
 
 def _first_finite_from_mapping(mapping: dict[str, Any], keys: tuple[str, ...]) -> tuple[str | None, float | None]:
     """Возвращает первое finite-число из набора синонимичных полей sizing.
@@ -1390,8 +1616,20 @@ def _execution_preflight(
 ) -> dict[str, Any]:
     now = int(now_ts or time.time())
     blocks: list[dict[str, Any]] = []
-    blocks.extend(_execution_market_data_blocks(conn, rec, now_ts=now))
-    blocks.extend(_execution_live_price_blocks(conn, rec))
+
+    if bybit_meta is None:
+        try:
+            bybit_meta = _fetch_bybit_instrument_meta(str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
+        except Exception:
+            bybit_meta = {}
+    elif not isinstance(bybit_meta, dict):
+        bybit_meta = {}
+    else:
+        bybit_meta = dict(bybit_meta)
+
+    rec_for_validation = _snap_reco_payload_to_bybit_meta(rec, bybit_meta)
+    blocks.extend(_execution_market_data_blocks(conn, rec_for_validation, now_ts=now))
+    blocks.extend(_execution_live_price_blocks(conn, rec_for_validation))
 
     market_shock = _get_app_config_mapping(
         conn,
@@ -1428,16 +1666,7 @@ def _execution_preflight(
         if isinstance(block, dict):
             blocks.append(dict(block))
 
-    if bybit_meta is None:
-        try:
-            bybit_meta = _fetch_bybit_instrument_meta(str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
-        except Exception:
-            bybit_meta = {}
-    elif not isinstance(bybit_meta, dict):
-        bybit_meta = {}
-    else:
-        bybit_meta = dict(bybit_meta)
-    bybit_validation = _validate_trade_plan_against_bybit_meta(rec, bybit_meta, require_meta=True)
+    bybit_validation = _validate_trade_plan_against_bybit_meta(rec_for_validation, bybit_meta, require_meta=True)
     for item in bybit_validation.get("errors") or []:
         if isinstance(item, dict):
             blocks.append({"code": str(item.get("code") or "BYBIT_PLAN_INVALID"), "msg": str(item.get("msg") or "Bybit plan validation failed")})
@@ -1961,7 +2190,8 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in exec_blocks)
         raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
 
-    preflight = _execution_preflight(conn, rec, now_ts=int(time.time()), bybit_meta=bybit_meta)
+    rec_for_execution = _snap_reco_payload_to_bybit_meta(rec, bybit_meta)
+    preflight = _execution_preflight(conn, rec_for_execution, now_ts=int(time.time()), bybit_meta=bybit_meta)
     preflight_blocks = list(preflight.get("blocks") or [])
     if preflight_blocks:
         db.log_decision(
@@ -1991,7 +2221,7 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             "margin_mode": rec["margin_mode"],
             "direction": rec["direction"],
         },
-        "params": rec["params"],
+        "params": rec_for_execution.get("params", rec["params"]),
         "state": {
             "created_from_rec_id": rec_id,
             "operator": operator,
