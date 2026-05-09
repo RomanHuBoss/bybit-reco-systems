@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-09 — Operator infographic update for 100–500 USDT accounts
+- Updated the root `how_to_trade.png` operator infographic for small accounts instead of the older 500 USDT / 10x-focused playbook.
+- The infographic now defaults to 1 bot, 1–3x leverage, 10–15% margin allocation, 75–85% reserve outside the position, and explicit NO TRADE behavior for blocking validations.
+- Added small-account sizing guidance and reminders that Bybit `minNotional`, `qtyStep` and `minQty` failures are valid rejection outcomes, especially near 100 USDT balances.
+- Reconciled the infographic text with the current grid-only scope: Bybit Linear USDT Perpetual `futures_grid`, exact symbols, isolated margin, arithmetic grid, net profit after costs, funding known, liquidation buffer and kill-switch guards.
+
 ## 2026-05-09 — Linear grid hardening: symbol scope, interval geometry, per-bot caps
 - Tightened Bybit Linear USDT scope: malformed symbols such as `BTC/USDT`, `USDT`, `BTC-USDT` and `BTCUSDT-PERP` are rejected/filtered before REST collection or scoring.
 - Fixed arithmetic grid range generation: `grid_count` is Bybit's number of price intervals, so total range span now scales with `grid_count`, not `grid_count - 1`.
