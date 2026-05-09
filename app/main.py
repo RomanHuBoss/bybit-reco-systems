@@ -48,6 +48,9 @@ INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
 BYBIT_FUTURES_GRID_MIN_COUNT = 2
 BYBIT_FUTURES_GRID_MAX_COUNT = 400
+EXECUTION_FUNDING_MAX_STALENESS_SEC = 60 * 60
+EXECUTION_FUNDING_WORSE_DELTA_BLOCK_BPS = 3.0
+EXECUTION_FUNDING_EXTREME_BPS = 6.0
 BACKGROUND_THREAD_STATE_APP_KEY_PREFIX = "runtime_thread_state:"
 BACKGROUND_THREAD_RESTART_DELAY_SEC = 5.0
 BACKGROUND_THREAD_ERROR_ACTIONS = {
@@ -972,6 +975,192 @@ def _grid_min_notional_price(reference_price: Any, lower: Any, upper: Any) -> fl
     return min(candidates)
 
 
+def _is_exact_linear_usdt_symbol(symbol: str | None) -> bool:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized.endswith("USDT"):
+        return False
+    base = normalized[:-4]
+    return bool(base) and normalized.isalnum()
+
+
+def _boolish_true(value: Any) -> bool:
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _rec_params_and_plan(rec: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    params = rec.get("params") if isinstance(rec, dict) else {}
+    if not isinstance(params, dict):
+        params = {}
+    plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    if not isinstance(plan, dict):
+        plan = {}
+    return params, plan
+
+
+def _first_mapping(*items: Any) -> dict[str, Any]:
+    for item in items:
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def _cost_model_from_rec(rec: dict[str, Any]) -> dict[str, Any]:
+    params, plan = _rec_params_and_plan(rec)
+    return _first_mapping(params.get("cost_model"), plan.get("cost_model"))
+
+
+def _economics_from_rec(rec: dict[str, Any]) -> dict[str, Any]:
+    params, plan = _rec_params_and_plan(rec)
+    return _first_mapping(params.get("economics"), plan.get("economics"))
+
+
+def _execution_label_horizon_sec(rec: dict[str, Any]) -> int:
+    params, plan = _rec_params_and_plan(rec)
+    cost_model = _cost_model_from_rec(rec)
+    candidates = (
+        cost_model.get("horizon_sec"),
+        params.get("label_horizon_sec"),
+        plan.get("label_horizon_sec"),
+        plan.get("expected_horizon_sec"),
+    )
+    for raw in candidates:
+        value = _finite_float_or_none(raw)
+        if value is not None and value > 0:
+            return int(min(max(value, 6 * 3600), 48 * 3600))
+    for raw in (
+        params.get("label_horizon_hours"),
+        plan.get("label_horizon_hours"),
+        _first_mapping(plan.get("expected_horizon")).get("label_horizon_hours"),
+    ):
+        value = _finite_float_or_none(raw)
+        if value is not None and value > 0:
+            return int(min(max(value * 3600.0, 6 * 3600), 48 * 3600))
+    return 12 * 3600
+
+
+def _signed_funding_bps_for_direction(direction: str, funding_rate: float) -> float | None:
+    rate = _finite_float_or_none(funding_rate)
+    if rate is None:
+        return None
+    direction_norm = str(direction or "neutral").strip().lower()
+    bps = float(rate) * 10_000.0
+    if direction_norm == "long":
+        return bps
+    if direction_norm == "short":
+        return -bps
+    if direction_norm == "neutral":
+        # Neutral futures-grid can accumulate either leg. Treat non-zero funding as
+        # adverse execution carry unless a direction-specific hedge model is added.
+        return abs(bps)
+    return None
+
+
+def _funding_events_until_horizon(now_ts: int, next_funding_ts: Any, interval_sec: int, horizon_sec: int) -> int:
+    if interval_sec <= 0 or horizon_sec <= 0:
+        return 0
+    next_ts = _finite_float_or_none(next_funding_ts)
+    if next_ts is None or next_ts <= 0:
+        return 1 if horizon_sec >= interval_sec else 0
+    # Bybit and some fixtures can provide ms timestamps; normalize defensively.
+    if next_ts > 10_000_000_000:
+        next_ts = next_ts / 1000.0
+    next_int = int(next_ts)
+    now_int = int(now_ts)
+    while next_int <= now_int:
+        next_int += int(interval_sec)
+    horizon_end = now_int + int(horizon_sec)
+    events = 0
+    ts = next_int
+    while ts <= horizon_end and events < 32:
+        events += 1
+        ts += int(interval_sec)
+    return events
+
+
+def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None = None) -> list[dict[str, Any]]:
+    """Fail-closed funding guard for the operator execute path.
+
+    Recommendation-time economics already estimate funding, but the operator can
+    execute minutes later. If the latest funding row is missing/stale or current
+    funding turns the net grid edge negative, execution must be blocked rather
+    than materialising a bot from stale carry assumptions.
+    """
+    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+        return []
+    if str(rec.get("venue") or "").strip().lower() != "linear":
+        return []
+    symbol = str(rec.get("symbol") or "").strip().upper()
+    if not symbol:
+        return [{"code": "FUNDING_SYMBOL_MISSING", "msg": "Нельзя проверить funding без symbol; execution заблокирован fail-closed."}]
+
+    params, plan = _rec_params_and_plan(rec)
+    has_cost_model = any(isinstance(container.get("cost_model"), dict) for container in (params, plan))
+    if not has_cost_model:
+        # Legacy/API fixture records that predate the full cost model do not contain
+        # recommendation-time funding assumptions to compare against. Full Bybit
+        # grid recommendations produced by the recommender carry cost_model and are
+        # checked fail-closed below.
+        return []
+
+    now = int(now_ts or time.time())
+    funding = db.get_latest_funding_rate(conn, symbol)
+    if not funding:
+        return [{"code": "FUNDING_RATE_UNAVAILABLE_AT_EXECUTION", "msg": f"{symbol}: нет funding_rate для execution-time проверки carry; запуск grid заблокирован."}]
+
+    ts = _safe_int(funding.get("ts"), default=0)
+    age_sec = max(0, now - ts) if ts > 0 else None
+    if age_sec is None or age_sec > EXECUTION_FUNDING_MAX_STALENESS_SEC:
+        return [{
+            "code": "STALE_FUNDING_RATE",
+            "msg": f"{symbol}: funding_rate stale at execution: age_sec={age_sec if age_sec is not None else 'unknown'} > limit={EXECUTION_FUNDING_MAX_STALENESS_SEC}.",
+        }]
+
+    rate = _finite_float_or_none(funding.get("funding_rate"))
+    signed_bps = _signed_funding_bps_for_direction(str(rec.get("direction") or "neutral"), rate if rate is not None else float("nan"))
+    if signed_bps is None:
+        return [{"code": "FUNDING_RATE_INVALID_AT_EXECUTION", "msg": f"{symbol}: funding_rate не является finite-числом; запуск grid заблокирован."}]
+
+    interval_min = _finite_float_or_none(funding.get("funding_interval_min"))
+    if interval_min is None or interval_min <= 0:
+        return [{"code": "FUNDING_INTERVAL_UNAVAILABLE_AT_EXECUTION", "msg": f"{symbol}: funding_interval_min отсутствует; нельзя оценить carry до горизонта сделки."}]
+    interval_sec = int(round(interval_min * 60.0))
+    horizon_sec = _execution_label_horizon_sec(rec)
+    events = _funding_events_until_horizon(now, funding.get("next_funding_ts"), interval_sec, horizon_sec)
+    current_expected_bps = signed_bps * max(0, events)
+
+    cost_model = _cost_model_from_rec(rec)
+    economics = _economics_from_rec(rec)
+    stored_expected_bps = _finite_float_or_none(cost_model.get("expected_funding_bps"))
+    if stored_expected_bps is None:
+        stored_expected_bps = 0.0
+    net_profit_bps = _finite_float_or_none(economics.get("net_profit_bps"))
+
+    current_adverse_cost_bps = max(0.0, float(current_expected_bps))
+    stored_adverse_cost_bps = max(0.0, float(stored_expected_bps))
+    worsened_bps = current_adverse_cost_bps - stored_adverse_cost_bps
+
+    blocks: list[dict[str, Any]] = []
+    if current_adverse_cost_bps >= EXECUTION_FUNDING_EXTREME_BPS:
+        blocks.append({
+            "code": "FUNDING_EXTREME_AT_EXECUTION",
+            "msg": f"{symbol}: текущий funding carry {current_adverse_cost_bps:.2f} bps до горизонта {horizon_sec}s превышает лимит {EXECUTION_FUNDING_EXTREME_BPS:.2f} bps.",
+        })
+    if (
+        net_profit_bps is not None
+        and worsened_bps > EXECUTION_FUNDING_WORSE_DELTA_BLOCK_BPS
+        and (float(net_profit_bps) - worsened_bps) <= 0.0
+    ):
+        blocks.append({
+            "code": "FUNDING_EDGE_TURNED_NEGATIVE",
+            "msg": f"{symbol}: funding ухудшился на {worsened_bps:.2f} bps; net edge {net_profit_bps:.2f} bps стал неположительным после актуального carry.",
+        })
+    return blocks
+
+
 def _active_symbol_disable_state(conn, venue: str, symbol: str, *, now_ts: int | None = None) -> dict[str, Any] | None:
     now = int(now_ts or time.time())
     cur = conn.execute(
@@ -1229,8 +1418,8 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             errors.append({"code": "MARGIN_MODE_MISSING", "msg": "futures_grid требует явный margin_mode=isolated; legacy/manual recommendation без режима исполнения блокируется fail-closed."})
         elif margin_mode != "isolated":
             errors.append({"code": "MARGIN_MODE_UNSUPPORTED", "msg": f"futures_grid в этом проекте поддерживается только в margin_mode=isolated, получено {margin_mode}."})
-        if rec_symbol and not rec_symbol.endswith("USDT"):
-            errors.append({"code": "USDT_PERPETUAL_SYMBOL_REQUIRED", "msg": f"futures_grid поддерживается только для USDT perpetual symbols, получено symbol={rec_symbol}."})
+        if rec_symbol and not _is_exact_linear_usdt_symbol(rec_symbol):
+            errors.append({"code": "USDT_PERPETUAL_SYMBOL_REQUIRED", "msg": f"futures_grid поддерживается только для точных alphanumeric USDT perpetual symbols без разделителей, получено symbol={rec_symbol}."})
 
     if bot_type == "futures_grid" and meta:
         def _meta_target():
@@ -1283,7 +1472,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                     "msg": f"Bybit metadata не содержит корректный {source_field}; {consequence}. Execution-preflight блокирует запуск fail-closed.",
                 })
 
-        pre_listing = meta_is_pre_listing is True or str(meta_status).strip().lower() in {"prelaunch", "pre-listing", "prelisting"}
+        pre_listing = _boolish_true(meta_is_pre_listing) or str(meta_status).strip().lower() in {"prelaunch", "pre-listing", "prelisting"}
         if pre_listing:
             errors.append({
                 "code": "BYBIT_PRELISTING_UNSUPPORTED",
@@ -1647,6 +1836,7 @@ def _execution_preflight(
     rec_for_validation = _snap_reco_payload_to_bybit_meta(rec, bybit_meta)
     blocks.extend(_execution_market_data_blocks(conn, rec_for_validation, now_ts=now))
     blocks.extend(_execution_live_price_blocks(conn, rec_for_validation))
+    blocks.extend(_execution_funding_blocks(conn, rec_for_validation, now_ts=now))
 
     market_shock = _get_app_config_mapping(
         conn,

@@ -1,3 +1,17 @@
+## 2026-05-10 — execution-time funding and strict linear-USDT scope hardening
+
+### Исправлено
+- execute-preflight для полноценных costed-рекомендаций теперь повторно проверяет свежий `funding_rate`/`funding_interval_min` перед материализацией bot instance и блокирует запуск при missing/stale funding, экстремальном carry или ухудшении funding, которое делает net edge сетки неположительным;
+- Bybit trade-plan validation больше не принимает malformed legacy symbols вида `BTC/USDT`/пустой base только потому, что строка оканчивается на `USDT`; нужен точный alphanumeric USDT perpetual symbol;
+- pre-listing detection теперь распознаёт строковые upstream-флаги (`"true"`, `"1"`, `"yes"`), а не только boolean `true` и status aliases.
+
+### Добавлено
+- регрессионные тесты `tests/test_iteration125_execution_funding_and_scope_hardening.py` на execution-time funding blocks, malformed symbol и string pre-listing flag.
+
+### Тесты
+- `pytest -q` → `406 passed`;
+- `python -m py_compile app/*.py tests/*.py main.py` → passed.
+
 
 ## 2026-05-10 — execution trade_plan fail-closed audit
 
