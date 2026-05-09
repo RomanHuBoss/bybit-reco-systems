@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import db
+from conftest import safe_linear_grid_params
 from app.main import _existing_trade_matches_request
 from app.outcomes import _resolve_effective_horizon
 from app.recommender import _build_trade_plan
@@ -124,7 +125,7 @@ def test_api_execute_handles_poisoned_ttl_and_timestamp_values(client_and_conn) 
                 "confidence": 0.7,
                 "expected_rr": 1.1,
                 "risk_score": 0.2,
-                "params": {"grid_levels": 8, "grid_spacing_pct": 0.7},
+                "params": safe_linear_grid_params({"grid_levels": 8, "grid_spacing_pct": 0.7}),
                 "reasons": {},
                 "blocks": [],
                 "status": "recommended",

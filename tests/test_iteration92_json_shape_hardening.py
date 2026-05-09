@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import db
+from conftest import safe_linear_grid_params
 
 
 @pytest.fixture()
@@ -87,7 +88,7 @@ def test_api_recommendations_and_details_fail_open_on_malformed_json_shapes(clie
                 'confidence': 0.9,
                 'expected_rr': 1.2,
                 'risk_score': 0.1,
-                'params': {'grid_levels': 5},
+                'params': safe_linear_grid_params({'grid_levels': 5}, reference=60050.0, lower=59400.0, upper=60600.0),
                 'reasons': {'why': 'ok'},
                 'blocks': [{'code': 'X'}],
                 'status': 'recommended',
@@ -247,7 +248,7 @@ def test_mutating_api_rejects_blank_audit_keys(client_conn_app):
                 'confidence': 0.8,
                 'expected_rr': 1.1,
                 'risk_score': 0.2,
-                'params': {'grid_levels': 5},
+                'params': safe_linear_grid_params({'grid_levels': 5}, reference=60050.0, lower=59400.0, upper=60600.0),
                 'reasons': {},
                 'blocks': [],
                 'status': 'recommended',

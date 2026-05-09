@@ -205,3 +205,30 @@ def test_bybit_preflight_validates_grid_count_even_without_complete_trade_plan(a
 
     assert validation["ok"] is False
     assert "GRID_COUNT_ABOVE_BYBIT_MAX" in _codes(validation)
+
+def test_execution_preflight_blocks_missing_trade_plan_fail_closed(app_main):
+    rec = _base_rec()
+    rec["params"] = {"grid_count": 8, "grid_type": "arithmetic", "leverage": 1, "margin_mode": "isolated"}
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True, require_execution_plan=True)
+
+    assert validation["ok"] is False
+    assert "TRADE_PLAN_MISSING" in _codes(validation)
+
+
+def test_execution_preflight_blocks_incomplete_trade_plan_geometry(app_main):
+    rec = _base_rec()
+    levels = rec["params"]["trade_plan"]["levels"]
+    levels["range"].pop("lower")
+    levels["kill_switch"].pop("upper")
+    levels["grid_step"].pop("step_abs")
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True, require_execution_plan=True)
+
+    assert validation["ok"] is False
+    assert {
+        "TRADE_PLAN_RANGE_LOWER_MISSING",
+        "TRADE_PLAN_KILL_SWITCH_UPPER_MISSING",
+        "TRADE_PLAN_GRID_STEP_MISSING",
+    } <= _codes(validation)
+

@@ -24,6 +24,71 @@ def client_and_conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app_main.app.router.on_startup.clear()
     monkeypatch.setattr(app_main, '_fetch_bybit_instrument_meta', lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
 
+    def _safe_grid_params(params):
+        payload = dict(params or {})
+        grid_count = int(payload.get('grid_count') or payload.get('grid_levels') or 8)
+        payload.setdefault('grid_count', grid_count)
+        payload.setdefault('grid_levels', grid_count)
+        payload.setdefault('grid_type', 'arithmetic')
+        payload.setdefault('leverage', 1)
+        payload.setdefault('margin_mode', 'isolated')
+        lower = float(payload.get('price_range_lower') or 95.0)
+        upper = float(payload.get('price_range_upper') or 105.0)
+        reference = float(payload.get('price_ref') or 100.5)
+        step_abs = 1.0
+        step_pct = step_abs / reference * 100.0
+        qty = 0.053
+        payload.setdefault('price_range_lower', lower)
+        payload.setdefault('price_range_upper', upper)
+        payload.setdefault(
+            'trade_plan',
+            {
+                'reference_price': reference,
+                'grid_type': 'arithmetic',
+                'levels': {
+                    'range': {'lower': lower, 'upper': upper},
+                    'kill_switch': {'lower': lower - 1.0, 'upper': upper + 1.0},
+                    'grid_step': {'step_abs': step_abs, 'step_pct': step_pct},
+                    'tp_per_leg': {'abs': step_abs, 'pct': step_pct},
+                },
+                'sizing': {
+                    'qty_per_order': qty,
+                    'order_notional_usdt': qty * reference,
+                    'estimated_total_order_notional_usdt': qty * reference * grid_count,
+                    'estimated_margin_required_usdt': qty * reference * grid_count,
+                },
+            },
+        )
+        payload.setdefault(
+            'economics',
+            {
+                'liquidation_buffer_pct': 100.0,
+                'net_profit_per_grid_pct': 0.25,
+                'estimated_fee_per_grid_pct': 0.04,
+                'estimated_funding_impact_pct': 0.0,
+            },
+        )
+        return payload
+
+    _real_insert_recommendations = db.insert_recommendations
+
+    def _insert_recommendations_with_safe_trade_plan(conn_arg, rows, *args, **kwargs):
+        normalized = []
+        for row in rows:
+            item = dict(row)
+            params = item.get('params')
+            if (
+                item.get('venue') == 'linear'
+                and item.get('bot_type') == 'futures_grid'
+                and isinstance(params, dict)
+                and params
+            ):
+                item['params'] = _safe_grid_params(params)
+            normalized.append(item)
+        return _real_insert_recommendations(conn_arg, normalized, *args, **kwargs)
+
+    monkeypatch.setattr(db, 'insert_recommendations', _insert_recommendations_with_safe_trade_plan)
+
     conn = db.connect(str(db_path))
     ts_now = int(time.time())
     db.upsert_ohlcv(

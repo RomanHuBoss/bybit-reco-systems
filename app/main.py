@@ -1147,7 +1147,7 @@ def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, An
             })
     return blocks
 
-def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str, Any], *, require_meta: bool = False) -> dict[str, Any]:
+def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str, Any], *, require_meta: bool = False, require_execution_plan: bool = False) -> dict[str, Any]:
     ctx = _trade_plan_price_context(rec)
     params = ctx["params"]
     plan = ctx["plan"]
@@ -1196,9 +1196,10 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         else:
             warnings.append(missing_meta_item)
     if not plan:
-        warnings.append({
+        target = errors if require_execution_plan else warnings
+        target.append({
             "code": "TRADE_PLAN_MISSING",
-            "msg": "У рекомендации нет полного trade_plan; execution-time preflight не может полноценно проверить диапазон и шаг сетки.",
+            "msg": "У рекомендации нет полного trade_plan; execution-time preflight не может проверить reference/range/kill-switch/grid-step и должен блокировать запуск fail-closed.",
         })
 
     # Эта система рекомендует только один продуктовый режим. Если рекомендация
@@ -1317,6 +1318,22 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     grid_levels = ctx["grid_levels"]
     tp_abs = ctx["tp_per_leg_abs"]
     tp_pct = ctx["tp_per_leg_pct"]
+
+    if require_execution_plan and bot_type == "futures_grid":
+        required_plan_fields = (
+            ("TRADE_PLAN_REFERENCE_PRICE_MISSING", reference_price, "trade_plan.reference_price"),
+            ("TRADE_PLAN_RANGE_LOWER_MISSING", lower, "trade_plan.levels.range.lower"),
+            ("TRADE_PLAN_RANGE_UPPER_MISSING", upper, "trade_plan.levels.range.upper"),
+            ("TRADE_PLAN_KILL_SWITCH_LOWER_MISSING", lower_ks, "trade_plan.levels.kill_switch.lower"),
+            ("TRADE_PLAN_KILL_SWITCH_UPPER_MISSING", upper_ks, "trade_plan.levels.kill_switch.upper"),
+            ("TRADE_PLAN_GRID_STEP_MISSING", step_abs, "trade_plan.levels.grid_step.step_abs"),
+        )
+        for code, value, field in required_plan_fields:
+            if value is None:
+                errors.append({
+                    "code": code,
+                    "msg": f"{field} отсутствует или не является finite-числом; execution-time preflight не может доказать исполнимость Bybit Linear USDT futures grid.",
+                })
 
     named_prices = {
         "reference_price": reference_price,
@@ -1666,7 +1683,7 @@ def _execution_preflight(
         if isinstance(block, dict):
             blocks.append(dict(block))
 
-    bybit_validation = _validate_trade_plan_against_bybit_meta(rec_for_validation, bybit_meta, require_meta=True)
+    bybit_validation = _validate_trade_plan_against_bybit_meta(rec_for_validation, bybit_meta, require_meta=True, require_execution_plan=True)
     for item in bybit_validation.get("errors") or []:
         if isinstance(item, dict):
             blocks.append({"code": str(item.get("code") or "BYBIT_PLAN_INVALID"), "msg": str(item.get("msg") or "Bybit plan validation failed")})

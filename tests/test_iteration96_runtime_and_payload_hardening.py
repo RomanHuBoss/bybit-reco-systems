@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import db
+from conftest import safe_linear_grid_params
 from app.recommender import _build_trade_plan, _estimate_cost_model
 
 
@@ -86,7 +87,7 @@ def test_materialize_existing_bot_closes_transaction_on_idempotent_reuse(isolate
                 "confidence": 0.71,
                 "expected_rr": 1.2,
                 "risk_score": 0.2,
-                "params": {"grid_levels": 8},
+                "params": safe_linear_grid_params({"grid_levels": 8}),
                 "reasons": {},
                 "blocks": [],
                 "status": "recommended",

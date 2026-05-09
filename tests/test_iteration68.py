@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app import collector, db
+from conftest import safe_linear_grid_params
 from app.recommender import run_recommender_once
 from app.settings import Settings
 
@@ -243,7 +244,7 @@ def test_execute_recommendation_rolls_back_bot_insert_on_followup_failure(client
             'confidence': 0.67,
             'expected_rr': 1.4,
             'risk_score': 0.2,
-            'params': {'grid_levels': 8},
+            'params': safe_linear_grid_params({'grid_levels': 8}),
             'reasons': {},
             'blocks': [],
             'status': 'recommended',
@@ -296,7 +297,7 @@ def test_execute_rolls_back_when_status_update_returns_false(client_and_conn, mo
             'confidence': 0.67,
             'expected_rr': 1.4,
             'risk_score': 0.2,
-            'params': {'grid_levels': 8},
+            'params': safe_linear_grid_params({'grid_levels': 8}),
             'reasons': {},
             'blocks': [],
             'status': 'recommended',
@@ -349,7 +350,7 @@ def test_trade_record_rolls_back_when_stop_bot_status_change_fails(client_and_co
             'confidence': 0.67,
             'expected_rr': 1.4,
             'risk_score': 0.2,
-            'params': {'grid_levels': 8},
+            'params': safe_linear_grid_params({'grid_levels': 8}),
             'reasons': {},
             'blocks': [],
             'status': 'recommended',
@@ -419,7 +420,7 @@ def test_trade_record_rolls_back_on_log_failure(client_and_conn, monkeypatch: py
             'confidence': 0.67,
             'expected_rr': 1.4,
             'risk_score': 0.2,
-            'params': {'grid_levels': 8},
+            'params': safe_linear_grid_params({'grid_levels': 8}),
             'reasons': {},
             'blocks': [],
             'status': 'recommended',

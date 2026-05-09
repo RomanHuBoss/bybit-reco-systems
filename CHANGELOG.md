@@ -1,3 +1,12 @@
+
+## 2026-05-10 — execution trade_plan fail-closed audit
+
+- Hardened execution preflight for Bybit Linear USDT Futures grid recommendations: mutating execution now requires a complete `params.trade_plan` with reference price, range, kill-switch and grid-step geometry.
+- Kept UI/list/detail validation non-destructive for malformed historical rows while preserving fail-closed execution behavior.
+- Updated API lifecycle/rollback tests to seed complete executable futures-grid plans instead of legacy params-only rows.
+- Added regression tests for missing and incomplete `trade_plan` execution blocks.
+- Verified the full suite: `401 passed`.
+
 # Changelog
 
 ## 2026-05-10 — Conservative funding approval edge
