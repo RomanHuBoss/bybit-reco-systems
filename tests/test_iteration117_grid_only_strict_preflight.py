@@ -180,3 +180,28 @@ def test_bybit_preflight_warns_and_defaults_legacy_missing_leverage_to_one(app_m
     validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
 
     assert "LEVERAGE_DEFAULTED_TO_ONE" in _codes(validation, "warnings")
+
+
+def test_bybit_preflight_blocks_geometric_until_geometric_math_is_implemented(app_main):
+    rec = _base_rec()
+    rec["params"]["grid_type"] = "geometric"
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
+
+    assert validation["ok"] is False
+    assert "GRID_TYPE_UNSUPPORTED" in _codes(validation)
+
+
+def test_bybit_preflight_validates_grid_count_even_without_complete_trade_plan(app_main):
+    rec = _base_rec()
+    rec["params"] = {
+        "grid_count": 401,
+        "grid_type": "arithmetic",
+        "leverage": 1,
+        "margin_mode": "isolated",
+    }
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
+
+    assert validation["ok"] is False
+    assert "GRID_COUNT_ABOVE_BYBIT_MAX" in _codes(validation)

@@ -57,7 +57,7 @@ execution-time validation должна блокировать исполнени
 - после округления по `tick_size` диапазон не схлопывается;
 - шаг сетки не меньше `tick_size` и не больше диапазона;
 - сетка содержит минимум 2 интервала после выравнивания;
-- `grid_type` допускается только `arithmetic` или `geometric`; генератор сейчас публикует `arithmetic`;
+- `grid_type` в этой ревизии допускается только `arithmetic`; `geometric` блокируется fail-closed, потому что для него нужна отдельная проверка ratio-levels, net-profit и tick rounding;
 - `grid_count` / legacy `grid_levels` трактуется как Bybit Number of Grids, то есть число price intervals, и должен быть в диапазоне 2..400;
 - `grid_step.step_abs` и `params.grid_count`/`params.grid_levels` не должны описывать радикально разные сетки; mismatch помечается warning'ом для ручной сверки перед запуском Bybit bot;
 - `tp_per_leg.abs` должен быть положительным и не схлопываться после округления по `tick_size`; off-tick TP помечается warning'ом с рассчитанным snapped-значением.

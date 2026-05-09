@@ -1,3 +1,9 @@
+# 2026-05-09 — Arithmetic grid fail-closed hardening
+
+- Execution preflight now blocks `grid_type=geometric` instead of accepting it without dedicated geometric ratio/net-profit/tick-rounding math; the recommender remains arithmetic-only.
+- `grid_count` / legacy `grid_levels` is validated as a Bybit Futures Grid interval count even when a manual/legacy payload lacks a complete `trade_plan.levels` range or step.
+- Added regression tests for geometric fail-closed behavior and grid-count validation without a complete trade plan.
+
 # 2026-05-09 — Linear perpetual ticker scope hardening
 
 - Public ticker filtering now excludes non-perpetual delivery contracts (`deliveryTime != 0`) and pre-market/pre-listing ticker rows before collector/scoring can use them.

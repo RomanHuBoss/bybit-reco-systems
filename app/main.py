@@ -44,6 +44,9 @@ PROCESS_STARTED_TS = int(time.time())
 OUTCOME_LABEL_VERSION = "grid_label_v2"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
+SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
+BYBIT_FUTURES_GRID_MIN_COUNT = 2
+BYBIT_FUTURES_GRID_MAX_COUNT = 400
 BACKGROUND_THREAD_STATE_APP_KEY_PREFIX = "runtime_thread_state:"
 BACKGROUND_THREAD_RESTART_DELAY_SEC = 5.0
 BACKGROUND_THREAD_ERROR_ACTIONS = {
@@ -1029,6 +1032,28 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             "code": "RANGE_COLLAPSES_AFTER_TICK_ROUNDING",
             "msg": f"После выравнивания по tick_size={tick_size} диапазон схлопывается: lower={snapped_lower}, upper={snapped_upper}.",
         })
+    # Validate Bybit "Number of Grids" independently from price metadata.
+    # The old check lived inside the range/step branch, so a malformed/manual
+    # payload could carry grid_count=401 and avoid the product-cap gate when
+    # trade_plan.levels was incomplete.
+    if bot_type == "futures_grid":
+        if grid_levels is None:
+            target = errors if require_meta else warnings
+            target.append({
+                "code": "GRID_COUNT_MISSING",
+                "msg": "grid_count/grid_levels отсутствует; нельзя подтвердить число price intervals для Bybit Futures Grid.",
+            })
+        elif grid_levels < BYBIT_FUTURES_GRID_MIN_COUNT:
+            errors.append({
+                "code": "GRID_LEVELS_INVALID",
+                "msg": f"grid_count/grid_levels должен быть >= {BYBIT_FUTURES_GRID_MIN_COUNT}, получено {grid_levels}.",
+            })
+        elif grid_levels > BYBIT_FUTURES_GRID_MAX_COUNT:
+            errors.append({
+                "code": "GRID_COUNT_ABOVE_BYBIT_MAX",
+                "msg": f"Bybit Futures Grid Bot допускает максимум {BYBIT_FUTURES_GRID_MAX_COUNT} grids, получено {grid_levels}.",
+            })
+
     if snapped_step is not None and snapped_lower is not None and snapped_upper is not None and snapped_upper > snapped_lower:
         span = float(snapped_upper) - float(snapped_lower)
         if snapped_step > span:
@@ -1038,30 +1063,25 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             })
         else:
             intervals = int(math.floor((span / float(snapped_step)) + 1e-12)) if snapped_step > 0 else 0
-            if intervals < 2:
+            if intervals < BYBIT_FUTURES_GRID_MIN_COUNT:
                 errors.append({
                     "code": "GRID_TOO_FEW_TICK_LEVELS",
-                    "msg": f"После выравнивания по tick_size сетка содержит только {intervals} интервал(ов); для grid требуется минимум 2.",
+                    "msg": f"После выравнивания по tick_size сетка содержит только {intervals} интервал(ов); для grid требуется минимум {BYBIT_FUTURES_GRID_MIN_COUNT}.",
                 })
-            if grid_levels is not None:
-                if grid_levels < 2:
-                    errors.append({"code": "GRID_LEVELS_INVALID", "msg": f"grid_count/grid_levels должен быть >= 2, получено {grid_levels}."})
-                elif grid_levels > 400:
-                    errors.append({"code": "GRID_COUNT_ABOVE_BYBIT_MAX", "msg": f"Bybit Futures Grid Bot допускает максимум 400 grids, получено {grid_levels}."})
-                else:
-                    # Bybit's "Number of Grids" is the count of price intervals.
-                    # Legacy payloads may have used grid_levels as price points, so
-                    # keep this a warning unless the grid is truly too sparse.
-                    if intervals + 1 < grid_levels:
-                        warnings.append({
-                            "code": "GRID_STEP_LEVELS_MISMATCH",
-                            "msg": f"Диапазон и step_abs дают примерно {intervals} интервал(ов), а params.grid_count/grid_levels={grid_levels}; оператор должен сверить число сеток перед запуском Bybit bot.",
-                        })
+            if grid_levels is not None and BYBIT_FUTURES_GRID_MIN_COUNT <= grid_levels <= BYBIT_FUTURES_GRID_MAX_COUNT:
+                # Bybit's "Number of Grids" is the count of price intervals.
+                # Legacy payloads may have used grid_levels as price points, so
+                # keep this a warning unless the grid is truly too sparse.
+                if intervals + 1 < grid_levels:
+                    warnings.append({
+                        "code": "GRID_STEP_LEVELS_MISMATCH",
+                        "msg": f"Диапазон и step_abs дают примерно {intervals} интервал(ов), а params.grid_count/grid_levels={grid_levels}; оператор должен сверить число сеток перед запуском Bybit bot.",
+                    })
 
-    if grid_type and grid_type not in {"arithmetic", "geometric"}:
+    if grid_type and grid_type != SUPPORTED_RECOMMENDER_GRID_TYPE:
         errors.append({
             "code": "GRID_TYPE_UNSUPPORTED",
-            "msg": f"Поддерживается только arithmetic/geometric grid spacing для Bybit Futures Grid, получено grid_type={grid_type}.",
+            "msg": f"Эта ревизия рассчитывает и проверяет только {SUPPORTED_RECOMMENDER_GRID_TYPE} grid; получено grid_type={grid_type}. Geometric grid нельзя запускать без отдельной геометрической математики диапазона, net-profit и tick rounding.",
         })
 
     if tp_abs is not None:
