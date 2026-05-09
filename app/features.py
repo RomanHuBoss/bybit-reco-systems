@@ -174,28 +174,35 @@ def liquidity_tier(turnover24h_usd: float | None) -> str:
 
 # ── Funding rate signal ───────────────────────────────────────────────────────
 
-def funding_signal(funding_rate: float | None) -> dict[str, Any]:
+def funding_signal(funding_rate: float | None, funding_interval_min: int | float | None = 480) -> dict[str, Any]:
     """
-    funding_rate: raw Bybit value, e.g. 0.0001 = 0.01% per 8h
+    funding_rate: raw Bybit value, e.g. 0.0001 = 0.01% per funding event
     Returns:
       value: raw funding rate
-      annualized_pct: rough annual cost (3×/day × 365)
+      annualized_pct: rough annual carry using the supplied Bybit funding interval
       signal: 'bullish' | 'bearish' | 'neutral'
         bullish  = funding < -0.01%  (longs being paid)
         bearish  = funding > +0.03%  (longs paying high premium)
         neutral  = otherwise
-      carry_cost_bps_8h: abs(funding_rate) × 10000 — cost per 8h in bps
+      carry_cost_bps_interval: abs(funding_rate) × 10000 — cost per funding interval in bps
     """
     if funding_rate is None:
-        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_8h": None}
+        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_interval": None, "carry_cost_bps_8h": None, "funding_interval_min": None}
 
     try:
         fr = float(funding_rate)
     except Exception:
-        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_8h": None}
+        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_interval": None, "carry_cost_bps_8h": None, "funding_interval_min": None}
     if not math.isfinite(fr):
-        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_8h": None}
-    annualized = fr * 3 * 365 * 100  # % per year
+        return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_interval": None, "carry_cost_bps_8h": None, "funding_interval_min": None}
+    try:
+        interval_min = float(funding_interval_min) if funding_interval_min not in (None, "") else 480.0
+    except Exception:
+        interval_min = 480.0
+    if not math.isfinite(interval_min) or interval_min <= 0:
+        interval_min = 480.0
+    events_per_year = (365.0 * 24.0 * 60.0) / interval_min
+    annualized = fr * events_per_year * 100  # % per year
 
     if fr < -0.0001:
         signal = "bullish"   # shorts overpaying → price pressure up
@@ -208,7 +215,11 @@ def funding_signal(funding_rate: float | None) -> dict[str, Any]:
         "value": fr,
         "annualized_pct": round(annualized, 2),
         "signal": signal,
+        "carry_cost_bps_interval": round(abs(fr) * 10000, 4),
+        # Backward-compatible alias. For non-8h instruments this is the per-event cost,
+        # not a rescaled 8h value; consumers should prefer carry_cost_bps_interval.
         "carry_cost_bps_8h": round(abs(fr) * 10000, 4),
+        "funding_interval_min": int(round(interval_min)),
     }
 
 

@@ -1220,6 +1220,7 @@ def _estimate_cost_model(
         "execution_cost_bps": float(execution_cost_bps),
         "funding_rate": fr,
         "direction": direction,
+        "directional_funding_bps_interval": float(directional_funding_bps_8h),
         "directional_funding_bps_8h": float(directional_funding_bps_8h),
         "neutral_funding_model": neutral_funding_model,
         "next_funding_ts": int(nfts_out) if nfts_out else _safe_int_or_none(next_funding_ts),
@@ -2669,7 +2670,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 latest_oi_ts = int((oi_rows[0] or {}).get("ts") or 0)
                 if latest_oi_ts <= 0 or (ts_now - latest_oi_ts > MAX_OI_STALENESS_SEC):
                     oi_rows = []
-            fr_sig   = funding_signal(fr_data["funding_rate"] if fr_data else None)
+            fr_sig   = funding_signal(fr_data["funding_rate"] if fr_data else None, fr_data.get("funding_interval_min") if isinstance(fr_data, dict) else None)
             oi_sig   = oi_trend(oi_rows)
             raw_direction = str((f.get('_direction_agg', {}) or {}).get('direction') or 'neutral')
             direction = _direction(bot_type, f.get('_direction_agg', {}))

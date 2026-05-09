@@ -922,11 +922,11 @@ def _bot(
 
 
 
-def test_active_bot_queries_ignore_unsupported_legacy_bots(conn):
+def test_active_bot_queries_ignore_unsupported_bot_types(conn):
     assert db.insert_bot_instance(conn, _bot(bot_id="B-supported", origin_rec_id="R-supported")) == "inserted"
     assert db.insert_bot_instance(
         conn,
-        _bot(bot_id="B-legacy", origin_rec_id="R-legacy", bot_type="legacy_grid"),
+        _bot(bot_id="B-unsupported", origin_rec_id="R-unsupported", bot_type="invalid_bot_type"),
     ) == "inserted"
 
     active = db.get_active_bots(conn)
@@ -935,11 +935,11 @@ def test_active_bot_queries_ignore_unsupported_legacy_bots(conn):
 
 
 
-def test_legacy_bots_do_not_pollute_risk_gates(conn, monkeypatch):
+def test_unsupported_bot_types_do_not_pollute_risk_gates(conn, monkeypatch):
     monkeypatch.setenv("RISK_DAY_TZ", "UTC")
     assert db.insert_bot_instance(
         conn,
-        _bot(bot_id="B-legacy", origin_rec_id="R-legacy", bot_type="legacy_grid"),
+        _bot(bot_id="B-unsupported", origin_rec_id="R-unsupported", bot_type="invalid_bot_type"),
     ) == "inserted"
 
     limits = {

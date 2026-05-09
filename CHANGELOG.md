@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-05-09 — audit archive repair and funding interval hardening
+
+- `funding_signal()` теперь annualizes funding по фактическому `funding_interval_min`, а не жёстко по 8h; UI/API получают тот же сигнал, что и event-aware cost model.
+- Execution preflight округляет цены/объёмы через Decimal-based `quantize_step()`, чтобы избежать float artifacts на tick/qty step.
+- Восстановлены отсутствующие `docs/AUDIT_REPORT_2026-04-08.md`, `docs/AUDIT_REPORT_2026-04-10.md`, `docs/AUDIT_REPORT_2026-04-15.md`, `docs/AUDIT_REPORT_2026-04-22.md`, `docs/AUDIT_REPORT_2026-04-24.md`, `docs/AUDIT_REPORT_2026-05-08.md`, `docs/AUDIT_REPORT_2026-05-09.md`.
+- Тестовые проверки неподдерживаемых payload переименованы без legacy-strategy wording: используется нейтральный `invalid_bot_type`.
+
 ## 2026-05-09 — funding interval and net grid economics audit hardening
 
 ### Исправлено

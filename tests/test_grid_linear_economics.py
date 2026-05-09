@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.features import funding_signal
 from app.grid_math import (
     funding_cashflow_usdt,
     grid_leg_economics,
@@ -75,3 +76,12 @@ def test_margin_and_liquidation_buffer_are_conservative_estimates() -> None:
     liq = estimate_linear_liq_price("long", "100", "5")
     assert float(liq) == pytest.approx(80.6)
     assert float(liquidation_buffer_pct("long", "100", liq)) == pytest.approx(19.4)
+
+
+def test_funding_signal_annualizes_by_bybit_interval() -> None:
+    one_hour = funding_signal(0.0001, 60)
+    eight_hour = funding_signal(0.0001, 480)
+    assert one_hour["carry_cost_bps_interval"] == pytest.approx(1.0)
+    assert one_hour["funding_interval_min"] == 60
+    assert one_hour["annualized_pct"] == pytest.approx(87.6)
+    assert eight_hour["annualized_pct"] == pytest.approx(10.95)

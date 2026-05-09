@@ -34,7 +34,7 @@ from .security import is_authorized
 from . import db
 from .db_backend import describe_target
 from .bot_types import sql_in_clause
-from .grid_math import estimate_linear_liq_price, liquidation_buffer_pct
+from .grid_math import estimate_linear_liq_price, liquidation_buffer_pct, quantize_step
 import logging
 
 logger = logging.getLogger(__name__)
@@ -543,18 +543,8 @@ def _quantize_to_step(value: float | None, step: float | None, *, mode: str = "n
     tick = _finite_float_or_none(step)
     if num is None or tick is None or tick <= 0:
         return None
-    decimals = _count_step_decimals(step) or 0
-    factor = 10 ** max(0, int(decimals))
-    scaled_value = int(round(num * factor))
-    scaled_step = max(1, int(round(tick * factor)))
-    ratio = scaled_value / scaled_step
-    if mode == "down":
-        units = math.floor(ratio + 1e-12)
-    elif mode == "up":
-        units = math.ceil(ratio - 1e-12)
-    else:
-        units = round(ratio)
-    return float((units * scaled_step) / factor)
+    rounded = quantize_step(str(num), str(tick), mode=mode)
+    return float(rounded) if rounded is not None else None
 
 
 def _format_step_aligned(value: float | None, step: float | None) -> str | None:
