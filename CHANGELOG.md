@@ -1,3 +1,8 @@
+# 2026-05-09 — Runtime risk cap hardening
+
+- Runtime risk-limit normalization now clamps `max_concurrent_bots` and `max_symbol_bots` to the Bybit Futures Grid Bot product cap of 50. Operator JSON can make limits stricter, but cannot raise the effective limit above the exchange/product cap.
+- Added regression tests for clamped risk-limit normalization and execution gate enforcement.
+
 ## 2026-05-09 — strict Linear USDT client boundary and funding labels
 
 - `BybitPublicClient` теперь fail-fast принимает только `category=linear` и символы с суффиксом `USDT`; non-USDT symbols или нецелевой category отклоняются до сетевого запроса.

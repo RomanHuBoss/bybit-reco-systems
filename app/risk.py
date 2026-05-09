@@ -14,6 +14,9 @@ from typing import Any
 
 from . import db
 
+BYBIT_FUTURES_GRID_MAX_CONCURRENT_BOTS = 50
+BYBIT_FUTURES_GRID_MAX_SYMBOL_BOTS = 50
+
 DEFAULT_RISK_LIMITS: dict[str, Any] = {
     "max_concurrent_bots": 4,
     "max_daily_dd_usdt": 200.0,
@@ -90,10 +93,37 @@ def _normalize_risk_limits(active: Any, fallback_limits: dict[str, Any]) -> dict
     default_cooldown_min = _safe_default_int(fallback.get("cooldown_after_loss_min", 30) or 30, 30)
     default_max_symbol_bots = _safe_default_int(fallback.get("max_symbol_bots", 1) or 1, 1)
 
-    merged["max_concurrent_bots"] = _limit_int(merged, "max_concurrent_bots", default_max_concurrent, minimum=1, maximum=100000)
-    merged["max_daily_dd_usdt"] = _limit_float(merged, "max_daily_dd_usdt", default_max_daily_dd, minimum=0.0, maximum=1e12)
-    merged["cooldown_after_loss_min"] = _limit_int(merged, "cooldown_after_loss_min", default_cooldown_min, minimum=0, maximum=7 * 24 * 60)
-    merged["max_symbol_bots"] = _limit_int(merged, "max_symbol_bots", default_max_symbol_bots, minimum=1, maximum=100000)
+    # Bybit caps Futures Grid Bot instances at 50 total. Risk limits are
+    # operator guardrails, not a way to bypass exchange/product constraints;
+    # fail closed by clamping the effective runtime limit to the product maximum.
+    merged["max_concurrent_bots"] = _limit_int(
+        merged,
+        "max_concurrent_bots",
+        default_max_concurrent,
+        minimum=1,
+        maximum=BYBIT_FUTURES_GRID_MAX_CONCURRENT_BOTS,
+    )
+    merged["max_daily_dd_usdt"] = _limit_float(
+        merged,
+        "max_daily_dd_usdt",
+        default_max_daily_dd,
+        minimum=0.0,
+        maximum=1e12,
+    )
+    merged["cooldown_after_loss_min"] = _limit_int(
+        merged,
+        "cooldown_after_loss_min",
+        default_cooldown_min,
+        minimum=0,
+        maximum=7 * 24 * 60,
+    )
+    merged["max_symbol_bots"] = _limit_int(
+        merged,
+        "max_symbol_bots",
+        default_max_symbol_bots,
+        minimum=1,
+        maximum=BYBIT_FUTURES_GRID_MAX_SYMBOL_BOTS,
+    )
     return merged
 
 def day_start_ts_utc() -> int:
@@ -221,7 +251,13 @@ def gate_candidate(conn, venue: str, symbol: str, limits: dict[str, Any], cached
     rs = cached_status if cached_status is not None else compute_risk_status(conn, limits)
 
     limits = normalize_risk_limits(limits, limits)
-    max_conc = _limit_int(limits, "max_concurrent_bots", 999999, minimum=1, maximum=100000)
+    max_conc = _limit_int(
+        limits,
+        "max_concurrent_bots",
+        999999,
+        minimum=1,
+        maximum=BYBIT_FUTURES_GRID_MAX_CONCURRENT_BOTS,
+    )
     if rs.active_bots >= max_conc:
         blocks.append({"code":"MAX_CONCURRENT_BOTS", "msg": f"active_bots={rs.active_bots} >= limit={max_conc}"})
 
@@ -232,7 +268,13 @@ def gate_candidate(conn, venue: str, symbol: str, limits: dict[str, Any], cached
     if rs.cooldown_active:
         blocks.append({"code":"COOLDOWN_ACTIVE", "msg":"cooldown after losses is active"})
 
-    max_symbol_bots = _limit_int(limits, "max_symbol_bots", 999999, minimum=1, maximum=100000)
+    max_symbol_bots = _limit_int(
+        limits,
+        "max_symbol_bots",
+        999999,
+        minimum=1,
+        maximum=BYBIT_FUTURES_GRID_MAX_SYMBOL_BOTS,
+    )
     active_for_symbol = rs.symbol_bot_counts.get(f"{venue}:{symbol}", 0)
     if active_for_symbol >= max_symbol_bots:
         blocks.append({"code":"MAX_SYMBOL_BOTS", "msg": f"{venue}:{symbol} active={active_for_symbol} >= limit={max_symbol_bots}"})

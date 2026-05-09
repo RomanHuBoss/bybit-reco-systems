@@ -126,6 +126,7 @@ ruff check app tests main.py
 - `SYMBOLS_LINEAR` — список только USDT perpetual symbols для `venue=linear`; дубли удаляются, а не-USDT symbols fail-closed отфильтровываются на bootstrap, чтобы нецелевой Bybit payload не попал в сбор и scoring;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
 - `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
+- `RISK_LIMITS_JSON` — runtime risk caps; `max_concurrent_bots` и `max_symbol_bots` дополнительно clamp-ятся к product cap 50 Futures Grid Bots, даже если оператор передал большее значение;
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
 - `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи; после этого окна same-direction сигнал всё равно не откроет новый outcome-root, пока предыдущая псевдо-сделка той же chain не доживёт до своего horizon или не получит outcome;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
