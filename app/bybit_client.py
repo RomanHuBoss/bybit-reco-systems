@@ -37,8 +37,12 @@ def _normalize_linear_usdt_symbol(symbol: str | None) -> str | None:
     normalized = str(symbol or "").strip().upper()
     if not normalized:
         return None
-    if not normalized.endswith("USDT"):
-        raise ValueError(f"Unsupported symbol for this service: {normalized}. Only Bybit Linear USDT perpetual symbols are allowed.")
+    base = normalized[:-4] if normalized.endswith("USDT") else ""
+    if not base or not normalized.endswith("USDT") or not normalized.isalnum():
+        raise ValueError(
+            f"Unsupported symbol for this service: {normalized}. "
+            "Only Bybit Linear USDT perpetual symbols are allowed; use exact symbols like BTCUSDT."
+        )
     return normalized
 
 

@@ -1763,7 +1763,12 @@ def _params(
         base_levels -= 1
     grid_levels = max(4, min(14, int(base_levels)))
 
-    range_span_pct_total = max(grid_spacing_pct_frac * max(grid_levels - 1, 4) * 1.15, atr_pct * (3.0 + 2.0 * range_score))
+    # ``grid_count`` is documented and validated as Bybit's Number of Grids,
+    # i.e. the number of price intervals. The range span therefore must scale
+    # with ``grid_levels`` itself, not ``grid_levels - 1``. Using points instead
+    # of intervals silently compressed the range and made the displayed
+    # step/range geometry inconsistent for manual operator setup.
+    range_span_pct_total = max(grid_spacing_pct_frac * max(grid_levels, 4) * 1.15, atr_pct * (3.0 + 2.0 * range_score))
     half_span = range_span_pct_total / 2.0
 
     down_mult = 1.0
@@ -3061,6 +3066,20 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     blocks.append({"code": "GRID_GROSS_EDGE_BELOW_COSTS", "msg": f"gross_profit_per_grid={gross_profit_bps:.2f} bps почти не покрывает execution_cost={execution_cost_bps:.2f} bps"})
                 if venue == "linear" and liq_buffer_pct is not None and liq_buffer_pct < 12.0:
                     blocks.append({"code": "LIQUIDATION_BUFFER_TOO_LOW", "msg": f"estimated liquidation buffer={liq_buffer_pct:.2f}% < 12%"})
+                max_leverage = _finite_or_none(limits.get("max_leverage") if isinstance(limits, dict) else None)
+                leverage_used = _finite_or_none(params.get("leverage"))
+                if max_leverage is not None and max_leverage > 0 and leverage_used is not None and leverage_used > max_leverage:
+                    blocks.append({"code": "MAX_LEVERAGE_PER_BOT", "msg": f"leverage={leverage_used:.0f}x > runtime cap={max_leverage:.0f}x"})
+
+                max_notional = _finite_or_none(limits.get("max_position_notional_usdt") if isinstance(limits, dict) else None)
+                estimated_notional = _finite_or_none(econ.get("estimated_max_position_notional_usdt"))
+                if max_notional is not None and max_notional > 0 and estimated_notional is not None and estimated_notional > max_notional:
+                    blocks.append({"code": "MAX_POSITION_NOTIONAL_PER_BOT", "msg": f"estimated_max_position_notional={estimated_notional:.2f} USDT > runtime cap={max_notional:.2f} USDT"})
+
+                max_margin = _finite_or_none(limits.get("max_margin_per_bot_usdt") if isinstance(limits, dict) else None)
+                estimated_margin = _finite_or_none((params.get("sizing") or {}).get("estimated_margin_required_usdt") if isinstance(params.get("sizing"), dict) else None)
+                if max_margin is not None and max_margin > 0 and estimated_margin is not None and estimated_margin > max_margin:
+                    blocks.append({"code": "MAX_MARGIN_PER_BOT", "msg": f"estimated_margin_required={estimated_margin:.2f} USDT > runtime cap={max_margin:.2f} USDT"})
 
             if blocks:
                 status = "blocked"

@@ -48,3 +48,22 @@ def test_gate_candidate_uses_clamped_futures_grid_bot_caps() -> None:
 
     assert "MAX_CONCURRENT_BOTS" in codes
     assert "MAX_SYMBOL_BOTS" in codes
+
+
+def test_risk_limits_include_per_bot_leverage_notional_and_margin_caps() -> None:
+    limits = normalize_risk_limits(
+        {
+            "max_concurrent_bots": 4,
+            "max_daily_dd_usdt": 200.0,
+            "cooldown_after_loss_min": 30,
+            "max_symbol_bots": 1,
+            "max_leverage": "2",
+            "max_position_notional_usdt": "750",
+            "max_margin_per_bot_usdt": "250",
+        },
+        {},
+    )
+
+    assert limits["max_leverage"] == 2
+    assert limits["max_position_notional_usdt"] == 750.0
+    assert limits["max_margin_per_bot_usdt"] == 250.0

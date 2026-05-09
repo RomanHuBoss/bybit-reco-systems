@@ -16,12 +16,18 @@ from . import db
 
 BYBIT_FUTURES_GRID_MAX_CONCURRENT_BOTS = 50
 BYBIT_FUTURES_GRID_MAX_SYMBOL_BOTS = 50
+BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT = 3
+BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT = 5_000.0
+BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT = 1_000.0
 
 DEFAULT_RISK_LIMITS: dict[str, Any] = {
     "max_concurrent_bots": 4,
     "max_daily_dd_usdt": 200.0,
     "cooldown_after_loss_min": 30,
     "max_symbol_bots": 1,
+    "max_leverage": BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT,
+    "max_position_notional_usdt": BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT,
+    "max_margin_per_bot_usdt": BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT,
 }
 
 
@@ -92,6 +98,20 @@ def _normalize_risk_limits(active: Any, fallback_limits: dict[str, Any]) -> dict
     default_max_daily_dd = _safe_default_float(fallback.get("max_daily_dd_usdt", 200.0) or 200.0, 200.0)
     default_cooldown_min = _safe_default_int(fallback.get("cooldown_after_loss_min", 30) or 30, 30)
     default_max_symbol_bots = _safe_default_int(fallback.get("max_symbol_bots", 1) or 1, 1)
+    default_max_leverage = _safe_default_int(
+        fallback.get("max_leverage", BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT) or BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT,
+        BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT,
+    )
+    default_max_position_notional = _safe_default_float(
+        fallback.get("max_position_notional_usdt", BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT)
+        or BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT,
+        BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT,
+    )
+    default_max_margin_per_bot = _safe_default_float(
+        fallback.get("max_margin_per_bot_usdt", BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT)
+        or BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT,
+        BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT,
+    )
 
     # Bybit caps Futures Grid Bot instances at 50 total. Risk limits are
     # operator guardrails, not a way to bypass exchange/product constraints;
@@ -123,6 +143,27 @@ def _normalize_risk_limits(active: Any, fallback_limits: dict[str, Any]) -> dict
         default_max_symbol_bots,
         minimum=1,
         maximum=BYBIT_FUTURES_GRID_MAX_SYMBOL_BOTS,
+    )
+    merged["max_leverage"] = _limit_int(
+        merged,
+        "max_leverage",
+        default_max_leverage,
+        minimum=1,
+        maximum=100,
+    )
+    merged["max_position_notional_usdt"] = _limit_float(
+        merged,
+        "max_position_notional_usdt",
+        default_max_position_notional,
+        minimum=0.0,
+        maximum=1e12,
+    )
+    merged["max_margin_per_bot_usdt"] = _limit_float(
+        merged,
+        "max_margin_per_bot_usdt",
+        default_max_margin_per_bot,
+        minimum=0.0,
+        maximum=1e12,
     )
     return merged
 
@@ -163,6 +204,9 @@ def normalize_risk_limits(limits: Any, fallback_limits: dict[str, Any] | None = 
         "max_daily_dd_usdt": float(effective["max_daily_dd_usdt"]),
         "cooldown_after_loss_min": int(effective["cooldown_after_loss_min"]),
         "max_symbol_bots": int(effective["max_symbol_bots"]),
+        "max_leverage": int(effective["max_leverage"]),
+        "max_position_notional_usdt": float(effective["max_position_notional_usdt"]),
+        "max_margin_per_bot_usdt": float(effective["max_margin_per_bot_usdt"]),
     }
 
 

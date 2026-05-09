@@ -1,3 +1,11 @@
+# Changelog
+
+## 2026-05-09 — Linear grid hardening: symbol scope, interval geometry, per-bot caps
+- Tightened Bybit Linear USDT scope: malformed symbols such as `BTC/USDT`, `USDT`, `BTC-USDT` and `BTCUSDT-PERP` are rejected/filtered before REST collection or scoring.
+- Fixed arithmetic grid range generation: `grid_count` is Bybit's number of price intervals, so total range span now scales with `grid_count`, not `grid_count - 1`.
+- Added normalized runtime caps for `max_leverage`, `max_position_notional_usdt` and `max_margin_per_bot_usdt`; recommender blocks candidates that exceed these per-bot risk limits.
+- Added regression tests for strict symbol scope, interval-count grid geometry and new risk-cap normalization.
+
 # 2026-05-09 — Arithmetic grid fail-closed hardening
 
 - Execution preflight now blocks `grid_type=geometric` instead of accepting it without dedicated geometric ratio/net-profit/tick-rounding math; the recommender remains arithmetic-only.

@@ -147,3 +147,30 @@ def test_recommender_default_sizing_snaps_up_for_expensive_linear_contracts() ->
 def test_linear_helpers_fail_closed_on_unknown_side() -> None:
     assert linear_pnl_usdt("typo", "1", "100", "110") == 0
     assert funding_cashflow_usdt("typo", "1000", "0.0001", 2) == 0
+
+
+def test_grid_count_is_used_as_interval_count_for_range_span() -> None:
+    from app.recommender import _params
+
+    params = _params(
+        "futures_grid",
+        "linear",
+        {
+            "price": 100.0,
+            "atr_pct": 0.001,
+            "_atr_pct_1h": 0.001,
+            "_direction_agg": {"trendiness": 0.05, "coherence": 0.80, "regime": "range", "regime_confidence": 0.80},
+        },
+        global_sent=0.0,
+        direction="neutral",
+        taker_fee_bps=0.0,
+        direction_bias="neutral",
+        direction_bias_strength=0.0,
+        atr_pct_for_grid=0.001,
+        cost_model={"execution_cost_bps": 0.0, "expected_funding_bps": 0.0},
+    )
+
+    # Bybit Number of Grids is price intervals, not rendered price points.
+    # The generated total range must therefore scale with grid_count itself.
+    assert params["grid_count"] == params["grid_levels"]
+    assert params["range_span_pct_total"] >= params["grid_spacing_pct"] * params["grid_count"] * 1.14

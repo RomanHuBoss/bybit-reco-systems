@@ -1,7 +1,7 @@
 # Модули и контракты
 
 ## `app/bybit_client.py`
-- fail-closed публичный REST-клиент Bybit с retry/backoff и exact-symbol проверкой `instruments-info`;
+- fail-closed публичный REST-клиент Bybit с retry/backoff, строгим scope `category=linear` + exact `*USDT` symbol и exact-symbol проверкой `instruments-info`;
 Публичный REST-клиент Bybit.
 
 Контракт:
@@ -52,7 +52,7 @@ Direction voting и aggregation по TF.
 Runtime risk limits.
 
 Контракт:
-- limits всегда нормализуются до канонической формы;
+- limits всегда нормализуются до канонической формы, включая per-bot caps `max_leverage`, `max_position_notional_usdt`, `max_margin_per_bot_usdt`;
 - cooldown/daily DD считаются только из известных audit/trade rows;
 - limits проверяются и на recommendation-time, и на execution-time.
 

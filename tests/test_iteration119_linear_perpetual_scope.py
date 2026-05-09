@@ -89,3 +89,29 @@ def test_collect_once_does_not_relabel_wrong_symbol_ticker(tmp_path: Path, monke
     assert stats["ticker_missing_symbols"] == 1
     assert db.get_latest_ticker(conn, "linear", "BTCUSDT") is None
     conn.close()
+
+
+def test_bybit_symbol_scope_rejects_malformed_usdt_symbols_before_request() -> None:
+    from app.bybit_client import BybitPublicClient
+
+    client = BybitPublicClient("https://api.bybit.com", max_retries=0)
+    try:
+        for bad_symbol in ("USDT", "BTC/USDT", "BTC-USDT", "BTCUSDT-PERP"):
+            with pytest.raises(ValueError, match="Only Bybit Linear USDT"):
+                client.get_kline("linear", bad_symbol)
+    finally:
+        client.close()
+
+
+def test_settings_filters_malformed_linear_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib
+    import sys
+
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT,BTC/USDT,ETHUSDT,USDT,SOL-USDT")
+    sys.modules.pop("app.settings", None)
+    settings_module = importlib.import_module("app.settings")
+    settings = settings_module.load_settings()
+
+    assert settings.symbols_linear == ["BTCUSDT", "ETHUSDT"]
+
+    sys.modules.pop("app.settings", None)

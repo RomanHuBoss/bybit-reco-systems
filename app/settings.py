@@ -124,16 +124,23 @@ def _csv_symbols_unique(raw: str) -> list[str]:
     return out
 
 
+def _is_exact_linear_usdt_symbol(symbol: str) -> bool:
+    base = str(symbol or "").strip().upper()[:-4] if str(symbol or "").strip().upper().endswith("USDT") else ""
+    normalized = str(symbol or "").strip().upper()
+    return bool(base and normalized.endswith("USDT") and normalized.isalnum())
+
+
 def _linear_usdt_symbols_unique(raw: str) -> list[str]:
-    """Return only Bybit Linear USDT perpetual symbols from operator config.
+    """Return only exact Bybit Linear USDT perpetual symbols from operator config.
 
     Bybit's ``linear`` API category also contains non-USDT linear contracts on
-    some endpoints. Product scope for this service is stricter: only USDT
-    perpetual futures grid recommendations are allowed. Filtering here prevents
-    accidental collection/scoring of BTCUSDC or legacy/non-perpetual symbols
-    before later execution preflight gets a chance to block them.
+    some endpoints. Product scope for this service is stricter: only exact USDT
+    perpetual futures symbols such as ``BTCUSDT``. Filtering here prevents
+    accidental collection/scoring of malformed values like ``BTC/USDT`` or
+    non-USDT instruments before later execution preflight gets a chance to block
+    them.
     """
-    return [symbol for symbol in _csv_symbols_unique(raw) if symbol.endswith("USDT")]
+    return [symbol for symbol in _csv_symbols_unique(raw) if _is_exact_linear_usdt_symbol(symbol)]
 
 
 @dataclass(frozen=True)
@@ -213,7 +220,7 @@ def load_settings() -> Settings:
 
     risk_limits = _env_json_dict(
         "RISK_LIMITS_JSON",
-        '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1}',
+        '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1,"max_leverage":3,"max_position_notional_usdt":5000.0,"max_margin_per_bot_usdt":1000.0}',
     )
 
     master_key = os.getenv("MASTER_KEY", "") or None

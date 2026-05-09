@@ -56,6 +56,9 @@ def test_bootstrap_persists_effective_normalized_risk_limits(tmp_path: Path, mon
             "max_daily_dd_usdt": 0.0,
             "cooldown_after_loss_min": 30,
             "max_symbol_bots": 1,
+            "max_leverage": 3,
+            "max_position_notional_usdt": 5000.0,
+            "max_margin_per_bot_usdt": 1000.0,
         }
     finally:
         conn.close()
@@ -91,6 +94,9 @@ def test_api_update_risk_limits_persists_and_returns_effective_limits(client_and
             "max_daily_dd_usdt": 0.0,
             "cooldown_after_loss_min": 30,
             "max_symbol_bots": 1,
+            "max_leverage": 3,
+            "max_position_notional_usdt": 5000.0,
+            "max_margin_per_bot_usdt": 1000.0,
         },
     }
 
