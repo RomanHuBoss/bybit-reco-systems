@@ -383,6 +383,87 @@ def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: 
     return (existing.get("meta") or {}) == (meta or {})
 
 
+def _merge_bybit_operator_guard_into_ui_payload(out: dict[str, Any], guard: dict[str, Any]) -> None:
+    """Make stale/invalid Bybit exchange constraints visible before execution.
+
+    The DB row may have been produced from market candles before fresh instrument
+    metadata was available. Operator-facing API responses must therefore fail
+    closed when current Bybit metadata cannot confirm LinearPerpetual/USDT/tick,
+    lot, min-notional and leverage constraints. This keeps the UI from showing an
+    apparently actionable futures-grid recommendation that execution preflight
+    would later reject.
+    """
+    if not isinstance(guard, dict):
+        return
+    errors = [item for item in (guard.get("errors") or []) if isinstance(item, dict)]
+    if not errors:
+        return
+
+    # Shape-normalized legacy rows with malformed JSON payloads are exposed as
+    # empty params/reasons/blocks by the API. Keep that defensive fail-open
+    # contract intact instead of rebuilding JSON objects from invalid storage.
+    params_payload = out.get("params")
+    if not isinstance(params_payload, dict) or not params_payload:
+        return
+
+    blocks = out.get("blocks")
+    if not isinstance(blocks, list):
+        blocks = []
+    seen_codes = {str(item.get("code") or "") for item in blocks if isinstance(item, dict)}
+    rejection_messages: list[str] = []
+    for err in errors:
+        code = str(err.get("code") or "BYBIT_OPERATOR_GUARD_FAILED")
+        msg = str(err.get("msg") or "Bybit exchange-constraint guard blocked this futures-grid recommendation.")
+        rejection_messages.append(msg)
+        if code in seen_codes:
+            continue
+        blocks.append({"code": code, "msg": msg, "source": "bybit_operator_guard"})
+        seen_codes.add(code)
+    out["blocks"] = blocks
+
+    current_status = str(out.get("status") or "").strip().lower()
+    if current_status in {"recommended", "pending", "active"}:
+        out["status"] = "blocked"
+
+    params = out.get("params") if isinstance(out.get("params"), dict) else {}
+    risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
+    risk_report["decision"] = "not_recommended"
+    existing_rejections = risk_report.get("rejection_reasons")
+    if not isinstance(existing_rejections, list):
+        existing_rejections = []
+    seen_reasons = {str(item) for item in existing_rejections}
+    for msg in rejection_messages:
+        if msg not in seen_reasons:
+            existing_rejections.append(msg)
+            seen_reasons.add(msg)
+    risk_report["rejection_reasons"] = existing_rejections
+    params["risk_report"] = risk_report
+    out["params"] = params
+
+    reasons = out.get("reasons") if isinstance(out.get("reasons"), dict) else {}
+    risk_checks = reasons.get("risk_checks") if isinstance(reasons.get("risk_checks"), dict) else {}
+    risk_checks["passed"] = False
+    risk_blocks = risk_checks.get("blocks")
+    if not isinstance(risk_blocks, list):
+        risk_blocks = []
+    risk_seen_codes = {str(item.get("code") or "") for item in risk_blocks if isinstance(item, dict)}
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        code = str(block.get("code") or "")
+        if code and code not in risk_seen_codes:
+            risk_blocks.append(block)
+            risk_seen_codes.add(code)
+    risk_checks["blocks"] = risk_blocks
+    reasons["risk_checks"] = risk_checks
+
+    decision_layers = reasons.get("decision_layers") if isinstance(reasons.get("decision_layers"), dict) else {}
+    decision_layers["bybit_operator_guard"] = "blocked"
+    decision_layers["final_status"] = "blocked"
+    reasons["decision_layers"] = decision_layers
+    out["reasons"] = reasons
+
+
 def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     out = dict(rec)
     venue = str(out.get("venue") or "")
@@ -392,6 +473,8 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         out["bybit_meta"] = {}
     out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, out.get("bybit_meta") or {})
+    out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, out.get("bybit_meta") or {}, require_meta=True)
+    _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
     return out
 
 
