@@ -735,10 +735,19 @@ def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, An
 
     ticker = db.get_latest_ticker(conn, str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
     current_price = _current_price_from_ticker(ticker)
-    if current_price is None:
-        return []
 
     blocks: list[dict[str, Any]] = []
+    if current_price is None:
+        # Freshness alone is not enough: a ticker row can be fresh but unusable
+        # (for example all price fields are NULL after sanitisation of a broken
+        # upstream payload). In that case execution must fail closed because the
+        # grid range, kill-switch and reference-price drift cannot be checked.
+        blocks.append({
+            "code": "LIVE_PRICE_UNAVAILABLE",
+            "msg": "Текущий ticker свежий, но не содержит пригодной last/bid/ask цены; запуск grid запрещён до получения валидной live price.",
+        })
+        return blocks
+
     if lower_ks is not None and upper_ks is not None and not (lower_ks <= current_price <= upper_ks):
         blocks.append({
             "code": "CURRENT_PRICE_OUTSIDE_KILL_SWITCH",

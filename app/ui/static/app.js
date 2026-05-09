@@ -580,7 +580,7 @@ function buildDetailsHtml(it) {
   const blockCards = blocks.length ? `<div class="small-blocks">${blocks.map(b => `<div class="small-block"><code>${escapeHtml(b.code || "BLOCK")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>` : `<div class="helper-text">Активных блоков нет.</div>`;
   const bybitValidationCards = bybitValidationItems.length
     ? `<div class="small-blocks">${bybitValidationItems.map(b => `<div class="small-block ${bybitErrors.includes(b) ? "small-block-critical" : ""}"><code>${escapeHtml(b.code || "BYBIT_VALIDATION")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>`
-    : `<div class="helper-text">Bybit metadata/preflight warnings отсутствуют. Перед запуском execution-preflight всё равно сверит live tick/lot/min-notional.</div>`;
+    : `<div class="helper-text">Bybit metadata/preflight warnings отсутствуют. Перед запуском execution-preflight всё равно сверит live last/bid/ask price, tick/lot/min-notional.</div>`;
   const fastVetoBlock = fastVeto.triggered ? `<div class="small-blocks"><div class="small-block"><code>${escapeHtml((fastVeto.blocks || [])[0]?.code || "FAST_VETO")}</code><br>${escapeHtml((fastVeto.blocks || [])[0]?.msg || "")}</div></div>` : `<div class="helper-text">Fast-veto не сработал.</div>`;
 
   return `

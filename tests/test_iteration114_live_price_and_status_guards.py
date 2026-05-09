@@ -190,3 +190,62 @@ def test_execution_preflight_blocks_live_price_outside_grid_range(isolated_app_a
     assert "STALE_TICKER_DATA" not in codes
     assert "CURRENT_PRICE_OUTSIDE_GRID_RANGE" in codes
     assert "CURRENT_PRICE_OUTSIDE_KILL_SWITCH" in codes
+
+def test_execution_preflight_blocks_fresh_ticker_without_live_price(isolated_app_and_conn):
+    app_main, conn = isolated_app_and_conn
+    now = int(time.time())
+    _insert_reco(conn, rec_id="R-live-price-missing", ts_now=now - 10)
+    db.upsert_ohlcv(
+        conn,
+        [
+            {
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "tf_sec": 60,
+                "ts": now - 30,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.5,
+                "close": 100.5,
+                "volume": 10.0,
+            }
+        ],
+    )
+    db.insert_tickers(
+        conn,
+        [
+            {
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "ts": now - 10,
+                "last": None,
+                "bid": None,
+                "ask": None,
+                "vol24h": 1000.0,
+                "turnover24h": 100000.0,
+            }
+        ],
+    )
+    db.insert_features(conn, "linear", "BTCUSDT", now - 10, {"volume_z": 0.1})
+    db.set_app_config_json(
+        conn,
+        app_main.MARKET_SHOCK_APP_KEY,
+        {
+            "state": "normal",
+            "title": "Нормальный режим",
+            "severity": "normal",
+            "entry_mode": "normal",
+            "operator_note": "Новые входы разрешены.",
+            "reasons": [],
+            "metrics": {},
+        },
+    )
+
+    rec = db.get_recommendation_by_id(conn, "R-live-price-missing")
+    preflight = app_main._execution_preflight(conn, rec, now_ts=now, bybit_meta=_meta())
+
+    codes = {block["code"] for block in preflight["blocks"]}
+    assert "MISSING_TICKER_DATA" not in codes
+    assert "STALE_TICKER_DATA" not in codes
+    assert "LIVE_PRICE_UNAVAILABLE" in codes
+

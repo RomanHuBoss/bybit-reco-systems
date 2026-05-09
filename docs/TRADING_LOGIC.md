@@ -42,7 +42,7 @@ execution-time validation должна блокировать исполнени
 - symbol fast-veto не активен;
 - instrument metadata Bybit подгружается до захвата SQLite write-lock, чтобы operator execution не тормозил остальные writer-контуры на сетевой задержке upstream;
 - execution-preflight fail-closed блокирует запуск, если metadata не подтверждает `contractType=LinearPerpetual`, `quoteCoin=USDT` и `settleCoin=USDT`;
-- текущий live ticker сверяется с сохранённым `trade_plan.levels.range` и `kill_switch`: если цена уже вышла за диапазон или защитную границу, подтверждение `executed` блокируется до пересчёта рекомендации.
+- текущий live ticker сверяется с сохранённым `trade_plan.levels.range` и `kill_switch`: если цена уже вышла за диапазон или защитную границу, подтверждение `executed` блокируется до пересчёта рекомендации; если свежая ticker-запись не содержит пригодной `last`/`bid`/`ask` цены, execution preflight блокируется fail-closed с `LIVE_PRICE_UNAVAILABLE`.
 
 ### Геометрия grid-плана
 - `reference_price` внутри диапазона;

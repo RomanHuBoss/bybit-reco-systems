@@ -1,3 +1,9 @@
+## 2026-05-09 — live-price preflight fail-closed
+
+- Execution preflight теперь блокирует подтверждение grid-рекомендации, если свежая ticker-запись не содержит пригодной `last`/`bid`/`ask` цены (`LIVE_PRICE_UNAVAILABLE`); freshness без live price больше не считается достаточной для проверки диапазона, kill-switch и drift от reference price.
+- Добавлен regression test на свежий, но непригодный ticker, чтобы execution-path не обходил live-price guards при `NULL` price fields.
+- UI helper text уточняет, что перед запуском проверяется пригодная live `last`/`bid`/`ask` цена, а не только свежесть ticker-записи.
+
 # 2026-05-09 — Deep grid-linear audit hardening
 
 - Product scope rechecked as grid-only: UI/API/docs/tests no longer contain unsupported strategy examples; invalid payload tests use neutral unsupported placeholders instead of naming disallowed bot families.
