@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-09 — Prompt re-audit: MTF fail-closed and risk-report sync
+- Added an explicit `INSUFFICIENT_MTF_HISTORY_FOR_GRID` block: futures-grid recommendations now require at least 3 closed multi-timeframe histories for direction/regime validation, instead of relying on 1m features plus confidence penalty.
+- Risk report `decision` is now synchronized whenever recommendation metadata is resynced, so persistence/LLM gates cannot leave a `pending` or `blocked` row with a stale `recommended` risk-report decision.
+- UI helper text now states that `pending` is also non-executable until the relevant gate is satisfied.
+- Added regression tests for insufficient MTF history and risk-report decision synchronization.
+
 ## 2026-05-09 — UI effective status sync fix
 - Fixed a table/detail status mismatch where `/api/v1/recommendations` could show a persisted `active` row while `/api/v1/recommendations/{rec_id}` applied the live Bybit operator guard and showed the same row as `blocked`.
 - Recommendation list responses now apply the same effective Bybit guard augmentation as detail responses before rendering/filtering statuses.

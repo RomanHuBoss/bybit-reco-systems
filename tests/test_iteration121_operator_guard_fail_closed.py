@@ -98,7 +98,9 @@ def test_operator_view_blocks_recommended_grid_when_bybit_min_notional_fails(app
     assert body["status"] == "blocked"
     assert body["bybit_operator_guard"]["ok"] is False
     codes = {item["code"] for item in body["blocks"]}
+    risk_codes = [item["code"] for item in body["reasons"]["risk_checks"]["blocks"]]
     assert "ORDER_NOTIONAL_BELOW_MIN" in codes
+    assert risk_codes.count("ORDER_NOTIONAL_BELOW_MIN") == 1
     assert body["params"]["risk_report"]["decision"] == "not_recommended"
     assert body["reasons"]["risk_checks"]["passed"] is False
     assert body["reasons"]["decision_layers"]["bybit_operator_guard"] == "blocked"

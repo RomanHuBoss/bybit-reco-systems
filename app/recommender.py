@@ -198,6 +198,11 @@ def _make_llm_reviewer(settings) -> OllamaCandleReviewer | None:
     )
 
 
+def _risk_report_decision_for_status(status: Any) -> str:
+    status_norm = str(status or "").strip().lower()
+    return "recommended" if status_norm in {"recommended", "active"} else "not_recommended"
+
+
 def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
     reasons = rec.setdefault("reasons", {})
     decision_layers = reasons.get("decision_layers")
@@ -226,6 +231,13 @@ def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
             "cached": llm_review.get("cached"),
             "cache_age_sec": llm_review.get("cache_age_sec"),
         }
+
+    params = rec.get("params")
+    if isinstance(params, dict):
+        risk_report = params.get("risk_report")
+        if isinstance(risk_report, dict):
+            risk_report["decision"] = _risk_report_decision_for_status(rec.get("status"))
+            params["risk_report"] = risk_report
 
 
 def _llm_review_hold_target_status(rec: dict[str, Any]) -> str | None:
@@ -2840,6 +2852,12 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 _range_score_now, _range_meta_now = _stable_range_score(f, f.get("_direction_agg", {}) or {})
                 _trendiness_now = float(_range_meta_now.get("trendiness") or 0.0)
                 _regime_now = str(_range_meta_now.get("regime") or "unknown")
+                _tf_used_now = list((f.get("_direction_agg") or {}).get("tf_used") or [])
+                if len(_tf_used_now) < 3:
+                    feasibility_blocks.append({
+                        "code": "INSUFFICIENT_MTF_HISTORY_FOR_GRID",
+                        "msg": f"использовано только {len(_tf_used_now)} timeframes для direction/regime; futures grid не публикуется без минимум 3 закрытых TF-историй",
+                    })
                 if _regime_now == "trend" and _trendiness_now >= 0.80 and _range_score_now < 0.35:
                     feasibility_blocks.append({
                         "code": "MARKET_TOO_TRENDY_FOR_GRID",
@@ -3085,7 +3103,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 status = "blocked"
 
             params["risk_report"] = {
-                "decision": "recommended" if status in {"recommended", "active"} and not blocks else ("not_recommended" if status in {"blocked", "no_trade", "suppressed", "pending"} else str(status)),
+                "decision": _risk_report_decision_for_status(status),
                 "risk_profile": (econ.get("risk_profile") if isinstance(econ, dict) else None) or ("conservative" if risk_score < 0.35 else ("moderate" if risk_score < 0.70 else "aggressive")),
                 "expected_net_profit_per_grid_bps": net_profit_bps,
                 "expected_net_profit_per_grid_usdt": _finite_or_none(econ.get("net_profit_usdt")) if isinstance(econ, dict) else None,

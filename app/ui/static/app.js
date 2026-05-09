@@ -669,7 +669,7 @@ function buildDetailsHtml(it) {
 
       <div class="operator-card">
         <h3>Риск-отчёт</h3>
-        <div class="helper-text" style="margin-bottom:8px">Решение относится только к Bybit Linear USDT Perpetual futures grid. При not_recommended/blocked запуск запрещён до пересчёта.</div>
+        <div class="helper-text" style="margin-bottom:8px">Решение относится только к Bybit Linear USDT Perpetual futures grid. При not_recommended/blocked/pending запуск запрещён до пересчёта или подтверждения gate.</div>
         <div class="operator-grid">
           ${fieldBox("Решение", riskReport.decision || (blocks.length ? "not_recommended" : "recommended"))}
           ${fieldBox("Профиль", riskReport.risk_profile || economics.risk_profile || "—")}
