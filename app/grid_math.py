@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Conservative linear-USDT futures grid economics.
 
 The helpers in this module intentionally avoid exchange-specific hidden state
@@ -7,6 +5,8 @@ The helpers in this module intentionally avoid exchange-specific hidden state
 for recommendation/preflight estimates and must be treated as conservative
 operator guidance, not as Bybit's exact liquidation engine.
 """
+
+from __future__ import annotations
 
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, InvalidOperation, getcontext
 from typing import Any
@@ -56,9 +56,12 @@ def linear_pnl_usdt(side: str, qty: Any, entry_price: Any, exit_price: Any) -> D
     if q <= ZERO or entry <= ZERO or exitp <= ZERO:
         return ZERO
     side_norm = str(side or "").strip().lower()
+    if side_norm == "long":
+        return q * (exitp - entry)
     if side_norm == "short":
         return q * (entry - exitp)
-    return q * (exitp - entry)
+    # Fail closed: a mistyped side must not silently become a long PnL.
+    return ZERO
 
 
 def round_trip_fee_usdt(entry_notional: Any, exit_notional: Any, fee_bps: Any) -> Decimal:
@@ -74,7 +77,14 @@ def funding_cashflow_usdt(side: str, position_notional: Any, funding_rate: Any, 
         n_events = max(0, int(events))
     except Exception:
         n_events = 0
-    sign = ONE if str(side or "").strip().lower() != "short" else Decimal("-1")
+    side_norm = str(side or "").strip().lower()
+    if side_norm == "long":
+        sign = ONE
+    elif side_norm == "short":
+        sign = Decimal("-1")
+    else:
+        # Unknown side: do not guess the funding payer/receiver.
+        return ZERO
     return notional * rate * Decimal(n_events) * sign
 
 

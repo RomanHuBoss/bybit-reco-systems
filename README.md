@@ -77,6 +77,7 @@
 - `bybit_meta` — metadata инструмента Bybit, доступная UI для операторской сверки диапазона, leverage и шагов.
 - `params.grid_type/grid_count` — Bybit Futures Grid Bot geometry: `grid_count` означает число price intervals (“Number of Grids”), а текущая генерация использует `grid_type=arithmetic`. `params.economics` / `reasons.grid_economics` — net-of-fees экономика одной сетки: gross/net bps, estimated execution cost, funding impact, estimated order notional, margin required и worst-boundary liquidation buffer. Если net profit per grid не положителен или слишком тонкий, рекомендация блокируется. `reasons.funding.funding_interval_source` показывает, был ли funding interval получен из Bybit ticker/instrument metadata; при материальном funding и неизвестном interval рекомендация блокируется fail-closed.
 - `bybit_plan_validation` — результат execution-time валидации trade plan: ошибки блокируют подтверждение, предупреждения напоминают о неполной проверке qty/min_notional без фактического размера позиции; если `trade_plan.sizing` или `params` уже содержит явный `order_qty`/`qty_per_leg`/`base_qty` либо `order_notional`, эти значения проверяются против Bybit `qty_step`, `min_order_qty`, `max_order_qty` и `min_notional`. Дополнительно блокируются рекомендации с любым `bot_type` кроме `futures_grid`, любым `venue` кроме `linear`, `reference_price` вне диапазона, внутренним `kill_switch`, схлопыванием сетки после округления по `tick_size`, отсутствующим или неподдерживаемым `margin_mode`, metadata Bybit от другого `symbol` или другого `category/venue`, instrument `status` отличным от `Trading`, несогласованным `grid_count`/`grid_step`, `grid_count > 400`, неподдержанным `grid_type`, off-tick ценами/шагом/`tp_per_leg` в строгом execution-mode, некорректным `leverage` относительно `min/max/leverage_step` Bybit, а также слишком малым worst-side/worst-boundary estimated liquidation buffer при leverage > 1. Execute-path дополнительно блокирует подтверждение, если текущий ticker уже вышел за сохранённый диапазон сетки или `kill_switch`, даже при свежих candles/ticker. Metadata инструмента теперь берётся только при точном совпадении `symbol` и только для `venue=linear`, чтобы preflight не валидировал unsupported payload ограничениями чужого или нецелевого инструмента.
+- `params.risk_report` — операторский риск-отчёт: итоговое решение, conservative/moderate/aggressive profile, net/grid после издержек, funding impact, execution cost, funding interval, required capital, liquidation buffer, adverse scenario, rejection reasons, warnings и approval factors. UI показывает этот блок явно; при `not_recommended`/blocking reasons запуск запрещён до пересчёта.
 - `reasons.llm_review` — second opinion LLM, включая источник (`live`, `cache`, `cache_inherited`, `async_live`, `async_inherited`).
 
 ## Документация в репозитории
@@ -109,7 +110,7 @@ ruff check app tests main.py
 Эта проверка сознательно разделяет runtime- и dev-зависимости: prod-установка может ограничиться `requirements.txt`, а релизная/аудиторская проверка использует дополнительный `requirements-dev.txt`.
 
 Текущий проверочный baseline этой ревизии:
-- `PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q` — `365 passed`;
+- `PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q` — `370 passed`;
 - `python -m py_compile app/*.py main.py` — passed;
 - `ruff check app tests main.py` — quality-gate команда из `requirements-dev.txt`;
 - `pytest --cov=app --cov-report=term-missing` — запускать в release/dev-контуре при изменениях покрытия;
@@ -122,7 +123,7 @@ ruff check app tests main.py
 - `RUNTIME_LOCK_DB_PATH` — путь к отдельной sidecar-БД runtime lock для SQLite; по умолчанию это `*.runtime_locks.sqlite` рядом с основной БД. Значение обязано отличаться от `DB_PATH`, иначе bootstrap завершится ошибкой конфигурации;
 - `DATABASE_URL` — обязательный DSN основной PostgreSQL БД в режиме `DB_ENGINE=postgresql`; теперь он должен быть задан явно, чтобы сервис не пытался молча подключаться к локальному `postgresql://127.0.0.1/...` по unsafe-default;
 - `RUNTIME_LOCK_DATABASE_URL` — опциональный отдельный DSN для runtime lock в PostgreSQL-режиме; если не задан, используется `DATABASE_URL`;
-- `SYMBOLS_LINEAR` — список только USDT perpetual symbols для `venue=linear`; дубли удаляются, а не-USDT symbols fail-closed отфильтровываются на bootstrap, чтобы Bybit linear/USDC/inverse/legacy payload не попал в сбор и scoring;
+- `SYMBOLS_LINEAR` — список только USDT perpetual symbols для `venue=linear`; дубли удаляются, а не-USDT symbols fail-closed отфильтровываются на bootstrap, чтобы нецелевой Bybit payload не попал в сбор и scoring;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
 - `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;

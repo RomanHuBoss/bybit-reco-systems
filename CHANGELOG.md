@@ -1,3 +1,12 @@
+# 2026-05-09 — Deep grid-linear audit hardening
+
+- Product scope rechecked as grid-only: UI/API/docs/tests no longer contain unsupported strategy examples; invalid payload tests use neutral unsupported placeholders instead of naming disallowed bot families.
+- Linear USDT economics fail closed: unknown side no longer silently becomes long for PnL/funding helpers.
+- Recommendation risk gates hardened: missing current funding rate blocks Linear USDT perpetual recommendations; highly trending/weak-range markets and extreme ATR get explicit grid rejections.
+- Recommendation payload now includes `params.risk_report` with decision, risk profile, net/grid, execution cost, funding impact, funding interval, liquidation buffer, required capital, adverse scenario, rejection reasons, warnings and approval factors.
+- Operator UI now renders the risk report directly in the recommendation detail panel.
+- Regression baseline: `370 passed`; `ruff check app tests main.py`; `python -m py_compile app/*.py main.py`; `node --check app/ui/static/app.js`.
+
 
 ## 2026-05-09 — Grid-only safety pass
 - Filter `SYMBOLS_LINEAR` to USDT perpetual symbols at bootstrap so non-USDT linear/legacy symbols never enter collection/scoring.

@@ -82,7 +82,7 @@ def test_bybit_preflight_blocks_any_non_futures_grid_payload(app_main):
 
 def test_bybit_preflight_blocks_any_non_linear_venue_payload(app_main):
     rec = _base_rec()
-    rec["venue"] = "spot"
+    rec["venue"] = "unsupported_venue"
 
     validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
 
@@ -120,7 +120,7 @@ def test_bybit_preflight_blocks_grid_count_above_bybit_futures_grid_limit(app_ma
 
 def test_bybit_preflight_blocks_unknown_grid_spacing_type(app_main):
     rec = _base_rec()
-    rec["params"]["grid_type"] = "martingale"
+    rec["params"]["grid_type"] = "unsupported_spacing"
 
     validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
 

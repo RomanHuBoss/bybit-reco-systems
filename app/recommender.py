@@ -2751,7 +2751,6 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             oi_sig   = oi_trend(oi_rows)
             raw_direction = str((f.get('_direction_agg', {}) or {}).get('direction') or 'neutral')
             direction = _direction(bot_type, f.get('_direction_agg', {}))
-            futures_neutral = False
             cost_model = _estimate_cost_model(
                 bot_type=bot_type,
                 venue=venue,
@@ -2826,11 +2825,34 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 feasibility_blocks.append({"code": "SPREAD_UNKNOWN",
                     "msg": "bid/ask отсутствуют — нельзя надёжно оценить execution cost"})
 
+            # ── Market-regime gates specific to grid ──
+            # Grid must be allowed only when the current multi-timeframe context is plausibly range-like.
+            # A high-confidence trend with weak range score is not just lower-scoring; it is a domain veto.
+            if bot_type == "futures_grid":
+                _range_score_now, _range_meta_now = _stable_range_score(f, f.get("_direction_agg", {}) or {})
+                _trendiness_now = float(_range_meta_now.get("trendiness") or 0.0)
+                _regime_now = str(_range_meta_now.get("regime") or "unknown")
+                if _regime_now == "trend" and _trendiness_now >= 0.80 and _range_score_now < 0.35:
+                    feasibility_blocks.append({
+                        "code": "MARKET_TOO_TRENDY_FOR_GRID",
+                        "msg": f"regime=trend, trendiness={_trendiness_now:.2f}, range_score={_range_score_now:.2f}; grid запускается только при диапазонном или слабонаправленном режиме",
+                    })
+                if atr_pct >= 0.10:
+                    feasibility_blocks.append({
+                        "code": "VOLATILITY_TOO_HIGH_FOR_GRID",
+                        "msg": f"ATR≈{atr_pct * 100.0:.2f}% слишком высок для безопасного grid-рекомендования; риск пробоя диапазона и ликвидации повышен",
+                    })
+
             # ── Funding rate gate (futures only) ──
             # Gate must be keyed off the *payer* side, not only off semantic longs.
             # `expected_funding_bps` is direction-aware already, so positive values mean
             # this exact setup is expected to pay funding over the label horizon.
             if venue == "linear":
+                if fr_sig.get("value") is None:
+                    feasibility_blocks.append({
+                        "code": "FUNDING_RATE_UNKNOWN",
+                        "msg": "нет актуального funding rate для Linear USDT perpetual; рекомендация блокируется, чтобы не показывать net-profit без funding",
+                    })
                 funding_block = _extreme_funding_block(direction, fr_sig, cost_model)
                 if funding_block is not None:
                     feasibility_blocks.append(funding_block)
@@ -3039,6 +3061,22 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
 
             if blocks:
                 status = "blocked"
+
+            params["risk_report"] = {
+                "decision": "recommended" if status in {"recommended", "active"} and not blocks else ("not_recommended" if status in {"blocked", "no_trade", "suppressed", "pending"} else str(status)),
+                "risk_profile": (econ.get("risk_profile") if isinstance(econ, dict) else None) or ("conservative" if risk_score < 0.35 else ("moderate" if risk_score < 0.70 else "aggressive")),
+                "expected_net_profit_per_grid_bps": net_profit_bps,
+                "expected_net_profit_per_grid_usdt": _finite_or_none(econ.get("net_profit_usdt")) if isinstance(econ, dict) else None,
+                "estimated_execution_cost_bps": _finite_or_none(cost_model.get("execution_cost_bps")),
+                "estimated_funding_impact_bps": _finite_or_none(cost_model.get("expected_funding_bps")),
+                "funding_interval_min": cost_model.get("funding_interval_min"),
+                "liquidation_buffer_pct": liq_buffer_pct,
+                "capital_required_usdt": _finite_or_none((params.get("sizing") or {}).get("estimated_margin_required_usdt")) if isinstance(params.get("sizing"), dict) else None,
+                "max_adverse_scenario": "цена выходит за range/kill-switch, сетка накапливает направленную позицию против движения; funding/fees продолжают ухудшать equity",
+                "approval_reasons": [str(x.get("msg") or x.get("code") or "") for x in (reasons.get("top_positive_factors") or [])[:5] if isinstance(x, dict)],
+                "rejection_reasons": [str(x.get("msg") or x.get("code") or "") for x in blocks[:8] if isinstance(x, dict)],
+                "warnings": [str(x.get("msg") or x.get("code") or "") for x in (reasons.get("top_negative_factors") or [])[:5] if isinstance(x, dict)],
+            }
 
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)

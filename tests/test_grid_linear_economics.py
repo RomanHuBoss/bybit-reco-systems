@@ -142,3 +142,8 @@ def test_recommender_default_sizing_snaps_up_for_expensive_linear_contracts() ->
     assert sizing["order_notional_usdt"] == pytest.approx(100.0)
     assert sizing["estimated_active_orders"] == params["grid_count"]
     assert sizing["exchange_filter_assumption"]["actual_bybit_filters_required"] is True
+
+
+def test_linear_helpers_fail_closed_on_unknown_side() -> None:
+    assert linear_pnl_usdt("typo", "1", "100", "110") == 0
+    assert funding_cashflow_usdt("typo", "1000", "0.0001", 2) == 0

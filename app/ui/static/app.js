@@ -559,6 +559,10 @@ function buildDetailsHtml(it) {
   const llmReview = reasons.llm_review || null;
   const blocks = it.blocks || [];
   const bybitValidation = it.bybit_plan_validation || {};
+  const riskReport = params.risk_report || {};
+  const riskReportRejected = Array.isArray(riskReport.rejection_reasons) ? riskReport.rejection_reasons : [];
+  const riskReportWarnings = Array.isArray(riskReport.warnings) ? riskReport.warnings : [];
+  const riskReportApprovals = Array.isArray(riskReport.approval_reasons) ? riskReport.approval_reasons : [];
   const bybitErrors = Array.isArray(bybitValidation.errors) ? bybitValidation.errors : [];
   const bybitWarnings = Array.isArray(bybitValidation.warnings) ? bybitValidation.warnings : [];
   const bybitValidationItems = bybitErrors.concat(bybitWarnings).slice(0, 8);
@@ -655,11 +659,30 @@ function buildDetailsHtml(it) {
           ${fieldBox("Active orders est.", economics.estimated_active_orders ?? sizing.estimated_active_orders ?? "—")}
           ${fieldBox("Liq buffer worst", economics.liquidation_buffer_pct !== undefined && economics.liquidation_buffer_pct !== null ? formatPercentDot(economics.liquidation_buffer_pct, 2, false) : "—")}
           ${fieldBox("Liq buffer edge", economics.liquidation_buffer_pct_adverse_boundary !== undefined && economics.liquidation_buffer_pct_adverse_boundary !== null ? formatPercentDot(economics.liquidation_buffer_pct_adverse_boundary, 2, false) : "—")}
-          ${fieldBox("Risk profile", economics.risk_profile || "—")}
+          ${fieldBox("Risk profile", economics.risk_profile || riskReport.risk_profile || "—")}
         </div>
         <div class="section-actions">
           <button class="ghost-chip" data-act="show-tech">Техподробности</button>
         </div>
+      </div>
+
+      <div class="operator-card">
+        <h3>Риск-отчёт</h3>
+        <div class="helper-text" style="margin-bottom:8px">Решение относится только к Bybit Linear USDT Perpetual futures grid. При not_recommended/blocked запуск запрещён до пересчёта.</div>
+        <div class="operator-grid">
+          ${fieldBox("Решение", riskReport.decision || (blocks.length ? "not_recommended" : "recommended"))}
+          ${fieldBox("Профиль", riskReport.risk_profile || economics.risk_profile || "—")}
+          ${fieldBox("Net/сетка", formatBps(riskReport.expected_net_profit_per_grid_bps ?? economics.net_profit_bps, 2, true))}
+          ${fieldBox("Funding", formatBps(riskReport.estimated_funding_impact_bps ?? costModel.expected_funding_bps, 2, true))}
+          ${fieldBox("Издержки исполнения", formatBps(riskReport.estimated_execution_cost_bps ?? costModel.execution_cost_bps, 2, false))}
+          ${fieldBox("Требуемый капитал", formatUsdValue(riskReport.capital_required_usdt ?? sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt))}
+          ${fieldBox("Буфер ликвидации", riskReport.liquidation_buffer_pct !== undefined && riskReport.liquidation_buffer_pct !== null ? formatPercentDot(riskReport.liquidation_buffer_pct, 2, false) : "—")}
+          ${fieldBox("Интервал funding", riskReport.funding_interval_min ? `${escapeHtml(riskReport.funding_interval_min)} мин` : "—")}
+        </div>
+        ${riskReport.max_adverse_scenario ? `<div class="helper-text" style="margin-top:8px"><b>Неблагоприятный сценарий:</b> ${escapeHtml(riskReport.max_adverse_scenario)}</div>` : ""}
+        ${riskReportRejected.length ? `<div class="small-blocks">${riskReportRejected.slice(0, 6).map(x => `<div class="small-block small-block-critical">${escapeHtml(x)}</div>`).join("")}</div>` : ""}
+        ${riskReportWarnings.length ? `<div class="helper-text" style="margin-top:8px"><b>Предупреждения:</b> ${riskReportWarnings.slice(0, 4).map(escapeHtml).join("; ")}</div>` : ""}
+        ${riskReportApprovals.length ? `<div class="helper-text" style="margin-top:8px"><b>Факторы допуска:</b> ${riskReportApprovals.slice(0, 4).map(escapeHtml).join("; ")}</div>` : ""}
       </div>
 
       ${buildLlmReviewCardHtml(llmReview, it.direction)}
