@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-05-09 — UI effective status sync fix
+- Fixed a table/detail status mismatch where `/api/v1/recommendations` could show a persisted `active` row while `/api/v1/recommendations/{rec_id}` applied the live Bybit operator guard and showed the same row as `blocked`.
+- Recommendation list responses now apply the same effective Bybit guard augmentation as detail responses before rendering/filtering statuses.
+- Default `recommended+active` view now hides recommendations that are dynamically blocked; they appear only when the `blocked` filter is enabled.
+- `no_trade` is now derived from effective operator-facing statuses.
+- Added regression coverage for list/detail effective-status consistency.
+
 ## 2026-05-09 — UI detail badge fit fix
 - Shortened only the compact details/modal bot-type badge to `Linear USDT Grid` while keeping the full `Bybit Linear USDT Futures Grid` table label and title tooltip.
 - Changed the detail subtitle row to wrap inside the panel instead of overflowing into metric cards on medium-width layouts.

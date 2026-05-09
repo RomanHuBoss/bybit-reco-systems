@@ -532,6 +532,53 @@ def _collapse_recommendation_items_by_publication_chain(items: list[dict[str, An
     return deduped, hidden
 
 
+def _operator_fetch_statuses_for_effective_filters(statuses: list[str]) -> list[str]:
+    """Return DB statuses that can produce the requested operator-facing statuses.
+
+    The UI displays an *effective* status: live Bybit metadata/operator guard can
+    turn a persisted recommended/active/pending row into blocked without mutating
+    the audit row. Therefore a blocked-only view must also scan actionable DB rows
+    that may become blocked after augmentation.
+    """
+    out = list(dict.fromkeys(str(s or "").strip().lower() for s in statuses if str(s or "").strip()))
+    if "blocked" in out:
+        for convertible in ("recommended", "active", "pending"):
+            if convertible not in out:
+                out.append(convertible)
+    return out
+
+
+def _operator_candidate_limit(top_n: int, *, collapse_chains: bool, statuses: list[str]) -> int:
+    """Fetch enough candidates before effective-status filtering.
+
+    If the Bybit operator guard blocks several actionable rows, filtering after
+    augmentation can otherwise leave the table under-filled and make the list and
+    detail card appear to disagree.
+    """
+    if top_n <= 0:
+        return 0
+    if not collapse_chains:
+        return top_n
+    if "blocked" in set(statuses):
+        return min(4000, max(top_n * 8, 80))
+    return min(4000, max(top_n * 4, 40))
+
+
+def _filter_operator_items_by_effective_status(items: list[dict[str, Any]], statuses: list[str], top_n: int) -> list[dict[str, Any]]:
+    allowed = {str(status or "").strip().lower() for status in statuses if str(status or "").strip()}
+    if not allowed or top_n <= 0:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in items:
+        effective_status = str(item.get("status") or "").strip().lower()
+        if effective_status not in allowed:
+            continue
+        out.append(item)
+        if len(out) >= top_n:
+            break
+    return out
+
+
 def _load_recommendations_for_operator_view(
     conn,
     *,
@@ -2109,37 +2156,33 @@ def api_recommendations(
 
         effective_min_conf = _bounded_probability(min_conf, default=float(settings.min_conf_to_recommend))
         strict_min_conf = min_conf is not None
+        fetch_statuses = _operator_fetch_statuses_for_effective_filters(statuses)
+        candidate_limit = _operator_candidate_limit(top_n, collapse_chains=collapse_chains, statuses=statuses)
         snapshot_ts = _resolve_recommendation_snapshot_ts(
             conn,
             venue,
             snapshot,
             min_conf=effective_min_conf,
             strict_min_conf=strict_min_conf,
-            requested_statuses=statuses,
+            requested_statuses=fetch_statuses,
         )
-        items, hidden_duplicates = _load_recommendations_for_operator_view(
+        raw_items, hidden_duplicates = _load_recommendations_for_operator_view(
             conn,
             venue=venue,
-            top_n=top_n,
+            top_n=candidate_limit,
             min_conf=effective_min_conf,
-            statuses=statuses,
+            statuses=fetch_statuses,
             snapshot_ts=snapshot_ts,
             strict_min_conf=strict_min_conf,
             collapse_chains=collapse_chains,
         )
+        augmented_items = [_augment_reco_for_ui(item) for item in raw_items]
+        items = _filter_operator_items_by_effective_status(augmented_items, statuses, top_n)
 
-        no_trade = True
         status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
         snapshot_age_sec = None if snapshot_ts is None else max(0, int(time.time()) - int(snapshot_ts))
         snapshot_is_stale = bool(snapshot_age_sec is not None and snapshot_age_sec > max(180, int(settings.reco_interval_sec) * 3))
-        if snapshot_ts is not None:
-            no_trade = db.count_visible_recommendations(
-                conn,
-                venue=venue,
-                min_conf=effective_min_conf,
-                snapshot_ts=snapshot_ts,
-                strict_min_conf=strict_min_conf,
-            ) == 0
+        no_trade = not any(str(item.get("status") or "").strip().lower() in {"recommended", "active"} for item in items)
 
         cur = conn.execute("SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1")
         row = cur.fetchone()
