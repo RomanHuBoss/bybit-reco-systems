@@ -124,6 +124,18 @@ def _csv_symbols_unique(raw: str) -> list[str]:
     return out
 
 
+def _linear_usdt_symbols_unique(raw: str) -> list[str]:
+    """Return only Bybit Linear USDT perpetual symbols from operator config.
+
+    Bybit's ``linear`` API category also contains non-USDT linear contracts on
+    some endpoints. Product scope for this service is stricter: only USDT
+    perpetual futures grid recommendations are allowed. Filtering here prevents
+    accidental collection/scoring of BTCUSDC or legacy/non-perpetual symbols
+    before later execution preflight gets a chance to block them.
+    """
+    return [symbol for symbol in _csv_symbols_unique(raw) if symbol.endswith("USDT")]
+
+
 @dataclass(frozen=True)
 class Settings:
     outcome_horizon_fallback_sec: int
@@ -197,7 +209,7 @@ def load_settings() -> Settings:
         venues = ["linear"]
 
     symbols_linear_default = "BTCUSDT,ETHUSDT" if "linear" in venues else ""
-    symbols_linear = _csv_symbols_unique(_env("SYMBOLS_LINEAR", symbols_linear_default)) if "linear" in venues else []
+    symbols_linear = _linear_usdt_symbols_unique(_env("SYMBOLS_LINEAR", symbols_linear_default)) if "linear" in venues else []
 
     risk_limits = _env_json_dict(
         "RISK_LIMITS_JSON",

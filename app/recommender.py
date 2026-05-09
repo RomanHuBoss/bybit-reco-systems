@@ -16,7 +16,7 @@ from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_
 from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
 from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
-from .grid_math import grid_leg_economics, margin_required_usdt, estimate_linear_liq_price, liquidation_buffer_pct
+from .grid_math import grid_leg_economics, margin_required_usdt, estimate_linear_liq_price, liquidation_buffer_pct, quantize_step
 from .collector import RuntimeLockLostError
 from .settings import load_settings
 from .calibration import (
@@ -1340,6 +1340,33 @@ def _build_feature_snapshot(
         "regime_conf": _clamp(_value_or_default(direction_agg.get("regime_confidence"), 0.5), 0.0, 1.0),
     }
 
+
+def _fallback_order_qty_for_linear_grid(price: float, target_notional_usdt: float = 25.0) -> tuple[float, float, dict[str, Any]]:
+    """Conservative default order size before live Bybit metadata is available.
+
+    The recommender does not hold account balance or per-symbol filters while
+    ranking candidates. A fixed 25 USDT leg is below the common BTCUSDT 0.001
+    quantity step/minQty once BTC trades above 25k, so the service can publish a
+    recommendation that its own Bybit preflight later rejects. We therefore snap
+    the provisional quantity up to a conservative 0.001 base-asset fallback and
+    expose the assumption in the payload. Execution preflight still validates the
+    actual Bybit ``qtyStep``/``minOrderQty``/``minNotionalValue`` fail-closed.
+    """
+    px = max(0.0, float(price or 0.0))
+    if px <= 0.0:
+        return 0.0, 0.0, {"mode": "invalid_price"}
+    fallback_qty_step = 0.001
+    raw_qty = max(float(target_notional_usdt) / px, fallback_qty_step)
+    snapped_qty_dec = quantize_step(raw_qty, fallback_qty_step, mode="up")
+    snapped_qty = float(snapped_qty_dec) if snapped_qty_dec is not None else raw_qty
+    notional = snapped_qty * px
+    return snapped_qty, notional, {
+        "mode": "fallback_qty_step_until_bybit_preflight",
+        "target_notional_usdt": float(target_notional_usdt),
+        "fallback_qty_step": float(fallback_qty_step),
+        "actual_bybit_filters_required": True,
+    }
+
 def _build_trade_plan(
     bot_type: str,
     venue: str,
@@ -1412,6 +1439,8 @@ def _build_trade_plan(
         "cost_model": _sanitize_json_numbers(dict(cost_model or {})),
         "sizing": _sanitize_json_numbers(dict(params.get("sizing") or {})),
         "economics": _sanitize_json_numbers(dict(params.get("economics") or {})),
+        "grid_type": str(params.get("grid_type") or "arithmetic"),
+        "grid_count": int(_safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")) or 0),
         "levels": {
             "range": {
                 "lower": _round_price(float(lower), decimals=10) if lower is not None else None,
@@ -1772,6 +1801,12 @@ def _params(
         "price_range_upper": _round_price(upper, decimals=10),
         "range_span_pct_total": float(range_span_pct_total * 100.0),
         "grid_spacing_pct": float(grid_spacing_pct_frac * 100.0),
+        # Bybit UI calls this value "Number of Grids"; it is the number of
+        # price intervals, not the number of displayed price points. Keep the
+        # legacy key ``grid_levels`` for API compatibility and add explicit
+        # aliases for new UI/API consumers.
+        "grid_type": "arithmetic",
+        "grid_count": int(grid_levels),
         "grid_levels": int(grid_levels),
         "label_horizon_hours": int(BOT_HORIZONS.get(bot_type, 12 * 3600) // 3600),
         "cost_model": dict(cost_model),
@@ -1794,9 +1829,8 @@ def _params(
     # Conservative minimum viable sizing. The project does not know the operator's
     # wallet balance, so this is an exchange-preflightable default, not a position
     # sizing promise. Execution preflight revalidates against live minNotional/qtyStep.
-    order_notional_usdt = 25.0
-    order_qty = order_notional_usdt / price if price > 0 else 0.0
-    active_grid_intervals = max(1, int(grid_levels) - 1)
+    order_qty, order_notional_usdt, sizing_assumption = _fallback_order_qty_for_linear_grid(price, target_notional_usdt=25.0)
+    active_grid_intervals = max(1, int(grid_levels))
     total_order_notional = order_notional_usdt * active_grid_intervals
     leverage_used = max(1, int(params.get("leverage") or 1))
     margin_required = float(margin_required_usdt(total_order_notional, leverage_used))
@@ -1837,6 +1871,8 @@ def _params(
             **grid_econ,
             "order_notional_usdt": float(order_notional_usdt),
             "qty_per_order": _round_price(order_qty, decimals=10),
+            "grid_type": "arithmetic",
+            "grid_count": int(grid_levels),
             "estimated_active_orders": int(active_grid_intervals),
             "estimated_total_order_notional_usdt": float(total_order_notional),
             "estimated_margin_required_usdt": float(margin_required),
@@ -1860,6 +1896,8 @@ def _params(
             **grid_econ,
             "order_notional_usdt": float(order_notional_usdt),
             "qty_per_order": _round_price(order_qty, decimals=10),
+            "grid_type": "arithmetic",
+            "grid_count": int(grid_levels),
             "estimated_active_orders": int(active_grid_intervals),
             "estimated_total_order_notional_usdt": float(total_order_notional),
             "estimated_margin_required_usdt": float(margin_required),
@@ -1876,10 +1914,13 @@ def _params(
         "basis": "minimum_viable_operator_default",
         "order_notional_usdt": float(order_notional_usdt),
         "qty_per_order": _round_price(order_qty, decimals=10),
+        "grid_type": "arithmetic",
+        "grid_count": int(grid_levels),
         "estimated_active_orders": int(active_grid_intervals),
         "estimated_total_order_notional_usdt": float(total_order_notional),
         "estimated_margin_required_usdt": float(margin_required),
-        "note": "Размер заявки — безопасный минимальный ориентир. Перед запуском preflight сверяет Bybit minNotional/qtyStep, оператор должен сверить доступную маржу.",
+        "exchange_filter_assumption": sizing_assumption,
+        "note": "Размер заявки — минимальный ориентир, округлённый вверх по fallback qty step до live Bybit preflight. Перед запуском preflight сверяет Bybit minNotional/qtyStep/minQty, оператор должен сверить доступную маржу.",
     }
 
     return params

@@ -50,7 +50,9 @@ execution-time validation должна блокировать исполнени
 - после округления по `tick_size` диапазон не схлопывается;
 - шаг сетки не меньше `tick_size` и не больше диапазона;
 - сетка содержит минимум 2 интервала после выравнивания;
-- `grid_step.step_abs` и `params.grid_levels` не должны описывать радикально разные сетки; mismatch помечается warning'ом для ручной сверки перед запуском Bybit bot;
+- `grid_type` допускается только `arithmetic` или `geometric`; генератор сейчас публикует `arithmetic`;
+- `grid_count` / legacy `grid_levels` трактуется как Bybit Number of Grids, то есть число price intervals, и должен быть в диапазоне 2..400;
+- `grid_step.step_abs` и `params.grid_count`/`params.grid_levels` не должны описывать радикально разные сетки; mismatch помечается warning'ом для ручной сверки перед запуском Bybit bot;
 - `tp_per_leg.abs` должен быть положительным и не схлопываться после округления по `tick_size`; off-tick TP помечается warning'ом с рассчитанным snapped-значением.
 
 ### Режимные инварианты
@@ -61,7 +63,7 @@ execution-time validation должна блокировать исполнени
 - `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint; leverage > 1 допускается только с явным worst-side/worst-boundary estimated liquidation buffer и блокируется, если buffer слишком мал;
 - metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу;
 - instrument `status` должен быть `Trading`; `PreLaunch`, `Delivering`, delisted/other statuses блокируются fail-closed для новых operator confirmations.
-- если payload содержит явный sizing (`order_qty`, `qty_per_leg`, `base_qty`, `order_notional` и совместимые алиасы), preflight блокирует значения ниже `min_order_qty`/`min_notional`, выше `max_order_qty` или не кратные `qty_step` (`ORDER_QTY_OFF_STEP`, `ORDER_QTY_BELOW_MIN`, `ORDER_NOTIONAL_BELOW_MIN`).
+- если payload содержит явный sizing (`order_qty`, `qty_per_leg`, `base_qty`, `order_notional` и совместимые алиасы), preflight блокирует значения ниже `min_order_qty`/`min_notional`, выше `max_order_qty` или не кратные `qty_step` (`ORDER_QTY_OFF_STEP`, `ORDER_QTY_BELOW_MIN`, `ORDER_NOTIONAL_BELOW_MIN`). Генератор больше не использует фиксированные 25 USDT для всех контрактов: qty округляется вверх по conservative fallback step до live Bybit preflight, чтобы дорогие USDT perpetual вроде BTCUSDT не публиковались заведомо ниже minQty.
 
 ## Linear-USDT PnL, funding и liquidation
 

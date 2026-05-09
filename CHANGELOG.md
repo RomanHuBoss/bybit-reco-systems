@@ -1,3 +1,11 @@
+
+## 2026-05-09 — Grid-only safety pass
+- Filter `SYMBOLS_LINEAR` to USDT perpetual symbols at bootstrap so non-USDT linear/legacy symbols never enter collection/scoring.
+- Clarify and expose `grid_type=arithmetic` and `grid_count` as Bybit "Number of Grids" intervals while keeping legacy `grid_levels` compatibility.
+- Block unsupported grid types and `grid_count > 400` in Bybit preflight.
+- Replace fixed 25 USDT per-leg sizing with conservative qty-step fallback sizing for expensive USDT contracts; live Bybit metadata remains mandatory at execution preflight.
+- UI now surfaces grid type and estimated active orders alongside net-per-grid, margin, funding and liquidation buffer.
+
 # 2026-05-09 strict docs cleanup and worst-boundary liquidation guard
 
 - Документация больше не ссылается на отсутствующие внешние report artifacts; регрессионные проверки обновлены на запрет таких ссылок.

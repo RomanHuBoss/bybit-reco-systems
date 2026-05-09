@@ -28,6 +28,19 @@ def test_load_settings_deduplicates_symbol_lists_preserving_order(
     assert settings.symbols_linear == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
 
+def test_load_settings_filters_non_usdt_linear_symbols_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    reload_settings_module: None,
+) -> None:
+    monkeypatch.setenv("VENUES", "linear")
+    monkeypatch.setenv("SYMBOLS_LINEAR", "BTCUSDT,BTCUSDC,ETHUSD,ETHUSDT")
+
+    settings_module = importlib.import_module("app.settings")
+    settings = settings_module.load_settings()
+
+    assert settings.symbols_linear == ["BTCUSDT", "ETHUSDT"]
+
+
 def test_env_example_documents_auto_llm_reviewer_ttl_consistently() -> None:
     """README и .env.example не должны расходиться по семантике auto-TTL."""
     root = Path(__file__).resolve().parent.parent

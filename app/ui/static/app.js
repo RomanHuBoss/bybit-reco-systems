@@ -443,7 +443,8 @@ function buildOperatorFieldSpecs(it, ov) {
   const fields = [
     { label: "Диапазон от", value: ov.rangeLower, mono: true },
     { label: "Диапазон до", value: ov.rangeUpper, mono: true },
-    { label: "Кол-во сеток", value: params.grid_levels ?? "—" },
+    { label: "Кол-во сеток", value: params.grid_count ?? params.grid_levels ?? "—" },
+    { label: "Тип сетки", value: params.grid_type || "arithmetic" },
     { label: "Интервал, цена", value: ov.gridStepAbs, mono: true },
     { label: "Интервал, %", value: ov.stepPct },
     { label: "Цена входа", value: ov.entryRef, mono: true },
@@ -650,6 +651,8 @@ function buildDetailsHtml(it) {
           ${fieldBox("Net/сетка", formatBps(economics.net_profit_bps, 2, true))}
           ${fieldBox("Net USDT/сетка", formatUsdValue(economics.net_profit_usdt))}
           ${fieldBox("Margin est.", formatUsdValue(sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt))}
+          ${fieldBox("Grid type", economics.grid_type || sizing.grid_type || params.grid_type || "arithmetic")}
+          ${fieldBox("Active orders est.", economics.estimated_active_orders ?? sizing.estimated_active_orders ?? "—")}
           ${fieldBox("Liq buffer worst", economics.liquidation_buffer_pct !== undefined && economics.liquidation_buffer_pct !== null ? formatPercentDot(economics.liquidation_buffer_pct, 2, false) : "—")}
           ${fieldBox("Liq buffer edge", economics.liquidation_buffer_pct_adverse_boundary !== undefined && economics.liquidation_buffer_pct_adverse_boundary !== null ? formatPercentDot(economics.liquidation_buffer_pct_adverse_boundary, 2, false) : "—")}
           ${fieldBox("Risk profile", economics.risk_profile || "—")}

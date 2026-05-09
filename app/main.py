@@ -693,7 +693,8 @@ def _trade_plan_price_context(rec: dict[str, Any]) -> dict[str, Any]:
         "kill_switch_lower": _finite_float_or_none(kill_switch.get("lower")),
         "kill_switch_upper": _finite_float_or_none(kill_switch.get("upper")),
         "grid_step_abs": _finite_float_or_none(grid_step.get("step_abs")),
-        "grid_levels": _safe_int_or_none(params.get("grid_levels")),
+        "grid_type": str(params.get("grid_type") or plan.get("grid_type") or "").strip().lower(),
+        "grid_levels": _safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(plan.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")),
         "tp_per_leg_abs": _finite_float_or_none(tp_per_leg.get("abs")),
         "tp_per_leg_pct": _finite_float_or_none(tp_per_leg.get("pct")),
     }
@@ -901,6 +902,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     lower_ks = ctx["kill_switch_lower"]
     upper_ks = ctx["kill_switch_upper"]
     step_abs = ctx["grid_step_abs"]
+    grid_type = ctx["grid_type"]
     grid_levels = ctx["grid_levels"]
     tp_abs = ctx["tp_per_leg_abs"]
     tp_pct = ctx["tp_per_leg_pct"]
@@ -991,14 +993,24 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 })
             if grid_levels is not None:
                 if grid_levels < 2:
-                    errors.append({"code": "GRID_LEVELS_INVALID", "msg": f"grid_levels должен быть >= 2, получено {grid_levels}."})
+                    errors.append({"code": "GRID_LEVELS_INVALID", "msg": f"grid_count/grid_levels должен быть >= 2, получено {grid_levels}."})
+                elif grid_levels > 400:
+                    errors.append({"code": "GRID_COUNT_ABOVE_BYBIT_MAX", "msg": f"Bybit Futures Grid Bot допускает максимум 400 grids, получено {grid_levels}."})
                 else:
-                    implied_levels = intervals + 1
-                    if implied_levels + 1 < grid_levels:
+                    # Bybit's "Number of Grids" is the count of price intervals.
+                    # Legacy payloads may have used grid_levels as price points, so
+                    # keep this a warning unless the grid is truly too sparse.
+                    if intervals + 1 < grid_levels:
                         warnings.append({
                             "code": "GRID_STEP_LEVELS_MISMATCH",
-                            "msg": f"Диапазон и step_abs дают примерно {implied_levels} ценовых уровней, а params.grid_levels={grid_levels}; оператор должен сверить число сеток перед запуском Bybit bot.",
+                            "msg": f"Диапазон и step_abs дают примерно {intervals} интервал(ов), а params.grid_count/grid_levels={grid_levels}; оператор должен сверить число сеток перед запуском Bybit bot.",
                         })
+
+    if grid_type and grid_type not in {"arithmetic", "geometric"}:
+        errors.append({
+            "code": "GRID_TYPE_UNSUPPORTED",
+            "msg": f"Поддерживается только arithmetic/geometric grid spacing для Bybit Futures Grid, получено grid_type={grid_type}.",
+        })
 
     if tp_abs is not None:
         if tp_abs <= 0:

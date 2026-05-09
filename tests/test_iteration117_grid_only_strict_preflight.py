@@ -105,3 +105,24 @@ def test_execution_preflight_treats_off_tick_price_and_step_as_errors(app_main):
     assert {"PRICE_OFF_TICK", "GRID_STEP_OFF_TICK", "TP_PER_LEG_OFF_TICK"} <= _codes(execution_validation)
     assert not ({"PRICE_OFF_TICK", "GRID_STEP_OFF_TICK", "TP_PER_LEG_OFF_TICK"} & _codes(detail_validation))
     assert {"PRICE_OFF_TICK", "GRID_STEP_OFF_TICK", "TP_PER_LEG_OFF_TICK"} <= _codes(detail_validation, "warnings")
+
+
+def test_bybit_preflight_blocks_grid_count_above_bybit_futures_grid_limit(app_main):
+    rec = _base_rec()
+    rec["params"]["grid_count"] = 401
+    rec["params"]["grid_levels"] = 401
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
+
+    assert validation["ok"] is False
+    assert "GRID_COUNT_ABOVE_BYBIT_MAX" in _codes(validation)
+
+
+def test_bybit_preflight_blocks_unknown_grid_spacing_type(app_main):
+    rec = _base_rec()
+    rec["params"]["grid_type"] = "martingale"
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
+
+    assert validation["ok"] is False
+    assert "GRID_TYPE_UNSUPPORTED" in _codes(validation)
