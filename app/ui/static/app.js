@@ -155,15 +155,16 @@ function directionRu(dir) {
   return "Нейтральный";
 }
 
-function botTypeLabel(botType) {
-  if (botType === "futures_grid") return "Bybit Linear USDT Futures Grid";
+function botTypeLabel(botType, compact = false) {
+  if (botType === "futures_grid") return compact ? "Linear USDT Grid" : "Bybit Linear USDT Futures Grid";
   return botType || "—";
 }
 
 function botTypePillHtml(botType, compact = false) {
-  const label = botTypeLabel(botType);
+  const label = botTypeLabel(botType, compact);
+  const fullLabel = botTypeLabel(botType, false);
   const cls = compact ? "bot-type-pill compact" : "bot-type-pill";
-  return `<span class="${cls} ${escapeHtml(botType || "other")}">${escapeHtml(label)}</span>`;
+  return `<span class="${cls} ${escapeHtml(botType || "other")}" title="${escapeHtml(fullLabel)}">${escapeHtml(label)}</span>`;
 }
 
 function venueLabel(venue) {

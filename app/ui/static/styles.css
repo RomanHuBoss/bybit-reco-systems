@@ -312,6 +312,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  max-width: 100%;
+  min-width: 0;
   font-size: 11px;
   line-height: 1;
   padding: 5px 8px;
@@ -319,6 +321,8 @@ body {
   border: 1px solid var(--border);
   color: var(--muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .venue-linear,
 .bot-type-pill.futures_grid {
@@ -334,6 +338,8 @@ body {
 }
 .bot-type-pill.compact {
   padding: 4px 8px;
+  line-height: 1.15;
+  white-space: normal;
 }
 
 .dir-badge {
@@ -884,10 +890,16 @@ body {
   margin-top: 4px;
 }
 .operator-subtitle-inline {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.operator-subtitle-inline .bot-type-pill.compact {
+  flex: 0 1 auto;
 }
 .operator-sub-sep {
   color: rgba(148,163,184,0.65);

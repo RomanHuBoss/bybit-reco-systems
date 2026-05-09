@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-09 — UI detail badge fit fix
+- Shortened only the compact details/modal bot-type badge to `Linear USDT Grid` while keeping the full `Bybit Linear USDT Futures Grid` table label and title tooltip.
+- Changed the detail subtitle row to wrap inside the panel instead of overflowing into metric cards on medium-width layouts.
+- Added static regression checks for the compact label, wrapping CSS and cache-key bump.
+
 ## 2026-05-09 — Operator infographic update for 100–500 USDT accounts
 - Updated the root `how_to_trade.png` operator infographic for small accounts instead of the older 500 USDT / 10x-focused playbook.
 - The infographic now defaults to 1 bot, 1–3x leverage, 10–15% margin allocation, 75–85% reserve outside the position, and explicit NO TRADE behavior for blocking validations.
