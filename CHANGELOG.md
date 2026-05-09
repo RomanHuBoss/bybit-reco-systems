@@ -1,3 +1,11 @@
+# 2026-05-09 — Linear perpetual ticker scope hardening
+
+- Public ticker filtering now excludes non-perpetual delivery contracts (`deliveryTime != 0`) and pre-market/pre-listing ticker rows before collector/scoring can use them.
+- Per-symbol collector fallback no longer relabels a returned ticker for a different `symbol` as the requested symbol; exact-symbol mismatch is treated as missing market data and fails closed.
+- Operator UI venue selector is locked to the only supported scope: Bybit Linear USDT Perpetual futures grid.
+- Added regression tests for delivery/pre-market ticker filtering and wrong-symbol ticker relabel protection.
+- Full regression suite after this pass: `383 passed`.
+
 # 2026-05-09 — Runtime risk cap hardening
 
 - Runtime risk-limit normalization now clamps `max_concurrent_bots` and `max_symbol_bots` to the Bybit Futures Grid Bot product cap of 50. Operator JSON can make limits stricter, but cannot raise the effective limit above the exchange/product cap.

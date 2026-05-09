@@ -129,6 +129,39 @@ def _sanitize_ticker_payload(t: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _ticker_delivery_time_is_perpetual(value: Any) -> bool:
+    if value in (None, ""):
+        return True
+    try:
+        return int(str(value).strip() or "0") == 0
+    except Exception:
+        return False
+
+
+def _is_exact_linear_usdt_perpetual_ticker(item: dict[str, Any], symbol: str, *, allow_missing_symbol: bool = False) -> bool:
+    item_symbol = str((item or {}).get("symbol") or "").strip().upper()
+    target_symbol = str(symbol or "").strip().upper()
+    if not target_symbol.endswith("USDT"):
+        return False
+    if item_symbol:
+        if item_symbol != target_symbol or not item_symbol.endswith("USDT"):
+            return False
+    elif not allow_missing_symbol:
+        return False
+    if not _ticker_delivery_time_is_perpetual((item or {}).get("deliveryTime")):
+        return False
+    if str((item or {}).get("curPreListingPhase") or "").strip():
+        return False
+    return True
+
+
+def _select_exact_ticker(items: list[dict[str, Any]], symbol: str) -> dict[str, Any] | None:
+    for item in items or []:
+        if isinstance(item, dict) and _is_exact_linear_usdt_perpetual_ticker(item, symbol, allow_missing_symbol=True):
+            return item
+    return None
+
+
 def _purge_expired_disabled_symbols(venue: str, now_ts: int) -> dict[str, int]:
     disabled = _DISABLED_SYMBOLS.setdefault(venue, {})
     expired = [sym for sym, until_ts in disabled.items() if int(until_ts or 0) <= int(now_ts)]
@@ -295,7 +328,7 @@ def _fetch_ticker_payloads(
         batch_ts = db.now_ts()
         for item in batch_items:
             sym = str(item.get("symbol") or "").upper()
-            if sym not in symbols_set:
+            if sym not in symbols_set or not _is_exact_linear_usdt_perpetual_ticker(item, sym):
                 continue
             fetched_symbols.add(sym)
             snap = _sanitize_ticker_payload(item)
@@ -322,10 +355,10 @@ def _fetch_ticker_payloads(
             continue
         try:
             lst = client.get_tickers(category=category, symbol=sym)
-            if not lst:
+            item = _select_exact_ticker(lst or [], sym)
+            if item is None:
                 missing_symbols.append(sym)
                 continue
-            item = lst[0]
             snap = _sanitize_ticker_payload(item)
             row_ts = _remote_ticker_ts(item, db.now_ts())
             ticker_rows.append(

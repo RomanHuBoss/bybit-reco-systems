@@ -49,11 +49,34 @@ def _ensure_linear_category(category: str) -> str:
     return normalized
 
 
+def _delivery_time_is_perpetual(value: Any) -> bool:
+    if value in (None, ""):
+        return True
+    try:
+        return int(str(value).strip() or "0") == 0
+    except Exception:
+        # Unknown deliveryTime is safer than pretending a delivery contract is perpetual.
+        return False
+
+
+def _is_linear_usdt_perpetual_ticker(item: Mapping[str, Any]) -> bool:
+    symbol = str(item.get("symbol") or "").strip().upper()
+    if not symbol.endswith("USDT"):
+        return False
+    if not _delivery_time_is_perpetual(item.get("deliveryTime")):
+        return False
+    prelisting_phase = str(item.get("curPreListingPhase") or "").strip()
+    if prelisting_phase:
+        return False
+    return True
+
+
 def _filter_exact_symbol(items: list[dict[str, Any]], symbol: str | None) -> list[dict[str, Any]]:
     target = _normalize_linear_usdt_symbol(symbol)
+    scoped = [item for item in items if _is_linear_usdt_perpetual_ticker(item)]
     if target is None:
-        return [item for item in items if str(item.get("symbol") or "").strip().upper().endswith("USDT")]
-    return [item for item in items if str(item.get("symbol") or "").strip().upper() == target]
+        return scoped
+    return [item for item in scoped if str(item.get("symbol") or "").strip().upper() == target]
 
 
 def _header_value(response: Any, name: str) -> str | None:
