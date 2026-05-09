@@ -126,3 +126,57 @@ def test_bybit_preflight_blocks_unknown_grid_spacing_type(app_main):
 
     assert validation["ok"] is False
     assert "GRID_TYPE_UNSUPPORTED" in _codes(validation)
+
+
+def test_bybit_preflight_requires_tick_lot_min_notional_and_leverage_filters(app_main):
+    rec = _base_rec()
+    meta = _meta()
+    for key in (
+        "tick_size",
+        "qty_step",
+        "min_order_qty",
+        "max_order_qty",
+        "min_notional",
+        "min_leverage",
+        "max_leverage",
+        "leverage_step",
+    ):
+        meta.pop(key, None)
+
+    execution_validation = app_main._validate_trade_plan_against_bybit_meta(rec, meta, require_meta=True)
+    detail_validation = app_main._validate_trade_plan_against_bybit_meta(rec, meta, require_meta=False)
+
+    required_codes = {
+        "BYBIT_TICK_SIZE_MISSING",
+        "BYBIT_QTY_STEP_MISSING",
+        "BYBIT_MIN_ORDER_QTY_MISSING",
+        "BYBIT_MAX_ORDER_QTY_MISSING",
+        "BYBIT_MIN_NOTIONAL_MISSING",
+        "BYBIT_MIN_LEVERAGE_MISSING",
+        "BYBIT_MAX_LEVERAGE_MISSING",
+        "BYBIT_LEVERAGE_STEP_MISSING",
+    }
+    assert execution_validation["ok"] is False
+    assert required_codes <= _codes(execution_validation)
+    assert not (required_codes & _codes(detail_validation))
+    assert required_codes <= _codes(detail_validation, "warnings")
+
+
+def test_bybit_preflight_blocks_delivery_contracts_even_in_linear_category(app_main):
+    rec = _base_rec()
+    meta = _meta()
+    meta["delivery_time"] = "1893456000000"
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, meta, require_meta=True)
+
+    assert validation["ok"] is False
+    assert "BYBIT_DELIVERY_TIME_NOT_PERPETUAL" in _codes(validation)
+
+
+def test_bybit_preflight_warns_and_defaults_legacy_missing_leverage_to_one(app_main):
+    rec = _base_rec()
+    rec["params"].pop("leverage", None)
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
+
+    assert "LEVERAGE_DEFAULTED_TO_ONE" in _codes(validation, "warnings")

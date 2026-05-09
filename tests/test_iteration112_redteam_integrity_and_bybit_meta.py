@@ -232,3 +232,39 @@ def test_release_docs_omit_audit_report_artifact_references() -> None:
         payload = path.read_text(encoding="utf-8")
         assert "AUDIT_REPORT_" not in payload
         assert "docs/AUDIT_REPORT_" not in payload
+
+
+def test_bybit_client_preserves_result_category_on_instrument_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.bybit_client import BybitPublicClient
+
+    class DummyResponse:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "retCode": 0,
+                "result": {
+                    "category": "inverse",
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "contractType": "LinearPerpetual",
+                            "status": "Trading",
+                        }
+                    ],
+                },
+            }
+
+    client = BybitPublicClient("https://example.invalid")
+    monkeypatch.setattr(client._client, "get", lambda *args, **kwargs: DummyResponse())
+    try:
+        info = client.get_instrument_info("linear", "BTCUSDT")
+    finally:
+        client.close()
+
+    assert info is not None
+    assert info["category"] == "inverse"

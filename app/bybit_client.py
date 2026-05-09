@@ -301,12 +301,22 @@ class BybitPublicClient:
         прокси или тестовый stub вернул список без точного совпадения symbol,
         безопаснее считать metadata непригодной и вернуть ``None``, чем молча
         взять первый инструмент из списка и валидировать чужими ограничениями.
+
+        The endpoint reports ``category`` at ``result.category`` rather than inside
+        every instrument object. Preserve that category on the returned item so
+        downstream validation can detect category/venue mismatches instead of
+        silently treating a malformed response as ``linear``.
         """
         data = self._get("/v5/market/instruments-info", {"category": category, "symbol": symbol})
+        result = _mapping_or_none(data.get("result")) or {}
+        result_category = str(result.get("category") or "").strip().lower()
         items = _result_list(data)
         target = str(symbol or "").strip().upper()
         for item in items:
             item_symbol = str(item.get("symbol") or "").strip().upper()
             if item_symbol and item_symbol == target:
-                return item
+                out = dict(item)
+                if result_category and not str(out.get("category") or "").strip():
+                    out["category"] = result_category
+                return out
         return None

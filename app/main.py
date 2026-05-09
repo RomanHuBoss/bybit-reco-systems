@@ -198,6 +198,7 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
             "quote_coin": str(info.get("quoteCoin") or "").strip().upper(),
             "settle_coin": str(info.get("settleCoin") or "").strip().upper(),
             "contract_type": str(info.get("contractType") or "").strip(),
+            "delivery_time": info.get("deliveryTime"),
             "funding_interval_min": info.get("fundingInterval"),
             "upper_funding_rate": info.get("upperFundingRate"),
             "lower_funding_rate": info.get("lowerFundingRate"),
@@ -788,6 +789,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     meta_contract_type = str((meta or {}).get("contract_type") or "").strip()
     meta_quote_coin = str((meta or {}).get("quote_coin") or "").strip().upper()
     meta_settle_coin = str((meta or {}).get("settle_coin") or "").strip().upper()
+    meta_delivery_time = _finite_float_or_none((meta or {}).get("delivery_time"))
     meta_is_pre_listing = (meta or {}).get("is_pre_listing")
     rec_symbol = str(rec.get("symbol") or "").strip().upper()
 
@@ -844,16 +846,23 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             errors.append({"code": "USDT_PERPETUAL_SYMBOL_REQUIRED", "msg": f"futures_grid поддерживается только для USDT perpetual symbols, получено symbol={rec_symbol}."})
 
     if bot_type == "futures_grid" and meta:
+        def _meta_target():
+            return errors if require_meta else warnings
+
         if meta_contract_type and meta_contract_type != "LinearPerpetual":
             errors.append({
                 "code": "BYBIT_CONTRACT_TYPE_UNSUPPORTED",
                 "msg": f"Bybit contractType={meta_contract_type}; проект поддерживает только LinearPerpetual USDT futures grid.",
             })
         elif not meta_contract_type:
-            target = errors if require_meta else warnings
-            target.append({
+            _meta_target().append({
                 "code": "BYBIT_CONTRACT_TYPE_MISSING",
                 "msg": "Bybit metadata не содержит contractType; невозможно подтвердить LinearPerpetual. Execution-preflight блокирует запуск fail-closed.",
+            })
+        if meta_delivery_time is not None and meta_delivery_time > 0:
+            errors.append({
+                "code": "BYBIT_DELIVERY_TIME_NOT_PERPETUAL",
+                "msg": f"Bybit deliveryTime={meta_delivery_time:.0f}; проект поддерживает только perpetual-контракты без даты поставки.",
             })
         if meta_quote_coin and meta_quote_coin != "USDT":
             errors.append({
@@ -861,16 +870,32 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 "msg": f"Bybit quoteCoin={meta_quote_coin}; проект поддерживает только USDT-quoted linear perpetual.",
             })
         elif not meta_quote_coin:
-            target = errors if require_meta else warnings
-            target.append({"code": "BYBIT_QUOTE_COIN_MISSING", "msg": "Bybit metadata не содержит quoteCoin; невозможно подтвердить USDT quote. Execution-preflight блокирует запуск fail-closed."})
+            _meta_target().append({"code": "BYBIT_QUOTE_COIN_MISSING", "msg": "Bybit metadata не содержит quoteCoin; невозможно подтвердить USDT quote. Execution-preflight блокирует запуск fail-closed."})
         if meta_settle_coin and meta_settle_coin != "USDT":
             errors.append({
                 "code": "BYBIT_SETTLE_COIN_UNSUPPORTED",
                 "msg": f"Bybit settleCoin={meta_settle_coin}; проект поддерживает только USDT-settled linear perpetual.",
             })
         elif not meta_settle_coin:
-            target = errors if require_meta else warnings
-            target.append({"code": "BYBIT_SETTLE_COIN_MISSING", "msg": "Bybit metadata не содержит settleCoin; невозможно подтвердить USDT settlement. Execution-preflight блокирует запуск fail-closed."})
+            _meta_target().append({"code": "BYBIT_SETTLE_COIN_MISSING", "msg": "Bybit metadata не содержит settleCoin; невозможно подтвердить USDT settlement. Execution-preflight блокирует запуск fail-closed."})
+
+        required_filter_fields = (
+            ("BYBIT_TICK_SIZE_MISSING", tick_size, "priceFilter.tickSize", "цены и шаг сетки нельзя безопасно округлить по биржевому tick size"),
+            ("BYBIT_QTY_STEP_MISSING", qty_step, "lotSizeFilter.qtyStep", "размер ордера нельзя безопасно округлить по qty step"),
+            ("BYBIT_MIN_ORDER_QTY_MISSING", min_order_qty, "lotSizeFilter.minOrderQty", "невозможно проверить минимальный размер заявки"),
+            ("BYBIT_MAX_ORDER_QTY_MISSING", max_order_qty, "lotSizeFilter.maxOrderQty", "невозможно проверить максимальный размер заявки"),
+            ("BYBIT_MIN_NOTIONAL_MISSING", min_notional, "lotSizeFilter.minNotionalValue", "невозможно проверить минимальный notional в USDT"),
+            ("BYBIT_MIN_LEVERAGE_MISSING", min_leverage, "leverageFilter.minLeverage", "невозможно проверить нижнюю границу leverage"),
+            ("BYBIT_MAX_LEVERAGE_MISSING", max_leverage, "leverageFilter.maxLeverage", "невозможно проверить верхнюю границу leverage"),
+            ("BYBIT_LEVERAGE_STEP_MISSING", leverage_step, "leverageFilter.leverageStep", "невозможно проверить шаг leverage"),
+        )
+        for code, value, source_field, consequence in required_filter_fields:
+            if value is None or value <= 0:
+                _meta_target().append({
+                    "code": code,
+                    "msg": f"Bybit metadata не содержит корректный {source_field}; {consequence}. Execution-preflight блокирует запуск fail-closed.",
+                })
+
         pre_listing = meta_is_pre_listing is True or str(meta_status).strip().lower() in {"prelaunch", "pre-listing", "prelisting"}
         if pre_listing:
             errors.append({
@@ -1030,6 +1055,8 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     if tp_pct is not None and tp_pct <= 0:
         errors.append({"code": "TP_PER_LEG_PCT_NON_POSITIVE", "msg": f"tp_per_leg.pct должен быть > 0, получено {tp_pct}."})
 
+    if bot_type == "futures_grid" and venue == "linear" and leverage is None:
+        warnings.append({"code": "LEVERAGE_DEFAULTED_TO_ONE", "msg": "leverage не указан в legacy/manual payload; для preflight принимается только безопасный default 1x, новые рекомендации должны хранить явный leverage."})
     if leverage is not None and leverage <= 0:
         errors.append({"code": "LEVERAGE_NON_POSITIVE", "msg": f"Leverage должен быть > 0, получено {leverage}."})
     if min_leverage is not None and leverage is not None and leverage < min_leverage:
