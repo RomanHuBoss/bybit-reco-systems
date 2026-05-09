@@ -31,6 +31,29 @@ def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
+def _normalize_linear_usdt_symbol(symbol: str | None) -> str | None:
+    if symbol is None:
+        return None
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return None
+    if not normalized.endswith("USDT"):
+        raise ValueError(f"Unsupported symbol for this service: {normalized}. Only Bybit Linear USDT perpetual symbols are allowed.")
+    return normalized
+
+
+def _ensure_linear_category(category: str) -> str:
+    normalized = str(category or "").strip().lower()
+    if normalized != "linear":
+        raise ValueError(f"Unsupported Bybit category for this service: {category!r}. Only category='linear' is allowed.")
+    return normalized
+
+
+def _filter_exact_symbol(items: list[dict[str, Any]], symbol: str | None) -> list[dict[str, Any]]:
+    target = _normalize_linear_usdt_symbol(symbol)
+    if target is None:
+        return [item for item in items if str(item.get("symbol") or "").strip().upper().endswith("USDT")]
+    return [item for item in items if str(item.get("symbol") or "").strip().upper() == target]
 
 
 def _header_value(response: Any, name: str) -> str | None:
@@ -166,11 +189,17 @@ class BybitPublicClient:
         raise RuntimeError("Bybit request failed")
 
     def get_tickers(self, category: str, symbol: str | None = None) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"category": category}
-        if symbol:
-            params["symbol"] = symbol
+        category_norm = _ensure_linear_category(category)
+        symbol_norm = _normalize_linear_usdt_symbol(symbol)
+        params: dict[str, Any] = {"category": category_norm}
+        if symbol_norm:
+            params["symbol"] = symbol_norm
         data = self._get("/v5/market/tickers", params=params)
-        return _result_list(data)
+        # Bybit category=linear can include non-USDT linear products when broad
+        # filters are used. Product scope here is stricter, and symbol-specific
+        # calls must not let a malformed upstream/stub row be relabelled as the
+        # requested instrument by the collector.
+        return _filter_exact_symbol(_result_list(data), symbol_norm)
 
     def get_kline(
         self,
@@ -181,9 +210,13 @@ class BybitPublicClient:
         start: int | None = None,
         end: int | None = None,
     ) -> list[list[str]]:
+        category_norm = _ensure_linear_category(category)
+        symbol_norm = _normalize_linear_usdt_symbol(symbol)
+        if not symbol_norm:
+            raise ValueError("symbol is required for Bybit linear USDT kline requests")
         params: dict[str, str] = {
-            "category": category,
-            "symbol": symbol,
+            "category": category_norm,
+            "symbol": symbol_norm,
             "interval": interval,
             "limit": str(max(1, min(int(limit), 1000))),
         }
@@ -197,12 +230,14 @@ class BybitPublicClient:
         return items if isinstance(items, list) else []
 
     def get_funding_rate(self, symbol: str) -> dict[str, Any] | None:
-        """Current funding rate from linear tickers endpoint."""
-        data = self._get("/v5/market/tickers", {"category": "linear", "symbol": symbol})
-        items = _result_list(data)
+        """Current funding rate from the Linear USDT perpetual ticker endpoint."""
+        target = _normalize_linear_usdt_symbol(symbol)
+        if not target:
+            raise ValueError("symbol is required for Bybit linear USDT funding requests")
+        data = self._get("/v5/market/tickers", {"category": "linear", "symbol": target})
+        items = _filter_exact_symbol(_result_list(data), target)
         if not items:
             return None
-        target = str(symbol or "").strip().upper()
         ticker = None
         for item in items:
             item_symbol = str(item.get("symbol") or "").strip().upper()
@@ -219,7 +254,7 @@ class BybitPublicClient:
         if interval_hours is not None and interval_hours > 0:
             funding_interval_min = int(round(interval_hours * 60.0))
         return {
-            "symbol": symbol,
+            "symbol": target,
             "funding_rate": funding_rate,
             "next_funding_ts": next_funding_ts,
             "funding_interval_min": funding_interval_min,
@@ -238,9 +273,12 @@ class BybitPublicClient:
         interval: 5min / 15min / 30min / 1h / 4h / 1d
         Returns sanitized rows plus optional pagination cursor.
         """
+        symbol_norm = _normalize_linear_usdt_symbol(symbol)
+        if not symbol_norm:
+            raise ValueError("symbol is required for Bybit linear USDT open-interest requests")
         params: dict[str, str] = {
             "category": "linear",
-            "symbol": symbol,
+            "symbol": symbol_norm,
             "intervalTime": interval,
             "limit": str(max(1, min(int(limit), 200))),
         }
@@ -294,7 +332,7 @@ class BybitPublicClient:
         return rows
 
     def get_instrument_info(self, category: str, symbol: str) -> dict[str, Any] | None:
-        """Metadata for a single instrument (tick size, lot size, etc.).
+        """Metadata for one Bybit Linear USDT perpetual instrument.
 
         Bybit normally honours the ``symbol`` filter, но для fail-closed execution
         validation нельзя опираться только на это предположение. Если upstream,
@@ -304,14 +342,18 @@ class BybitPublicClient:
 
         The endpoint reports ``category`` at ``result.category`` rather than inside
         every instrument object. Preserve that category on the returned item so
-        downstream validation can detect category/venue mismatches instead of
-        silently treating a malformed response as ``linear``.
+        downstream validation can detect malformed responses instead of silently
+        treating them as compatible execution metadata.
         """
-        data = self._get("/v5/market/instruments-info", {"category": category, "symbol": symbol})
+        category_norm = _ensure_linear_category(category)
+        symbol_norm = _normalize_linear_usdt_symbol(symbol)
+        if not symbol_norm:
+            raise ValueError("symbol is required for Bybit linear USDT instrument metadata")
+        data = self._get("/v5/market/instruments-info", {"category": category_norm, "symbol": symbol_norm})
         result = _mapping_or_none(data.get("result")) or {}
         result_category = str(result.get("category") or "").strip().lower()
         items = _result_list(data)
-        target = str(symbol or "").strip().upper()
+        target = symbol_norm
         for item in items:
             item_symbol = str(item.get("symbol") or "").strip().upper()
             if item_symbol and item_symbol == target:

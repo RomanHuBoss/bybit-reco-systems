@@ -257,6 +257,10 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
     fund_block = reasons.get("funding") or {}
     fund_raw = fund_block.get("expected_funding_bps")
     if fund_raw is None:
+        fund_raw = fund_block.get("directional_funding_bps_per_event")
+    if fund_raw is None:
+        fund_raw = fund_block.get("directional_funding_bps_interval")
+    if fund_raw is None:
         fund_raw = fund_block.get("directional_funding_bps_8h")
     if fund_raw is None:
         fund_raw = fund_block.get("carry_cost_bps_8h")

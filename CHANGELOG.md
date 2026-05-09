@@ -1,3 +1,11 @@
+## 2026-05-09 — strict Linear USDT client boundary and funding labels
+
+- `BybitPublicClient` теперь fail-fast принимает только `category=linear` и символы с суффиксом `USDT`; non-USDT symbols или нецелевой category отклоняются до сетевого запроса.
+- Symbol-specific ticker/kline/funding/open-interest/instrument-info paths теперь фильтруют exact `symbol`, чтобы collector не мог присвоить чужую строку market-data запрошенному USDT perpetual.
+- Funding payload получил явное поле `directional_funding_bps_per_event`; старый ключ `directional_funding_bps_8h` оставлен только как backward-compatible alias.
+- Добавлены regression tests на exact-symbol ticker filtering и fail-fast product boundary.
+- Full regression suite after this pass: `377 passed`; `python -m py_compile app/*.py main.py`; `node --check app/ui/static/app.js`.
+
 ## 2026-05-09 — live-price preflight fail-closed
 
 - Execution preflight теперь блокирует подтверждение grid-рекомендации, если свежая ticker-запись не содержит пригодной `last`/`bid`/`ask` цены (`LIVE_PRICE_UNAVAILABLE`); freshness без live price больше не считается достаточной для проверки диапазона, kill-switch и drift от reference price.

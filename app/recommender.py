@@ -1161,19 +1161,19 @@ def _estimate_cost_model(
 
     horizon_sec = BOT_HORIZONS.get(bot_type, 0)
     fr = _finite_or_none(funding_rate)
-    directional_funding_bps_8h = 0.0
+    directional_funding_bps_per_event = 0.0
     neutral_funding_model = None
     if fr is not None:
         if direction == "long":
-            directional_funding_bps_8h = fr * 10000.0
+            directional_funding_bps_per_event = fr * 10000.0
         elif direction == "short":
-            directional_funding_bps_8h = -fr * 10000.0
+            directional_funding_bps_per_event = -fr * 10000.0
         elif direction == "neutral" and bot_type == "futures_grid" and venue == "linear":
             # Neutral futures grids can accumulate either long or short inventory as
             # price moves through the range. A signed funding estimate would mark one
             # side as free carry even though the bot may end up holding the adverse
             # side. Use abs(rate) as a conservative expected cost in approvals.
-            directional_funding_bps_8h = abs(fr) * 10000.0
+            directional_funding_bps_per_event = abs(fr) * 10000.0
             neutral_funding_model = "adverse_side_for_neutral_grid"
 
     expected_funding_events = 0
@@ -1207,7 +1207,7 @@ def _estimate_cost_model(
         else:
             expected_funding_events = 1 if horizon_sec >= funding_interval_sec else 0
             nfts_out = nfts if nfts > 0 else None
-        expected_funding_bps = directional_funding_bps_8h * expected_funding_events
+        expected_funding_bps = directional_funding_bps_per_event * expected_funding_events
 
     execution_cost_bps = max(0.0, fee_bps_round_trip + spread_bps_used + slippage_bps)
     net_cost_bps = execution_cost_bps + expected_funding_bps
@@ -1220,8 +1220,11 @@ def _estimate_cost_model(
         "execution_cost_bps": float(execution_cost_bps),
         "funding_rate": fr,
         "direction": direction,
-        "directional_funding_bps_interval": float(directional_funding_bps_8h),
-        "directional_funding_bps_8h": float(directional_funding_bps_8h),
+        "directional_funding_bps_per_event": float(directional_funding_bps_per_event),
+        "directional_funding_bps_interval": float(directional_funding_bps_per_event),
+        # Backward-compatible alias for old consumers. For non-8h contracts
+        # this is per funding event, not annualized/normalized to 8h.
+        "directional_funding_bps_8h": float(directional_funding_bps_per_event),
         "neutral_funding_model": neutral_funding_model,
         "next_funding_ts": int(nfts_out) if nfts_out else _safe_int_or_none(next_funding_ts),
         "expected_funding_events": int(expected_funding_events),
@@ -3105,6 +3108,13 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 reasons2["funding"] = {
                     **fr_sig,
                     "direction": direction,
+                    "directional_funding_bps_per_event": float(
+                        cost_model.get("directional_funding_bps_per_event")
+                        or cost_model.get("directional_funding_bps_interval")
+                        or cost_model.get("directional_funding_bps_8h")
+                        or 0.0
+                    ),
+                    # Legacy alias; prefer directional_funding_bps_per_event.
                     "directional_funding_bps_8h": float(cost_model.get("directional_funding_bps_8h") or 0.0),
                     "expected_funding_bps": float(cost_model.get("expected_funding_bps") or 0.0),
                     "expected_funding_events": int(cost_model.get("expected_funding_events") or 0),

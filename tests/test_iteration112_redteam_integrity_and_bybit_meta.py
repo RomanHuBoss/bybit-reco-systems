@@ -234,7 +234,7 @@ def test_release_docs_omit_audit_report_artifact_references() -> None:
         assert "docs/AUDIT_REPORT_" not in payload
 
 
-def test_bybit_client_preserves_result_category_on_instrument_info(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bybit_client_preserves_linear_result_metadata_on_instrument_info(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.bybit_client import BybitPublicClient
 
     class DummyResponse:
@@ -248,12 +248,14 @@ def test_bybit_client_preserves_result_category_on_instrument_info(monkeypatch: 
             return {
                 "retCode": 0,
                 "result": {
-                    "category": "inverse",
+                    "category": "linear",
                     "list": [
                         {
                             "symbol": "BTCUSDT",
                             "contractType": "LinearPerpetual",
                             "status": "Trading",
+                            "quoteCoin": "USDC",
+                            "settleCoin": "USDC",
                         }
                     ],
                 },
@@ -267,4 +269,6 @@ def test_bybit_client_preserves_result_category_on_instrument_info(monkeypatch: 
         client.close()
 
     assert info is not None
-    assert info["category"] == "inverse"
+    assert info["category"] == "linear"
+    assert info["quoteCoin"] == "USDC"
+    assert info["settleCoin"] == "USDC"

@@ -1,4 +1,11 @@
 # Торговая логика Bybit Linear USDT Futures grid
+## Bybit Linear USDT product boundary
+
+- Public Bybit REST client принимает только `category=linear`; другой category отклоняется до сетевого запроса.
+- Symbol-specific market-data/metadata calls принимают только символы `*USDT`; non-USDT symbols не попадают в ticker/kline/funding/open-interest/instrument-info path.
+- Если upstream/stub возвращает список без точного совпадения `symbol`, строка отбрасывается: collector не должен присваивать чужую цену, funding или metadata запрошенному контракту.
+- Broad ticker fetch дополнительно фильтруется по `*USDT`, потому что продуктовый scope сервиса уже API-scope Bybit `linear`: рекомендации строятся только для USDT perpetual.
+- Funding в risk/recommendation payload теперь хранит `directional_funding_bps_per_event`; legacy alias `directional_funding_bps_8h` не использовать для новой логики.
 
 ## Важная граница
 

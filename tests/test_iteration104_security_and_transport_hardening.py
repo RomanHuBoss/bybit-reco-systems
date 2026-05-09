@@ -196,3 +196,45 @@ def test_bybit_client_retries_invalid_retcode_shape_errors(monkeypatch: pytest.M
 
     assert rows == [{"symbol": "ETHUSDT"}]
     assert len(fake_http.calls) == 2
+
+
+def test_bybit_client_ticker_filters_symbol_exactly_and_usdt_only() -> None:
+    client = BybitPublicClient("https://api.bybit.com", max_retries=0)
+    fake_http = _SequenceClient(
+        [
+            _FakeResponse(
+                200,
+                {
+                    "retCode": 0,
+                    "result": {
+                        "list": [
+                            {"symbol": "ETHUSDT", "lastPrice": "2000"},
+                            {"symbol": "BTCUSDT", "lastPrice": "100000"},
+                            {"symbol": "BTCUSDC", "lastPrice": "100000"},
+                        ]
+                    },
+                },
+            )
+        ]
+    )
+    client._client = fake_http  # type: ignore[attr-defined]
+
+    rows = client.get_tickers("linear", "BTCUSDT")
+    client.close()
+
+    assert rows == [{"symbol": "BTCUSDT", "lastPrice": "100000"}]
+    assert fake_http.calls[0][1] == {"category": "linear", "symbol": "BTCUSDT"}
+
+
+def test_bybit_client_rejects_non_linear_category_and_non_usdt_symbol_before_request() -> None:
+    client = BybitPublicClient("https://api.bybit.com", max_retries=0)
+    fake_http = _SequenceClient([])
+    client._client = fake_http  # type: ignore[attr-defined]
+
+    with pytest.raises(ValueError, match="Only category='linear'"):
+        client.get_tickers("unsupported", "BTCUSDT")
+    with pytest.raises(ValueError, match="Only Bybit Linear USDT"):
+        client.get_kline("linear", "BTCUSDC")
+
+    client.close()
+    assert fake_http.calls == []
