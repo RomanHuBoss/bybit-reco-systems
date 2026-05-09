@@ -5,7 +5,7 @@
 Следствие: нельзя считать его завершённой автоторговой системой без внешнего execution layer.
 
 ## 2. Qty/min-notional validation зависит от фактического размера позиции
-Сервис формирует minimum viable `params.sizing` с order notional/qty/margin estimate, округляя provisional qty вверх по conservative fallback step до получения live Bybit metadata, чтобы UI показывал капитал и preflight мог проверить явные значения. Это не заменяет sizing от баланса аккаунта и не гарантирует совпадение с каждым `qtyStep`: внешний исполнитель обязан повторно сверять `qty_step`, `min_order_qty`, `max_order_qty`, `min_notional`, available balance и фактическую маржу перед созданием Bybit grid bot.
+Сервис формирует minimum viable `params.sizing` с order notional/qty/margin estimate, округляя provisional qty вверх по conservative fallback step до получения live Bybit metadata, чтобы UI показывал капитал и preflight мог проверить явные значения. Execution-preflight дополнительно проверяет minNotional на нижней цене grid range и согласованность qty/notional, но это всё равно не заменяет live preview фактических ордеров в Bybit. Это не заменяет sizing от баланса аккаунта и не гарантирует совпадение с каждым `qtyStep`: внешний исполнитель обязан повторно сверять `qty_step`, `min_order_qty`, `max_order_qty`, `min_notional`, available balance и фактическую маржу перед созданием Bybit grid bot.
 
 ## 3. Outcome labeling остаётся proxy-моделью
 Даже усиленная grid-разметка не заменяет реальные fill/funding/liquidation данные.

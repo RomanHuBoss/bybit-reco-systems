@@ -595,6 +595,24 @@ def _step_aligned(value: float, step: float, *, tolerance: float = 1e-9) -> bool
     return abs(units - nearest) <= max(float(tolerance), abs(units) * float(tolerance))
 
 
+def _grid_min_notional_price(reference_price: Any, lower: Any, upper: Any) -> float | None:
+    """Conservative price for Bybit minNotional checks across a grid range.
+
+    Bybit validates notional at the actual order price. A fixed base qty that
+    passes ``qty * reference_price`` can still fail for buy levels near the lower
+    grid boundary. Use the smallest positive executable range/reference price so
+    a recommendation is not approved with lower-grid orders below minNotional.
+    """
+    candidates: list[float] = []
+    for raw in (lower, reference_price, upper):
+        num = _finite_float_or_none(raw)
+        if num is not None and num > 0:
+            candidates.append(float(num))
+    if not candidates:
+        return None
+    return min(candidates)
+
+
 def _active_symbol_disable_state(conn, venue: str, symbol: str, *, now_ts: int | None = None) -> dict[str, Any] | None:
     now = int(now_ts or time.time())
     cur = conn.execute(
@@ -1158,18 +1176,19 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                     "msg": f"{qty_source or 'order_qty'}={order_qty} не выровнен по Bybit qty_step={qty_step}; ближайшее значение={snapped.get('order_qty') or snapped_qty}.",
                 })
         if min_notional is not None:
-            if reference_price is not None and reference_price > 0:
-                qty_notional = order_qty * reference_price
+            notional_price = _grid_min_notional_price(reference_price, lower, upper)
+            if notional_price is not None:
+                qty_notional = order_qty * notional_price
                 notional_checked = True
                 if qty_notional < min_notional:
                     errors.append({
                         "code": "ORDER_NOTIONAL_BELOW_MIN",
-                        "msg": f"Расчётный notional={qty_notional:.12g} по {qty_source or 'order_qty'} и reference_price ниже Bybit min_notional={min_notional}.",
+                        "msg": f"Минимальный расчётный notional={qty_notional:.12g} по {qty_source or 'order_qty'} и grid_min_price={notional_price:.12g} ниже Bybit min_notional={min_notional}; lower-grid заявки могут быть отклонены биржей.",
                     })
             else:
                 warnings.append({
                     "code": "MIN_NOTIONAL_NOT_CHECKED",
-                    "msg": f"Bybit min_notional={min_notional}, но reference_price отсутствует; notional по order_qty проверить нельзя.",
+                    "msg": f"Bybit min_notional={min_notional}, но reference/range price отсутствуют; notional по order_qty проверить нельзя.",
                 })
 
     if order_notional is not None:
@@ -1180,6 +1199,15 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             errors.append({
                 "code": "ORDER_NOTIONAL_BELOW_MIN",
                 "msg": f"{notional_source or 'order_notional'}={order_notional} ниже Bybit min_notional={min_notional}.",
+            })
+
+    if order_qty is not None and order_notional is not None and reference_price is not None and reference_price > 0:
+        implied_notional = order_qty * reference_price
+        tolerance = max(0.01, abs(implied_notional) * 0.005)
+        if abs(implied_notional - order_notional) > tolerance:
+            errors.append({
+                "code": "ORDER_QTY_NOTIONAL_MISMATCH",
+                "msg": f"{qty_source or 'order_qty'} * reference_price = {implied_notional:.12g} USDT, но {notional_source or 'order_notional'}={order_notional:.12g}; sizing payload внутренне несогласован.",
             })
 
     if not size_known:

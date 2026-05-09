@@ -35,7 +35,7 @@ def _base_rec():
             "leverage": 1,
             "trade_plan": {
                 "reference_price": 100.0,
-                "sizing": {"order_qty": 0.05, "order_notional_usdt": 5.5},
+                "sizing": {"order_qty": 0.051, "order_notional_usdt": 5.1},
                 "levels": {
                     "range": {"lower": 99.0, "upper": 101.0},
                     "kill_switch": {"lower": 98.5, "upper": 101.5},

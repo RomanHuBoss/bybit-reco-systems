@@ -88,7 +88,7 @@ def test_bybit_plan_validation_blocks_explicit_order_qty_below_filters(app_main)
 # что qty/min_notional якобы вообще не проверялись.
 def test_bybit_plan_validation_accepts_explicit_aligned_qty_and_notional(app_main):
     validation = app_main._validate_trade_plan_against_bybit_meta(
-        _rec_with_sizing({"order_qty": 0.05, "order_notional_usdt": 5.5}),
+        _rec_with_sizing({"order_qty": 0.051, "order_notional_usdt": 5.1}),
         _meta(),
     )
 
@@ -100,4 +100,34 @@ def test_bybit_plan_validation_accepts_explicit_aligned_qty_and_notional(app_mai
     assert "ORDER_NOTIONAL_BELOW_MIN" not in error_codes
     assert "SIZE_INPUT_REQUIRED" not in warning_codes
     assert "MIN_NOTIONAL_NOT_CHECKED" not in warning_codes
-    assert validation["snapped_levels"]["order_qty"] == "0.050"
+    assert validation["snapped_levels"]["order_qty"] == "0.051"
+
+
+# Bybit minNotional applies at the actual order price. A qty that passes at the
+# reference price can still be rejected for lower grid levels, so preflight must
+# use the lower executable range price for the conservative check.
+def test_bybit_plan_validation_checks_min_notional_at_lower_grid_price(app_main):
+    rec = _rec_with_sizing({"order_qty": 0.05, "order_notional_usdt": 5.0})
+    validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
+
+    error_codes = {item["code"] for item in validation["errors"]}
+
+    assert validation["ok"] is False
+    assert "ORDER_NOTIONAL_BELOW_MIN" in error_codes
+    assert any("grid_min_price" in item["msg"] for item in validation["errors"] if item["code"] == "ORDER_NOTIONAL_BELOW_MIN")
+
+
+# Manual/operator payloads may contain both base qty and quote notional. If they
+# disagree materially, downstream validation can show a false minNotional/margin
+# result, so fail closed before execution.
+def test_bybit_plan_validation_blocks_inconsistent_qty_and_notional(app_main):
+    validation = app_main._validate_trade_plan_against_bybit_meta(
+        _rec_with_sizing({"order_qty": 0.051, "order_notional_usdt": 6.5}),
+        _meta(),
+        require_meta=True,
+    )
+
+    error_codes = {item["code"] for item in validation["errors"]}
+
+    assert validation["ok"] is False
+    assert "ORDER_QTY_NOTIONAL_MISMATCH" in error_codes
