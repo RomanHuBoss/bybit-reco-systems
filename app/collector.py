@@ -285,9 +285,10 @@ def _extract_funding_row(symbol: str, ticker: dict[str, Any], fallback_ts: int) 
     except Exception:
         next_funding_ts = None
 
-    # Bybit linear tickers expose fundingIntervalHour. Store minutes so the
+    # Bybit linear tickers may expose fundingIntervalHour. Store minutes so the
     # recommender counts actual funding events instead of assuming 8h for every
-    # USDT perpetual.
+    # USDT perpetual. If the ticker omits this field, collection falls back to
+    # instruments-info below, where Bybit publishes fundingInterval in minutes.
     funding_interval_min = None
     interval_hours = _to_float(ticker.get("fundingIntervalHour"), minimum=0.0)
     if interval_hours is not None and interval_hours > 0:
@@ -300,6 +301,61 @@ def _extract_funding_row(symbol: str, ticker: dict[str, Any], fallback_ts: int) 
         "next_funding_ts": next_funding_ts,
         "funding_interval_min": funding_interval_min,
     }
+
+
+def _funding_interval_min_from_instrument_info(client: BybitPublicClient, category: str, symbol: str) -> int | None:
+    """Read fundingInterval from instruments-info only after product-scope checks.
+
+    The ticker endpoint can omit fundingIntervalHour. Using a blind default would
+    under/over-count funding events and distort grid net edge, so the collector
+    tries the per-symbol instrument spec and accepts the value only when the row
+    still proves the same Bybit Linear USDT perpetual product boundary.
+    """
+    try:
+        info = client.get_instrument_info(category, symbol)
+    except Exception:
+        return None
+    if not isinstance(info, dict):
+        return None
+
+    item_symbol = str(info.get("symbol") or "").strip().upper()
+    target_symbol = str(symbol or "").strip().upper()
+    contract_type = str(info.get("contractType") or "").strip()
+    quote_coin = str(info.get("quoteCoin") or "").strip().upper()
+    settle_coin = str(info.get("settleCoin") or "").strip().upper()
+    status = str(info.get("status") or "").strip().lower()
+    is_pre_listing = str(info.get("isPreListing") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    if item_symbol != target_symbol or not target_symbol.endswith("USDT"):
+        return None
+    if contract_type != "LinearPerpetual" or quote_coin != "USDT" or settle_coin != "USDT":
+        return None
+    if status and status != "trading":
+        return None
+    if is_pre_listing or not _ticker_delivery_time_is_perpetual(info.get("deliveryTime")):
+        return None
+
+    interval_min = _to_float(info.get("fundingInterval"), minimum=0.0)
+    if interval_min is None or interval_min <= 0:
+        return None
+    return int(round(interval_min))
+
+
+def _ensure_funding_interval_from_instrument_info(
+    client: BybitPublicClient,
+    category: str,
+    symbol: str,
+    funding_row: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if funding_row is None:
+        return None
+    if _to_float(funding_row.get("funding_interval_min"), minimum=0.0):
+        return funding_row
+    interval_min = _funding_interval_min_from_instrument_info(client, category, symbol)
+    if interval_min is not None and interval_min > 0:
+        funding_row = dict(funding_row)
+        funding_row["funding_interval_min"] = int(interval_min)
+    return funding_row
 
 
 def _client_get_tickers_batch(client: BybitPublicClient, category: str) -> tuple[list[dict[str, Any]] | None, Exception | None]:
@@ -349,7 +405,12 @@ def _fetch_ticker_payloads(
                 }
             )
             if venue == "linear":
-                funding_row = _extract_funding_row(sym, item, batch_ts)
+                funding_row = _ensure_funding_interval_from_instrument_info(
+                    client,
+                    category,
+                    sym,
+                    _extract_funding_row(sym, item, batch_ts),
+                )
                 if funding_row is not None:
                     funding_rows.append(funding_row)
 
@@ -378,7 +439,12 @@ def _fetch_ticker_payloads(
                 }
             )
             if venue == "linear":
-                funding_row = _extract_funding_row(sym, item, row_ts)
+                funding_row = _ensure_funding_interval_from_instrument_info(
+                    client,
+                    category,
+                    sym,
+                    _extract_funding_row(sym, item, row_ts),
+                )
                 if funding_row is not None:
                     funding_rows.append(funding_row)
         except Exception as e:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-05-10 — Collector funding interval fallback hardening
+
+- Public collector now fills missing ticker `fundingIntervalHour` from Bybit `/v5/market/instruments-info` `fundingInterval` for the exact same Linear USDT perpetual symbol.
+- The fallback is accepted only when instrument metadata proves `contractType=LinearPerpetual`, `quoteCoin=USDT`, `settleCoin=USDT`, `status=Trading` and no delivery/pre-listing state.
+- This prevents recommendation/execution funding event counts from degrading to missing/implicit interval assumptions when ticker payloads omit the interval.
+- Added regression coverage in `tests/test_iteration136_collector_funding_interval_fallback.py`; validation: `444 passed`, `python -m py_compile app/*.py tests/*.py main.py`, `node --check app/ui/static/app.js`.
+
 ## 2026-05-10 — Execution funding event count and outcome funding hardening
 
 - Execution-time funding preflight now counts missing `next_funding_ts` conservatively as `ceil(horizon / interval)` instead of assuming at most one event; this can block grids whose current funding carry turns net edge negative before launch.
