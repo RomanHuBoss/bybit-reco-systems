@@ -134,3 +134,75 @@ def test_grid_step_and_tp_snap_up_so_economic_edge_is_not_thinned(app_main):
     assert levels["tp_per_leg"]["abs"] == pytest.approx(0.3)
     assert levels["tp_per_leg"]["pct"] == pytest.approx(0.3)
     assert params["operator_sheet"]["tp_per_leg"]["abs"] == pytest.approx(0.3)
+
+
+def test_strict_bybit_geometry_snap_rebuilds_range_from_grid_count(app_main):
+    meta = {
+        **_meta(),
+        "tick_size": "0.001",
+    }
+    rec = {
+        "bot_type": "futures_grid",
+        "venue": "linear",
+        "symbol": "BTCUSDT",
+        "direction": "neutral",
+        "account_mode": "unified",
+        "margin_mode": "isolated",
+        "params": {
+            "grid_geometry_model": "bybit_arithmetic_range_width_div_grid_count",
+            "actual_grid_step_abs": 0.101,
+            "actual_grid_spacing_pct": 0.101,
+            "grid_count": 12,
+            "grid_levels": 12,
+            "grid_type": "arithmetic",
+            "leverage": 1,
+            "price_ref": 100.0,
+            "price_range_lower": 99.0,
+            "price_range_upper": 100.2,
+            "sizing": {
+                "basis": "minimum_viable_operator_default",
+                "qty_per_order": 0.05,
+                "order_notional_usdt": 5.0,
+                "estimated_total_order_notional_usdt": 60.0,
+                "estimated_margin_required_usdt": 60.0,
+            },
+            "operator_sheet": {
+                "price_ref": 100.0,
+                "range_lower": 99.0,
+                "range_upper": 100.2,
+                "grid_spacing_pct": 0.101,
+                "kill_switch": {"lower": 98.9, "upper": 100.3},
+                "tp_per_leg": {"abs": 0.071, "pct": 0.071},
+                "sizing": {"basis": "minimum_viable_operator_default", "qty_per_order": 0.05},
+            },
+            "trade_plan": {
+                "reference_price": 100.0,
+                "grid_count": 12,
+                "grid_type": "arithmetic",
+                "sizing": {"basis": "minimum_viable_operator_default", "qty_per_order": 0.05},
+                "levels": {
+                    "range": {"lower": 99.0, "upper": 100.2},
+                    "kill_switch": {"lower": 98.9, "upper": 100.3},
+                    "grid_step": {"step_abs": 0.101, "step_pct": 0.101},
+                    "tp_per_leg": {"abs": 0.071, "pct": 0.071},
+                },
+            },
+        },
+    }
+
+    # Without strict range rebuild this shape validates as only 11 intervals:
+    # floor((100.2 - 99.0) / 0.101) == 11 while grid_count is 12.
+    snapped = app_main._snap_reco_payload_to_bybit_meta(rec, meta)
+    levels = snapped["params"]["trade_plan"]["levels"]
+
+    assert levels["range"]["lower"] == pytest.approx(99.0)
+    assert levels["range"]["upper"] == pytest.approx(100.212)
+    assert levels["grid_step"]["step_abs"] == pytest.approx(0.101)
+    assert snapped["params"]["price_range_upper"] == pytest.approx(100.212)
+    assert snapped["params"]["operator_sheet"]["range_upper"] == pytest.approx(100.212)
+    assert levels["kill_switch"]["upper"] > levels["range"]["upper"]
+
+    validation = app_main._validate_trade_plan_against_bybit_meta(snapped, meta, require_meta=True)
+    assert validation["ok"] is True
+    assert "GRID_STEP_LEVELS_MISMATCH" not in {item["code"] for item in validation["errors"]}
+    assert "GRID_STEP_LEVELS_MISMATCH" not in {item["code"] for item in validation["warnings"]}
