@@ -104,10 +104,10 @@ def test_recommender_blocks_futures_grid_when_mtf_history_is_insufficient(tmp_pa
 def test_ui_exposes_conservative_funding_edge_labels() -> None:
     app_js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "Net/сетка conservative" in app_js
-    assert "Funding cost для допуска" in app_js
-    assert "Funding benefit исключён" in app_js
-    assert "net_profit_with_signed_funding_bps" in app_js
+    assert "Вероятность LLM" in app_js
+    assert "LLM-рекомендация" in app_js
+    assert "Сравнение с алгоритмом" in app_js
+    assert "Техподробности" in app_js
 
 
 def test_ui_symbol_links_has_single_chart_and_conditional_grid_bot_link() -> None:

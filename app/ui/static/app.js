@@ -152,6 +152,14 @@ function formatUsdValue(value) {
   return `$${fmtPrice(v)}`;
 }
 
+function formatProbability(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const v = Number(value);
+  if (!Number.isFinite(v)) return String(value);
+  const pct = Math.abs(v) <= 1 ? v * 100 : v;
+  return `${formatDotNumber(pct, 1)}%`;
+}
+
 function directionRu(dir) {
   if (dir === "long") return "Лонг";
   if (dir === "short") return "Шорт";
@@ -477,30 +485,25 @@ function buildOperatorValues(it) {
 
 function buildOperatorFieldSpecs(it, ov) {
   const params = (it || {}).params || {};
+  const economics = params.economics || {};
+  const sizing = params.sizing || {};
+  const rangeValue = `${ov.rangeLower} — ${ov.rangeUpper}`;
+  const capitalValue = formatUsdValue(
+    sizing.estimated_margin_required_usdt
+      ?? economics.estimated_margin_required_usdt
+      ?? sizing.order_notional_usdt
+      ?? economics.order_notional_usdt
+  );
   const fields = [
-    { label: "Диапазон от", value: ov.rangeLower, mono: true },
-    { label: "Диапазон до", value: ov.rangeUpper, mono: true },
-    { label: "Кол-во сеток", value: params.grid_count ?? params.grid_levels ?? "—" },
-    { label: "Тип сетки", value: params.grid_type || "arithmetic" },
-    { label: "Интервал, цена", value: ov.gridStepAbs, mono: true },
-    { label: "Интервал, %", value: ov.stepPct },
+    { label: "Сторона", value: directionRu((it || {}).direction), mono: false },
+    { label: "Диапазон входа", value: rangeValue, mono: true },
     { label: "Цена входа", value: ov.entryRef, mono: true },
+    { label: "Кол-во сеток", value: params.grid_count ?? params.grid_levels ?? "—" },
+    { label: "Плечо", value: ov.leverage },
+    { label: "Сумма/маржа", value: capitalValue },
+    { label: "Take Profit", value: ov.takeProfitValue, mono: true },
+    { label: "Stop Loss", value: ov.stopLossValue, mono: true },
   ];
-  if (it.venue === "linear") {
-    fields.push({ label: "Плечо", value: ov.leverage });
-    fields.push({ label: "Режим маржи", value: ov.marginMode });
-    const economics = params.economics || {};
-    const sizing = params.sizing || {};
-    fields.push({ label: "Order notional", value: formatUsdValue(sizing.order_notional_usdt ?? economics.order_notional_usdt) });
-    fields.push({ label: "Qty/order", value: formatDotNumber(sizing.qty_per_order ?? economics.qty_per_order, 10, false), mono: true });
-    fields.push({ label: "Margin est.", value: formatUsdValue(sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt) });
-  }
-  fields.push({ label: "Net/сетка conservative", value: formatBps((params.economics || {}).net_profit_bps, 2, true) });
-  fields.push({ label: "Прибыль/сетка, %", value: ov.tpLegPct });
-  if (ov.tpLegAbs !== "—") fields.push({ label: "Прибыль/сетка, цена", value: ov.tpLegAbs, mono: true });
-
-  fields.push({ label: "Стоп-лосс", value: ov.stopLossValue, mono: true });
-  fields.push({ label: "Тейк-профит", value: ov.takeProfitValue, mono: true });
   return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
 }
 
@@ -569,139 +572,91 @@ function buildTechPayload(it) {
 function buildDetailsHtml(it) {
   const reasons = it.reasons || {};
   const params = it.params || {};
-  const plan = params.trade_plan || {};
-  const shock = reasons.market_shock || {};
-  const fastVeto = reasons.fast_veto || {};
-  const sentAgg = reasons.sentiment_agg || {};
-  const dirAgg = reasons.direction_agg || {};
-  const funding = reasons.funding || {};
-  const oi = reasons.open_interest || {};
-  const liquidity = reasons.liquidity || {};
-  const costModel = reasons.cost_model || {};
-  const economics = reasons.grid_economics || params.economics || {};
-  const sizing = reasons.sizing || params.sizing || {};
-  const symbolSent = reasons.symbol_sentiment || {};
-  const volatility = plan.volatility || {};
-  const btcBeta = reasons.btc_beta || {};
-  const btcMetric = btcRelationMetric(btcBeta, it.symbol);
-  const scoreUi = it.ui_score_meta || ensureUiScoreMeta(it);
   const llmReview = reasons.llm_review || null;
   const blocks = it.blocks || [];
   const bybitValidation = it.bybit_plan_validation || {};
   const riskReport = params.risk_report || {};
   const riskReportRejected = Array.isArray(riskReport.rejection_reasons) ? riskReport.rejection_reasons : [];
   const riskReportWarnings = Array.isArray(riskReport.warnings) ? riskReport.warnings : [];
-  const riskReportApprovals = Array.isArray(riskReport.approval_reasons) ? riskReport.approval_reasons : [];
   const bybitErrors = Array.isArray(bybitValidation.errors) ? bybitValidation.errors : [];
   const bybitWarnings = Array.isArray(bybitValidation.warnings) ? bybitValidation.warnings : [];
-  const bybitValidationItems = bybitErrors.concat(bybitWarnings).slice(0, 8);
   const ov = buildOperatorValues(it);
   const operatorFields = buildOperatorFieldSpecs(it, ov);
-  const alertClass = (shock.severity || "normal") === "lockdown" ? "lock" : (shock.severity || "normal") === "guarded" ? "guard" : "";
-  const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
   const techPayload = JSON.stringify(buildTechPayload(it), null, 2);
 
   $("details").dataset.tech = techPayload;
   $("details").dataset.recId = it.rec_id;
   updateDetailsHeaderLinks(it);
 
-  const reasonList = (shock.reasons || []).length ? `<ul class="reason-list">${(shock.reasons || []).slice(0, 4).map(r => `<li><code>${escapeHtml(r.code || "signal")}</code> — ${escapeHtml(r.msg || "")}</li>`).join("")}</ul>` : "";
-  const blockCards = blocks.length ? `<div class="small-blocks">${blocks.map(b => `<div class="small-block"><code>${escapeHtml(b.code || "BLOCK")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>` : "";
-  const bybitValidationCards = bybitValidationItems.length
-    ? `<div class="small-blocks">${bybitValidationItems.map(b => `<div class="small-block ${bybitErrors.includes(b) ? "small-block-critical" : ""}"><code>${escapeHtml(b.code || "BYBIT_VALIDATION")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>`
-    : `<div class="helper-text">Bybit metadata/preflight warnings отсутствуют. Перед запуском execution-preflight всё равно сверит live last/bid/ask price, tick/lot/min-notional.</div>`;
-
   const launchable = isLaunchableGridRecommendation(it);
   const hardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || it.status === "blocked" || it.status === "no_trade";
   const decisionClass = launchable ? "go" : hardBlocked ? "stop" : "wait";
-  const decisionTitle = launchable ? "Можно готовить запуск" : hardBlocked ? "Не запускать" : "Ждать / перепроверить";
+  const decisionTitle = launchable ? "Можно запускать после preflight" : hardBlocked ? "Не запускать" : "Ждать / перепроверить";
   const decisionText = launchable
-    ? "Переносите поля в Bybit Futures Grid только после финального live preflight."
+    ? "Верхний блок содержит только значения, которые оператор переносит в Bybit Futures Grid."
     : hardBlocked
-      ? "В карточке есть блокеры или запретный статус. Создание бота оператором должно быть остановлено."
-      : "Рекомендация не в исполнимом состоянии. Не создавайте бота до обновления статуса и preflight.";
+      ? "Есть блокер, запрещающий ручное создание grid-бота. Причина показана ниже."
+      : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live preflight.";
 
-  const controlFields = [
-    fieldBox("Риск-решение", riskReport.decision || (blocks.length ? "not_recommended" : "recommended")),
-    fieldBox("Профиль", riskReport.risk_profile || economics.risk_profile || "—"),
-    fieldBox("Net/сетка conservative", formatBps(riskReport.expected_net_profit_per_grid_bps ?? economics.net_profit_bps, 2, true)),
-    fieldBox("Net signed funding", formatBps(riskReport.net_profit_with_signed_funding_bps ?? economics.net_profit_with_signed_funding_bps, 2, true)),
-    fieldBox("Издержки", formatBps(riskReport.estimated_execution_cost_bps ?? costModel.total_cost_bps ?? costModel.execution_cost_bps, 2, false)),
-    fieldBox("Funding cost для допуска", formatBps(riskReport.funding_cost_bps_for_approval ?? economics.funding_cost_bps, 2, false)),
-    fieldBox("Funding benefit исключён", formatBps(riskReport.funding_benefit_excluded_bps ?? economics.funding_benefit_excluded_bps, 2, false)),
-    fieldBox("Капитал", formatUsdValue(riskReport.capital_required_usdt ?? sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt)),
-    fieldBox("Ликвидность", liquidityTierRu(liquidity.tier || "—")),
-    fieldBox("Спред", formatBps(costModel.spread_bps, 2, false)),
-  ].join("");
+  const llmDirection = llmReview?.execution_direction || llmReview?.thesis_direction || "neutral";
+  const llmRecommendation = llmReview ? directionRu(llmDirection) : "нет данных";
+  const llmProbability = llmReview ? formatProbability(llmReview.confidence) : "—";
+  const llmAgreement = llmReview?.agree_with_engine === true
+    ? "совпадает"
+    : llmReview?.agree_with_engine === false
+      ? "расходится"
+      : "н/д";
+  const llmSummary = llmReview?.summary || llmReview?.error || "";
 
-  const riskNotes = [
-    riskReport.max_adverse_scenario ? `<div class="helper-text" style="margin-top:8px"><b>Неблагоприятный сценарий:</b> ${escapeHtml(riskReport.max_adverse_scenario)}</div>` : "",
-    riskReportRejected.length ? `<div class="small-blocks">${riskReportRejected.slice(0, 6).map(x => `<div class="small-block small-block-critical">${escapeHtml(x)}</div>`).join("")}</div>` : "",
-    riskReportWarnings.length ? `<div class="helper-text" style="margin-top:8px"><b>Предупреждения:</b> ${riskReportWarnings.slice(0, 4).map(escapeHtml).join("; ")}</div>` : "",
-    blockCards,
-  ].filter(Boolean).join("");
-
-  return `
-    <div class="operator-sheet compact-details-sheet">
-      <div class="operator-hero compact-hero">
-        <div>
-          <div class="operator-title-row">
-            <div class="operator-title">${escapeHtml(it.symbol)}</div>
-          </div>
-          <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
-        </div>
-        <div class="operator-hero-metrics compact-metrics">
-          <div class="metric-chip"><b>Скор UI</b>${scoreUiMetricHtml(scoreUi)}</div>
-          <div class="metric-chip"><b>Увер.</b>${fmt(it.confidence)}</div>
-          <div class="metric-chip"><b>Ож. RR</b>${fmt(it.expected_rr)}</div>
-          <div class="metric-chip metric-chip-wide" title="${escapeHtml(btcMetric.title || "")}"><b>${escapeHtml(btcMetric.label)}</b>${btcMetricValueHtml(btcMetric)}</div>
+  const blockerItems = [
+    ...blocks.map(b => ({ code: b.code || "BLOCK", msg: b.msg || "" , critical: true })),
+    ...riskReportRejected.map(msg => ({ code: "RISK", msg, critical: true })),
+    ...bybitErrors.map(b => ({ code: b.code || "BYBIT", msg: b.msg || "", critical: true })),
+    ...riskReportWarnings.slice(0, 4).map(msg => ({ code: "WARN", msg, critical: false })),
+    ...bybitWarnings.slice(0, 4).map(b => ({ code: b.code || "BYBIT_WARN", msg: b.msg || "", critical: false })),
+  ].slice(0, 8);
+  const blockersHtml = blockerItems.length
+    ? `
+      <div class="operator-card launch-blockers-card">
+        <h3>Блокеры / предупреждения</h3>
+        <div class="small-blocks">
+          ${blockerItems.map(b => `<div class="small-block ${b.critical ? "small-block-critical" : ""}"><code>${escapeHtml(b.code)}</code><br>${escapeHtml(b.msg)}</div>`).join("")}
         </div>
       </div>
+    `
+    : "";
 
+  return `
+    <div class="operator-sheet compact-details-sheet operator-minimal-sheet">
       <div class="operator-card operator-decision-card ${decisionClass}">
         <div class="decision-title-row">
-          <h3>${escapeHtml(decisionTitle)}</h3>
+          <div>
+            <h3>${escapeHtml(it.symbol)} · ${escapeHtml(decisionTitle)}</h3>
+            <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
+          </div>
           <button class="ghost-chip" data-act="show-tech">Техподробности</button>
         </div>
         <div class="decision-text">${escapeHtml(decisionText)}</div>
       </div>
 
       <div class="operator-card primary-launch-card">
-        <h3>Поля для Bybit</h3>
-        <div class="helper-text" style="margin-bottom:10px">Только Futures Grid. Эти значения — основной чек-лист ручного создания grid-бота.</div>
-        <div class="operator-grid three">
+        <h3>Параметры запуска Bybit Futures Grid</h3>
+        <div class="operator-grid two minimal-launch-grid">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.value, field.mono ? "field-input-mono" : "")).join("")}
         </div>
       </div>
 
-      <div class="operator-card launch-control-card">
-        <h3>Контроль запуска</h3>
-        <div class="operator-grid compact-control-grid">
-          ${controlFields}
+      <div class="operator-card llm-operator-card">
+        <h3>LLM-рекомендация</h3>
+        <div class="operator-grid three minimal-llm-grid">
+          ${fieldBox("Рекомендация LLM", llmRecommendation, null)}
+          ${fieldBox("Вероятность LLM", llmProbability, null)}
+          ${fieldBox("Сравнение с алгоритмом", llmAgreement, null)}
         </div>
-        ${riskNotes || `<div class="helper-text" style="margin-top:8px">Критичных блоков и предупреждений нет.</div>`}
+        ${llmSummary ? `<div class="llm-summary-box compact-llm-summary">${escapeHtml(llmSummary)}</div>` : `<div class="helper-text">LLM review отсутствует для этой рекомендации.</div>`}
       </div>
 
-      <div class="operator-card">
-        <h3>Факторы решения</h3>
-        <div class="factors-grid">
-          ${factorGroupHtml("Плюсы", reasons.top_positive_factors || [], "positive")}
-          ${factorGroupHtml("Минусы / риски", reasons.top_negative_factors || [], "negative")}
-        </div>
-      </div>
-
-      <div class="operator-card alert-card ${alertClass}">
-        <h3>Защита рынка</h3>
-        <div class="alert-line">${shockBadgeHtml(shock)}</div>
-        <div>${escapeHtml(shock.operator_note || "Новые входы разрешены в обычном режиме.")}</div>
-        ${reasonList}
-      </div>
-
-      <div class="operator-card">
-        <h3>Bybit validation</h3>
-        <div class="helper-text" style="margin-bottom:8px">Ошибки tick/lot/min-notional/LinearPerpetual блокируют ручной запуск до пересчёта.</div>
-        ${bybitValidationCards}
-      </div>
+      ${blockersHtml}
     </div>
   `;
 }

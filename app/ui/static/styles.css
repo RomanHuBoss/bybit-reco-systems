@@ -1303,6 +1303,26 @@ body {
 .compact-control-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+
+.operator-minimal-sheet {
+  gap: 10px;
+}
+.operator-minimal-sheet .primary-launch-card h3,
+.operator-minimal-sheet .llm-operator-card h3,
+.operator-minimal-sheet .launch-blockers-card h3 {
+  margin-bottom: 8px;
+}
+.minimal-launch-grid .field-input,
+.minimal-llm-grid .field-input {
+  font-weight: 650;
+}
+.compact-llm-summary {
+  margin-top: 8px;
+}
+.launch-blockers-card {
+  border-left: 4px solid var(--bad);
+}
+
 @media (max-width: 1180px) {
   .operator-grid.three {
     grid-template-columns: repeat(2, minmax(0, 1fr));
