@@ -114,8 +114,11 @@ def estimate_linear_liq_price(side: str, entry_price: Any, leverage: Any, mmr: A
     side_norm = str(side or "").strip().lower()
     if side_norm == "short":
         factor = ONE + inv_lev - maintenance - fee_buffer
-    else:
+    elif side_norm == "long":
         factor = ONE - inv_lev + maintenance + fee_buffer
+    else:
+        # Unknown side must not silently become a long liquidation estimate.
+        return None
     if factor <= ZERO:
         return None
     return +(entry * factor)
@@ -129,7 +132,9 @@ def liquidation_buffer_pct(side: str, reference_price: Any, liq_price: Any) -> D
     side_norm = str(side or "").strip().lower()
     if side_norm == "short":
         return max(ZERO, (liq - ref) / ref * Decimal("100"))
-    return max(ZERO, (ref - liq) / ref * Decimal("100"))
+    if side_norm == "long":
+        return max(ZERO, (ref - liq) / ref * Decimal("100"))
+    return None
 
 
 def grid_leg_economics(

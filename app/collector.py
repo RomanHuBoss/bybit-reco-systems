@@ -157,7 +157,11 @@ def _is_exact_linear_usdt_perpetual_ticker(item: dict[str, Any], symbol: str, *,
 
 def _select_exact_ticker(items: list[dict[str, Any]], symbol: str) -> dict[str, Any] | None:
     for item in items or []:
-        if isinstance(item, dict) and _is_exact_linear_usdt_perpetual_ticker(item, symbol, allow_missing_symbol=True):
+        # Symbol-specific fallbacks still have to echo the exact symbol. A malformed
+        # upstream/stub row without symbol is not proof that this is the requested
+        # Linear USDT perpetual, and accepting it can write price/funding for the
+        # wrong instrument.
+        if isinstance(item, dict) and _is_exact_linear_usdt_perpetual_ticker(item, symbol, allow_missing_symbol=False):
             return item
     return None
 

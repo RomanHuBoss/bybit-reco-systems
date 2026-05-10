@@ -91,6 +91,37 @@ def test_collect_once_does_not_relabel_wrong_symbol_ticker(tmp_path: Path, monke
     conn.close()
 
 
+def test_collect_once_rejects_symbol_specific_ticker_without_echoed_symbol(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    collector._DISABLED_SYMBOLS["linear"].clear()
+    collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
+
+    conn = db.connect(str(tmp_path / "missing-symbol-ticker.db"))
+    db.init_db(conn)
+    monkeypatch.setattr(collector, "_API_FETCH_TFS", ())
+    monkeypatch.setattr(collector, "_DERIVED_TF_SOURCES", {})
+    monkeypatch.setattr(db, "now_ts", lambda: 1_700_000_000)
+
+    class MissingSymbolClient:
+        def get_tickers(self, *, category: str, symbol: str | None = None):
+            if symbol is None:
+                return []
+            return [{
+                "lastPrice": "100000",
+                "bid1Price": "99990",
+                "ask1Price": "100010",
+                "volume24h": "1000",
+                "turnover24h": "100000000",
+                "deliveryTime": "0",
+            }]
+
+    stats = collector.collect_once(conn, MissingSymbolClient(), "linear", ["BTCUSDT"])
+
+    assert stats["tickers_written"] == 0
+    assert stats["ticker_missing_symbols"] == 1
+    assert db.get_latest_ticker(conn, "linear", "BTCUSDT") is None
+    conn.close()
+
+
 def test_bybit_symbol_scope_rejects_malformed_usdt_symbols_before_request() -> None:
     from app.bybit_client import BybitPublicClient
 

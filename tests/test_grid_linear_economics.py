@@ -99,6 +99,11 @@ def test_margin_and_liquidation_buffer_are_conservative_estimates() -> None:
     assert float(liquidation_buffer_pct("long", "100", liq)) == pytest.approx(19.4)
 
 
+def test_liquidation_helpers_fail_closed_on_unknown_side() -> None:
+    assert estimate_linear_liq_price("neutral", "100", "5") is None
+    assert liquidation_buffer_pct("neutral", "100", "80") is None
+
+
 def test_funding_signal_annualizes_by_bybit_interval() -> None:
     one_hour = funding_signal(0.0001, 60)
     eight_hour = funding_signal(0.0001, 480)

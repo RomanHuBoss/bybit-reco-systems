@@ -1,3 +1,20 @@
+# Changelog
+
+## 2026-05-10 — fail-closed liquidation side and exact ticker scope hardening
+
+### Исправлено
+- liquidation helpers больше не трактуют неизвестный `side` как long: `estimate_linear_liq_price()` и `liquidation_buffer_pct()` возвращают `None`, чтобы malformed payload не получал ложный liquidation buffer.
+- collector теперь требует exact echoed `symbol` даже в symbol-specific ticker fallback; payload без `symbol` не записывается как рыночные данные целевого Bybit Linear USDT perpetual.
+- `.env.example` уточняет, что `REQUIRE_CONF_GATE=1` переводит low-confidence кандидатов в `no_trade`, а не в recommended.
+
+### Добавлено
+- регрессионный тест на fail-closed liquidation side.
+- регрессионный тест на отказ collector записывать ticker без exact symbol.
+- отдельный audit report по fail-closed side/ticker scope hardening.
+
+### Тесты
+- `python -m pytest -q` → `413 passed`.
+
 ## 2026-05-10 — Tick-safe operator grid snapping
 
 - Operator-facing Bybit metadata snapping now preserves generated grid containment: lower range/kill-switch boundaries snap down and upper boundaries snap up instead of all prices rounding to the nearest tick.

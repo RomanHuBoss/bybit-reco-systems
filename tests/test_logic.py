@@ -2863,6 +2863,7 @@ class _RetryingCollectorClient:
             self.failures_left -= 1
             raise RuntimeError("Bybit error 10001: params error: symbol invalid")
         return [{
+            "symbol": symbol,
             "lastPrice": "100",
             "bid1Price": "99",
             "ask1Price": "101",
@@ -2928,6 +2929,7 @@ def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
     class BadPayloadClient:
         def get_tickers(self, *, category: str, symbol: str):
             return [{
+                "symbol": symbol,
                 "lastPrice": "NaN",
                 "bid1Price": "99",
                 "ask1Price": "101",
@@ -2981,6 +2983,7 @@ def test_collector_sanitizes_crossed_quotes(tmp_path: Path):
     class CrossedQuoteClient:
         def get_tickers(self, *, category: str, symbol: str):
             return [{
+                "symbol": symbol,
                 "lastPrice": "100",
                 "bid1Price": "101",
                 "ask1Price": "99",
