@@ -110,9 +110,10 @@ def test_ui_exposes_conservative_funding_edge_labels() -> None:
     assert "net_profit_with_signed_funding_bps" in app_js
 
 
-def test_ui_symbol_links_has_single_chart_and_single_grid_bot_link() -> None:
+def test_ui_symbol_links_has_single_chart_and_conditional_grid_bot_link() -> None:
     app_js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
     symbol_links_body = app_js.split("function symbolLinksHtml", 1)[1].split("function statusBadgeHtml", 1)[0]
     assert symbol_links_body.count('title="Открыть график Bybit"') == 1
-    assert symbol_links_body.count('title="Открыть страницу создания grid-бота Bybit"') == 1
+    assert 'const botLink = isLaunchableGridRecommendation(it)' in symbol_links_body
+    assert symbol_links_body.count('title="Открыть страницу создания Futures Grid на Bybit"') == 1

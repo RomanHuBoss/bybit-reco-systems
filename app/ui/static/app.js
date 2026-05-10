@@ -158,16 +158,21 @@ function directionRu(dir) {
   return "Нейтральный";
 }
 
-function botTypeLabel(botType, compact = false) {
-  if (botType === "futures_grid") return "Futures Grid";
-  return botType || "—";
+const SUPPORTED_GRID_BOT_TYPE = "futures_grid";
+const SUPPORTED_GRID_VENUE = "linear";
+
+function botTypeLabel(botType) {
+  return botType === SUPPORTED_GRID_BOT_TYPE ? "Futures Grid" : "—";
 }
 
-function botTypePillHtml(botType, compact = false) {
-  const label = botTypeLabel(botType, compact);
-  const fullLabel = botTypeLabel(botType, false);
-  const cls = compact ? "bot-type-pill compact" : "bot-type-pill";
-  return `<span class="${cls} ${escapeHtml(botType || "other")}" title="${escapeHtml(fullLabel)}">${escapeHtml(label)}</span>`;
+function isLaunchableGridRecommendation(it) {
+  if (!it || it.bot_type !== SUPPORTED_GRID_BOT_TYPE || it.venue !== SUPPORTED_GRID_VENUE) return false;
+  if (!(it.status === "recommended" || it.status === "active")) return false;
+  const riskDecision = it?.params?.risk_report?.decision;
+  if (riskDecision && riskDecision !== "recommended") return false;
+  const validation = it.bybit_plan_validation || it.bybit_operator_guard || {};
+  const errors = Array.isArray(validation.errors) ? validation.errors : [];
+  return errors.length === 0;
 }
 
 function venueLabel(venue) {
@@ -197,10 +202,8 @@ function splitLinearSymbol(symbol) {
   return null;
 }
 
-function bybitBotCreateUrl(botType) {
-  return botType === "futures_grid"
-    ? "https://www.bybit.com/ru-RU/tradingbot/fgrid-create/"
-    : "#";
+function futuresGridBotCreateUrl() {
+  return "https://www.bybit.com/ru-RU/tradingbot/fgrid-create/";
 }
 
 function bybitChartUrl(venue, symbol) {
@@ -236,12 +239,14 @@ function iconSvg(kind) {
 
 function symbolLinksHtml(it, compact = false) {
   const chartUrl = bybitChartUrl(it.venue, it.symbol);
-  const botUrl = bybitBotCreateUrl(it.bot_type);
+  const botLink = isLaunchableGridRecommendation(it)
+    ? `<a class="icon-link" href="${escapeHtml(futuresGridBotCreateUrl())}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания Futures Grid на Bybit">${iconSvg("bot")}</a>`
+    : "";
   const cls = compact ? "symbol-links compact" : "symbol-links";
   return `
     <span class="${cls}">
       <a class="icon-link" href="${escapeHtml(chartUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть график Bybit">${iconSvg("chart")}</a>
-      <a class="icon-link" href="${escapeHtml(botUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания grid-бота Bybit">${iconSvg("bot")}</a>
+      ${botLink}
     </span>
   `;
 }
@@ -405,11 +410,20 @@ function updateDetailsHeaderLinks(it) {
   const bot = $("detailsBotLink");
   if (!chart || !bot) return;
   chart.href = bybitChartUrl(it.venue, it.symbol);
-  bot.href = bybitBotCreateUrl(it.bot_type);
   chart.innerHTML = iconSvg("chart");
-  bot.innerHTML = iconSvg("bot");
   chart.classList.remove("hidden");
-  bot.classList.remove("hidden");
+
+  if (isLaunchableGridRecommendation(it)) {
+    bot.href = futuresGridBotCreateUrl();
+    bot.innerHTML = iconSvg("bot");
+    bot.title = "Открыть страницу создания Futures Grid на Bybit";
+    bot.classList.remove("hidden");
+  } else {
+    bot.removeAttribute("href");
+    bot.innerHTML = "";
+    bot.title = "Создание grid-бота скрыто: рекомендация сейчас не исполнима";
+    bot.classList.add("hidden");
+  }
 }
 
 function clearDetailsHeaderLinks() {
@@ -438,12 +452,10 @@ function buildOperatorValues(it) {
   const tpLegPct = formatPercentDot(tpPerLeg.pct, 4, false);
   const leverage = it.venue === "linear" ? String(params.leverage ?? 1) : "—";
   const marginMode = it.venue === "linear" ? marginModeRu(params.margin_mode || "isolated") : "—";
-  const isLinearBot = it.bot_type === "futures_grid";
-  const isNeutralFutures = it.venue === "linear" && it.direction === "neutral";
-  const stopLossLabel = isLinearBot ? "Стоп-лосс" : it.direction === "short" ? "Стоп-лосс (верх)" : it.direction === "long" ? "Стоп-лосс (низ)" : "Нижняя стоп-цена";
-  const takeProfitLabel = isLinearBot ? "Тейк-профит" : it.direction === "short" ? "Тейк-профит (низ)" : it.direction === "long" ? "Тейк-профит (верх)" : "Верхняя стоп-цена";
-  const stopLossValue = (isLinearBot || isNeutralFutures || it.direction === "long") ? killLower : killUpper;
-  const takeProfitValue = (isLinearBot || isNeutralFutures || it.direction === "long") ? killUpper : killLower;
+  const stopLossLabel = "Стоп-лосс";
+  const takeProfitLabel = "Тейк-профит";
+  const stopLossValue = killLower;
+  const takeProfitValue = killUpper;
   return {
     rangeLower,
     rangeUpper,
@@ -487,16 +499,8 @@ function buildOperatorFieldSpecs(it, ov) {
   fields.push({ label: "Прибыль/сетка, %", value: ov.tpLegPct });
   if (ov.tpLegAbs !== "—") fields.push({ label: "Прибыль/сетка, цена", value: ov.tpLegAbs, mono: true });
 
-  if (it.bot_type === "futures_grid") {
-    fields.push({ label: "Стоп-лосс", value: ov.stopLossValue, mono: true });
-    fields.push({ label: "Тейк-профит", value: ov.takeProfitValue, mono: true });
-  } else if (it.direction === "neutral") {
-    fields.push({ label: "Нижняя стоп-цена", value: ov.killLower, mono: true });
-    fields.push({ label: "Верхняя стоп-цена", value: ov.killUpper, mono: true });
-  } else {
-    fields.push({ label: "Стоп-лосс", value: ov.stopLossValue, mono: true });
-    fields.push({ label: "Тейк-профит", value: ov.takeProfitValue, mono: true });
-  }
+  fields.push({ label: "Стоп-лосс", value: ov.stopLossValue, mono: true });
+  fields.push({ label: "Тейк-профит", value: ov.takeProfitValue, mono: true });
   return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
 }
 

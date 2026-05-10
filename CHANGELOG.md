@@ -1,5 +1,13 @@
 ## 2026-05-10 — UI score near-tie segmentation
 
+## 2026-05-10 — Non-actionable launch link guard
+
+- UI больше не показывает ссылку на создание Bybit Futures Grid для `blocked`, `no_trade` или `pending` рекомендаций; create-link доступен только для `futures_grid`/`linear` со статусом `recommended`/`active`, `risk_report.decision=recommended` и без ошибок Bybit validation.
+- Удалён product-url helper, зависящий от произвольного `bot_type`; UI использует фиксированный Futures Grid create URL.
+- Operator card labels упрощены под единственный поддерживаемый Bybit Linear USDT Futures Grid product.
+- Добавлены регрессии `tests/test_iteration130_non_actionable_launch_links.py`; полный suite: `425 passed`.
+
+
 
 ## 2026-05-10 — UI single-product simplification
 
