@@ -494,6 +494,35 @@ function firstFiniteValue(sources, keys) {
   return null;
 }
 
+
+function formatHoursValue(value) {
+  const v = toFiniteNumber(value);
+  if (v === null || v <= 0) return null;
+  if (v < 1) return `${formatDotNumber(v * 60, 0)} мин`;
+  if (v < 24) return `${formatDotNumber(v, v % 1 === 0 ? 0 : 1)} ч`;
+  const days = v / 24;
+  return `${formatDotNumber(days, days % 1 === 0 ? 0 : 1)} д`;
+}
+
+function formatBotLifetimeValue(params = {}) {
+  const plan = params.trade_plan || {};
+  const horizon = plan.expected_horizon || {};
+  const minHours = firstFiniteValue(
+    [horizon, plan, params],
+    ["min_hours", "min_holding_hours", "bot_lifetime_min_hours", "runtime_min_hours"]
+  );
+  const maxHours = firstFiniteValue(
+    [horizon, plan, params],
+    ["max_hours", "max_holding_hours", "bot_lifetime_hours", "bot_lifetime_max_hours", "runtime_hours", "runtime_max_hours", "label_horizon_hours"]
+  );
+  const minText = formatHoursValue(minHours);
+  const maxText = formatHoursValue(maxHours);
+  if (minText && maxText && minText !== maxText) return `${minText} — ${maxText}`;
+  if (maxText) return `до ${maxText}`;
+  if (minText) return `от ${minText}`;
+  return "—";
+}
+
 function formatPositionSizeValue(notional, qty, baseAsset = "") {
   const parts = [];
   if (notional !== null && notional !== undefined) parts.push(formatUsdValue(notional));
@@ -538,9 +567,11 @@ function buildOperatorFieldSpecs(it, ov) {
   );
   const capitalValue = formatUsdValue(marginRequired);
   const positionValue = formatPositionSizeValue(positionNotional, positionQty, symbolParts?.base || "");
+  const botLifetimeValue = formatBotLifetimeValue(params);
   const fields = [
     { label: "Сторона", value: directionRu((it || {}).direction), mono: false },
     { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true },
+    { label: "Время работы", value: botLifetimeValue, copyValue: botLifetimeValue },
     { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue },
     { label: "Диапазон входа", value: rangeValue, mono: true },
     { label: "Цена входа", value: ov.entryRef, mono: true },
