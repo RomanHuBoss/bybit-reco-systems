@@ -1,5 +1,10 @@
-## 2026-05-10 — execution-time funding and strict linear-USDT scope hardening
+## 2026-05-10 — Funding interval / grid spacing hardening
 
+- `BybitPublicClient.get_funding_rate()` now falls back to `/v5/market/instruments-info` for `fundingInterval` when ticker payload lacks `fundingIntervalHour`, keeping funding event counts tied to Bybit instrument metadata instead of a silent 8h fallback.
+- `futures_grid` spacing now includes adverse expected funding carry in the minimum cost floor; funding receipts remain diagnostics and cannot tighten the grid.
+- Added regression coverage for funding-interval fallback and funding-aware grid spacing.
+
+## 2026-05-10 — execution-time funding and strict linear-USDT scope hardening
 ### Исправлено
 - execute-preflight для полноценных costed-рекомендаций теперь повторно проверяет свежий `funding_rate`/`funding_interval_min` перед материализацией bot instance и блокирует запуск при missing/stale funding, экстремальном carry или ухудшении funding, которое делает net edge сетки неположительным;
 - Bybit trade-plan validation больше не принимает malformed legacy symbols вида `BTC/USDT`/пустой base только потому, что строка оканчивается на `USDT`; нужен точный alphanumeric USDT perpetual symbol;

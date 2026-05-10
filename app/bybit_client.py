@@ -280,6 +280,23 @@ class BybitPublicClient:
         interval_hours = _safe_float(ticker.get("fundingIntervalHour"))
         if interval_hours is not None and interval_hours > 0:
             funding_interval_min = int(round(interval_hours * 60.0))
+
+        if funding_interval_min is None:
+            # Official V5 funding-history docs point operators to instruments-info
+            # for the per-symbol funding interval. Some ticker payloads/stubs do not
+            # include fundingIntervalHour, so falling back to instruments-info avoids
+            # a silent 8h assumption later in the recommender. Keep this fail-open for
+            # collection: if metadata cannot be fetched, downstream approval gates keep
+            # funding_interval_source=fallback_8h_missing_interval and can block when
+            # the carry is material.
+            try:
+                info = self.get_instrument_info("linear", target)
+            except Exception:
+                info = None
+            if isinstance(info, Mapping):
+                interval_min = _safe_float(info.get("fundingInterval"))
+                if interval_min is not None and interval_min > 0:
+                    funding_interval_min = int(round(interval_min))
         return {
             "symbol": target,
             "funding_rate": funding_rate,

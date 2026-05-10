@@ -1757,7 +1757,15 @@ def _params(
         0.0,
         float(cost_model.get("total_cost_bps") or cost_model.get("execution_cost_bps") or max(0.0, float(taker_fee_bps) * 2.0)),
     )
-    cost_floor_pct = max(execution_cost_bps / 10000.0, 0.0001)
+    # Grid spacing must cover not only fees/spread/slippage but also the adverse
+    # expected funding carry for the planned horizon. Received funding is deliberately
+    # excluded from the approval edge because it can flip by the time inventory is
+    # accumulated. Without this, high-funding symbols could still render a visually
+    # dense grid whose gross step cannot plausibly pay the carry, only to be blocked
+    # later as GRID_NET_PROFIT_NON_POSITIVE. Build the geometry fail-closed instead.
+    funding_cost_bps_for_spacing = max(0.0, _finite_float(cost_model.get("expected_funding_bps"), 0.0))
+    cost_floor_bps_for_spacing = execution_cost_bps + funding_cost_bps_for_spacing
+    cost_floor_pct = max(cost_floor_bps_for_spacing / 10000.0, 0.0001)
     min_spacing_pct = max((cost_floor_pct / 0.70) * 1.25, 0.0008)
     vol_spacing_pct = max(atr_pct * (0.45 + 0.25 * range_score), 0.0010)
     grid_spacing_pct_frac = max(min_spacing_pct, vol_spacing_pct)
@@ -1821,6 +1829,8 @@ def _params(
         "price_range_upper": _round_price(upper, decimals=10),
         "range_span_pct_total": float(range_span_pct_total * 100.0),
         "grid_spacing_pct": float(grid_spacing_pct_frac * 100.0),
+        "grid_spacing_cost_floor_bps": float(cost_floor_bps_for_spacing),
+        "grid_spacing_funding_cost_bps": float(funding_cost_bps_for_spacing),
         # Bybit UI calls this value "Number of Grids"; it is the number of
         # price intervals, not the number of displayed price points. Keep the
         # legacy key ``grid_levels`` for API compatibility and add explicit

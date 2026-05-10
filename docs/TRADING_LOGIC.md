@@ -34,7 +34,7 @@ execution-time validation должна блокировать исполнени
 4. Строится основной диапазон `price_range_lower/upper`.
 5. Вокруг диапазона строится `kill_switch` через padding от старшего ATR.
 6. Рассчитывается `params.economics`: gross/net profit per grid, execution cost, funding impact, minimum viable order notional, estimated margin required и approximate worst-boundary liquidation buffer.
-7. Если net profit per grid после fees/spread/slippage/funding <= 0 или слишком тонкий, рекомендация получает блок `GRID_NET_PROFIT_*` и не должна запускаться.
+7. Если net profit per grid после fees/spread/slippage/funding <= 0 или слишком тонкий, рекомендация получает блок `GRID_NET_PROFIT_*` и не должна запускаться. Минимальный шаг grid рассчитывается от execution-cost плюс неблагоприятный expected funding carry; положительный funding receipt не уменьшает шаг и не засчитывается как approval-edge.
 8. Для UI и operator guidance формируется `trade_plan`.
 
 ## Что именно проверяется перед `executed`
