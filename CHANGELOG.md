@@ -1,3 +1,14 @@
+# Changelog
+
+## 2026-05-10 — Strategy grid geometry and funding schedule hardening
+
+- Fixed arithmetic futures-grid geometry: published `grid_spacing_pct` now matches the executable Bybit arithmetic step `(upper - lower) / grid_count`, while the old minimum spacing floor is kept separately as `economic_min_grid_spacing_pct`.
+- Grid economics, `trade_plan.levels.grid_step` and TP hints now use the executable range-derived step instead of an understated minimum floor when ATR/range padding expands the range.
+- Funding approval economics now fail more conservatively when `funding_rate` and interval are known but `next_funding_ts` is missing: the model assumes possible funding events across the recommendation horizon instead of assuming zero carry.
+- Added `funding_event_schedule_assumption` and `grid_geometry_model` diagnostics to make these assumptions visible in audit/UI payloads.
+- Added a stronger weak-range veto `RANGE_EDGE_TOO_WEAK_FOR_GRID` so grid is blocked before execution when trendiness is already too high for a credible range setup.
+- Updated tests for executable arithmetic step consistency and conservative funding-event counting; full suite: `428 passed`.
+
 ## 2026-05-10 — UI score near-tie segmentation
 
 ## 2026-05-10 — Non-actionable launch link guard
@@ -21,7 +32,6 @@
 - Sorting by `Скор UI` now uses the grouped UI percentile instead of raw score, reducing false visual precision.
 - Added regression tests for 0.245 / 0.242 / 0.232 and materially separated score groups.
 
-# Changelog
 
 ## 2026-05-10 — Adverse funding score hardening
 
@@ -88,7 +98,6 @@
 - Added regression tests for missing and incomplete `trade_plan` execution blocks.
 - Verified the full suite: `401 passed`.
 
-# Changelog
 
 ## 2026-05-10 — Adverse funding score hardening
 

@@ -29,12 +29,12 @@ execution-time validation должна блокировать исполнени
 ## Как строится grid idea
 
 1. Берётся reference price.
-2. По ATR и stability/range context выбирается `grid_spacing_pct`.
-3. По тому же контексту выбирается число уровней `grid_levels`.
-4. Строится основной диапазон `price_range_lower/upper`.
+2. По ATR и stability/range context выбирается минимальный экономический шаг `economic_min_grid_spacing_pct`, который обязан покрывать execution-cost и adverse expected funding carry.
+3. По тому же контексту выбирается число интервалов `grid_count` / legacy `grid_levels`.
+4. Строится основной диапазон `price_range_lower/upper`; для Bybit arithmetic grid исполнимый шаг публикуется как `grid_spacing_pct = (upper - lower) / grid_count / reference_price`.
 5. Вокруг диапазона строится `kill_switch` через padding от старшего ATR.
 6. Рассчитывается `params.economics`: gross/net profit per grid, execution cost, funding impact, minimum viable order notional, estimated margin required и approximate worst-boundary liquidation buffer.
-7. Если net profit per grid после fees/spread/slippage/funding <= 0 или слишком тонкий, рекомендация получает блок `GRID_NET_PROFIT_*` и не должна запускаться. Минимальный шаг grid, score и expected RR рассчитываются от execution-cost плюс неблагоприятный expected funding carry; положительный funding receipt не уменьшает шаг, не повышает score/RR и не засчитывается как approval-edge.
+7. Если net profit per grid после fees/spread/slippage/funding <= 0 или слишком тонкий, рекомендация получает блок `GRID_NET_PROFIT_*` и не должна запускаться. Минимальный шаг grid, score и expected RR рассчитываются от execution-cost плюс неблагоприятный expected funding carry; положительный funding receipt не уменьшает шаг, не повышает score/RR и не засчитывается как approval-edge. Если `next_funding_ts` отсутствует, модель консервативно считает возможные funding events по горизонту и interval вместо предположения «funding не будет».
 8. Для UI и operator guidance формируется `trade_plan`.
 
 ## Что именно проверяется перед `executed`
@@ -60,7 +60,7 @@ execution-time validation должна блокировать исполнени
 - шаг сетки не меньше `tick_size` и не больше диапазона;
 - сетка содержит минимум 2 интервала после выравнивания;
 - `grid_type` в этой ревизии допускается только `arithmetic`; `geometric` блокируется fail-closed, потому что для него нужна отдельная проверка ratio-levels, net-profit и tick rounding;
-- `grid_count` / legacy `grid_levels` трактуется как Bybit Number of Grids, то есть число price intervals, и должен быть в диапазоне 2..400; генератор диапазона также масштабирует total span по числу интервалов, а не по числу price points;
+- `grid_count` / legacy `grid_levels` трактуется как Bybit Number of Grids, то есть число price intervals, и должен быть в диапазоне 2..400; генератор диапазона масштабирует total span по числу интервалов, а опубликованный arithmetic `grid_step.step_abs` соответствует `(upper - lower) / grid_count`;
 - `grid_step.step_abs` и `params.grid_count`/`params.grid_levels` не должны описывать радикально разные сетки; mismatch помечается warning'ом для ручной сверки перед запуском Bybit bot;
 - `tp_per_leg.abs` должен быть положительным и не схлопываться после округления по `tick_size`; off-tick TP помечается warning'ом с рассчитанным snapped-значением.
 

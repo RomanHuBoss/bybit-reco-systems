@@ -197,6 +197,13 @@ def test_grid_count_is_used_as_interval_count_for_range_span() -> None:
     )
 
     # Bybit Number of Grids is price intervals, not rendered price points.
-    # The generated total range must therefore scale with grid_count itself.
+    # The published spacing must match the executable arithmetic geometry:
+    # (upper - lower) / grid_count, while the economic minimum remains a floor.
     assert params["grid_count"] == params["grid_levels"]
-    assert params["range_span_pct_total"] >= params["grid_spacing_pct"] * params["grid_count"] * 1.14
+    lower = params["price_range_lower"]
+    upper = params["price_range_upper"]
+    ref = params["price_ref"]
+    actual_step_pct = ((upper - lower) / params["grid_count"]) / ref * 100.0
+    assert params["grid_spacing_pct"] == pytest.approx(actual_step_pct)
+    assert params["actual_grid_spacing_pct"] == pytest.approx(actual_step_pct)
+    assert params["grid_spacing_pct"] >= params["economic_min_grid_spacing_pct"]

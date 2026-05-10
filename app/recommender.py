@@ -1217,7 +1217,12 @@ def _estimate_cost_model(
                 expected_funding_events = 1 + max(0, (horizon_end - nfts) // funding_interval_sec)
             nfts_out = nfts
         else:
-            expected_funding_events = 1 if horizon_sec >= funding_interval_sec else 0
+            # Without a valid next_funding_ts we cannot know whether the first
+            # funding event is minutes away or almost a full interval away. A
+            # futures grid can hold inventory across the boundary, so approval
+            # economics must use a conservative event count instead of assuming
+            # zero carry for horizons shorter than the interval.
+            expected_funding_events = max(1, int(math.ceil(float(horizon_sec) / float(funding_interval_sec))))
             nfts_out = nfts if nfts > 0 else None
         expected_funding_bps = directional_funding_bps_per_event * expected_funding_events
 
@@ -1251,6 +1256,11 @@ def _estimate_cost_model(
         "funding_interval_min": int(round(funding_interval_sec / 60.0)) if venue == "linear" else None,
         "funding_interval_source": funding_interval_source if venue == "linear" else "not_applicable",
         "funding_interval_uncertain": bool(venue == "linear" and funding_interval_source.startswith("fallback") and fr is not None),
+        "funding_event_schedule_assumption": (
+            "bybit_next_funding_ts"
+            if (venue == "linear" and fr is not None and int(next_funding_ts or 0) > 0)
+            else ("conservative_unknown_next_funding_ts" if venue == "linear" and fr is not None else "not_applicable")
+        ),
         # Canonical cost floor for scoring / RR / labels reflects execution
         # friction plus adverse funding only. Potential funding receipts stay
         # diagnostic and must not increase approval edge, score or expected RR.
@@ -1818,7 +1828,8 @@ def _params(
     # with ``grid_levels`` itself, not ``grid_levels - 1``. Using points instead
     # of intervals silently compressed the range and made the displayed
     # step/range geometry inconsistent for manual operator setup.
-    range_span_pct_total = max(grid_spacing_pct_frac * max(grid_levels, 4) * 1.15, atr_pct * (3.0 + 2.0 * range_score))
+    economic_min_spacing_pct_frac = grid_spacing_pct_frac
+    range_span_pct_total = max(economic_min_spacing_pct_frac * max(grid_levels, 4) * 1.15, atr_pct * (3.0 + 2.0 * range_score))
     half_span = range_span_pct_total / 2.0
 
     down_mult = 1.0
@@ -1835,6 +1846,26 @@ def _params(
     if upper <= lower:
         lower = price * (1.0 - half_span)
         upper = price * (1.0 + half_span)
+
+    # Bybit arithmetic Futures Grid uses lower/upper plus Number of Grids, so the
+    # executable step is exactly range_width / grid_count. The earlier minimum
+    # economic spacing is only a floor for building the range. Publishing it as
+    # grid_spacing_pct understated the actual exchange geometry, TP hint and
+    # per-grid economics whenever the range had ATR/padding expansion.
+    actual_grid_step_abs = max(0.0, (upper - lower) / max(1, int(grid_levels)))
+    actual_grid_spacing_pct_frac = (actual_grid_step_abs / price) if price > 0 else economic_min_spacing_pct_frac
+    grid_spacing_pct_frac = max(actual_grid_spacing_pct_frac, economic_min_spacing_pct_frac)
+    if actual_grid_spacing_pct_frac < economic_min_spacing_pct_frac:
+        # Should only happen after defensive clamps; widen the range to preserve
+        # the minimum net-edge floor instead of publishing an over-dense grid.
+        target_span = economic_min_spacing_pct_frac * max(1, int(grid_levels))
+        half_span = target_span / 2.0
+        lower = price * max(0.01, 1.0 - half_span * down_mult)
+        upper = price * (1.0 + half_span * up_mult)
+        range_span_pct_total = (upper - lower) / price if price > 0 else target_span
+        actual_grid_step_abs = max(0.0, (upper - lower) / max(1, int(grid_levels)))
+        actual_grid_spacing_pct_frac = (actual_grid_step_abs / price) if price > 0 else economic_min_spacing_pct_frac
+        grid_spacing_pct_frac = actual_grid_spacing_pct_frac
 
     # Use the same ATR padding as trade_plan.kill_switch so liquidation checks are
     # performed at the worst grid boundary the operator is instructed to tolerate,
@@ -1859,9 +1890,13 @@ def _params(
         "price_range_upper": _round_price(upper, decimals=10),
         "range_span_pct_total": float(range_span_pct_total * 100.0),
         "grid_spacing_pct": float(grid_spacing_pct_frac * 100.0),
+        "actual_grid_step_abs": _round_price(actual_grid_step_abs, decimals=10),
+        "actual_grid_spacing_pct": float(actual_grid_spacing_pct_frac * 100.0),
+        "economic_min_grid_spacing_pct": float(economic_min_spacing_pct_frac * 100.0),
         "grid_spacing_cost_floor_bps": float(cost_floor_bps_for_spacing),
         "grid_spacing_funding_cost_bps": float(funding_cost_bps_for_spacing),
         "grid_density_economic_cost_bps": float(economic_cost_bps_for_density),
+        "grid_geometry_model": "bybit_arithmetic_range_width_div_grid_count",
         # Bybit UI calls this value "Number of Grids"; it is the number of
         # price intervals, not the number of displayed price points. Keep the
         # legacy key ``grid_levels`` for API compatibility and add explicit
@@ -2898,6 +2933,11 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     feasibility_blocks.append({
                         "code": "INSUFFICIENT_MTF_HISTORY_FOR_GRID",
                         "msg": f"использовано только {len(_tf_used_now)} timeframes для direction/regime; futures grid не публикуется без минимум 3 закрытых TF-историй",
+                    })
+                if _range_score_now < 0.42 and _trendiness_now >= 0.58:
+                    feasibility_blocks.append({
+                        "code": "RANGE_EDGE_TOO_WEAK_FOR_GRID",
+                        "msg": f"range_score={_range_score_now:.2f}, trendiness={_trendiness_now:.2f}; futures grid требует выраженного диапазонного edge, а не только отсутствия hard-trend veto",
                     })
                 if _regime_now == "trend" and _trendiness_now >= 0.80 and _range_score_now < 0.35:
                     feasibility_blocks.append({

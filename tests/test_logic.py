@@ -1087,6 +1087,11 @@ def test_estimate_cost_model_rolls_stale_funding_forward_and_counts_crossed_even
     assert missing_interval["funding_interval_source"] == "fallback_8h_missing_interval"
     assert missing_interval["funding_interval_uncertain"] is True
 
+    unknown_next = _estimate_cost_model(next_funding_ts=None, funding_interval_min=480, **base_args)
+    assert unknown_next["expected_funding_events"] == 2
+    assert unknown_next["expected_funding_bps"] == pytest.approx(10.0)
+    assert unknown_next["funding_event_schedule_assumption"] == "conservative_unknown_next_funding_ts"
+
 
 def test_funding_receipt_does_not_improve_score_cost_or_expected_rr():
     now = int(time.time())
