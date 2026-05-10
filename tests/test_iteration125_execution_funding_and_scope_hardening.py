@@ -135,6 +135,26 @@ def test_execution_preflight_blocks_when_current_funding_turns_grid_edge_negativ
         conn.close()
 
 
+def test_execution_funding_counts_unknown_next_timestamp_conservatively(app_main, tmp_path: Path):
+    conn = db.connect(str(tmp_path / "funding_unknown_next_ts.db"))
+    db.init_db(conn)
+    now = int(time.time())
+    rec = _base_rec(net_profit_bps=2.5)
+    try:
+        # 12h horizon with 8h funding interval can include two funding events if
+        # the next event is near. Missing next_funding_ts must therefore not be
+        # treated as a single event; otherwise execution can approve a grid whose
+        # actual funding carry turns the net edge negative.
+        db.upsert_funding_rate(
+            conn,
+            [{"symbol": "BTCUSDT", "ts": now - 30, "funding_rate": 0.0002, "next_funding_ts": None, "funding_interval_min": 480}],
+        )
+        blocks = app_main._execution_funding_blocks(conn, rec, now_ts=now)
+        codes = {block["code"] for block in blocks}
+        assert "FUNDING_EDGE_TURNED_NEGATIVE" in codes
+    finally:
+        conn.close()
+
 def test_execution_funding_preflight_allows_fresh_low_funding(app_main, tmp_path: Path):
     conn = db.connect(str(tmp_path / "funding_low_ok.db"))
     db.init_db(conn)

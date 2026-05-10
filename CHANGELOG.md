@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-10 — Execution funding event count and outcome funding hardening
+
+- Execution-time funding preflight now counts missing `next_funding_ts` conservatively as `ceil(horizon / interval)` instead of assuming at most one event; this can block grids whose current funding carry turns net edge negative before launch.
+- Outcome labeling no longer credits negative signed funding as durable edge: calibration labels subtract adverse funding cost only and do not boost success/return from funding receipt.
+- Added regression tests for unknown next funding timestamp at execution and no funding-receipt boost in outcome labels; full suite: `430 passed`.
+
 ## 2026-05-10 — Strategy grid geometry and funding schedule hardening
 
 - Fixed arithmetic futures-grid geometry: published `grid_spacing_pct` now matches the executable Bybit arithmetic step `(upper - lower) / grid_count`, while the old minimum spacing floor is kept separately as `economic_min_grid_spacing_pct`.

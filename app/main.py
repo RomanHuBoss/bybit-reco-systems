@@ -1081,7 +1081,13 @@ def _funding_events_until_horizon(now_ts: int, next_funding_ts: Any, interval_se
         return 0
     next_ts = _finite_float_or_none(next_funding_ts)
     if next_ts is None or next_ts <= 0:
-        return 1 if horizon_sec >= interval_sec else 0
+        # If Bybit/DB has the funding interval but not the next event timestamp,
+        # execution preflight must not assume that only one event can occur. The
+        # first event may be minutes away and a futures grid can carry inventory
+        # across every boundary in the label horizon. Match recommendation-time
+        # economics: use a conservative ceil(horizon / interval), capped only to
+        # avoid absurd legacy horizons.
+        return min(32, max(1, int(math.ceil(float(horizon_sec) / float(interval_sec)))))
     # Bybit and some fixtures can provide ms timestamps; normalize defensively.
     if next_ts > 10_000_000_000:
         next_ts = next_ts / 1000.0

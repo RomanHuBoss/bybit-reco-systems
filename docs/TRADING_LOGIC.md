@@ -34,7 +34,7 @@ execution-time validation должна блокировать исполнени
 4. Строится основной диапазон `price_range_lower/upper`; для Bybit arithmetic grid исполнимый шаг публикуется как `grid_spacing_pct = (upper - lower) / grid_count / reference_price`.
 5. Вокруг диапазона строится `kill_switch` через padding от старшего ATR.
 6. Рассчитывается `params.economics`: gross/net profit per grid, execution cost, funding impact, minimum viable order notional, estimated margin required и approximate worst-boundary liquidation buffer.
-7. Если net profit per grid после fees/spread/slippage/funding <= 0 или слишком тонкий, рекомендация получает блок `GRID_NET_PROFIT_*` и не должна запускаться. Минимальный шаг grid, score и expected RR рассчитываются от execution-cost плюс неблагоприятный expected funding carry; положительный funding receipt не уменьшает шаг, не повышает score/RR и не засчитывается как approval-edge. Если `next_funding_ts` отсутствует, модель консервативно считает возможные funding events по горизонту и interval вместо предположения «funding не будет».
+7. Если net profit per grid после fees/spread/slippage/funding <= 0 или слишком тонкий, рекомендация получает блок `GRID_NET_PROFIT_*` и не должна запускаться. Минимальный шаг grid, score и expected RR рассчитываются от execution-cost плюс неблагоприятный expected funding carry; положительный funding receipt не уменьшает шаг, не повышает score/RR и не засчитывается как approval-edge. Если `next_funding_ts` отсутствует, recommendation и execution-preflight консервативно считают возможные funding events по горизонту и interval вместо предположения «funding не будет» или «будет только один event».
 8. Для UI и operator guidance формируется `trade_plan`.
 
 ## Что именно проверяется перед `executed`
@@ -98,7 +98,7 @@ UI обязан показывать этот блок рядом с execution/l
 ## Что outcome labeling умеет и чего не умеет
 
 ### Умеет
-- учитывать grid spacing, cost floor, funding-carry;
+- учитывать grid spacing, cost floor и adverse funding-carry; funding receipt не кредитуется как durable edge для calibration;
 - штрафовать break-out, kill-switch breach и плохую occupancy range;
 - считать success по факту достижения per-leg TP либо по oscillation proxy.
 

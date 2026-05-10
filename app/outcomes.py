@@ -239,6 +239,19 @@ def _extract_total_cost_bps(params: dict | None, fallback: float = 15.0) -> floa
     return float(execution_bps)
 
 
+def _funding_cost_bps_for_outcome_label(signed_funding_bps: float) -> float:
+    """Conservative funding charge for historical grid outcome labels.
+
+    Recommendation and execution approval deliberately exclude funding receipts
+    from canonical edge because the rate can flip and neutral grids may build the
+    adverse inventory side. Outcome labels feed calibration/ranking, so they must
+    use the same conservative convention: funding that the setup is expected to
+    pay is charged, while a possible receipt is retained only as diagnostics in
+    the stored payload and must not inflate win-rate/expectancy.
+    """
+    return max(0.0, _finite_or_default(signed_funding_bps, 0.0))
+
+
 def _signed_return(entry: float, exitp: float, direction: str) -> float:
     if not entry:
         return 0.0
@@ -557,10 +570,12 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             exitp = ep
             success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, direction, params)
             _, funding_cost_bps = _extract_cost_components(params)
-            if venue == "linear" and funding_cost_bps:
-                ret_proxy -= funding_cost_bps / 10_000.0
-                if ret_proxy <= 0:
-                    success = 0
+            if venue == "linear":
+                conservative_funding_cost_bps = _funding_cost_bps_for_outcome_label(funding_cost_bps)
+                if conservative_funding_cost_bps:
+                    ret_proxy -= conservative_funding_cost_bps / 10_000.0
+                    if ret_proxy <= 0:
+                        success = 0
 
         else:
             continue
