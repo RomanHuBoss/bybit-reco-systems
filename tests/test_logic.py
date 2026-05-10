@@ -3347,6 +3347,7 @@ def test_collector_uses_incremental_hot_path_and_local_tf_derivation(tmp_path: P
 
         def get_tickers(self, *, category: str, symbol: str):
             return [{
+                "symbol": symbol,
                 "lastPrice": "100",
                 "bid1Price": "99",
                 "ask1Price": "101",

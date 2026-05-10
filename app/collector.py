@@ -210,12 +210,24 @@ def _is_not_supported_symbol(err: Exception) -> bool:
     )
 
 
+def _is_exact_linear_usdt_symbol(symbol: str) -> bool:
+    normalized = str(symbol or "").strip().upper()
+    base = normalized[:-4] if normalized.endswith("USDT") else ""
+    return bool(base and normalized.endswith("USDT") and normalized.isalnum())
+
+
 def _normalize_symbols(symbols: list[str], disabled: dict[str, int], now_ts: int) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for raw in symbols:
         sym = str(raw or "").strip().upper()
         if not sym or sym in seen:
+            continue
+        # Defense in depth: settings.py already filters SYMBOLS_LINEAR, but tests,
+        # scripts or future callers may invoke the collector directly. Do not let
+        # malformed spot-style values like BTC/USDT reach Bybit requests or local
+        # storage in a Linear USDT futures-only service.
+        if not _is_exact_linear_usdt_symbol(sym):
             continue
         if int(disabled.get(sym, 0) or 0) > now_ts:
             continue
@@ -748,8 +760,17 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     }
 
     ticker_rows, funding_rows, missing_symbols = _fetch_ticker_payloads(conn, client, venue, category, symbols2, disabled, now_ts)
+    missing_symbol_set = {str(sym or "").strip().upper() for sym in missing_symbols}
+    # A current exact ticker is the minimum proof that the configured symbol is a
+    # live Bybit Linear USDT perpetual in this collect cycle. If ticker is missing
+    # or malformed, do not refresh candles/derived TFs for that symbol in the same
+    # cycle; otherwise the recommender can see fresh OHLCV beside stale or absent
+    # price/funding and overstate readiness.
+    active_symbols = [sym for sym in symbols2 if sym not in missing_symbol_set]
     stats["ticker_missing_symbols"] = len(missing_symbols)
     stats["sample_ticker_missing_symbols"] = list(missing_symbols[:8])
+    stats["symbols_with_current_ticker"] = len(active_symbols)
+    stats["symbols_skipped_without_ticker"] = len(symbols2) - len(active_symbols)
     if ticker_rows:
         db.insert_tickers(conn, ticker_rows, commit=False)
         stats["tickers_written"] = len(ticker_rows)
@@ -786,7 +807,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         ohlcv_rows: list[dict[str, Any]] = []
         api_log_events: list[tuple[str, dict[str, Any]]] = []
         api_tasks: list[tuple[str, int, int | None]] = []
-        for sym in symbols2:
+        for sym in active_symbols:
             if int(disabled.get(sym, 0) or 0) > now_ts:
                 continue
             if not _should_fetch_api_tf(conn, venue, sym, tf_sec, now_ts):
@@ -842,7 +863,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         bootstrap_log_events: list[tuple[str, dict[str, Any]]] = []
         bootstrap_tasks: list[tuple[str, int]] = []
         for target_tf_sec in _DERIVED_TF_SOURCES:
-            for sym in symbols2:
+            for sym in active_symbols:
                 if int(disabled.get(sym, 0) or 0) > now_ts:
                     continue
                 if not _should_bootstrap_derived_tf(conn, venue, sym, target_tf_sec, now_ts):
@@ -891,7 +912,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
 
     # Maintain derived TFs locally after primary source TFs are written.
     for target_tf_sec, source_tf_sec in _DERIVED_TF_SOURCES.items():
-        for sym in symbols2:
+        for sym in active_symbols:
             if int(disabled.get(sym, 0) or 0) > now_ts:
                 continue
             derived_rows = _derive_local_tf_rows(conn, venue, sym, source_tf_sec, target_tf_sec)

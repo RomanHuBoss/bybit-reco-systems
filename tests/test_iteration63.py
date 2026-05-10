@@ -142,6 +142,7 @@ def test_collector_bootstraps_derived_timeframes_on_cold_start(tmp_path: Path, m
 
         def get_tickers(self, *, category: str, symbol: str):
             return [{
+                "symbol": symbol,
                 "lastPrice": "100",
                 "bid1Price": "99",
                 "ask1Price": "101",
@@ -347,6 +348,7 @@ def test_collector_skips_redundant_4h_bootstrap_when_1h_history_is_sufficient(tm
 
         def get_tickers(self, *, category: str, symbol: str):
             return [{
+                "symbol": symbol,
                 "lastPrice": "100",
                 "bid1Price": "99",
                 "ask1Price": "101",
