@@ -159,7 +159,7 @@ function directionRu(dir) {
 }
 
 function botTypeLabel(botType, compact = false) {
-  if (botType === "futures_grid") return compact ? "Linear USDT Grid" : "Bybit Linear USDT Futures Grid";
+  if (botType === "futures_grid") return "Futures Grid";
   return botType || "—";
 }
 
@@ -615,7 +615,7 @@ function buildDetailsHtml(it) {
           <div class="operator-title-row">
             <div class="operator-title">${escapeHtml(it.symbol)}</div>
           </div>
-          <div class="operator-subtitle operator-subtitle-inline">${botTypePillHtml(it.bot_type, true)}<span class="operator-sub-sep">·</span>${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
+          <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
         </div>
         <div class="operator-hero-metrics">
           <div class="metric-chip"><b>Скор UI</b>${scoreUiMetricHtml(scoreUi)}</div>
@@ -627,7 +627,7 @@ function buildDetailsHtml(it) {
 
       <div class="operator-card primary-launch-card">
         <h3>Поля для Bybit</h3>
-        <div class="helper-text" style="margin-bottom:10px">Только Bybit Linear USDT Perpetual futures grid. Это не обещание прибыли: при blocked/no_trade запуск запрещён, а все уровни должны пройти Bybit tick/lot/min-notional preflight.</div>
+        <div class="helper-text" style="margin-bottom:10px">Только Futures Grid. Это не обещание прибыли: при blocked/no_trade запуск запрещён, а все уровни должны пройти Bybit tick/lot/min-notional preflight.</div>
         <div class="operator-grid three">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.value, field.mono ? "field-input-mono" : "")).join("")}
         </div>
@@ -696,7 +696,7 @@ function buildDetailsHtml(it) {
 
       <div class="operator-card">
         <h3>Риск-отчёт</h3>
-        <div class="helper-text" style="margin-bottom:8px">Решение относится только к Bybit Linear USDT Perpetual futures grid. При not_recommended/blocked/pending запуск запрещён до пересчёта или подтверждения gate.</div>
+        <div class="helper-text" style="margin-bottom:8px">Решение относится только к Futures Grid. При not_recommended/blocked/pending запуск запрещён до пересчёта или подтверждения gate.</div>
         <div class="operator-grid">
           ${fieldBox("Решение", riskReport.decision || (blocks.length ? "not_recommended" : "recommended"))}
           ${fieldBox("Профиль", riskReport.risk_profile || economics.risk_profile || "—")}
@@ -833,21 +833,21 @@ function updateCalibrationUi(items) {
 
     if (botCalibs.length > 0 && fittedBots.length === botCalibs.length) {
       header.textContent = "Увер ✓";
-      header.title = `Все поддерживаемые bot_type имеют bot-specific калибровку (${fittedBots.length}/${botCalibs.length}).`;
+      header.title = `Калибровка продукта готова (${fittedBots.length}/${botCalibs.length}).`;
       banner.classList.add("hidden");
     } else {
       header.textContent = fittedBots.length > 0 ? "Увер ~" : "Увер ?";
       header.title = fittedBots.length > 0
-        ? `Калибровка готова только для части bot_type (${fittedBots.length}/${botCalibs.length}); глобальная модель считается диагностической и не используется как fallback.`
-        : "Bot-specific калибровка ещё не готова.";
+        ? `Калибровка готова частично (${fittedBots.length}/${botCalibs.length}); глобальная модель считается диагностической и не используется как fallback.`
+        : "Калибровка продукта ещё не готова.";
       banner.classList.remove("hidden");
       const count = Number(statusPayload?.outcome_count || 0);
       const needed = Number(statusPayload?.calib_min_samples || 80);
       const pct = needed > 0 ? Math.min(100, Math.round(count / needed * 100)) : 0;
       const readiness = botCalibs.length > 0
-        ? `Готово bot_type: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (LogReg: ${logregBots.length})` : ""}. `
+        ? `Готово: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (LogReg: ${logregBots.length})` : ""}. `
         : "";
-      $("calibProgress").textContent = `${readiness}Всего исходов: ${count}. Глобальная калибровка отображается только как диагностика; inference опирается на bot-specific модели.`;
+      $("calibProgress").textContent = `${readiness}Всего исходов: ${count}. Глобальная калибровка отображается только как диагностика; inference опирается на продуктовую модель.`;
       $("calibBarFill").style.width = `${pct}%`;
     }
     return;
@@ -873,7 +873,7 @@ function updateCalibrationUi(items) {
   const botCalibs = statusPayload?.bot_calibrators || {};
   const totalOutcomeCount = Number(statusPayload?.outcome_count || 0);
   const messages = botTypes.slice(0, 3).map((botType) => buildBotCalibText(botType, botCalibs[botType], totalOutcomeCount));
-  if (botTypes.length > 3) messages.push(`И ещё ${botTypes.length - 3} bot_type.`);
+  if (botTypes.length > 3) messages.push(`И ещё ${botTypes.length - 3} внутренних сегмента.`);
 
   const primaryBot = botTypes.length === 1 ? botTypes[0] : null;
   const primaryInfo = primaryBot ? botCalibs[primaryBot] : null;
@@ -885,9 +885,9 @@ function updateCalibrationUi(items) {
   if (primaryBot) {
     const title = primaryInfo?.fitted
       ? (primaryInfo?.logreg_active
-        ? `Текущий bot_type ${primaryBot}: калибратор активен`
-        : `Текущий bot_type ${primaryBot}: работает Platt-only`) 
-      : `Текущий bot_type ${primaryBot}: калибратор не обучен`;
+        ? `Futures Grid: калибратор активен`
+        : `Futures Grid: работает Platt-only`) 
+      : `Futures Grid: калибратор не обучен`;
     document.querySelector(".calib-title").innerHTML = `${title} — уверенность <b>${primaryInfo?.fitted ? "частично/полностью откалибрована" : "не откалибрована"}</b>`;
   } else {
     document.querySelector(".calib-title").innerHTML = `Калибровка по текущему набору <b>смешанная</b>`;
@@ -1284,7 +1284,7 @@ async function loadStatus() {
 // ── recommendations ───────────────────────────────────────────────────────────
 
 async function loadRecommendations() {
-  const venue = $("venue").value;
+  const venue = "linear";
   const topN = Number($("topN").value || 50);
   const minConf = Number($("minConf").value || 0);
 
@@ -1381,7 +1381,6 @@ function renderRecoTable(items) {
     if (it.status === "recommended" || it.status === "active") tr.classList.add("row-recommended");
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td>${botTypePillHtml(it.bot_type)}</td>
       <td>
         <div class="symbol-cell">
           <b>${it.symbol}</b>
@@ -1545,7 +1544,6 @@ async function loadHealth() {
     <div class="modal-section">
       <div class="modal-section-title">Журнал здоровья символов</div>
       ${buildModalTable([
-        { label: "Площадка", render: row => escapeHtml(venueLabel(row.venue)) },
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
         { label: "Статус", render: row => renderHealthStatus(row.status) },
         { label: "Возраст свечи", render: row => escapeHtml(formatAgeHuman(row.age_sec)) },
@@ -1684,23 +1682,9 @@ async function loadOutcomes() {
       ], byRaw, { emptyText: "Нет сводки по raw direction." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">7. По типу бота</div>
-      ${buildModalTable([
-        { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
-        { label: "Raw direction", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Execution direction", render: row => renderDirectionBadge(row.execution_direction) },
-        { label: "Всего", render: row => escapeHtml(String(row.total)) },
-        { label: "Побед", render: row => escapeHtml(String(row.wins)) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
-        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], byBot, { emptyText: "Нет агрегированных данных по bot_type." })}
-    </div>
-    <div class="modal-section">
-      <div class="modal-section-title">8. По символу (топ 30)</div>
+      <div class="modal-section-title">7. По символу (топ 30)</div>
       ${buildModalTable([
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
-        { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
         { label: "Raw direction", render: row => renderDirectionBadge(row.raw_direction) },
         { label: "Execution direction", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
@@ -1710,12 +1694,10 @@ async function loadOutcomes() {
       ], bySymbol, { emptyText: "Нет данных по символам." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">9. Журнал исходов (последние 80)</div>
+      <div class="modal-section-title">8. Журнал исходов (последние 80)</div>
       ${buildModalTable([
         { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
-        { label: "Площадка", render: row => escapeHtml(venueLabel(row.venue)) },
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
-        { label: "Бот", render: row => botTypePillHtml(row.bot_type, true) },
         { label: "Algo raw", render: row => renderDirectionBadge(row.raw_direction) },
         { label: "Algo exec", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "LLM status", render: row => renderLlmStatusBadge(row.llm_review?.status || "none") },
@@ -1886,7 +1868,7 @@ $("modalClose").addEventListener("click", (e) => { e.stopPropagation(); hideModa
 $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") hideModal(); });
 $("collectErrJournal").addEventListener("click", (e) => { e.preventDefault(); loadDecisions(); });
 
-["venue", "topN", "minConf"].forEach(id => {
+["topN", "minConf"].forEach(id => {
   const el = $(id);
   if (el) el.addEventListener("input", () => {
     if (recoDebounce) clearTimeout(recoDebounce);

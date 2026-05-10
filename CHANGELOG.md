@@ -1,5 +1,13 @@
 ## 2026-05-10 — UI score near-tie segmentation
 
+
+## 2026-05-10 — UI single-product simplification
+
+- Operator UI now uses concise `Futures Grid` product wording instead of repeating the full `Bybit Linear USDT Futures Grid` label.
+- Removed redundant single-value `Площадка` selector and main-table `Тип бота` column; frontend still sends `venue=linear` to preserve backend fail-closed scope.
+- Removed redundant product/venue dimensions from details, health and outcomes subwindows.
+- Added regression coverage in `tests/test_iteration129_ui_single_product_simplification.py` and updated the detail badge UI regression.
+
 - UI `Скор UI` no longer converts tiny raw-score differences into hard 100/50/0 percentile splits when the visible candidate set is small.
 - Added near-tie grouping with a material raw-score delta of 0.025; candidates inside one group receive the same averaged UI percentile/grade.
 - Sorting by `Скор UI` now uses the grouped UI percentile instead of raw score, reducing false visual precision.
