@@ -811,8 +811,20 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
             "kill_switch_lower": (levels.get("kill_switch") or {}).get("lower") if isinstance(levels.get("kill_switch"), dict) else None,
             "kill_switch_upper": (levels.get("kill_switch") or {}).get("upper") if isinstance(levels.get("kill_switch"), dict) else None,
         }
+        # Preserve the containment guarantees of the generated grid after tick rounding.
+        # Rounding every boundary to the nearest tick can shrink the tradable range or
+        # move kill-switch levels inside the range, which makes the UI display a safer
+        # plan than the exchange can actually place. Lower boundaries snap down, upper
+        # boundaries snap up; only the reference price is allowed to use nearest-tick.
+        snap_modes = {
+            "reference_price": "nearest",
+            "range_lower": "down",
+            "range_upper": "up",
+            "kill_switch_lower": "down",
+            "kill_switch_upper": "up",
+        }
         for name, raw in source_values.items():
-            snapped = snap(raw, tick_size, mode="nearest")
+            snapped = snap(raw, tick_size, mode=snap_modes.get(name, "nearest"))
             if snapped is None:
                 continue
             snapped_price[name] = snapped
@@ -823,7 +835,10 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
         if not isinstance(levels.get("grid_step"), dict):
             levels["grid_step"] = grid_step
         raw_step = grid_step.get("step_abs")
-        snapped_step = snap(raw_step, tick_size, mode="nearest")
+        # A grid step rounded down can invalidate the net-edge floor used by the
+        # recommender. Snap up so the exchange-aligned step is never thinner than
+        # the economics/risk model assumed.
+        snapped_step = snap(raw_step, tick_size, mode="up")
         if snapped_step is not None and snapped_step > 0:
             grid_step["step_abs"] = snapped_step
             ref = snapped_price.get("reference_price") or _finite_float_or_none(plan.get("reference_price"))
@@ -837,7 +852,9 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
         tp_per_leg = levels.get("tp_per_leg") if isinstance(levels.get("tp_per_leg"), dict) else {}
         if not isinstance(levels.get("tp_per_leg"), dict):
             levels["tp_per_leg"] = tp_per_leg
-        snapped_tp = snap(tp_per_leg.get("abs"), tick_size, mode="nearest")
+        # Same principle as grid step: do not round a TP hint below the modelled
+        # per-leg edge after fees, spread, slippage and funding.
+        snapped_tp = snap(tp_per_leg.get("abs"), tick_size, mode="up")
         if snapped_tp is not None and snapped_tp > 0:
             tp_per_leg["abs"] = snapped_tp
             ref = snapped_price.get("reference_price") or _finite_float_or_none(plan.get("reference_price"))

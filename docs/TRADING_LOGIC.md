@@ -54,7 +54,9 @@ execution-time validation должна блокировать исполнени
 ### Геометрия grid-плана
 - `reference_price` внутри диапазона;
 - kill-switch лежит вне основного диапазона;
+- operator-facing auto-snap по Bybit metadata не сужает рассчитанный диапазон: lower range / lower kill-switch округляются вниз, upper range / upper kill-switch округляются вверх;
 - после округления по `tick_size` диапазон не схлопывается;
+- `grid_step.step_abs` и `tp_per_leg.abs` округляются вверх для auto-generated payload, чтобы exchange-aligned значения не стали тоньше economics-модели net edge;
 - шаг сетки не меньше `tick_size` и не больше диапазона;
 - сетка содержит минимум 2 интервала после выравнивания;
 - `grid_type` в этой ревизии допускается только `arithmetic`; `geometric` блокируется fail-closed, потому что для него нужна отдельная проверка ratio-levels, net-profit и tick rounding;

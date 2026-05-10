@@ -1,3 +1,10 @@
+## 2026-05-10 — Tick-safe operator grid snapping
+
+- Operator-facing Bybit metadata snapping now preserves generated grid containment: lower range/kill-switch boundaries snap down and upper boundaries snap up instead of all prices rounding to the nearest tick.
+- Exchange-aligned `grid_step.step_abs` and `tp_per_leg.abs` now snap upward so UI/preflight values cannot become thinner than the economics model that covered fees, spread, slippage and adverse funding.
+- Added regression coverage for tick-safe range/kill-switch snapping and no-thinner step/TP snapping.
+- Validation after this pass: `411 passed`; `python -m py_compile app/*.py tests/*.py main.py`; `node --check app/ui/static/app.js`.
+
 ## 2026-05-10 — Funding interval / grid spacing hardening
 
 - `BybitPublicClient.get_funding_rate()` now falls back to `/v5/market/instruments-info` for `fundingInterval` when ticker payload lacks `fundingIntervalHour`, keeping funding event counts tied to Bybit instrument metadata instead of a silent 8h fallback.
