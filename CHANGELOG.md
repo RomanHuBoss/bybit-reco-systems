@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-05-10 — TP outcome and generated grid geometry preflight hardening
+
+- Outcome-labeling no longer marks a per-leg TP touch as success when the TP distance is smaller than execution costs; `tp_success` now requires net-positive edge after the cost floor.
+- Strict execution preflight now treats generated payloads with `grid_geometry_model=bybit_arithmetic_range_width_div_grid_count` as blocking-invalid when `range / grid_step` implies a different interval count than `grid_count`.
+- Legacy/manual payloads without generated geometry markers keep a warning instead of a hard error, preserving old audit rows while keeping new generated recommendations fail-closed.
+- Added regression coverage in `tests/test_iteration137_grid_outcome_and_preflight_hardening.py`; validation: `447 passed`, `python -m compileall -q app tests`.
+
 ## 2026-05-10 — Collector funding interval fallback hardening
 
 - Public collector now fills missing ticker `fundingIntervalHour` from Bybit `/v5/market/instruments-info` `fundingInterval` for the exact same Linear USDT perpetual symbol.

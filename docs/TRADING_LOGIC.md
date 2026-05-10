@@ -61,7 +61,7 @@ execution-time validation должна блокировать исполнени
 - сетка содержит минимум 2 интервала после выравнивания;
 - `grid_type` в этой ревизии допускается только `arithmetic`; `geometric` блокируется fail-closed, потому что для него нужна отдельная проверка ratio-levels, net-profit и tick rounding;
 - `grid_count` / legacy `grid_levels` трактуется как Bybit Number of Grids, то есть число price intervals, и должен быть в диапазоне 2..400; генератор диапазона масштабирует total span по числу интервалов, а опубликованный arithmetic `grid_step.step_abs` соответствует `(upper - lower) / grid_count`;
-- `grid_step.step_abs` и `params.grid_count`/`params.grid_levels` не должны описывать радикально разные сетки; mismatch помечается warning'ом для ручной сверки перед запуском Bybit bot;
+- `grid_step.step_abs` и `params.grid_count`/`params.grid_levels` не должны описывать разные сетки; для generated payload с `grid_geometry_model=bybit_arithmetic_range_width_div_grid_count` mismatch блокируется strict execution-preflight, legacy/manual payload получает warning для ручной сверки;
 - `tp_per_leg.abs` должен быть положительным и не схлопываться после округления по `tick_size`; off-tick TP помечается warning'ом с рассчитанным snapped-значением.
 
 ### Режимные инварианты
@@ -100,7 +100,7 @@ UI обязан показывать этот блок рядом с execution/l
 ### Умеет
 - учитывать grid spacing, cost floor и adverse funding-carry; funding receipt не кредитуется как durable edge для calibration;
 - штрафовать break-out, kill-switch breach и плохую occupancy range;
-- считать success по факту достижения per-leg TP либо по oscillation proxy.
+- считать success по факту достижения per-leg TP только если TP-touch остаётся net-positive после execution-cost floor, либо по oscillation proxy.
 
 ### Не умеет
 - реконструировать реальные fill sequence;

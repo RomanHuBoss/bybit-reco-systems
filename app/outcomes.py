@@ -450,18 +450,10 @@ def _grid_outcome(
         occupancy_penalty_base = max(range_span_pct * 0.85, step_pct * 2.0)
         net_proxy -= (min_range_ratio - in_range_ratio) * occupancy_penalty_base
 
-    # Explicit TP achievement should count as success for grid outcome semantics:
-    # if the operator-facing per-leg target was touched inside the label window,
-    # WR must reflect that realised profit opportunity even when the close of the
-    # horizon later drifts away and the oscillation counter stays < 2.
-    if tp_hit and tp_leg_abs is not None and entry:
-        tp_realized_net = max(0.0001, (float(tp_leg_abs) / float(entry)) - cost_floor)
-        net_proxy = max(net_proxy, tp_realized_net)
-
     # A single profitable leg is too easy to obtain on noisy data and was one of the
     # reasons why historical win-rate inflated toward ~100%. Require at least two
-    # matched oscillation legs plus a buffer above explicit trading costs — unless
-    # the explicit per-leg TP itself was already reached.
+    # matched oscillation legs plus a buffer above explicit trading costs, or an
+    # explicit TP touch whose *net* per-leg economics are still viable after costs.
     min_steps_required = 2
     required_profit = max(
         cost_floor * (1.60 if direction == "neutral" else 1.35),
@@ -469,8 +461,20 @@ def _grid_outcome(
         0.0005,
     )
 
+    tp_success = False
+    if tp_hit and tp_leg_abs is not None and entry:
+        tp_realized_net = (float(tp_leg_abs) / float(entry)) - cost_floor
+        # Do not turn an economically non-viable TP touch into a positive label.
+        # The previous max(0.0001, ...) floor could mark grids as successful even
+        # when the per-leg target was smaller than execution costs.
+        if tp_realized_net > max(cost_floor * 0.50, 0.0001):
+            tp_success = True
+            net_proxy = max(net_proxy, tp_realized_net)
+        else:
+            net_proxy = min(net_proxy, tp_realized_net)
+
     success = int(
-        tp_hit
+        tp_success
         or (
             completed_steps >= min_steps_required
             and (in_range_ratio == 0.0 or in_range_ratio >= min_range_ratio)

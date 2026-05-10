@@ -1654,13 +1654,22 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                     "msg": f"После выравнивания по tick_size сетка содержит только {intervals} интервал(ов); для grid требуется минимум {BYBIT_FUTURES_GRID_MIN_COUNT}.",
                 })
             if grid_levels is not None and BYBIT_FUTURES_GRID_MIN_COUNT <= grid_levels <= BYBIT_FUTURES_GRID_MAX_COUNT:
-                # Bybit's "Number of Grids" is the count of price intervals.
-                # Legacy payloads may have used grid_levels as price points, so
-                # keep this a warning unless the grid is truly too sparse.
-                if intervals + 1 < grid_levels:
-                    warnings.append({
+                # Bybit's "Number of Grids" is the count of price intervals. If
+                # range/step implies a different number of intervals after tick
+                # rounding, the displayed TP/economics no longer describe the grid
+                # an operator will create from lower/upper/grid_count. Treat this as
+                # a hard execution error in strict preflight, not as a harmless
+                # legacy price-point ambiguity.
+                if intervals != int(grid_levels):
+                    strict_geometry_payload = (
+                        str(params.get("grid_geometry_model") or "").strip() == "bybit_arithmetic_range_width_div_grid_count"
+                        or params.get("actual_grid_step_abs") is not None
+                        or params.get("actual_grid_spacing_pct") is not None
+                    )
+                    target = errors if (require_meta and strict_geometry_payload) else warnings
+                    target.append({
                         "code": "GRID_STEP_LEVELS_MISMATCH",
-                        "msg": f"Диапазон и step_abs дают примерно {intervals} интервал(ов), а params.grid_count/grid_levels={grid_levels}; оператор должен сверить число сеток перед запуском Bybit bot.",
+                        "msg": f"Диапазон и step_abs дают примерно {intervals} интервал(ов), а params.grid_count/grid_levels={grid_levels}; Bybit Number of Grids должен совпадать с числом интервалов, иначе TP/economics не соответствуют исполнимой сетке.",
                     })
 
     if grid_type and grid_type != SUPPORTED_RECOMMENDER_GRID_TYPE:
