@@ -28,5 +28,5 @@ def test_details_subtitle_wraps_instead_of_overflowing_panel() -> None:
 def test_static_asset_cache_key_bumped_after_ui_fix() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v18" in index
-    assert "app.js?v=manual-ui-v18" in index
+    assert "styles.css?v=manual-ui-v19" in index
+    assert "app.js?v=manual-ui-v19" in index

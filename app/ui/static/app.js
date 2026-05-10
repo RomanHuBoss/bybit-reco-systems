@@ -483,24 +483,69 @@ function buildOperatorValues(it) {
   };
 }
 
+function firstFiniteValue(sources, keys) {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    for (const key of keys) {
+      const value = toFiniteNumber(source[key]);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+}
+
+function formatPositionSizeValue(notional, qty, baseAsset = "") {
+  const parts = [];
+  if (notional !== null && notional !== undefined) parts.push(formatUsdValue(notional));
+  if (qty !== null && qty !== undefined && Number.isFinite(Number(qty))) {
+    const qtyText = formatDotNumber(qty, 8, false);
+    parts.push(baseAsset ? `${qtyText} ${baseAsset}` : qtyText);
+  }
+  return parts.length ? parts.join(" · ") : "—";
+}
+
 function buildOperatorFieldSpecs(it, ov) {
   const params = (it || {}).params || {};
   const economics = params.economics || {};
   const sizing = params.sizing || {};
   const rangeValue = `${ov.rangeLower} — ${ov.rangeUpper}`;
-  const capitalValue = formatUsdValue(
-    sizing.estimated_margin_required_usdt
-      ?? economics.estimated_margin_required_usdt
-      ?? sizing.order_notional_usdt
-      ?? economics.order_notional_usdt
+  const marginRequired = firstFiniteValue(
+    [sizing, economics, params],
+    ["estimated_margin_required_usdt", "margin_required_usdt", "capital_required_usdt", "margin_usdt", "investment_usdt"]
   );
+  const leverage = Math.max(1, Number(params.leverage || 1));
+  const positionNotional = firstFiniteValue(
+    [sizing, economics, params],
+    [
+      "estimated_max_position_notional_usdt",
+      "max_position_notional_usdt",
+      "estimated_total_order_notional_usdt",
+      "total_order_notional_usdt",
+      "position_notional_usdt",
+      "notional_usdt",
+    ]
+  ) ?? (marginRequired !== null && Number.isFinite(leverage) ? marginRequired * leverage : null);
+  const symbolParts = splitLinearSymbol((it || {}).symbol);
+  const referencePrice = toFiniteNumber(params.price_ref);
+  const explicitPositionQty = firstFiniteValue(
+    [sizing, economics, params],
+    ["estimated_position_qty", "position_qty", "total_qty", "estimated_total_qty", "max_position_qty"]
+  );
+  const positionQty = explicitPositionQty ?? (
+    positionNotional !== null && referencePrice !== null && referencePrice > 0
+      ? positionNotional / referencePrice
+      : null
+  );
+  const capitalValue = formatUsdValue(marginRequired);
+  const positionValue = formatPositionSizeValue(positionNotional, positionQty, symbolParts?.base || "");
   const fields = [
     { label: "Сторона", value: directionRu((it || {}).direction), mono: false },
+    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true },
+    { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue },
     { label: "Диапазон входа", value: rangeValue, mono: true },
     { label: "Цена входа", value: ov.entryRef, mono: true },
     { label: "Кол-во сеток", value: params.grid_count ?? params.grid_levels ?? "—" },
     { label: "Плечо", value: ov.leverage },
-    { label: "Сумма/маржа", value: capitalValue },
     { label: "Take Profit", value: ov.takeProfitValue, mono: true },
     { label: "Stop Loss", value: ov.stopLossValue, mono: true },
   ];
@@ -642,7 +687,7 @@ function buildDetailsHtml(it) {
       <div class="operator-card primary-launch-card">
         <h3>Параметры запуска Bybit Futures Grid</h3>
         <div class="operator-grid two minimal-launch-grid">
-          ${operatorFields.map(field => fieldBox(field.label, field.value, field.value, field.mono ? "field-input-mono" : "")).join("")}
+          ${operatorFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "")).join("")}
         </div>
       </div>
 
