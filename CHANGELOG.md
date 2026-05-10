@@ -1,3 +1,10 @@
+## 2026-05-10 — UI score near-tie segmentation
+
+- UI `Скор UI` no longer converts tiny raw-score differences into hard 100/50/0 percentile splits when the visible candidate set is small.
+- Added near-tie grouping with a material raw-score delta of 0.025; candidates inside one group receive the same averaged UI percentile/grade.
+- Sorting by `Скор UI` now uses the grouped UI percentile instead of raw score, reducing false visual precision.
+- Added regression tests for 0.245 / 0.242 / 0.232 and materially separated score groups.
+
 # Changelog
 
 ## 2026-05-10 — Funding receipt score/RR hardening

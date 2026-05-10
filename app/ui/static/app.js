@@ -14,6 +14,9 @@ let sortCol = "confidence";  // default: sort by confidence descending
 let sortDir = "desc";        // "asc" | "desc"
 let lastItems = [];          // last fetched items — re-sorted on header click without refetch
 let uiScoreMetaById = new Map();
+// Raw recommendation score is normalized roughly to [-1, 1]. Smaller deltas are
+// not economically meaningful enough for a hard A/B/C split in the UI.
+const SCORE_UI_NEAR_TIE_DELTA = 0.025;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -313,19 +316,40 @@ function computeUiScoreMetaMap(items) {
     return String(a.id).localeCompare(String(b.id));
   });
 
-  let rank = 0;
   const n = rows.length;
-  for (let i = 0; i < rows.length; i += 1) {
-    if (i > 0 && Math.abs(rows[i].score - rows[i - 1].score) > 1e-12) rank = i;
-    const percentile = n === 1 ? 100 : Math.round((1 - rank / (n - 1)) * 100);
+  let groupStart = 0;
+  while (groupStart < n) {
+    let groupEnd = groupStart;
+    const anchorScore = rows[groupStart].score;
+    while (
+      groupEnd + 1 < n &&
+      Math.abs(anchorScore - rows[groupEnd + 1].score) <= SCORE_UI_NEAR_TIE_DELTA
+    ) {
+      groupEnd += 1;
+    }
+
+    const avgRank = (groupStart + groupEnd) / 2;
+    const percentile = n === 1 ? 100 : Math.round((1 - avgRank / (n - 1)) * 100);
     const zone = scoreUiZone(percentile);
-    out.set(rows[i].id, {
-      percentile,
-      grade: zone.grade,
-      zoneLabel: zone.label,
-      raw: rows[i].score,
-      title: `Скор UI: ${percentile}/100 — ${zone.label}; raw=${formatDotNumber(rows[i].score, 4)}`,
-    });
+    const groupSize = groupEnd - groupStart + 1;
+    const groupSpread = Math.abs(rows[groupStart].score - rows[groupEnd].score);
+    const tieNote = groupSize > 1
+      ? `; near-tie группа=${groupSize}, Δraw=${formatDotNumber(groupSpread, 4)}, порог=${formatDotNumber(SCORE_UI_NEAR_TIE_DELTA, 4)}`
+      : `; material gap > ${formatDotNumber(SCORE_UI_NEAR_TIE_DELTA, 4)}`;
+
+    for (let i = groupStart; i <= groupEnd; i += 1) {
+      out.set(rows[i].id, {
+        percentile,
+        grade: zone.grade,
+        zoneLabel: zone.label,
+        raw: rows[i].score,
+        groupSize,
+        groupSpread,
+        tieThreshold: SCORE_UI_NEAR_TIE_DELTA,
+        title: `Скор UI: ${percentile}/100 — ${zone.label}; raw=${formatDotNumber(rows[i].score, 4)}${tieNote}`,
+      });
+    }
+    groupStart = groupEnd + 1;
   }
   return out;
 }
@@ -1318,6 +1342,9 @@ function applySort(items) {
       const db = (b.reasons || {}).direction_agg || {};
       av = da.direction_confidence_calibrated ?? da.direction_confidence ?? -1;
       bv = db.direction_confidence_calibrated ?? db.direction_confidence ?? -1;
+    } else if (sortCol === "score") {
+      av = ensureUiScoreMeta(a, items).percentile ?? -1;
+      bv = ensureUiScoreMeta(b, items).percentile ?? -1;
     } else {
       av = a[sortCol] ?? "";
       bv = b[sortCol] ?? "";

@@ -15,6 +15,7 @@
 - ведёт эвристический sentiment pipeline (`global`, `symbol`, `topic` scopes);
 - определяет direction/regime на нескольких ТФ;
 - считает score / confidence / expected RR / risk score;
+- UI `Скор UI` показывает не «точный рейтинг», а grouped percentile: близкие raw-score внутри material delta `0.025` объединяются в near-tie band и получают одинаковый averaged percentile/grade, чтобы 0.245/0.242/0.232 не выглядели как 100/50/0;
 - применяет risk-gate, publication-gate, market shock guard и symbol fast-veto;
 - при необходимости отправляет кандидат в локальный LLM-reviewer;
 - перед operator-confirmation повторно проверяет риск-лимиты, свежесть market-data, актуальный market shock / fast-veto, live-price относительно сохранённого диапазона сетки и базовую исполнимость trade plan относительно metadata инструмента Bybit;
