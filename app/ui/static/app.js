@@ -238,7 +238,7 @@ function symbolLinksHtml(it, compact = false) {
   return `
     <span class="${cls}">
       <a class="icon-link" href="${escapeHtml(chartUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть график Bybit">${iconSvg("chart")}</a>
-      <a class="icon-link" href="${escapeHtml(botUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания бота">${iconSvg("bot")}</a>
+      <a class="icon-link" href="${escapeHtml(botUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания grid-бота Bybit">${iconSvg("bot")}</a>
     </span>
   `;
 }

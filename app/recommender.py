@@ -1222,7 +1222,14 @@ def _estimate_cost_model(
         expected_funding_bps = directional_funding_bps_per_event * expected_funding_events
 
     execution_cost_bps = max(0.0, fee_bps_round_trip + spread_bps_used + slippage_bps)
-    net_cost_bps = execution_cost_bps + expected_funding_bps
+    # Conservative approval/scoring cost: funding receipts are not durable edge.
+    # Keep the signed funding-aware value as a diagnostic, but any gate, score or
+    # expected-RR default must use only adverse carry. Otherwise a short/long can
+    # look better solely because the current funding snapshot pays it, even though
+    # the rate may flip before inventory is accumulated.
+    funding_cost_bps_for_approval = max(0.0, expected_funding_bps)
+    net_cost_bps = execution_cost_bps + funding_cost_bps_for_approval
+    signed_net_cost_bps = execution_cost_bps + expected_funding_bps
 
     return {
         "spread_bps": spread_bps_used,
@@ -1244,9 +1251,12 @@ def _estimate_cost_model(
         "funding_interval_min": int(round(funding_interval_sec / 60.0)) if venue == "linear" else None,
         "funding_interval_source": funding_interval_source if venue == "linear" else "not_applicable",
         "funding_interval_uncertain": bool(venue == "linear" and funding_interval_source.startswith("fallback") and fr is not None),
-        # Canonical cost floor for scoring / RR / labels must reflect unavoidable
-        # execution friction only. Funding carry stays explicit in net_cost_bps.
+        # Canonical cost floor for scoring / RR / labels reflects execution
+        # friction plus adverse funding only. Potential funding receipts stay
+        # diagnostic and must not increase approval edge, score or expected RR.
         "total_cost_bps": float(execution_cost_bps),
+        "funding_cost_bps_for_approval": float(funding_cost_bps_for_approval),
+        "signed_net_cost_bps": float(signed_net_cost_bps),
         "net_cost_bps": float(net_cost_bps),
         "horizon_sec": int(horizon_sec),
     }
@@ -1258,8 +1268,9 @@ def _funding_score_adjustment(direction: str, fr_sig: dict[str, Any], cost_model
     Funding should only affect the score if the trade horizon is actually expected to
     cross one or more funding events. Otherwise we create an economic signal that the
     execution model never realises. The adjustment is also direction-aware: expensive
-    carry should penalise the side that is expected to *pay* funding, while received
-    funding can be mildly supportive.
+    carry penalises the side that is expected to *pay* funding. Received funding is
+    intentionally not rewarded because it can flip or disappear before inventory is
+    accumulated; it is displayed only as a diagnostic.
     """
     if direction not in ("long", "short"):
         return 0.0
@@ -1273,18 +1284,9 @@ def _funding_score_adjustment(direction: str, fr_sig: dict[str, Any], cost_model
         return -0.05
     if expected_bps >= 1.5:
         return -0.02
-    if expected_bps <= -8.0:
-        return 0.05
-    if expected_bps <= -3.0:
-        return 0.03
-    if expected_bps <= -1.0:
-        return 0.015
-
-    sig = str(fr_sig.get("signal") or "unknown")
-    if direction == "long" and sig == "bullish":
-        return 0.01
-    if direction == "short" and sig == "bearish":
-        return 0.01
+    # Funding receipt is not a reliable alpha source for grid approval. Do not add
+    # a positive score adjustment for negative expected funding or for a bullish /
+    # bearish funding signal; the UI/risk report still exposes the signed carry.
     return 0.0
 
 
@@ -1703,10 +1705,9 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
     trend_strength = _clamp(float(agg.get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
     coherence = _clamp(float(agg.get("coherence") or 0.5), 0.0, 1.0)
     atr_pct = max(0.0, float(f.get("_atr_pct_1h") or f.get("atr_pct") or 0.0))
-    # RR must reflect the same economics as scoring/labels: execution costs are always
-    # paid, while futures funding carry can materially hurt or help the setup over the
-    # label horizon. Keep execution friction in the risk proxy, but use net_cost_bps in
-    # the numerator so expensive long carry lowers RR and received funding can improve it.
+    # RR must reflect conservative approval economics: execution costs are always paid
+    # and adverse funding carry can hurt the setup, but funding receipts must not raise
+    # RR because they can flip before inventory is accumulated.
     net_cost_pct = float(
         cost_model.get("net_cost_bps")
         or cost_model.get("total_cost_bps")

@@ -18,7 +18,9 @@ from app.recommender import (
     _apply_llm_reviewer,
     _advance_persistence_gate,
     _estimate_cost_model,
+    _expected_rr,
     _extreme_funding_block,
+    _funding_score_adjustment,
     _params,
     _persistence_fresh_gap,
     _persistence_gate_requirements,
@@ -1084,6 +1086,39 @@ def test_estimate_cost_model_rolls_stale_funding_forward_and_counts_crossed_even
     assert missing_interval["funding_interval_min"] == 480
     assert missing_interval["funding_interval_source"] == "fallback_8h_missing_interval"
     assert missing_interval["funding_interval_uncertain"] is True
+
+
+def test_funding_receipt_does_not_improve_score_cost_or_expected_rr():
+    now = int(time.time())
+    feature_payload = {
+        "spread_bps": 1.0,
+        "atr_pct": 0.02,
+        "_atr_pct_1h": 0.02,
+        "_direction_agg": {"trendiness": 0.05, "coherence": 0.90, "regime": "range", "regime_confidence": 0.90},
+    }
+    base_args = {
+        "bot_type": "futures_grid",
+        "venue": "linear",
+        "f": feature_payload,
+        "taker_fee_bps": 6.0,
+        "direction": "short",
+        "ts_now": now,
+        "next_funding_ts": now + 3600,
+        "funding_interval_min": 480,
+    }
+
+    no_funding = _estimate_cost_model(funding_rate=0.0, **base_args)
+    receipt = _estimate_cost_model(funding_rate=0.0005, **base_args)
+
+    assert receipt["expected_funding_bps"] < 0
+    assert receipt["signed_net_cost_bps"] < no_funding["signed_net_cost_bps"]
+    assert receipt["net_cost_bps"] == pytest.approx(no_funding["net_cost_bps"])
+    assert receipt["funding_cost_bps_for_approval"] == 0.0
+
+    assert _funding_score_adjustment("short", {"signal": "bearish", "value": 0.0005}, receipt) == 0.0
+    assert _expected_rr("futures_grid", feature_payload, cost_model=receipt) == pytest.approx(
+        _expected_rr("futures_grid", feature_payload, cost_model=no_funding)
+    )
 
 
 def test_get_first_tradeable_candle_after_uses_next_candle_open(conn):

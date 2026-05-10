@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-10 — Funding receipt score/RR hardening
+
+- Recommendation score and `expected_rr` now use conservative `net_cost_bps = execution_cost_bps + max(expected_funding_bps, 0)`; funding receipts are no longer allowed to improve score or RR.
+- Added `signed_net_cost_bps` as a diagnostic so UI/audit can still see the signed carry effect without using it as approval edge.
+- `_funding_score_adjustment()` now penalizes only the paying side and returns no positive boost for receiving funding.
+- Removed a duplicate chart link in the symbol actions UI and made the remaining bot link explicitly point to Bybit grid-bot creation.
+- Added regression tests for funding-receipt score/RR behavior and UI symbol-link shape.
+
 ## 2026-05-10 — fail-closed liquidation side and exact ticker scope hardening
 
 ### Исправлено
