@@ -1257,3 +1257,61 @@ body {
 }
 
 .small-block.small-block-critical { border-color: rgba(255,90,122,0.55); background: rgba(255,90,122,0.10); }
+
+/* Compact operator-first details panel */
+.compact-details-sheet {
+  gap: 10px;
+}
+.compact-details-sheet .operator-card {
+  padding: 10px;
+}
+.compact-details-sheet .operator-card h3 {
+  margin-bottom: 8px;
+}
+.compact-details-sheet .field-box {
+  padding: 7px 9px;
+}
+.compact-details-sheet .operator-grid {
+  gap: 7px;
+}
+.operator-decision-card {
+  border-left: 4px solid var(--border);
+}
+.operator-decision-card.go {
+  border-left-color: var(--good);
+}
+.operator-decision-card.wait {
+  border-left-color: var(--warn);
+}
+.operator-decision-card.stop {
+  border-left-color: var(--bad);
+}
+.decision-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.decision-title-row h3 {
+  margin: 0;
+}
+.decision-text {
+  color: var(--text);
+  font-size: 13px;
+}
+.compact-control-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 1180px) {
+  .operator-grid.three {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  .operator-grid,
+  .operator-grid.three,
+  .compact-control-grid {
+    grid-template-columns: 1fr;
+  }
+}

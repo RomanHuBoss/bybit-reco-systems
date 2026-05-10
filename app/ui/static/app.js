@@ -495,7 +495,7 @@ function buildOperatorFieldSpecs(it, ov) {
     fields.push({ label: "Qty/order", value: formatDotNumber(sizing.qty_per_order ?? economics.qty_per_order, 10, false), mono: true });
     fields.push({ label: "Margin est.", value: formatUsdValue(sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt) });
   }
-  fields.push({ label: "Net/сетка", value: formatBps((params.economics || {}).net_profit_bps, 2, true) });
+  fields.push({ label: "Net/сетка conservative", value: formatBps((params.economics || {}).net_profit_bps, 2, true) });
   fields.push({ label: "Прибыль/сетка, %", value: ov.tpLegPct });
   if (ov.tpLegAbs !== "—") fields.push({ label: "Прибыль/сетка, цена", value: ov.tpLegAbs, mono: true });
 
@@ -606,14 +606,43 @@ function buildDetailsHtml(it) {
   updateDetailsHeaderLinks(it);
 
   const reasonList = (shock.reasons || []).length ? `<ul class="reason-list">${(shock.reasons || []).slice(0, 4).map(r => `<li><code>${escapeHtml(r.code || "signal")}</code> — ${escapeHtml(r.msg || "")}</li>`).join("")}</ul>` : "";
-  const blockCards = blocks.length ? `<div class="small-blocks">${blocks.map(b => `<div class="small-block"><code>${escapeHtml(b.code || "BLOCK")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>` : `<div class="helper-text">Активных блоков нет.</div>`;
+  const blockCards = blocks.length ? `<div class="small-blocks">${blocks.map(b => `<div class="small-block"><code>${escapeHtml(b.code || "BLOCK")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>` : "";
   const bybitValidationCards = bybitValidationItems.length
     ? `<div class="small-blocks">${bybitValidationItems.map(b => `<div class="small-block ${bybitErrors.includes(b) ? "small-block-critical" : ""}"><code>${escapeHtml(b.code || "BYBIT_VALIDATION")}</code><br>${escapeHtml(b.msg || "")}</div>`).join("")}</div>`
     : `<div class="helper-text">Bybit metadata/preflight warnings отсутствуют. Перед запуском execution-preflight всё равно сверит live last/bid/ask price, tick/lot/min-notional.</div>`;
-  const fastVetoBlock = fastVeto.triggered ? `<div class="small-blocks"><div class="small-block"><code>${escapeHtml((fastVeto.blocks || [])[0]?.code || "FAST_VETO")}</code><br>${escapeHtml((fastVeto.blocks || [])[0]?.msg || "")}</div></div>` : `<div class="helper-text">Fast-veto не сработал.</div>`;
+
+  const launchable = isLaunchableGridRecommendation(it);
+  const hardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || it.status === "blocked" || it.status === "no_trade";
+  const decisionClass = launchable ? "go" : hardBlocked ? "stop" : "wait";
+  const decisionTitle = launchable ? "Можно готовить запуск" : hardBlocked ? "Не запускать" : "Ждать / перепроверить";
+  const decisionText = launchable
+    ? "Переносите поля в Bybit Futures Grid только после финального live preflight."
+    : hardBlocked
+      ? "В карточке есть блокеры или запретный статус. Создание бота оператором должно быть остановлено."
+      : "Рекомендация не в исполнимом состоянии. Не создавайте бота до обновления статуса и preflight.";
+
+  const controlFields = [
+    fieldBox("Риск-решение", riskReport.decision || (blocks.length ? "not_recommended" : "recommended")),
+    fieldBox("Профиль", riskReport.risk_profile || economics.risk_profile || "—"),
+    fieldBox("Net/сетка conservative", formatBps(riskReport.expected_net_profit_per_grid_bps ?? economics.net_profit_bps, 2, true)),
+    fieldBox("Net signed funding", formatBps(riskReport.net_profit_with_signed_funding_bps ?? economics.net_profit_with_signed_funding_bps, 2, true)),
+    fieldBox("Издержки", formatBps(riskReport.estimated_execution_cost_bps ?? costModel.total_cost_bps ?? costModel.execution_cost_bps, 2, false)),
+    fieldBox("Funding cost для допуска", formatBps(riskReport.funding_cost_bps_for_approval ?? economics.funding_cost_bps, 2, false)),
+    fieldBox("Funding benefit исключён", formatBps(riskReport.funding_benefit_excluded_bps ?? economics.funding_benefit_excluded_bps, 2, false)),
+    fieldBox("Капитал", formatUsdValue(riskReport.capital_required_usdt ?? sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt)),
+    fieldBox("Ликвидность", liquidityTierRu(liquidity.tier || "—")),
+    fieldBox("Спред", formatBps(costModel.spread_bps, 2, false)),
+  ].join("");
+
+  const riskNotes = [
+    riskReport.max_adverse_scenario ? `<div class="helper-text" style="margin-top:8px"><b>Неблагоприятный сценарий:</b> ${escapeHtml(riskReport.max_adverse_scenario)}</div>` : "",
+    riskReportRejected.length ? `<div class="small-blocks">${riskReportRejected.slice(0, 6).map(x => `<div class="small-block small-block-critical">${escapeHtml(x)}</div>`).join("")}</div>` : "",
+    riskReportWarnings.length ? `<div class="helper-text" style="margin-top:8px"><b>Предупреждения:</b> ${riskReportWarnings.slice(0, 4).map(escapeHtml).join("; ")}</div>` : "",
+    blockCards,
+  ].filter(Boolean).join("");
 
   return `
-    <div class="operator-sheet">
+    <div class="operator-sheet compact-details-sheet">
       <div class="operator-hero compact-hero">
         <div>
           <div class="operator-title-row">
@@ -621,7 +650,7 @@ function buildDetailsHtml(it) {
           </div>
           <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
         </div>
-        <div class="operator-hero-metrics">
+        <div class="operator-hero-metrics compact-metrics">
           <div class="metric-chip"><b>Скор UI</b>${scoreUiMetricHtml(scoreUi)}</div>
           <div class="metric-chip"><b>Увер.</b>${fmt(it.confidence)}</div>
           <div class="metric-chip"><b>Ож. RR</b>${fmt(it.expected_rr)}</div>
@@ -629,108 +658,49 @@ function buildDetailsHtml(it) {
         </div>
       </div>
 
+      <div class="operator-card operator-decision-card ${decisionClass}">
+        <div class="decision-title-row">
+          <h3>${escapeHtml(decisionTitle)}</h3>
+          <button class="ghost-chip" data-act="show-tech">Техподробности</button>
+        </div>
+        <div class="decision-text">${escapeHtml(decisionText)}</div>
+      </div>
+
       <div class="operator-card primary-launch-card">
         <h3>Поля для Bybit</h3>
-        <div class="helper-text" style="margin-bottom:10px">Только Futures Grid. Это не обещание прибыли: при blocked/no_trade запуск запрещён, а все уровни должны пройти Bybit tick/lot/min-notional preflight.</div>
+        <div class="helper-text" style="margin-bottom:10px">Только Futures Grid. Эти значения — основной чек-лист ручного создания grid-бота.</div>
         <div class="operator-grid three">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.value, field.mono ? "field-input-mono" : "")).join("")}
         </div>
       </div>
 
+      <div class="operator-card launch-control-card">
+        <h3>Контроль запуска</h3>
+        <div class="operator-grid compact-control-grid">
+          ${controlFields}
+        </div>
+        ${riskNotes || `<div class="helper-text" style="margin-top:8px">Критичных блоков и предупреждений нет.</div>`}
+      </div>
+
       <div class="operator-card">
         <h3>Факторы решения</h3>
         <div class="factors-grid">
-          ${factorGroupHtml("Плюсы сигнала", reasons.top_positive_factors || [], "positive")}
-          ${factorGroupHtml("Минусы и риски", reasons.top_negative_factors || [], "negative")}
+          ${factorGroupHtml("Плюсы", reasons.top_positive_factors || [], "positive")}
+          ${factorGroupHtml("Минусы / риски", reasons.top_negative_factors || [], "negative")}
         </div>
       </div>
 
       <div class="operator-card alert-card ${alertClass}">
-        <h3>Защита и фон</h3>
+        <h3>Защита рынка</h3>
         <div class="alert-line">${shockBadgeHtml(shock)}</div>
         <div>${escapeHtml(shock.operator_note || "Новые входы разрешены в обычном режиме.")}</div>
-        <div class="alert-note">Сентимент в этой сборке остаётся эвристическим: это operator-grade фон, а не полноценный semantic news-анализ статей.</div>
-        <div class="alert-note">Breadth вниз: ${fmt(((shock.metrics || {}).breadth_down || 0) * 100, 1)}% · вверх: ${fmt(((shock.metrics || {}).breadth_up || 0) * 100, 1)}% · median 5m: ${fmtPct((((shock.metrics || {}).median_r5m || 0) * 100), 2)}</div>
         ${reasonList}
       </div>
 
       <div class="operator-card">
-        <h3>Контекст сигнала</h3>
-        <div class="operator-grid">
-          ${fieldBox("Уверенность направления", formatDotNumber(dirConf, 4), formatDotNumber(dirConf, 4))}
-          ${fieldBox("Raw score", formatDotNumber(it.score, 4), formatDotNumber(it.score, 4))}
-          ${fieldBox("Режим сигнала", dirAgg.regime || "—", dirAgg.regime || "—")}
-          ${fieldBox("Согласованность", formatDotNumber(dirAgg.coherence, 4), formatDotNumber(dirAgg.coherence, 4))}
-          ${fieldBox("Сентимент глобальный", formatDotNumber(symbolSent.global, 4), formatDotNumber(symbolSent.global, 4))}
-          ${fieldBox("Сентимент по символу", formatDotNumber(symbolSent.value, 4), formatDotNumber(symbolSent.value, 4))}
-          ${fieldBox("Сентимент итоговый", formatDotNumber(symbolSent.effective, 4), formatDotNumber(symbolSent.effective, 4))}
-          ${fieldBox("ATR 1ч", volatility.atr_pct_1h !== undefined && volatility.atr_pct_1h !== null ? formatPercentDot(volatility.atr_pct_1h * 100, 2, false) : "—")}
-          ${fieldBox("Фандинг", funding.value !== undefined && funding.value !== null ? formatPercentDot(funding.value * 100, 4, true) : "—")}
-          ${fieldBox("OI 4ч", oi.oi_4h_chg_pct !== undefined && oi.oi_4h_chg_pct !== null ? formatPercentDot(oi.oi_4h_chg_pct, 2, true) : "—")}
-        </div>
-        ${fastVetoBlock}
-      </div>
-
-      <div class="operator-card">
-        <h3>Исполнение и ликвидность</h3>
-        <div class="operator-grid">
-          ${fieldBox("Ликвидность", liquidityTierRu(liquidity.tier || "—"))}
-          ${fieldBox("Оборот 24ч", formatUsdValue(liquidity.turnover24h_usd))}
-          ${fieldBox("Спред", formatBps(costModel.spread_bps, 2, false))}
-          ${fieldBox("Издержки всего", formatBps(costModel.total_cost_bps, 2, false))}
-          ${fieldBox("Комиссия taker", formatBps(costModel.taker_fee_bps, 2, false))}
-          ${fieldBox("Ожид. funding", formatBps(costModel.expected_funding_bps, 2, true))}
-          ${fieldBox("Funding cost для допуска", formatBps(economics.funding_cost_bps, 2, false))}
-          ${fieldBox("Funding benefit исключён", formatBps(economics.funding_benefit_excluded_bps, 2, false))}
-          ${fieldBox("Gross/сетка", formatBps(economics.gross_profit_bps, 2, false))}
-          ${fieldBox("Net/сетка conservative", formatBps(economics.net_profit_bps, 2, true))}
-          ${fieldBox("Net signed funding", formatBps(economics.net_profit_with_signed_funding_bps, 2, true))}
-          ${fieldBox("Net USDT/сетка", formatUsdValue(economics.net_profit_usdt))}
-          ${fieldBox("Margin est.", formatUsdValue(sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt))}
-          ${fieldBox("Grid type", economics.grid_type || sizing.grid_type || params.grid_type || "arithmetic")}
-          ${fieldBox("Active orders est.", economics.estimated_active_orders ?? sizing.estimated_active_orders ?? "—")}
-          ${fieldBox("Liq buffer worst", economics.liquidation_buffer_pct !== undefined && economics.liquidation_buffer_pct !== null ? formatPercentDot(economics.liquidation_buffer_pct, 2, false) : "—")}
-          ${fieldBox("Liq buffer edge", economics.liquidation_buffer_pct_adverse_boundary !== undefined && economics.liquidation_buffer_pct_adverse_boundary !== null ? formatPercentDot(economics.liquidation_buffer_pct_adverse_boundary, 2, false) : "—")}
-          ${fieldBox("Risk profile", economics.risk_profile || riskReport.risk_profile || "—")}
-        </div>
-        <div class="section-actions">
-          <button class="ghost-chip" data-act="show-tech">Техподробности</button>
-        </div>
-      </div>
-
-      <div class="operator-card">
-        <h3>Риск-отчёт</h3>
-        <div class="helper-text" style="margin-bottom:8px">Решение относится только к Futures Grid. При not_recommended/blocked/pending запуск запрещён до пересчёта или подтверждения gate.</div>
-        <div class="operator-grid">
-          ${fieldBox("Решение", riskReport.decision || (blocks.length ? "not_recommended" : "recommended"))}
-          ${fieldBox("Профиль", riskReport.risk_profile || economics.risk_profile || "—")}
-          ${fieldBox("Net/сетка conservative", formatBps(riskReport.expected_net_profit_per_grid_bps ?? economics.net_profit_bps, 2, true))}
-          ${fieldBox("Net signed funding", formatBps(riskReport.net_profit_with_signed_funding_bps ?? economics.net_profit_with_signed_funding_bps, 2, true))}
-          ${fieldBox("Funding", formatBps(riskReport.estimated_funding_impact_bps ?? costModel.expected_funding_bps, 2, true))}
-          ${fieldBox("Funding cost для допуска", formatBps(riskReport.funding_cost_bps_for_approval ?? economics.funding_cost_bps, 2, false))}
-          ${fieldBox("Funding benefit исключён", formatBps(riskReport.funding_benefit_excluded_bps ?? economics.funding_benefit_excluded_bps, 2, false))}
-          ${fieldBox("Издержки исполнения", formatBps(riskReport.estimated_execution_cost_bps ?? costModel.execution_cost_bps, 2, false))}
-          ${fieldBox("Требуемый капитал", formatUsdValue(riskReport.capital_required_usdt ?? sizing.estimated_margin_required_usdt ?? economics.estimated_margin_required_usdt))}
-          ${fieldBox("Буфер ликвидации", riskReport.liquidation_buffer_pct !== undefined && riskReport.liquidation_buffer_pct !== null ? formatPercentDot(riskReport.liquidation_buffer_pct, 2, false) : "—")}
-          ${fieldBox("Интервал funding", riskReport.funding_interval_min ? `${escapeHtml(riskReport.funding_interval_min)} мин` : "—")}
-        </div>
-        ${riskReport.max_adverse_scenario ? `<div class="helper-text" style="margin-top:8px"><b>Неблагоприятный сценарий:</b> ${escapeHtml(riskReport.max_adverse_scenario)}</div>` : ""}
-        ${riskReportRejected.length ? `<div class="small-blocks">${riskReportRejected.slice(0, 6).map(x => `<div class="small-block small-block-critical">${escapeHtml(x)}</div>`).join("")}</div>` : ""}
-        ${riskReportWarnings.length ? `<div class="helper-text" style="margin-top:8px"><b>Предупреждения:</b> ${riskReportWarnings.slice(0, 4).map(escapeHtml).join("; ")}</div>` : ""}
-        ${riskReportApprovals.length ? `<div class="helper-text" style="margin-top:8px"><b>Факторы допуска:</b> ${riskReportApprovals.slice(0, 4).map(escapeHtml).join("; ")}</div>` : ""}
-      </div>
-
-      ${buildLlmReviewCardHtml(llmReview, it.direction)}
-
-      <div class="operator-card">
         <h3>Bybit validation</h3>
-        <div class="helper-text" style="margin-bottom:8px">Проверка соответствия LinearPerpetual/USDT, tick size, qty step, minQty и minNotional. Ошибки здесь означают, что запуск должен быть заблокирован до пересчёта или ручной корректировки размера.</div>
+        <div class="helper-text" style="margin-bottom:8px">Ошибки tick/lot/min-notional/LinearPerpetual блокируют ручной запуск до пересчёта.</div>
         ${bybitValidationCards}
-      </div>
-
-      <div class="operator-card">
-        <h3>Блоки и предостережения</h3>
-        ${blockCards}
       </div>
     </div>
   `;
