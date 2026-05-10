@@ -1351,7 +1351,13 @@ def _build_feature_snapshot(
         "spread_bps_norm": _clamp(_value_or_default(spread_bps, 8.0) / 10.0, 0.0, 5.0),
         "score": _clamp(float(score), -1.0, 1.0),
         "oi_4h_norm": _clamp(_value_or_default(oi_sig.get("oi_4h_chg_pct"), 0.0) / 10.0, -3.0, 3.0),
-        "funding_norm": _clamp(_value_or_default(cost_model.get("expected_funding_bps"), 0.0) / 20.0, -2.0, 2.0),
+        # Calibration/features should see only the adverse funding burden used for
+        # approvals. A signed funding receipt is diagnostic UI data, not durable
+        # alpha, and must not make a grid candidate look less costly.
+        "funding_cost_norm": _clamp(_value_or_default(cost_model.get("funding_cost_bps_for_approval"), max(0.0, _value_or_default(cost_model.get("expected_funding_bps"), 0.0))) / 20.0, 0.0, 2.0),
+        # Backward-compatible feature name. Now also canonicalized to adverse cost
+        # only, so negative funding does not improve the feature vector.
+        "funding_norm": _clamp(_value_or_default(cost_model.get("funding_cost_bps_for_approval"), max(0.0, _value_or_default(cost_model.get("expected_funding_bps"), 0.0))) / 20.0, 0.0, 2.0),
         "liq_tier_num": float(liq_map.get(str(liq_tier).lower(), 0.67)),
         "btc_corr": _clamp(_value_or_default(beta_info.get("correlation"), 0.0), -1.0, 1.0),
         "regime_conf": _clamp(_value_or_default(direction_agg.get("regime_confidence"), 0.5), 0.0, 1.0),
@@ -1607,7 +1613,18 @@ def _score(
             _num(cost_model.get("total_cost_bps"), max(0.0, spread + 2.0 * float(taker_fee_bps))),
         ),
     )
-    cost_penalty = _clamp(execution_cost_bps / 20.0, 0.0, 2.5)
+    adverse_funding_cost_bps = max(
+        0.0,
+        _num(
+            cost_model.get("funding_cost_bps_for_approval"),
+            max(0.0, _num(cost_model.get("expected_funding_bps"), 0.0)),
+        ),
+    )
+    economic_cost_bps = max(
+        execution_cost_bps + adverse_funding_cost_bps,
+        _num(cost_model.get("net_cost_bps"), 0.0),
+    )
+    cost_penalty = _clamp(economic_cost_bps / 20.0, 0.0, 2.5)
 
     pos: list[dict[str, Any]] = []
     neg: list[dict[str, Any]] = []
@@ -1663,8 +1680,10 @@ def _score(
             add_neg("trend_strength", trend_strength, -1.00 * trend_strength, "сильный тренд ломает grid")
         if atr_pct > 0.0:
             add_neg("atr_pct", atr_pct, -0.75 * atr_penalty, "высокая волатильность повышает риск range break")
-        if execution_cost_bps > 0.0:
-            add_neg("execution_cost_bps", execution_cost_bps, -0.40 * cost_penalty, "издержки исполнения и funding давят на net result")
+        if economic_cost_bps > 0.0:
+            add_neg("economic_cost_bps", economic_cost_bps, -0.40 * cost_penalty, "издержки исполнения и adverse funding давят на net result")
+        if adverse_funding_cost_bps > 0.0:
+            add_neg("adverse_funding_cost_bps", adverse_funding_cost_bps, -0.18 * min(1.0, adverse_funding_cost_bps / 12.0), "ожидаемый funding-carry ухудшает экономику grid")
         if spread > 0.0:
             add_neg("spread_bps", spread, -0.18 * min(1.0, spread / 5.0), "спред ухудшает fills")
     else:
@@ -1681,8 +1700,11 @@ def _score(
             "spread_bps": spread,
             "taker_fee_bps": float(taker_fee_bps),
             "execution_cost_bps": float(cost_model.get("execution_cost_bps") or execution_cost_bps),
+            "adverse_funding_cost_bps": float(adverse_funding_cost_bps),
+            "funding_cost_bps_for_approval": float(adverse_funding_cost_bps),
+            "economic_cost_bps": float(economic_cost_bps),
             "total_cost_bps": float(cost_model.get("total_cost_bps") or execution_cost_bps),
-            "net_cost_bps": float(cost_model.get("net_cost_bps") or execution_cost_bps),
+            "net_cost_bps": float(cost_model.get("net_cost_bps") or economic_cost_bps),
         },
         "score_components": {
             "range_score": float(range_score),
@@ -1691,6 +1713,9 @@ def _score(
             "coherence": float(coherence),
             "regime_confidence": float(regime_conf),
             "atr_penalty": float(atr_penalty),
+            "execution_cost_bps": float(execution_cost_bps),
+            "adverse_funding_cost_bps": float(adverse_funding_cost_bps),
+            "economic_cost_bps": float(economic_cost_bps),
             "cost_penalty": float(cost_penalty),
         },
         "effective_sentiment": effective_sent,
@@ -1766,6 +1791,10 @@ def _params(
     # later as GRID_NET_PROFIT_NON_POSITIVE. Build the geometry fail-closed instead.
     funding_cost_bps_for_spacing = max(0.0, _finite_float(cost_model.get("expected_funding_bps"), 0.0))
     cost_floor_bps_for_spacing = execution_cost_bps + funding_cost_bps_for_spacing
+    economic_cost_bps_for_density = max(
+        cost_floor_bps_for_spacing,
+        _finite_float(cost_model.get("net_cost_bps"), 0.0),
+    )
     cost_floor_pct = max(cost_floor_bps_for_spacing / 10000.0, 0.0001)
     min_spacing_pct = max((cost_floor_pct / 0.70) * 1.25, 0.0008)
     vol_spacing_pct = max(atr_pct * (0.45 + 0.25 * range_score), 0.0010)
@@ -1776,9 +1805,9 @@ def _params(
         base_levels += 2
     elif range_score <= 0.45:
         base_levels -= 2
-    if execution_cost_bps >= 18.0:
+    if economic_cost_bps_for_density >= 18.0:
         base_levels -= 2
-    elif execution_cost_bps <= 8.0:
+    elif economic_cost_bps_for_density <= 8.0:
         base_levels += 1
     if dir_strength >= 0.60:
         base_levels -= 1
@@ -1832,6 +1861,7 @@ def _params(
         "grid_spacing_pct": float(grid_spacing_pct_frac * 100.0),
         "grid_spacing_cost_floor_bps": float(cost_floor_bps_for_spacing),
         "grid_spacing_funding_cost_bps": float(funding_cost_bps_for_spacing),
+        "grid_density_economic_cost_bps": float(economic_cost_bps_for_density),
         # Bybit UI calls this value "Number of Grids"; it is the number of
         # price intervals, not the number of displayed price points. Keep the
         # legacy key ``grid_levels`` for API compatibility and add explicit

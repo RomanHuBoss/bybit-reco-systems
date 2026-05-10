@@ -23,6 +23,13 @@
 
 # Changelog
 
+## 2026-05-10 — Adverse funding score hardening
+
+- Score/ranking now penalizes adverse funding carry through `economic_cost_bps`, including neutral futures grids that can accumulate either side.
+- Feature snapshots no longer encode negative signed funding as a cost benefit; `funding_norm` and `funding_cost_norm` are based on approval-only adverse carry.
+- Grid density (`grid_count`) now uses execution cost plus adverse funding carry, so expensive carry reduces order density instead of only widening spacing.
+- Added regression tests for funding-aware score, feature snapshot and grid-density behaviour.
+
 ## 2026-05-10 — Funding receipt score/RR hardening
 
 - Recommendation score and `expected_rr` now use conservative `net_cost_bps = execution_cost_bps + max(expected_funding_bps, 0)`; funding receipts are no longer allowed to improve score or RR.
@@ -82,6 +89,13 @@
 - Verified the full suite: `401 passed`.
 
 # Changelog
+
+## 2026-05-10 — Adverse funding score hardening
+
+- Score/ranking now penalizes adverse funding carry through `economic_cost_bps`, including neutral futures grids that can accumulate either side.
+- Feature snapshots no longer encode negative signed funding as a cost benefit; `funding_norm` and `funding_cost_norm` are based on approval-only adverse carry.
+- Grid density (`grid_count`) now uses execution cost plus adverse funding carry, so expensive carry reduces order density instead of only widening spacing.
+- Added regression tests for funding-aware score, feature snapshot and grid-density behaviour.
 
 ## 2026-05-10 — Conservative funding approval edge
 - Fixed grid-leg economics so signed funding receipts no longer inflate the canonical `net_profit_bps` used for approval/rejection. Positive funding remains a cost; negative funding is exposed separately as `funding_benefit_excluded_bps` and `net_profit_with_signed_funding_bps`.
