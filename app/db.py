@@ -486,13 +486,25 @@ def init_runtime_lock_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _exception_sqlstate(exc: Exception) -> str:
+    value = getattr(exc, "sqlstate", None)
+    if value:
+        return str(value).strip().upper()
+    diag = getattr(exc, "diag", None)
+    value = getattr(diag, "sqlstate", None) if diag is not None else None
+    return str(value or "").strip().upper()
+
+
 def _is_lock_retryable_error(exc: Exception) -> bool:
     msg = str(exc).lower()
+    sqlstate = _exception_sqlstate(exc)
     return (
-        "database is locked" in msg
+        sqlstate in {"40P01", "40001", "55P03"}
+        or "database is locked" in msg
         or "database table is locked" in msg
         or "busy" in msg
         or "deadlock detected" in msg
+        or "взаимоблок" in msg
         or "could not serialize access" in msg
         or "lock timeout" in msg
         or "lock not available" in msg
@@ -711,17 +723,32 @@ def get_app_config_json(conn: sqlite3.Connection, key: str, default: Any = None)
     except Exception:
         return default
 
+def _canonical_ohlcv_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str, int, int], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row["venue"]), str(row["symbol"]), int(row["tf_sec"]), int(row["ts"]))
+        deduped[key] = row
+    return [deduped[key] for key in sorted(deduped)]
+
+
 def upsert_ohlcv(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
-    valid_rows = [dict(r) for r in rows if _is_valid_ohlcv_row(r)]
+    valid_rows = _canonical_ohlcv_rows([dict(r) for r in rows if _is_valid_ohlcv_row(r)])
     if not valid_rows:
         return
-    conn.executemany(
-        """INSERT OR REPLACE INTO ohlcv(venue,symbol,tf_sec,ts,open,high,low,close,volume)
-           VALUES(?,?,?,?,?,?,?,?,?)""",
-        [(r["venue"], r["symbol"], r["tf_sec"], r["ts"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in valid_rows],
-    )
+    params = [
+        (r["venue"], r["symbol"], r["tf_sec"], r["ts"], r["open"], r["high"], r["low"], r["close"], r["volume"])
+        for r in valid_rows
+    ]
+    sql = """INSERT OR REPLACE INTO ohlcv(venue,symbol,tf_sec,ts,open,high,low,close,volume)
+           VALUES(?,?,?,?,?,?,?,?,?)"""
+
+    def _op():
+        return conn.executemany(sql, params)
+
     if commit:
-        conn.commit()
+        _commit_write_with_retry(conn, _op)
+        return
+    _op()
 
 def insert_tickers(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
     valid_rows = [dict(r) for r in rows if _is_valid_ticker_row(r)]
