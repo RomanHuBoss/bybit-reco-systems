@@ -198,8 +198,10 @@ def _fetch_bybit_instrument_meta(venue: str, symbol: str) -> dict[str, Any]:
         # сохранить запрошенные значения, то downstream никогда не заметит, что
         # прокси/stub вернул metadata другого инструмента.
         meta = {
-            "category": str(info.get("category") or category).strip().lower() or category,
-            "symbol": str(info.get("symbol") or symbol_norm).strip().upper() or symbol_norm,
+            # Не подставляем запрошенные category/symbol вместо отсутствующих:
+            # strict preflight должен видеть неполную/malformed metadata и блокировать запуск.
+            "category": str(info.get("category") or "").strip().lower(),
+            "symbol": str(info.get("symbol") or "").strip().upper(),
             "status": str(info.get("status") or "").strip(),
             "base_coin": str(info.get("baseCoin") or "").strip().upper(),
             "quote_coin": str(info.get("quoteCoin") or "").strip().upper(),
@@ -468,11 +470,13 @@ def _merge_bybit_operator_guard_into_ui_payload(out: dict[str, Any], guard: dict
     if not errors:
         return
 
-    # Shape-normalized legacy rows with malformed JSON payloads are exposed as
-    # empty params/reasons/blocks by the API. Keep that defensive fail-open
-    # contract intact instead of rebuilding JSON objects from invalid storage.
+    # Legacy rows with malformed JSON payloads may expose empty params. They still
+    # must not remain launchable if the fresh operator guard found execution-risk
+    # errors, but we avoid rebuilding params for those rows to preserve API shape
+    # compatibility with JSON-hardening tests.
     params_payload = out.get("params")
-    if not isinstance(params_payload, dict) or not params_payload:
+    has_params_payload = isinstance(params_payload, dict) and bool(params_payload)
+    if not has_params_payload:
         return
 
     blocks = out.get("blocks")
@@ -544,23 +548,25 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(out.get("params"), dict) or not out.get("params"):
         out["bybit_meta"] = bybit_meta
         out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
-        out["bybit_operator_guard"] = {
-            "ok": True,
-            "critical": False,
-            "errors": [],
-            "warnings": [{
-                "code": "PAYLOAD_UNAVAILABLE_FOR_OPERATOR_GUARD",
-                "msg": "params_json пустой или повреждён; operator guard не меняет audit-status в списке, но execution-preflight всё равно заблокирует запуск без полного trade_plan.",
-            }],
-            "meta_checked": bool(bybit_meta),
-            "snapped_levels": {},
+        guard = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True, require_execution_plan=True)
+        guard_errors = guard.get("errors") if isinstance(guard.get("errors"), list) else []
+        payload_error = {
+            "code": "PAYLOAD_UNAVAILABLE_FOR_OPERATOR_GUARD",
+            "msg": "params_json пустой или повреждён; operator guard блокирует запуск без полного исполнимого trade_plan.",
         }
+        if not any(isinstance(err, dict) and err.get("code") == payload_error["code"] for err in guard_errors):
+            guard_errors.append(payload_error)
+        guard["errors"] = guard_errors
+        guard["ok"] = False
+        guard["critical"] = True
+        out["bybit_operator_guard"] = guard
+        _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
         _apply_llm_effective_pending_guard(out)
         return out
     out = _snap_reco_payload_to_bybit_meta(out, bybit_meta)
     out["bybit_meta"] = bybit_meta
     out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
-    out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True)
+    out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True, require_execution_plan=True)
     _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
     _apply_llm_effective_pending_guard(out)
     return out
@@ -1525,6 +1531,9 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     warnings: list[dict[str, str]] = []
     snapped: dict[str, str] = {}
 
+    def _meta_target():
+        return errors if require_meta else warnings
+
     if not meta:
         missing_meta_item = {
             "code": "BYBIT_META_UNAVAILABLE",
@@ -1537,7 +1546,13 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             })
         else:
             warnings.append(missing_meta_item)
-    if not plan:
+    raw_trade_plan = params.get("trade_plan") if isinstance(params, dict) else None
+    plan_effectively_missing = (
+        not isinstance(raw_trade_plan, dict)
+        or not raw_trade_plan
+        or (set(raw_trade_plan.keys()) <= {"levels"} and not raw_trade_plan.get("levels"))
+    )
+    if plan_effectively_missing:
         target = errors if require_execution_plan else warnings
         target.append({
             "code": "TRADE_PLAN_MISSING",
@@ -1575,9 +1590,6 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             errors.append({"code": "USDT_PERPETUAL_SYMBOL_REQUIRED", "msg": f"futures_grid поддерживается только для точных alphanumeric USDT perpetual symbols без разделителей, получено symbol={rec_symbol}."})
 
     if bot_type == "futures_grid" and meta:
-        def _meta_target():
-            return errors if require_meta else warnings
-
         if meta_contract_type and meta_contract_type != "LinearPerpetual":
             errors.append({
                 "code": "BYBIT_CONTRACT_TYPE_UNSUPPORTED",
@@ -1632,19 +1644,34 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 "msg": "Pre-market/pre-listing контракты не поддерживаются для production futures grid recommendation.",
             })
 
-    if meta_symbol and rec_symbol and meta_symbol != rec_symbol:
+    if meta and not meta_symbol:
+        _meta_target().append({
+            "code": "BYBIT_META_SYMBOL_MISSING",
+            "msg": "Bybit metadata не содержит symbol; strict preflight не может доказать, что exchange filters относятся к той же торговой паре.",
+        })
+    elif meta_symbol and rec_symbol and meta_symbol != rec_symbol:
         errors.append({
             "code": "BYBIT_META_SYMBOL_MISMATCH",
             "msg": f"Metadata Bybit получена для symbol={meta_symbol}, тогда как recommendation ожидает symbol={rec_symbol}; применять такие ограничения опасно.",
         })
 
-    if meta_category and venue and meta_category != venue:
+    if meta and not meta_category:
+        _meta_target().append({
+            "code": "BYBIT_META_CATEGORY_MISSING",
+            "msg": "Bybit metadata не содержит category; нельзя подтвердить, что инструмент относится к linear USDT futures.",
+        })
+    elif meta_category and venue and meta_category != venue:
         errors.append({
             "code": "BYBIT_META_CATEGORY_MISMATCH",
             "msg": f"Metadata Bybit получена для category={meta_category}, тогда как recommendation ожидает venue={venue}; применять такие ограничения небезопасно.",
         })
 
-    if meta and meta_status and meta_status.lower() != "trading":
+    if meta and not meta_status:
+        _meta_target().append({
+            "code": "BYBIT_STATUS_MISSING",
+            "msg": "Bybit metadata не содержит status; нельзя подтвердить, что контракт сейчас торгуется.",
+        })
+    elif meta and meta_status and meta_status.lower() != "trading":
         errors.append({
             "code": "BYBIT_INSTRUMENT_NOT_TRADING",
             "msg": f"Bybit instrument status={meta_status}; запускать новую grid-рекомендацию можно только для status=Trading.",

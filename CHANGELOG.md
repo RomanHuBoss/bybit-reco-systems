@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-11 — Fail-closed operator guard re-audit
+
+- Preserved raw missing Bybit `category`/`symbol` metadata instead of masking it with requested values.
+- Made strict metadata validation block missing `category`, `symbol`, and `status`.
+- Required full execution `trade_plan` in operator guard for non-empty params payloads.
+- Marked empty/corrupt params payloads non-launchable through `bybit_operator_guard.ok=false` without rebuilding legacy normalized JSON shapes.
+- Hardened frontend launch links to require strict operator guard OK, complete trade plan, recommended risk decision, and non-pending LLM review.
+- Added iteration144 regression tests for the prompt re-audit fail-closed cases.
+
 ## 2026-05-11 — UI pending details no_trade disambiguation
 
 - Fixed operator detail card for `pending` recommendations: conservative `risk_report.decision=not_recommended` is no longer rendered as `no_trade` while async LLM-review is still holding the row.

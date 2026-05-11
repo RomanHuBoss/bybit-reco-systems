@@ -178,11 +178,15 @@ function botTypeLabel(botType) {
 function isLaunchableGridRecommendation(it) {
   if (!it || it.bot_type !== SUPPORTED_GRID_BOT_TYPE || it.venue !== SUPPORTED_GRID_VENUE) return false;
   if (!(it.status === "recommended" || it.status === "active")) return false;
-  const riskDecision = it?.params?.risk_report?.decision;
-  if (riskDecision && riskDecision !== "recommended") return false;
-  const validation = it.bybit_plan_validation || it.bybit_operator_guard || {};
-  const errors = Array.isArray(validation.errors) ? validation.errors : [];
-  return errors.length === 0;
+  const params = it.params && typeof it.params === "object" ? it.params : {};
+  if (!params.trade_plan || typeof params.trade_plan !== "object") return false;
+  const riskDecision = params?.risk_report?.decision;
+  if (riskDecision !== "recommended") return false;
+  const llmStatus = String(it?.reasons?.llm_review?.status || "").toLowerCase();
+  if (llmStatus === "pending" || llmStatus === "error") return false;
+  const guard = it.bybit_operator_guard || {};
+  const errors = Array.isArray(guard.errors) ? guard.errors : [];
+  return guard.ok === true && guard.meta_checked === true && errors.length === 0;
 }
 
 function venueLabel(venue) {
