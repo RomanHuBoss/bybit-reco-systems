@@ -1072,7 +1072,7 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
           ${renderAgreementBadge(llm.agree_with_engine)}
           ${renderDirectionBadge(llm.execution_direction || "neutral")}
         </div>
-        <div class="helper-text">LLM-слой опционален и может переиспользоваться между соседними rec_id, пока review остаётся свежим.</div>
+        <div class="helper-text">В advisory режиме LLM-слой не блокирует запуск; в gate режиме pending удерживается только до заданного таймаута, затем запуск блокируется fail-closed.</div>
       </div>
       <div class="llm-summary-box">${escapeHtml(summary)}</div>
       ${errorLine}
@@ -1581,6 +1581,7 @@ async function loadHealth() {
         { name: "Max кандидатов", value: llm.max_candidates ?? "—" },
         { name: "Мин. уверенность", value: llm.min_confidence ?? "—" },
         { name: "Каденс по символу", value: llm.cadence_sec == null ? "—" : `${llm.cadence_sec} сек` },
+        { name: "Таймаут pending", value: llm.pending_timeout_sec == null ? "—" : `${llm.pending_timeout_sec} сек` },
       ], { emptyText: "Конфигурация reviewer недоступна." })}
     </div>
     <div class="modal-section">

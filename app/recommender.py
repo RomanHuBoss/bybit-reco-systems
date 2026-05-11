@@ -38,6 +38,7 @@ LLM_REVIEWER_DEFAULT_MAX_WORKERS = 2
 LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE = 0.65
 LLM_REVIEWER_DEFAULT_CADENCE_SEC = 300
 LLM_REVIEWER_DEFAULT_TTL_SEC = 900
+LLM_REVIEWER_DEFAULT_PENDING_TIMEOUT_SEC = 900
 settings = load_settings()
 
 
@@ -267,6 +268,18 @@ def _carry_forward_llm_hold_target(rec: dict[str, Any], review_dict: dict[str, A
     return review_dict
 
 
+def _llm_review_pending_timeout_sec(settings) -> int:
+    try:
+        explicit = int(getattr(settings, "llm_reviewer_pending_timeout_sec", LLM_REVIEWER_DEFAULT_PENDING_TIMEOUT_SEC) or LLM_REVIEWER_DEFAULT_PENDING_TIMEOUT_SEC)
+    except Exception:
+        explicit = LLM_REVIEWER_DEFAULT_PENDING_TIMEOUT_SEC
+    cadence_sec = max(5, int(getattr(settings, "llm_reviewer_cadence_sec", LLM_REVIEWER_DEFAULT_CADENCE_SEC) or LLM_REVIEWER_DEFAULT_CADENCE_SEC))
+    timeout_sec = max(5, int(getattr(settings, "llm_reviewer_timeout_sec", 60) or 60))
+    # Pending is an operator-visible execution hold. It must never be indefinite:
+    # at minimum allow one cadence and one model timeout, then fail safely.
+    return max(60, int(explicit), cadence_sec + timeout_sec)
+
+
 def _llm_review_ttl_sec(settings) -> int:
     explicit_ttl = getattr(settings, "llm_reviewer_ttl_sec", None)
     if explicit_ttl is not None:
@@ -486,6 +499,10 @@ def _make_pending_llm_review(rec: dict[str, Any], mode: str, reviewer: OllamaCan
     }
     if target_status in LLM_REVIEW_ELIGIBLE_STATUSES:
         review["publish_target_status"] = target_status
+    if mode == "advisory":
+        review["hold_policy"] = "non_blocking_advisory"
+    else:
+        review["hold_policy"] = "gate_hold"
     return review
 
 
@@ -560,7 +577,11 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
         else:
             reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason=f"deferred_candidate_cap ({max_candidates})")
             stats["deferred"] += 1
-        rec["status"] = "pending"
+        # Advisory review is diagnostic only: it must not hold an otherwise
+        # actionable grid recommendation in `pending`. Gate mode is the only
+        # mode that may block publication while waiting for the external LLM.
+        if mode == "gate":
+            rec["status"] = "pending"
         _sync_recommendation_metadata(rec)
     return stats
 
@@ -673,6 +694,103 @@ def _count_recent_pending_llm_candidates(conn, settings, *, snapshot_ts: int | N
     return len(pool)
 
 
+def _llm_pending_age_sec(rec: dict[str, Any], *, now_ts: int) -> int:
+    first_seen = _llm_pending_first_seen_ts(rec)
+    if first_seen <= 0:
+        return 0
+    return max(0, int(now_ts) - int(first_seen))
+
+
+def _resolve_stale_llm_pending(
+    conn,
+    recs: list[dict[str, Any]],
+    settings,
+    *,
+    now_ts_value: int | None = None,
+    reason: str = "timeout",
+) -> dict[str, int]:
+    """Resolve async LLM holds that exceeded the operator-visible SLA.
+
+    Advisory mode is non-blocking, so a stale legacy `pending` row is restored to
+    the engine status it was holding. Gate mode is fail-closed: if the external
+    reviewer did not return a verdict in time, the row becomes `no_trade` and
+    cannot be launched manually. This directly prevents half-hour+ `pending`
+    hangs from silently freezing the operator workflow.
+    """
+    now_val = int(now_ts_value if now_ts_value is not None else time.time())
+    pending_timeout_sec = _llm_review_pending_timeout_sec(settings)
+    stats = {"resolved": 0, "restored": 0, "failed_closed": 0}
+    for rec in list(recs or []):
+        current_status = str(rec.get("status") or "").strip().lower()
+        reasons = rec.setdefault("reasons", {})
+        if not isinstance(reasons, dict):
+            reasons = {}
+            rec["reasons"] = reasons
+        llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
+        llm_status = str((llm_review or {}).get("status") or "").strip().lower()
+        mode = str((llm_review or {}).get("mode") or getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
+        target = _llm_review_hold_target_status(rec)
+        is_pending_hold = current_status == "pending"
+        is_nonblocking_advisory_review = (
+            mode == "advisory"
+            and current_status in LLM_REVIEW_ELIGIBLE_STATUSES
+            and llm_status not in {"ok", "skipped"}
+        )
+        if not (is_pending_hold or is_nonblocking_advisory_review):
+            continue
+        age_sec = _llm_pending_age_sec(rec, now_ts=now_val)
+        if age_sec < pending_timeout_sec:
+            continue
+        if mode == "advisory" and (target in LLM_REVIEW_ELIGIBLE_STATUSES or current_status in LLM_REVIEW_ELIGIBLE_STATUSES):
+            new_status = target if target in LLM_REVIEW_ELIGIBLE_STATUSES else current_status
+            stats["restored"] += 1
+            terminal_review = {
+                **(llm_review or {}),
+                "status": "skipped",
+                "mode": mode,
+                "gate_decision": "skipped",
+                "source": "async_timeout",
+                "reason": "advisory_timeout_restored",
+                "error": f"LLM reviewer did not finish within {pending_timeout_sec}s; advisory mode restored the engine status.",
+                "resolved_ts": now_val,
+                "age_sec": age_sec,
+                "pending_timeout_sec": pending_timeout_sec,
+                "hold_policy": "non_blocking_advisory",
+            }
+        else:
+            new_status = "no_trade"
+            stats["failed_closed"] += 1
+            terminal_review = {
+                **(llm_review or {}),
+                "status": "error",
+                "mode": mode if mode in {"advisory", "gate"} else "gate",
+                "gate_decision": "fail_closed",
+                "source": "async_timeout",
+                "reason": "gate_timeout_no_trade",
+                "error": f"LLM reviewer did not finish within {pending_timeout_sec}s; launch was blocked fail-closed.",
+                "resolved_ts": now_val,
+                "age_sec": age_sec,
+                "pending_timeout_sec": pending_timeout_sec,
+                "hold_policy": "gate_hold",
+            }
+        if target in LLM_REVIEW_ELIGIBLE_STATUSES:
+            terminal_review["publish_target_status"] = target
+        reasons["llm_review"] = terminal_review
+        rec["status"] = new_status
+        _sync_recommendation_metadata(rec)
+        db.update_recommendation_review(conn, rec["rec_id"], reasons=reasons, status=new_status)
+        db.log_decision(conn, "LLM_REVIEW_PENDING_TIMEOUT", rec.get("rec_id"), None, {
+            "new_status": new_status,
+            "mode": mode,
+            "reason": reason,
+            "age_sec": age_sec,
+            "pending_timeout_sec": pending_timeout_sec,
+            "publish_target_status": target,
+        })
+        stats["resolved"] += 1
+    return stats
+
+
 def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     stats: dict[str, Any] = {
         "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
@@ -687,6 +805,10 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
         "recent_window_sec": _llm_review_recent_sec(settings),
         "pending_before": 0,
         "pending_after": 0,
+        "pending_timeout_sec": _llm_review_pending_timeout_sec(settings),
+        "stale_resolved": 0,
+        "stale_restored": 0,
+        "stale_failed_closed": 0,
         "duration_ms": 0,
         "max_workers": int(getattr(settings, "llm_reviewer_max_workers", LLM_REVIEWER_DEFAULT_MAX_WORKERS) or LLM_REVIEWER_DEFAULT_MAX_WORKERS),
         "max_candidates": int(getattr(settings, "llm_reviewer_max_candidates", LLM_REVIEWER_DEFAULT_MAX_CANDIDATES) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES),
@@ -699,20 +821,38 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
             raise RuntimeLockLostError("llm reviewer runtime lock lost")
 
     t0 = time.time()
+    _check_heartbeat()
+    snapshot_ts = db.get_latest_reco_ts(conn)
+    stats["snapshot_ts"] = snapshot_ts
+    if snapshot_ts is None:
+        return stats
+
+    _check_heartbeat()
+    pending_scope = _selected_recent_pending_llm_pool(conn, settings, snapshot_ts=snapshot_ts, limit=4000)
+    stats["pending_before"] = len(pending_scope)
+    stale_stats = _resolve_stale_llm_pending(conn, pending_scope, settings, reason="pre_sweep")
+    if stale_stats["resolved"]:
+        stats["stale_resolved"] += stale_stats["resolved"]
+        stats["stale_restored"] += stale_stats["restored"]
+        stats["stale_failed_closed"] += stale_stats["failed_closed"]
+        pending_scope = _selected_recent_pending_llm_pool(conn, settings, snapshot_ts=snapshot_ts, limit=4000)
+    scope_keys = {_llm_cache_key(r) for r in pending_scope if int(r.get("ts") or 0) == int(snapshot_ts)}
+    scope_has_latest_pending = bool(scope_keys)
+
     try:
         reviewer = _make_llm_reviewer(settings)
     except Exception as exc:
         stats["errors"] += 1
         stats["error"] = str(exc)
-        db.log_decision(conn, "LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(exc), "stage": "reviewer_init"})
+        stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
+        stats["duration_ms"] = int((time.time() - t0) * 1000)
+        db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
+        db.log_decision(conn, "LLM_REVIEW_SWEEP_ERROR", None, None, {"err": str(exc), "stage": "reviewer_init", **stats})
         return stats
     if reviewer is None:
-        return stats
-
-    _check_heartbeat()
-    snapshot_ts = db.get_latest_reco_ts(conn)
-    stats["snapshot_ts"] = snapshot_ts
-    if snapshot_ts is None:
+        stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
+        stats["duration_ms"] = int((time.time() - t0) * 1000)
+        db.set_app_config_json(conn, LLM_REVIEW_ASYNC_STATUS_APP_KEY, {**stats, "updated_ts": int(time.time())})
         return stats
 
     mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
@@ -723,10 +863,6 @@ def run_llm_review_sweep_once(conn, settings, *, heartbeat=None) -> dict[str, An
     cache_dirty = False
 
     _check_heartbeat()
-    pending_scope = _selected_recent_pending_llm_pool(conn, settings, snapshot_ts=snapshot_ts, limit=4000)
-    scope_keys = {_llm_cache_key(r) for r in pending_scope if int(r.get("ts") or 0) == int(snapshot_ts)}
-    scope_has_latest_pending = bool(scope_keys)
-    stats["pending_before"] = len(pending_scope)
     # Candidate selection must scan beyond the live-call cap. Otherwise fresh-cache keys can
     # consume the whole selection budget and permanently starve lower-ranked uncached symbols.
     # Scan the whole latest pending snapshot (capped) and only apply the live-call cap after

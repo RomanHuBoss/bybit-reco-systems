@@ -153,6 +153,7 @@ ruff check app tests main.py
 - `.env.example` синхронизирован с этими runtime-дефолтами; drift между шаблоном env, README и `settings.py` теперь считается регрессией и проверяется тестами.
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
 - `LLM_REVIEWER_CADENCE_SEC=300`
+- `LLM_REVIEWER_PENDING_TIMEOUT_SEC=900` — максимальное время операторского `pending`: в `gate` после таймаута идея переводится в `no_trade` fail-closed, в `advisory` LLM-marker становится `skipped` и не блокирует рекомендацию
 - `LLM_REVIEWER_TTL_SEC=` — отдельный TTL валидности LLM-review для повторного использования по тому же `(venue, symbol, bot_type, direction)`; оставьте пустым для auto-режима: по умолчанию не короче TTL самой рекомендации
 - `LLM_REVIEWER_KEEP_ALIVE=90s`
 
@@ -161,7 +162,7 @@ ruff check app tests main.py
 - `gate` — уверенное расхождение LLM с `execution_direction` может перевести идею в `no_trade`.
 
 Важно:
-- Если LLM-reviewer включён, actionable-статусы (`recommended`/`active`) без свежего LLM-вердикта временно переводятся в `pending` и возвращаются обратно после review. Для same-direction reuse теперь используется отдельный TTL валидности reviewer-кэша, поэтому `active` не должен откатываться в `pending` только из-за короткого sweep cadence.
+- В `advisory` LLM-reviewer не переводит actionable-статусы (`recommended`/`active`) в `pending`; он пишет second opinion асинхронно. В `gate` actionable-идея может быть временно удержана в `pending`, но не дольше `LLM_REVIEWER_PENDING_TIMEOUT_SEC`: затем запуск блокируется fail-closed через `no_trade`. Для same-direction reuse используется отдельный TTL валидности reviewer-кэша, поэтому `active` не должен откатываться в `pending` только из-за короткого sweep cadence.
 - В shipped-профиле reviewer настроен консервативно для локальных GPU уровня RTX 3060: короткий keep-alive, сниженный parallelism и ограниченное число live-кандидатов на sweep.
 - UI и API умеют показывать `pending`, `ok`, `error`, `cache_inherited`, `async_live` и другие состояния reviewer.
 - После изменения `LLM_REVIEWER_TFS` или `LLM_REVIEWER_CANDLES_PER_TF` старый кэш reviewer больше не переиспользуется автоматически.
@@ -197,7 +198,7 @@ ruff check app tests main.py
 1. recommendation публикуется со статусом `recommended`, если это новый actionable выпуск;
 2. если same-direction сигнал пришёл, пока предыдущая корневая идея по этому `(venue, symbol, bot_type, direction)` ещё находится внутри своего outcome-horizon, новый `publication_root` не создаётся даже при material-upgrade: запись принудительно сохраняется как `active` в существующей publication-chain, чтобы outcome-labeling имитировал одну открытую псевдо-сделку, а не серию повторных входов;
 3. если сигнал повторился уже после закрытия псевдо-сделки, но внутри republish-cooldown и без material upgrade, он тоже сохраняется как `active` в той же publication-chain: запись остаётся исполнимой для оператора, но её lineage указывает на прежний `publication_root_rec_id`, поэтому outcome/calibration считают только корневую публикацию; если предыдущий bot этой chain уже остановлен, новый `execute` обязан создать новый running-бот, а не вернуть старый stopped-instance;
-4. если сигнал для persistence-ботов требует подтверждения ещё одним циклом, он получает статус `pending`;
+4. если включён `LLM_REVIEWER_MODE=gate`, actionable grid-рекомендация может временно получить `pending` до вердикта reviewer; этот hold ограничен `LLM_REVIEWER_PENDING_TIMEOUT_SEC`;
 5. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
 6. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
 7. перед созданием `bot_instance` сервис повторно проверяет текущие риск-лимиты, свежесть candles/ticker, live-price относительно диапазона/kill-switch, актуальный market shock / fast-veto и базовую Bybit-валидность сетки; instrument metadata Bybit подгружается заранее, вне SQLite write-lock, чтобы медленный upstream не блокировал collector/recommender; при ошибке возвращается `409`, а в `decision_log` пишется `EXECUTION_BLOCKED` или `EXECUTION_PRECHECK_BLOCKED`;
@@ -209,7 +210,7 @@ ruff check app tests main.py
 ### Семантика статусов recommendation
 - `recommended` — новый actionable сигнал, готовый к исполнению;
 - `active` — повторно актуальный signal-update внутри уже открытой publication-chain; возникает либо при обычном cooldown-reuse, либо при жёстком same-direction pseudo-position lock до завершения horizon. Исполним, но не считается новым выпуском и не создаёт отдельный outcome-root;
-- `pending` — кандидат ждёт подтверждения persistence-gate и ещё не исполним;
+- `pending` — временный gate-hold перед исполнением; не является `no_trade`, но не исполним до финального `recommended`/`active` либо fail-closed отказа;
 - `suppressed` — скрытая альтернатива, проигравшая dedupe/selector и сохранённая только для аудита.
 
 ### Инварианты исполнения publication-chain

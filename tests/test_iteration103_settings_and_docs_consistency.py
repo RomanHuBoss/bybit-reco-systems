@@ -49,5 +49,7 @@ def test_env_example_documents_auto_llm_reviewer_ttl_consistently() -> None:
 
     assert "LLM_REVIEWER_TTL_SEC=" in env_example
     assert "LLM_REVIEWER_TTL_SEC=900" not in env_example
+    assert "LLM_REVIEWER_PENDING_TIMEOUT_SEC=900" in env_example
+    assert "LLM_REVIEWER_PENDING_TIMEOUT_SEC=900" in readme
     assert "отдельный TTL валидности LLM-review" in readme
     assert "по умолчанию не короче TTL самой рекомендации" in readme

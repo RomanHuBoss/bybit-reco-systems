@@ -199,8 +199,12 @@ def test_mark_llm_reviews_async_sanitizes_candidate_rank_fields(conn):
     assert stats["queued"] == 2
     assert recs[0]["reasons"]["llm_review"]["status"] == "pending"
     assert recs[1]["reasons"]["llm_review"]["status"] == "pending"
-    assert recs[0]["status"] == "pending"
-    assert recs[1]["status"] == "pending"
+    # Advisory reviewer is non-blocking: rank-field sanitization must still queue
+    # the LLM marker, but it must not park actionable recommendations in pending.
+    assert recs[0]["status"] == "recommended"
+    assert recs[1]["status"] == "recommended"
+    assert recs[0]["reasons"]["llm_review"]["hold_policy"] == "non_blocking_advisory"
+    assert recs[1]["reasons"]["llm_review"]["hold_policy"] == "non_blocking_advisory"
 
 
 # Pending-sweep должен переживать битые score/confidence в latest snapshot из SQLite.

@@ -2077,7 +2077,7 @@ def test_mark_llm_reviews_async_includes_active_candidates(conn):
 
 
 
-def test_mark_llm_reviews_async_holds_active_until_fresh_review(conn):
+def test_mark_llm_reviews_async_advisory_does_not_hold_active_until_fresh_review(conn):
     ts_now = int(time.time())
     recs = [
         {
@@ -2119,9 +2119,10 @@ def test_mark_llm_reviews_async_holds_active_until_fresh_review(conn):
     stats = recommender_module._mark_llm_reviews_async(conn, recs, settings, reviewer=FakeReviewer())
 
     assert stats["queued"] == 1
-    assert recs[0]["status"] == "pending"
+    assert recs[0]["status"] == "active"
     assert recs[0]["reasons"]["llm_review"]["status"] == "pending"
     assert recs[0]["reasons"]["llm_review"]["publish_target_status"] == "active"
+    assert recs[0]["reasons"]["llm_review"]["hold_policy"] == "non_blocking_advisory"
 
 
 def test_mark_llm_reviews_async_reuses_cache_with_review_ttl_longer_than_cadence(conn):
