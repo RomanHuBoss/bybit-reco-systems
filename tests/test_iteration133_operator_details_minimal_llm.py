@@ -34,16 +34,16 @@ def test_details_panel_keeps_only_operator_launch_fields_and_llm() -> None:
 def test_details_panel_shows_blockers_only_when_they_matter() -> None:
     app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "hardBlocked" in app_js
+    assert "explicitHardBlocked" in app_js
     assert "blockerItems" in app_js
     assert "Блокеры / предупреждения" in app_js
     assert "bybitErrors.length" in app_js
     assert "riskReportRejected.length" in app_js
-    assert "Есть блокер, запрещающий ручное создание grid-бота" in app_js
+    assert "Есть жёсткий блокер, запрещающий ручное создание grid-бота" in app_js
 
 
 def test_static_asset_cache_key_bumped_after_minimal_llm_details() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v20" in index
-    assert "app.js?v=manual-ui-v20" in index
+    assert "styles.css?v=manual-ui-v21" in index
+    assert "app.js?v=manual-ui-v21" in index

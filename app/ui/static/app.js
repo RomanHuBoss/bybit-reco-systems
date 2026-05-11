@@ -665,14 +665,24 @@ function buildDetailsHtml(it) {
   updateDetailsHeaderLinks(it);
 
   const launchable = isLaunchableGridRecommendation(it);
-  const hardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || it.status === "blocked" || it.status === "no_trade";
-  const decisionClass = launchable ? "go" : hardBlocked ? "stop" : "wait";
-  const decisionTitle = launchable ? "Можно запускать после preflight" : hardBlocked ? "Не запускать" : "Ждать / перепроверить";
+  const scoreMeta = ensureUiScoreMeta(it);
+  const explicitHardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || it.status === "blocked";
+  const noTradeDecision = it.status === "no_trade" || riskReport.decision === "not_recommended";
+  const decisionClass = launchable ? "go" : explicitHardBlocked ? "stop" : "wait";
+  const decisionTitle = launchable
+    ? "Можно запускать после preflight"
+    : explicitHardBlocked
+      ? "Не запускать"
+      : noTradeDecision
+        ? "Не запускать сейчас"
+        : "Ждать / перепроверить";
   const decisionText = launchable
     ? "Верхний блок содержит только значения, которые оператор переносит в Bybit Futures Grid."
-    : hardBlocked
-      ? "Есть блокер, запрещающий ручное создание grid-бота. Причина показана ниже."
-      : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live preflight.";
+    : explicitHardBlocked
+      ? "Есть жёсткий блокер, запрещающий ручное создание grid-бота. Причина показана ниже."
+      : noTradeDecision
+        ? "no_trade — это отказ по скорингу/рискам, а не технический блокер. Жёстких блокеров нет; причины и предупреждения показаны ниже."
+        : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live preflight.";
 
   const llmDirection = llmReview?.execution_direction || llmReview?.thesis_direction || "neutral";
   const llmRecommendation = llmReview ? directionRu(llmDirection) : "нет данных";
@@ -684,17 +694,35 @@ function buildDetailsHtml(it) {
       : "н/д";
   const llmSummary = llmReview?.summary || llmReview?.error || "";
 
+  const noTradeReasonItems = noTradeDecision && !explicitHardBlocked
+    ? [{
+        code: "NO_TRADE",
+        msg: `Запуск не рекомендован: общий скор ${scoreMeta.percentile ?? 0}/100 (${scoreMeta.grade || "E"} · ${scoreMeta.zoneLabel || "слабый"}). Это не Bybit/preflight-блокер; см. предупреждения ниже.`,
+        critical: false,
+      }]
+    : [];
+  const factorWarnings = riskReportWarnings.length
+    ? []
+    : (reasons.top_negative_factors || []).slice(0, 4).map(item => ({ code: "WARN", msg: item.msg || item.text || item.feature || "", critical: false }));
   const blockerItems = [
     ...blocks.map(b => ({ code: b.code || "BLOCK", msg: b.msg || "" , critical: true })),
     ...riskReportRejected.map(msg => ({ code: "RISK", msg, critical: true })),
     ...bybitErrors.map(b => ({ code: b.code || "BYBIT", msg: b.msg || "", critical: true })),
+    ...noTradeReasonItems,
     ...riskReportWarnings.slice(0, 4).map(msg => ({ code: "WARN", msg, critical: false })),
+    ...factorWarnings,
     ...bybitWarnings.slice(0, 4).map(b => ({ code: b.code || "BYBIT_WARN", msg: b.msg || "", critical: false })),
   ].slice(0, 8);
+  const blockersTitle = explicitHardBlocked
+    ? "Блокеры / предупреждения"
+    : noTradeDecision
+      ? "Причины no_trade / предупреждения"
+      : "Предупреждения";
+  const blockersCardClass = explicitHardBlocked ? "launch-blockers-card" : "launch-warnings-card";
   const blockersHtml = blockerItems.length
     ? `
-      <div class="operator-card launch-blockers-card">
-        <h3>Блокеры / предупреждения</h3>
+      <div class="operator-card ${blockersCardClass}">
+        <h3>${escapeHtml(blockersTitle)}</h3>
         <div class="small-blocks">
           ${blockerItems.map(b => `<div class="small-block ${b.critical ? "small-block-critical" : ""}"><code>${escapeHtml(b.code)}</code><br>${escapeHtml(b.msg)}</div>`).join("")}
         </div>

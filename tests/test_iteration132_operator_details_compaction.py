@@ -26,16 +26,16 @@ def test_details_panel_is_operator_first_not_diagnostic_dump() -> None:
 def test_details_panel_keeps_launch_blockers_visible() -> None:
     app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "hardBlocked" in app_js
+    assert "explicitHardBlocked" in app_js
     assert "riskReportRejected.length" in app_js
     assert "bybitErrors.length" in app_js
     assert "blocks.length" in app_js
-    assert "Есть блокер, запрещающий ручное создание grid-бота" in app_js
-    assert "Есть блокер, запрещающий ручное создание grid-бота" in app_js
+    assert "Есть жёсткий блокер, запрещающий ручное создание grid-бота" in app_js
+    assert "Есть жёсткий блокер, запрещающий ручное создание grid-бота" in app_js
 
 
 def test_static_asset_cache_key_bumped_after_details_compaction() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v20" in index
-    assert "app.js?v=manual-ui-v20" in index
+    assert "styles.css?v=manual-ui-v21" in index
+    assert "app.js?v=manual-ui-v21" in index

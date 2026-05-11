@@ -1309,7 +1309,8 @@ body {
 }
 .operator-minimal-sheet .primary-launch-card h3,
 .operator-minimal-sheet .llm-operator-card h3,
-.operator-minimal-sheet .launch-blockers-card h3 {
+.operator-minimal-sheet .launch-blockers-card h3,
+.operator-minimal-sheet .launch-warnings-card h3 {
   margin-bottom: 8px;
 }
 .minimal-launch-grid .field-input,
@@ -1321,6 +1322,9 @@ body {
 }
 .launch-blockers-card {
   border-left: 4px solid var(--bad);
+}
+.launch-warnings-card {
+  border-left: 4px solid var(--warn);
 }
 
 @media (max-width: 1180px) {

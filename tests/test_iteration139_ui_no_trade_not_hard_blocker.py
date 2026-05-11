@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_no_trade_copy_distinguishes_score_rejection_from_hard_blocker() -> None:
+    app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
+
+    assert "explicitHardBlocked" in app_js
+    assert "noTradeDecision" in app_js
+    assert "it.status === \"no_trade\" || riskReport.decision === \"not_recommended\"" in app_js
+    assert "no_trade — это отказ по скорингу/рискам, а не технический блокер" in app_js
+    assert "Жёстких блокеров нет; причины и предупреждения показаны ниже" in app_js
+    assert "Есть блокер, запрещающий ручное создание grid-бота" not in app_js
+
+
+def test_no_trade_warning_card_is_not_rendered_as_blocker_card() -> None:
+    app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "app/ui/static/styles.css").read_text(encoding="utf-8")
+
+    assert "Причины no_trade / предупреждения" in app_js
+    assert "const blockersCardClass = explicitHardBlocked ? \"launch-blockers-card\" : \"launch-warnings-card\"" in app_js
+    assert "NO_TRADE" in app_js
+    assert "общий скор" in app_js
+    assert ".launch-warnings-card" in styles
+
+
+def test_static_asset_cache_key_bumped_after_no_trade_copy_fix() -> None:
+    index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
+
+    assert "styles.css?v=manual-ui-v21" in index
+    assert "app.js?v=manual-ui-v21" in index
