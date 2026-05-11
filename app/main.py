@@ -387,6 +387,71 @@ def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: 
     return (existing.get("meta") or {}) == (meta or {})
 
 
+def _llm_status_from_reasons_dict(reasons: Any) -> str:
+    if not isinstance(reasons, dict):
+        return "none"
+    llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else None
+    if not isinstance(llm_review, dict):
+        return "none"
+    return str(llm_review.get("status") or "none").strip().lower() or "none"
+
+
+def _apply_llm_effective_pending_guard(out: dict[str, Any]) -> None:
+    """Operator-facing guard: actionable rows require an OK LLM verdict.
+
+    Legacy rows can already be persisted as recommended/active with no LLM verdict
+    because older advisory mode did not hold publication. Do not mutate the audit row
+    here; expose the safe effective status to the UI/API instead.
+    """
+    if not bool(getattr(settings, "llm_reviewer_enabled", False)):
+        return
+    status = str(out.get("status") or "").strip().lower()
+    if status not in {"recommended", "active"}:
+        return
+    reasons = out.get("reasons") if isinstance(out.get("reasons"), dict) else {}
+    llm_status = _llm_status_from_reasons_dict(reasons)
+    if llm_status == "ok":
+        return
+    original_status = status
+    out["status"] = "pending"
+    out["effective_status"] = "pending"
+    out["stored_status"] = original_status
+    reasons = out.setdefault("reasons", {})
+    if not isinstance(reasons, dict):
+        reasons = {}
+        out["reasons"] = reasons
+    llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
+    if not isinstance(llm_review, dict):
+        llm_review = {}
+    if llm_status in {"none", "", "unknown"}:
+        llm_review["status"] = "pending"
+        llm_review.setdefault("reason", "legacy_actionable_without_llm_verdict")
+    llm_review.setdefault("publish_target_status", original_status)
+    llm_review["gate_decision"] = "pending"
+    llm_review["hold_policy"] = "llm_verdict_required"
+    llm_review["requires_ok_verdict"] = True
+    reasons["llm_review"] = llm_review
+    decision_layers = reasons.get("decision_layers") if isinstance(reasons.get("decision_layers"), dict) else {}
+    decision_layers["llm_verdict_guard"] = {
+        "stored_status": original_status,
+        "effective_status": "pending",
+        "llm_status": llm_status,
+        "requires_ok_verdict": True,
+    }
+    decision_layers["final_status"] = "pending"
+    reasons["decision_layers"] = decision_layers
+    params = out.get("params") if isinstance(out.get("params"), dict) else {}
+    risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
+    risk_report["decision"] = "not_recommended"
+    warnings = risk_report.get("warnings") if isinstance(risk_report.get("warnings"), list) else []
+    warning_text = "LLM-review ещё не завершён: запуск grid удержан в pending до OK-вердикта."
+    if warning_text not in [str(x) for x in warnings]:
+        warnings.append(warning_text)
+    risk_report["warnings"] = warnings
+    params["risk_report"] = risk_report
+    out["params"] = params
+
+
 def _merge_bybit_operator_guard_into_ui_payload(out: dict[str, Any], guard: dict[str, Any]) -> None:
     """Make stale/invalid Bybit exchange constraints visible before execution.
 
@@ -490,12 +555,14 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
             "meta_checked": bool(bybit_meta),
             "snapped_levels": {},
         }
+        _apply_llm_effective_pending_guard(out)
         return out
     out = _snap_reco_payload_to_bybit_meta(out, bybit_meta)
     out["bybit_meta"] = bybit_meta
     out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
     out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True)
     _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
+    _apply_llm_effective_pending_guard(out)
     return out
 
 
@@ -564,6 +631,10 @@ def _operator_fetch_statuses_for_effective_filters(statuses: list[str]) -> list[
     out = list(dict.fromkeys(str(s or "").strip().lower() for s in statuses if str(s or "").strip()))
     if "blocked" in out:
         for convertible in ("recommended", "active", "pending"):
+            if convertible not in out:
+                out.append(convertible)
+    if bool(getattr(settings, "llm_reviewer_enabled", False)) and "pending" in out:
+        for convertible in ("recommended", "active"):
             if convertible not in out:
                 out.append(convertible)
     return out

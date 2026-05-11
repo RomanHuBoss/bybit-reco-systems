@@ -1,5 +1,7 @@
 # Audit report — LLM pending timeout and linear grid re-audit — 2026-05-11
 
+> Superseded note (2026-05-11): subsequent audit `AUDIT_REPORT_2026-05-11_LLM_OK_VERDICT_GUARD.md` changes the LLM policy. If `LLM_REVIEWER_ENABLED=1`, actionable `recommended/active` now requires `llm_review.status=ok`; otherwise the row is held as effective `pending` and timeout fails closed to `no_trade`. The older non-blocking advisory semantics below are historical only.
+
 ## A. Краткое резюме
 
 Повторно проверен проект рекомендательной системы только для Bybit Linear USDT Futures / USDT Perpetual grid-ботов. Основная подтверждённая аварийная проблема: async LLM-reviewer мог удерживать actionable-рекомендации в `pending` слишком долго, особенно если внешний Ollama/LLM слой не отвечал, возвращал error или не был доступен. Это создавало операторский deadlock: рекомендация уже была рассчитана движком, но UI не давал финального actionable/not-actionable статуса.

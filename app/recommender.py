@@ -204,6 +204,51 @@ def _risk_report_decision_for_status(status: Any) -> str:
     return "recommended" if status_norm in {"recommended", "active"} else "not_recommended"
 
 
+def _llm_review_is_completed_ok(rec: dict[str, Any]) -> bool:
+    reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
+    llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
+    return str(llm_review.get("status") or "").strip().lower() == "ok"
+
+
+def _hold_recommendation_until_llm_verdict(rec: dict[str, Any], settings, reviewer: OllamaCandleReviewer | None = None, *, reason: str = "queued_async") -> bool:
+    """Move an actionable recommendation to pending while LLM reviewer has no OK verdict.
+
+    Operator-facing recommendations must never be launchable as recommended/active
+    when LLM review is enabled but still absent, pending, errored or timed out.
+    This keeps the database, API and UI fail-closed for the LLM gate contract.
+    """
+    if not bool(getattr(settings, "llm_reviewer_enabled", False)):
+        return False
+    current_status = str(rec.get("status") or "").strip().lower()
+    if current_status not in LLM_REVIEW_ELIGIBLE_STATUSES:
+        return False
+    if _llm_review_is_completed_ok(rec):
+        return False
+    mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
+    if mode not in {"advisory", "gate"}:
+        mode = "advisory"
+    reasons = rec.setdefault("reasons", {})
+    if not isinstance(reasons, dict):
+        reasons = {}
+        rec["reasons"] = reasons
+    llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else None
+    if not isinstance(llm_review, dict) or str(llm_review.get("status") or "").strip().lower() not in {"pending", "error"}:
+        llm_review = _make_pending_llm_review(rec, mode, reviewer, reason=reason)
+    else:
+        llm_review = dict(llm_review)
+        llm_review.setdefault("mode", mode)
+        llm_review.setdefault("gate_decision", "pending")
+        llm_review.setdefault("queued_ts", int(time.time()))
+        llm_review.setdefault("reason", reason)
+        if current_status in LLM_REVIEW_ELIGIBLE_STATUSES:
+            llm_review["publish_target_status"] = current_status
+    llm_review["hold_policy"] = "llm_verdict_required"
+    llm_review["requires_ok_verdict"] = True
+    reasons["llm_review"] = llm_review
+    rec["status"] = "pending"
+    return True
+
+
 def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
     reasons = rec.setdefault("reasons", {})
     decision_layers = reasons.get("decision_layers")
@@ -499,10 +544,8 @@ def _make_pending_llm_review(rec: dict[str, Any], mode: str, reviewer: OllamaCan
     }
     if target_status in LLM_REVIEW_ELIGIBLE_STATUSES:
         review["publish_target_status"] = target_status
-    if mode == "advisory":
-        review["hold_policy"] = "non_blocking_advisory"
-    else:
-        review["hold_policy"] = "gate_hold"
+    review["hold_policy"] = "llm_verdict_required"
+    review["requires_ok_verdict"] = True
     return review
 
 
@@ -574,14 +617,11 @@ def _mark_llm_reviews_async(conn, recs: list[dict[str, Any]], settings, reviewer
         if str(rec.get("rec_id") or "") in queued_ids:
             reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason="queued_async")
             stats["queued"] += 1
+            _hold_recommendation_until_llm_verdict(rec, settings, reviewer, reason="queued_async")
         else:
             reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason=f"deferred_candidate_cap ({max_candidates})")
             stats["deferred"] += 1
-        # Advisory review is diagnostic only: it must not hold an otherwise
-        # actionable grid recommendation in `pending`. Gate mode is the only
-        # mode that may block publication while waiting for the external LLM.
-        if mode == "gate":
-            rec["status"] = "pending"
+            _hold_recommendation_until_llm_verdict(rec, settings, reviewer, reason=f"deferred_candidate_cap ({max_candidates})")
         _sync_recommendation_metadata(rec)
     return stats
 
@@ -711,11 +751,9 @@ def _resolve_stale_llm_pending(
 ) -> dict[str, int]:
     """Resolve async LLM holds that exceeded the operator-visible SLA.
 
-    Advisory mode is non-blocking, so a stale legacy `pending` row is restored to
-    the engine status it was holding. Gate mode is fail-closed: if the external
-    reviewer did not return a verdict in time, the row becomes `no_trade` and
-    cannot be launched manually. This directly prevents half-hour+ `pending`
-    hangs from silently freezing the operator workflow.
+    If the external reviewer did not return an OK verdict in time, the row becomes
+    `no_trade` and cannot be launched manually. This prevents stale async holds
+    from reappearing as actionable recommendations without a real LLM verdict.
     """
     now_val = int(now_ts_value if now_ts_value is not None else time.time())
     pending_timeout_sec = _llm_review_pending_timeout_sec(settings)
@@ -741,38 +779,22 @@ def _resolve_stale_llm_pending(
         age_sec = _llm_pending_age_sec(rec, now_ts=now_val)
         if age_sec < pending_timeout_sec:
             continue
-        if mode == "advisory" and (target in LLM_REVIEW_ELIGIBLE_STATUSES or current_status in LLM_REVIEW_ELIGIBLE_STATUSES):
-            new_status = target if target in LLM_REVIEW_ELIGIBLE_STATUSES else current_status
-            stats["restored"] += 1
-            terminal_review = {
-                **(llm_review or {}),
-                "status": "skipped",
-                "mode": mode,
-                "gate_decision": "skipped",
-                "source": "async_timeout",
-                "reason": "advisory_timeout_restored",
-                "error": f"LLM reviewer did not finish within {pending_timeout_sec}s; advisory mode restored the engine status.",
-                "resolved_ts": now_val,
-                "age_sec": age_sec,
-                "pending_timeout_sec": pending_timeout_sec,
-                "hold_policy": "non_blocking_advisory",
-            }
-        else:
-            new_status = "no_trade"
-            stats["failed_closed"] += 1
-            terminal_review = {
-                **(llm_review or {}),
-                "status": "error",
-                "mode": mode if mode in {"advisory", "gate"} else "gate",
-                "gate_decision": "fail_closed",
-                "source": "async_timeout",
-                "reason": "gate_timeout_no_trade",
-                "error": f"LLM reviewer did not finish within {pending_timeout_sec}s; launch was blocked fail-closed.",
-                "resolved_ts": now_val,
-                "age_sec": age_sec,
-                "pending_timeout_sec": pending_timeout_sec,
-                "hold_policy": "gate_hold",
-            }
+        new_status = "no_trade"
+        stats["failed_closed"] += 1
+        terminal_review = {
+            **(llm_review or {}),
+            "status": "error",
+            "mode": mode if mode in {"advisory", "gate"} else "gate",
+            "gate_decision": "fail_closed",
+            "source": "async_timeout",
+            "reason": "llm_timeout_no_trade",
+            "error": f"LLM reviewer did not finish within {pending_timeout_sec}s; launch was blocked fail-closed because an OK LLM verdict is required.",
+            "resolved_ts": now_val,
+            "age_sec": age_sec,
+            "pending_timeout_sec": pending_timeout_sec,
+            "hold_policy": "llm_verdict_required",
+            "requires_ok_verdict": True,
+        }
         if target in LLM_REVIEW_ELIGIBLE_STATUSES:
             terminal_review["publish_target_status"] = target
         reasons["llm_review"] = terminal_review

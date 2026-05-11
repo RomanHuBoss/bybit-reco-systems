@@ -1072,7 +1072,7 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
           ${renderAgreementBadge(llm.agree_with_engine)}
           ${renderDirectionBadge(llm.execution_direction || "neutral")}
         </div>
-        <div class="helper-text">В advisory режиме LLM-слой не блокирует запуск; в gate режиме pending удерживается только до заданного таймаута, затем запуск блокируется fail-closed.</div>
+        <div class="helper-text">Если LLM-reviewer включён, запуск удерживается в pending до OK-вердикта; при таймауте идея переводится в no_trade fail-closed.</div>
       </div>
       <div class="llm-summary-box">${escapeHtml(summary)}</div>
       ${errorLine}

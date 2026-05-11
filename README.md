@@ -153,16 +153,16 @@ ruff check app tests main.py
 - `.env.example` синхронизирован с этими runtime-дефолтами; drift между шаблоном env, README и `settings.py` теперь считается регрессией и проверяется тестами.
 - `LLM_REVIEWER_MIN_CONFIDENCE=0.65`
 - `LLM_REVIEWER_CADENCE_SEC=300`
-- `LLM_REVIEWER_PENDING_TIMEOUT_SEC=900` — максимальное время операторского `pending`: в `gate` после таймаута идея переводится в `no_trade` fail-closed, в `advisory` LLM-marker становится `skipped` и не блокирует рекомендацию
+- `LLM_REVIEWER_PENDING_TIMEOUT_SEC=900` — максимальное время операторского `pending`: если включён LLM-reviewer, `recommended/active` допустимы только после `llm_review.status=ok`; при таймауте pending переводится в `no_trade` fail-closed
 - `LLM_REVIEWER_TTL_SEC=` — отдельный TTL валидности LLM-review для повторного использования по тому же `(venue, symbol, bot_type, direction)`; оставьте пустым для auto-режима: по умолчанию не короче TTL самой рекомендации
 - `LLM_REVIEWER_KEEP_ALIVE=90s`
 
 Режимы:
-- `advisory` — LLM пишет second opinion, но не меняет статус рекомендации;
-- `gate` — уверенное расхождение LLM с `execution_direction` может перевести идею в `no_trade`.
+- `advisory` — LLM пишет second opinion; пока нет OK-вердикта, actionable-идея удерживается в `pending`, а после OK возвращается к целевому `recommended/active`;
+- `gate` — LLM также удерживает идею в `pending`, а уверенное расхождение с `execution_direction` или timeout переводит идею в `no_trade` fail-closed.
 
 Важно:
-- В `advisory` LLM-reviewer не переводит actionable-статусы (`recommended`/`active`) в `pending`; он пишет second opinion асинхронно. В `gate` actionable-идея может быть временно удержана в `pending`, но не дольше `LLM_REVIEWER_PENDING_TIMEOUT_SEC`: затем запуск блокируется fail-closed через `no_trade`. Для same-direction reuse используется отдельный TTL валидности reviewer-кэша, поэтому `active` не должен откатываться в `pending` только из-за короткого sweep cadence.
+- При `LLM_REVIEWER_ENABLED=1` операторский запуск запрещён без `llm_review.status=ok`. Новые и legacy-строки со stored `recommended/active`, но без OK-вердикта, API/UI показывают как effective `pending`. Этот hold ограничен `LLM_REVIEWER_PENDING_TIMEOUT_SEC`: затем рекомендация переводится в `no_trade` fail-closed. Для same-direction reuse используется отдельный TTL валидности reviewer-кэша, поэтому `active` остаётся actionable только при свежем OK-cache/review.
 - В shipped-профиле reviewer настроен консервативно для локальных GPU уровня RTX 3060: короткий keep-alive, сниженный parallelism и ограниченное число live-кандидатов на sweep.
 - UI и API умеют показывать `pending`, `ok`, `error`, `cache_inherited`, `async_live` и другие состояния reviewer.
 - После изменения `LLM_REVIEWER_TFS` или `LLM_REVIEWER_CANDLES_PER_TF` старый кэш reviewer больше не переиспользуется автоматически.
@@ -198,7 +198,7 @@ ruff check app tests main.py
 1. recommendation публикуется со статусом `recommended`, если это новый actionable выпуск;
 2. если same-direction сигнал пришёл, пока предыдущая корневая идея по этому `(venue, symbol, bot_type, direction)` ещё находится внутри своего outcome-horizon, новый `publication_root` не создаётся даже при material-upgrade: запись принудительно сохраняется как `active` в существующей publication-chain, чтобы outcome-labeling имитировал одну открытую псевдо-сделку, а не серию повторных входов;
 3. если сигнал повторился уже после закрытия псевдо-сделки, но внутри republish-cooldown и без material upgrade, он тоже сохраняется как `active` в той же publication-chain: запись остаётся исполнимой для оператора, но её lineage указывает на прежний `publication_root_rec_id`, поэтому outcome/calibration считают только корневую публикацию; если предыдущий bot этой chain уже остановлен, новый `execute` обязан создать новый running-бот, а не вернуть старый stopped-instance;
-4. если включён `LLM_REVIEWER_MODE=gate`, actionable grid-рекомендация может временно получить `pending` до вердикта reviewer; этот hold ограничен `LLM_REVIEWER_PENDING_TIMEOUT_SEC`;
+4. если включён `LLM_REVIEWER_ENABLED=1`, actionable grid-рекомендация получает `pending` до `llm_review.status=ok`; без OK-вердикта `recommended/active` в UI/API не показываются как запускаемые, а hold ограничен `LLM_REVIEWER_PENDING_TIMEOUT_SEC`;
 5. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
 6. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
 7. перед созданием `bot_instance` сервис повторно проверяет текущие риск-лимиты, свежесть candles/ticker, live-price относительно диапазона/kill-switch, актуальный market shock / fast-veto и базовую Bybit-валидность сетки; instrument metadata Bybit подгружается заранее, вне SQLite write-lock, чтобы медленный upstream не блокировал collector/recommender; при ошибке возвращается `409`, а в `decision_log` пишется `EXECUTION_BLOCKED` или `EXECUTION_PRECHECK_BLOCKED`;

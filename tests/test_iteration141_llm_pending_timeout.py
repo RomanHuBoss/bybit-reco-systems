@@ -76,16 +76,18 @@ def _load_row(conn, rec_id: str):
     return row["status"], json.loads(row["reasons_json"])
 
 
-def test_advisory_async_llm_review_no_longer_holds_actionable_recommendation_in_pending(tmp_path):
+def test_advisory_async_llm_review_holds_actionable_recommendation_in_pending_until_ok_verdict(tmp_path):
     conn = _conn(tmp_path)
     rec = _rec(rec_id="R-advisory-nonblocking", ts=int(time.time()), status="recommended")
 
     stats = _mark_llm_reviews_async(conn, [rec], _settings(llm_reviewer_mode="advisory"), reviewer=None)
 
     assert stats["queued"] == 1
-    assert rec["status"] == "recommended"
+    assert rec["status"] == "pending"
     assert rec["reasons"]["llm_review"]["status"] == "pending"
-    assert rec["reasons"]["llm_review"]["hold_policy"] == "non_blocking_advisory"
+    assert rec["reasons"]["llm_review"]["publish_target_status"] == "recommended"
+    assert rec["reasons"]["llm_review"]["hold_policy"] == "llm_verdict_required"
+    assert rec["reasons"]["llm_review"]["requires_ok_verdict"] is True
 
 
 def test_gate_async_llm_review_still_holds_launch_until_verdict(tmp_path):
@@ -96,7 +98,8 @@ def test_gate_async_llm_review_still_holds_launch_until_verdict(tmp_path):
 
     assert stats["queued"] == 1
     assert rec["status"] == "pending"
-    assert rec["reasons"]["llm_review"]["hold_policy"] == "gate_hold"
+    assert rec["reasons"]["llm_review"]["hold_policy"] == "llm_verdict_required"
+    assert rec["reasons"]["llm_review"]["requires_ok_verdict"] is True
     assert rec["reasons"]["llm_review"]["publish_target_status"] == "recommended"
 
 
@@ -117,7 +120,7 @@ def test_stale_gate_pending_review_fails_closed_to_no_trade_when_reviewer_unavai
     assert reasons["llm_review"]["gate_decision"] == "fail_closed"
 
 
-def test_stale_advisory_pending_review_is_marked_skipped_without_blocking_engine_status(tmp_path):
+def test_stale_advisory_pending_review_fails_closed_instead_of_becoming_actionable_without_verdict(tmp_path):
     conn = _conn(tmp_path)
     now = int(time.time())
     db.insert_recommendations(
@@ -128,7 +131,8 @@ def test_stale_advisory_pending_review_is_marked_skipped_without_blocking_engine
     stats = run_llm_review_sweep_once(conn, _settings(llm_reviewer_mode="advisory", llm_reviewer_model=""))
 
     status, reasons = _load_row(conn, "R-advisory-timeout")
-    assert stats["stale_restored"] == 1
-    assert status == "recommended"
-    assert reasons["llm_review"]["status"] == "skipped"
-    assert reasons["llm_review"]["gate_decision"] == "skipped"
+    assert stats["stale_failed_closed"] == 1
+    assert status == "no_trade"
+    assert reasons["llm_review"]["status"] == "error"
+    assert reasons["llm_review"]["gate_decision"] == "fail_closed"
+    assert reasons["llm_review"]["hold_policy"] == "llm_verdict_required"
