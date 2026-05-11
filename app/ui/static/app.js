@@ -666,8 +666,13 @@ function buildDetailsHtml(it) {
 
   const launchable = isLaunchableGridRecommendation(it);
   const scoreMeta = ensureUiScoreMeta(it);
-  const explicitHardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || it.status === "blocked";
-  const noTradeDecision = it.status === "no_trade" || riskReport.decision === "not_recommended";
+  const status = String(it.status || "").trim().toLowerCase();
+  const explicitHardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || status === "blocked";
+  // risk_report.decision is intentionally conservative for pending async-LLM holds:
+  // backend may store it as not_recommended until the reviewer finalizes the row.
+  // Therefore only the persisted operator status may render the score/risk no_trade copy.
+  const noTradeDecision = status === "no_trade";
+  const pendingDecision = status === "pending";
   const decisionClass = launchable ? "go" : explicitHardBlocked ? "stop" : "wait";
   const decisionTitle = launchable
     ? "Можно запускать после preflight"
@@ -675,14 +680,18 @@ function buildDetailsHtml(it) {
       ? "Не запускать"
       : noTradeDecision
         ? "Не запускать сейчас"
-        : "Ждать / перепроверить";
+        : pendingDecision
+          ? "Ждать LLM-review"
+          : "Ждать / перепроверить";
   const decisionText = launchable
     ? "Верхний блок содержит только значения, которые оператор переносит в Bybit Futures Grid."
     : explicitHardBlocked
       ? "Есть жёсткий блокер, запрещающий ручное создание grid-бота. Причина показана ниже."
       : noTradeDecision
         ? "no_trade — это отказ по скорингу/рискам, а не технический блокер. Жёстких блокеров нет; причины и предупреждения показаны ниже."
-        : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live preflight.";
+        : pendingDecision
+          ? "Рекомендация удержана до завершения LLM-review. Это не no_trade и не Bybit/preflight-блокер; дождитесь финального статуса recommended/active либо отказа."
+          : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live preflight.";
 
   const llmDirection = llmReview?.execution_direction || llmReview?.thesis_direction || "neutral";
   const llmRecommendation = llmReview ? directionRu(llmDirection) : "нет данных";

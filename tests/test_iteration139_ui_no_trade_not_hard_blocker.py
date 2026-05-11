@@ -11,7 +11,8 @@ def test_no_trade_copy_distinguishes_score_rejection_from_hard_blocker() -> None
 
     assert "explicitHardBlocked" in app_js
     assert "noTradeDecision" in app_js
-    assert "it.status === \"no_trade\" || riskReport.decision === \"not_recommended\"" in app_js
+    assert "const noTradeDecision = status === \"no_trade\"" in app_js
+    assert "risk_report.decision is intentionally conservative for pending async-LLM holds" in app_js
     assert "no_trade — это отказ по скорингу/рискам, а не технический блокер" in app_js
     assert "Жёстких блокеров нет; причины и предупреждения показаны ниже" in app_js
     assert "Есть блокер, запрещающий ручное создание grid-бота" not in app_js
@@ -31,5 +32,5 @@ def test_no_trade_warning_card_is_not_rendered_as_blocker_card() -> None:
 def test_static_asset_cache_key_bumped_after_no_trade_copy_fix() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v21" in index
-    assert "app.js?v=manual-ui-v21" in index
+    assert "styles.css?v=manual-ui-v22" in index
+    assert "app.js?v=manual-ui-v22" in index
