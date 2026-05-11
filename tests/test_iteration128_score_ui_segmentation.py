@@ -63,4 +63,5 @@ def test_score_ui_copy_explains_near_tie_semantics() -> None:
 
     assert "SCORE_UI_NEAR_TIE_DELTA" in app_js
     assert "near-tie группа" in app_js
-    assert "перцентиль с near-tie группировкой близких raw score" in index_html
+    assert "Ранг в текущей выборке" in index_html
+    assert "не является разрешением запуска" in index_html

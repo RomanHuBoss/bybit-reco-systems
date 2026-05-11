@@ -1,10 +1,10 @@
-# Audit report — Score UI near-tie segmentation
+# Audit report — Sample rank UI near-tie segmentation
 
 ## Summary
 
-The operator-facing `Скор UI` previously converted raw score rank directly into a percentile among the currently visible candidates. With a small candidate set this created false precision: three practically indistinguishable raw scores such as `0.245 / 0.242 / 0.232` could be rendered as `100 / 50 / 0`.
+The operator-facing `Ранг в выборке` previously converted raw score rank directly into a percentile among the currently visible candidates. With a small candidate set this created false precision: three practically indistinguishable raw scores such as `0.245 / 0.242 / 0.232` could be rendered as `100 / 50 / 0`.
 
-This iteration changes `Скор UI` from a pure rank percentile into a grouped percentile with near-tie bands. Raw-score differences within `0.025` are treated as not materially distinguishable in the UI. Members of a near-tie group receive the same averaged percentile and grade.
+This iteration changes `Ранг в выборке` from a pure rank percentile into a grouped percentile with near-tie bands. Raw-score differences within `0.025` are treated as not materially distinguishable in the UI. Members of a near-tie group receive the same averaged percentile and grade.
 
 ## Changed files
 
@@ -12,7 +12,7 @@ This iteration changes `Скор UI` from a pure rank percentile into a grouped 
   - Added `SCORE_UI_NEAR_TIE_DELTA = 0.025`.
   - Reworked `computeUiScoreMetaMap()` to create near-tie score groups.
   - UI tooltip now exposes group size, raw spread and material threshold.
-  - Sorting by `Скор UI` uses grouped UI percentile instead of raw score.
+  - Sorting by `Ранг в выборке` uses grouped UI percentile instead of raw score.
 - `app/ui/static/index.html`
   - Updated column tooltip to explain grouped score percentile.
 - `tests/test_iteration128_score_ui_segmentation.py`
@@ -20,7 +20,7 @@ This iteration changes `Скор UI` from a pure rank percentile into a grouped 
   - Added regression that materially different groups still separate.
   - Added static copy regression.
 - `README.md`, `docs/TRADING_LOGIC.md`, `CHANGELOG.md`
-  - Documented that `Скор UI` is a visual grouped percentile, not an exact quality/probability ranking.
+  - Documented that `Ранг в выборке` is a visual grouped percentile, not an exact quality/probability ranking.
 
 ## Behavioral example
 

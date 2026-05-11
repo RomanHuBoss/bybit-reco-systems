@@ -15,7 +15,9 @@ let sortDir = "desc";        // "asc" | "desc"
 let lastItems = [];          // last fetched items — re-sorted on header click without refetch
 let uiScoreMetaById = new Map();
 // Raw recommendation score is normalized roughly to [-1, 1]. Smaller deltas are
-// not economically meaningful enough for a hard A/B/C split in the UI.
+// not economically meaningful enough for a hard A/B/C split in the UI. The
+// operator-facing value is a relative rank in the visible sample, not launch
+// approval and not a probability.
 const SCORE_UI_NEAR_TIE_DELTA = 0.025;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -359,7 +361,7 @@ function computeUiScoreMetaMap(items) {
         groupSize,
         groupSpread,
         tieThreshold: SCORE_UI_NEAR_TIE_DELTA,
-        title: `Скор UI: ${percentile}/100 — ${zone.label}; raw=${formatDotNumber(rows[i].score, 4)}${tieNote}`,
+        title: `Ранг в выборке: ${percentile}/100 — ${zone.label}; raw launch-score=${formatDotNumber(rows[i].score, 4)}${tieNote}; не является разрешением запуска`,
       });
     }
     groupStart = groupEnd + 1;
@@ -368,7 +370,7 @@ function computeUiScoreMetaMap(items) {
 }
 
 function ensureUiScoreMeta(item, poolItems = lastItems) {
-  if (!item) return { percentile: 0, grade: "E", zoneLabel: "слабый", raw: null, title: "Скор UI недоступен" };
+  if (!item) return { percentile: 0, grade: "E", zoneLabel: "слабый", raw: null, title: "Ранг недоступен" };
   const existing = uiScoreMetaById.get(item.rec_id);
   if (existing) return existing;
   const basis = Array.isArray(poolItems) && poolItems.length ? poolItems : [item];
@@ -378,18 +380,95 @@ function ensureUiScoreMeta(item, poolItems = lastItems) {
     grade: "E",
     zoneLabel: "слабый",
     raw: Number.isFinite(Number(item.score)) ? Number(item.score) : null,
-    title: `Скор UI недоступен; raw=${formatDotNumber(item.score, 4)}`,
+    title: `Ранг недоступен; raw launch-score=${formatDotNumber(item.score, 4)}`,
   };
 }
 
 function scoreUiCellHtml(meta) {
-  const scoreMeta = meta || { percentile: 0, grade: "E", zoneLabel: "слабый", title: "Скор UI недоступен" };
+  const scoreMeta = meta || { percentile: 0, grade: "E", zoneLabel: "слабый", title: "Ранг недоступен" };
   return `<span class="score-ui-cell" title="${escapeHtml(scoreMeta.title || "")}"><span class="score-ui-num zone-${escapeHtml(String(scoreMeta.grade || "E").toLowerCase())}">${escapeHtml(String(scoreMeta.percentile ?? 0))}</span><span class="score-ui-grade grade-${escapeHtml(String(scoreMeta.grade || "E").toLowerCase())}">${escapeHtml(scoreMeta.grade || "E")}</span></span>`;
 }
 
 function scoreUiMetricHtml(meta) {
-  const scoreMeta = meta || { percentile: 0, grade: "E", zoneLabel: "слабый", title: "Скор UI недоступен" };
+  const scoreMeta = meta || { percentile: 0, grade: "E", zoneLabel: "слабый", title: "Ранг недоступен" };
   return `<span class="score-ui-metric" title="${escapeHtml(scoreMeta.title || "")}"><span class="score-ui-metric-main">${escapeHtml(String(scoreMeta.percentile ?? 0))}/100</span><span class="score-ui-metric-sub grade-${escapeHtml(String(scoreMeta.grade || "E").toLowerCase())}">${escapeHtml(scoreMeta.grade || "E")} · ${escapeHtml(scoreMeta.zoneLabel || "")}</span></span>`;
+}
+
+
+function launchDecisionDiagnostics(it, scoreMeta) {
+  const reasons = it?.reasons || {};
+  const layers = reasons.decision_layers || {};
+  const rawScore = toFiniteNumber(it?.score);
+  const scoreThreshold = toFiniteNumber(layers.score_threshold);
+  const confidence = toFiniteNumber(it?.confidence);
+  const confidenceThreshold = toFiniteNumber(layers.confidence_threshold);
+  const confidenceGateApplied = layers.confidence_gate_applied === true;
+  const thesisStatus = String(layers.thesis_status || "").trim();
+  const executionStatus = String(layers.execution_status || "").trim();
+  const finalStatus = String(layers.final_status || it?.status || "").trim();
+
+  const rows = [];
+  rows.push({
+    label: "Ранг в выборке",
+    value: `${scoreMeta?.percentile ?? 0}/100 ${scoreMeta?.grade || "E"}`,
+    note: "относительное место среди видимых монет; не approval-score",
+  });
+  if (rawScore !== null) {
+    const cmp = scoreThreshold !== null ? (rawScore >= scoreThreshold ? "≥" : "<") : "";
+    const thr = scoreThreshold !== null ? ` ${cmp} порога ${formatDotNumber(scoreThreshold, 3)}` : "";
+    rows.push({
+      label: "Launch-score",
+      value: `${formatDotNumber(rawScore, 3)}${thr}`,
+      note: "абсолютный backend-score для решения о запуске",
+    });
+  }
+  if (confidence !== null) {
+    const showThreshold = confidenceGateApplied && confidenceThreshold !== null;
+    const cmp = showThreshold ? (confidence >= confidenceThreshold ? "≥" : "<") : "";
+    const thr = showThreshold ? ` ${cmp} порога ${formatDotNumber(confidenceThreshold, 3)}` : "";
+    rows.push({
+      label: "Confidence gate",
+      value: `${formatDotNumber(confidence, 3)}${thr}`,
+      note: confidenceGateApplied ? "участвует в запуске" : "не включён для этого решения",
+    });
+  }
+  rows.push({
+    label: "Decision gates",
+    value: [thesisStatus, executionStatus, finalStatus].filter(Boolean).join(" / ") || "—",
+    note: "финальный статус задаётся абсолютными гейтами, а не UI-рангом",
+  });
+  return rows;
+}
+
+function launchDecisionDiagnosticsHtml(it, scoreMeta) {
+  const rows = launchDecisionDiagnostics(it, scoreMeta);
+  return `
+    <div class="operator-card launch-decision-diagnostics-card">
+      <h3>Ранг не равен разрешению запуска</h3>
+      <div class="operator-grid two launch-diagnostics-grid">
+        ${rows.map(row => `
+          <div class="mini-metric">
+            <div class="mini-metric-label">${escapeHtml(row.label)}</div>
+            <div class="mini-metric-value">${escapeHtml(row.value)}</div>
+            <div class="mini-metric-note">${escapeHtml(row.note)}</div>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function noTradeDecisionMessage(it, scoreMeta) {
+  const rows = launchDecisionDiagnostics(it, scoreMeta);
+  const launchRow = rows.find(row => row.label === "Launch-score");
+  const confidenceRow = rows.find(row => row.label === "Confidence gate");
+  const gateRow = rows.find(row => row.label === "Decision gates");
+  const parts = [];
+  if (launchRow) parts.push(launchRow.value);
+  if (confidenceRow && !confidenceRow.value.includes("не включ")) parts.push(`confidence ${confidenceRow.value}`);
+  if (gateRow && gateRow.value !== "—") parts.push(`gates: ${gateRow.value}`);
+  const gateSummary = parts.length ? ` ${parts.join("; ")}.` : "";
+  return `Запуск grid сейчас не рекомендован. Ранг ${scoreMeta?.percentile ?? 0}/100 (${scoreMeta?.grade || "E"} · ${scoreMeta?.zoneLabel || ""}) — это только относительное место в текущей выборке, не разрешение запуска.${gateSummary}`;
 }
 
 function copyButton(copyValue) {
@@ -688,7 +767,7 @@ function buildDetailsHtml(it) {
     : explicitHardBlocked
       ? "Есть жёсткий блокер, запрещающий ручное создание grid-бота. Причина показана ниже."
       : noTradeDecision
-        ? "no_trade — это отказ по скорингу/рискам, а не технический блокер. Жёстких блокеров нет; причины и предупреждения показаны ниже."
+        ? "no_trade означает: grid сейчас не запускать. Это не технический Bybit/preflight-блокер; решение принято абсолютными launch-гейтами, а не относительным рангом в таблице."
         : pendingDecision
           ? "Рекомендация удержана до завершения LLM-review. Это не no_trade и не Bybit/preflight-блокер; дождитесь финального статуса recommended/active либо отказа."
           : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live preflight.";
@@ -706,7 +785,7 @@ function buildDetailsHtml(it) {
   const noTradeReasonItems = noTradeDecision && !explicitHardBlocked
     ? [{
         code: "NO_TRADE",
-        msg: `Запуск не рекомендован: общий скор ${scoreMeta.percentile ?? 0}/100 (${scoreMeta.grade || "E"} · ${scoreMeta.zoneLabel || "слабый"}). Это не Bybit/preflight-блокер; см. предупреждения ниже.`,
+        msg: noTradeDecisionMessage(it, scoreMeta),
         critical: false,
       }]
     : [];
@@ -725,7 +804,7 @@ function buildDetailsHtml(it) {
   const blockersTitle = explicitHardBlocked
     ? "Блокеры / предупреждения"
     : noTradeDecision
-      ? "Причины no_trade / предупреждения"
+      ? "Почему запуск не рекомендован / предупреждения"
       : "Предупреждения";
   const blockersCardClass = explicitHardBlocked ? "launch-blockers-card" : "launch-warnings-card";
   const blockersHtml = blockerItems.length
@@ -751,6 +830,8 @@ function buildDetailsHtml(it) {
         </div>
         <div class="decision-text">${escapeHtml(decisionText)}</div>
       </div>
+
+      ${launchDecisionDiagnosticsHtml(it, scoreMeta)}
 
       <div class="operator-card primary-launch-card">
         <h3>Параметры запуска Bybit Futures Grid</h3>
