@@ -51,6 +51,8 @@ BYBIT_FUTURES_GRID_MAX_COUNT = 400
 EXECUTION_FUNDING_MAX_STALENESS_SEC = 60 * 60
 EXECUTION_FUNDING_WORSE_DELTA_BLOCK_BPS = 3.0
 EXECUTION_FUNDING_EXTREME_BPS = 6.0
+EXECUTION_MIN_NET_PROFIT_BPS = 2.0
+EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER = 1.10
 BACKGROUND_THREAD_STATE_APP_KEY_PREFIX = "runtime_thread_state:"
 BACKGROUND_THREAD_RESTART_DELAY_SEC = 5.0
 BACKGROUND_THREAD_ERROR_ACTIONS = {
@@ -1900,7 +1902,12 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 "msg": f"Оценочный worst-side liquidation buffer={liq_buffer_pct:.2f}% слишком мал для запуска futures grid с leverage={leverage}.",
             })
 
-    sizing = plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {}
+    sizing_candidates = [
+        plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {},
+        params.get("sizing") if isinstance(params.get("sizing"), dict) else {},
+        params.get("economics") if isinstance(params.get("economics"), dict) else {},
+        plan.get("economics") if isinstance(plan.get("economics"), dict) else {},
+    ]
     qty_keys = (
         "order_qty",
         "qty",
@@ -1921,10 +1928,15 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         "investment_per_grid",
         "usdt_per_order",
     )
-    qty_source, order_qty = _first_finite_from_mapping(sizing, qty_keys)
+    qty_source, order_qty = (None, None)
+    notional_source, order_notional = (None, None)
+    for sizing in sizing_candidates:
+        if order_qty is None:
+            qty_source, order_qty = _first_finite_from_mapping(sizing, qty_keys)
+        if order_notional is None:
+            notional_source, order_notional = _first_finite_from_mapping(sizing, notional_keys)
     if order_qty is None:
         qty_source, order_qty = _first_finite_from_mapping(params, qty_keys)
-    notional_source, order_notional = _first_finite_from_mapping(sizing, notional_keys)
     if order_notional is None:
         notional_source, order_notional = _first_finite_from_mapping(params, notional_keys)
 
@@ -1980,6 +1992,72 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 "code": "ORDER_QTY_NOTIONAL_MISMATCH",
                 "msg": f"{qty_source or 'order_qty'} * reference_price = {implied_notional:.12g} USDT, но {notional_source or 'order_notional'}={order_notional:.12g}; sizing payload внутренне несогласован.",
             })
+
+
+    if bot_type == "futures_grid" and require_execution_plan:
+        economics_candidates = [
+            params.get("economics") if isinstance(params.get("economics"), dict) else {},
+            plan.get("economics") if isinstance(plan.get("economics"), dict) else {},
+        ]
+        economics: dict[str, Any] = {}
+        for candidate in economics_candidates:
+            if candidate:
+                economics = candidate
+                break
+        cost_model = params.get("cost_model") if isinstance(params.get("cost_model"), dict) else {}
+        if not economics:
+            warnings.append({
+                "code": "GRID_ECONOMICS_MISSING",
+                "msg": "Execution-plan не содержит economics; legacy payload допускается только после остальных preflight-проверок, новые рекомендации должны хранить net economics.",
+            })
+        else:
+            net_profit_bps = _finite_float_or_none(economics.get("net_profit_bps"))
+            gross_profit_bps = _finite_float_or_none(economics.get("gross_profit_bps"))
+            execution_cost_bps = _finite_float_or_none(economics.get("execution_cost_bps"))
+            if execution_cost_bps is None:
+                execution_cost_bps = _finite_float_or_none(cost_model.get("execution_cost_bps"))
+            funding_cost_bps = _finite_float_or_none(economics.get("funding_cost_bps"))
+            if funding_cost_bps is None:
+                funding_cost_bps = max(0.0, _finite_float_or_none(cost_model.get("expected_funding_bps")) or 0.0)
+            if net_profit_bps is not None and net_profit_bps <= 0.0:
+                errors.append({"code": "GRID_NET_PROFIT_NON_POSITIVE", "msg": f"net_profit_bps={net_profit_bps:.2f} после execution/funding costs <= 0."})
+            elif net_profit_bps is not None and net_profit_bps < EXECUTION_MIN_NET_PROFIT_BPS:
+                errors.append({"code": "GRID_NET_PROFIT_TOO_THIN", "msg": f"net_profit_bps={net_profit_bps:.2f} < {EXECUTION_MIN_NET_PROFIT_BPS:.2f} bps; edge слишком тонкий для live execution."})
+            if execution_cost_bps is not None and gross_profit_bps is not None and gross_profit_bps <= execution_cost_bps * EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER:
+                errors.append({
+                    "code": "GRID_GROSS_EDGE_BELOW_COSTS",
+                    "msg": f"gross_profit_bps={gross_profit_bps:.2f} почти не покрывает execution_cost_bps={execution_cost_bps:.2f}; запуск fail-closed.",
+                })
+            if funding_cost_bps is not None and funding_cost_bps >= EXECUTION_FUNDING_EXTREME_BPS:
+                errors.append({
+                    "code": "GRID_FUNDING_COST_EXTREME",
+                    "msg": f"funding_cost_bps={funding_cost_bps:.2f} за горизонт >= {EXECUTION_FUNDING_EXTREME_BPS:.2f}; carry риск слишком высок для grid.",
+                })
+            est_active_orders = _finite_float_or_none(economics.get("estimated_active_orders"))
+            if est_active_orders is not None and grid_levels is not None and int(round(est_active_orders)) != int(grid_levels):
+                errors.append({
+                    "code": "ACTIVE_ORDERS_GRID_COUNT_MISMATCH",
+                    "msg": f"estimated_active_orders={est_active_orders:.0f}, но grid_count={grid_levels}; маржа/ношинал рассчитаны для другого числа ордеров.",
+                })
+            total_notional_est = _finite_float_or_none(economics.get("estimated_total_order_notional_usdt"))
+            margin_est = _finite_float_or_none(economics.get("estimated_margin_required_usdt"))
+            leverage_for_margin = leverage if leverage is not None and leverage > 0 else 1.0
+            if total_notional_est is not None and margin_est is not None and leverage_for_margin > 0:
+                expected_margin = total_notional_est / leverage_for_margin
+                tolerance = max(0.02, abs(expected_margin) * 0.02)
+                if abs(margin_est - expected_margin) > tolerance:
+                    errors.append({
+                        "code": "MARGIN_NOTIONAL_LEVERAGE_MISMATCH",
+                        "msg": f"estimated_margin_required={margin_est:.6g} не соответствует total_notional/leverage={expected_margin:.6g}; риск маржи рассчитан неверно.",
+                    })
+            if order_notional is not None and grid_levels is not None and total_notional_est is not None:
+                expected_total_notional = order_notional * max(1, int(grid_levels))
+                tolerance = max(0.05, abs(expected_total_notional) * 0.02)
+                if abs(total_notional_est - expected_total_notional) > tolerance:
+                    errors.append({
+                        "code": "TOTAL_NOTIONAL_GRID_COUNT_MISMATCH",
+                        "msg": f"estimated_total_order_notional={total_notional_est:.6g} не соответствует order_notional*grid_count={expected_total_notional:.6g}.",
+                    })
 
     if not size_known:
         warnings.append({
