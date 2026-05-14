@@ -216,16 +216,26 @@ function splitLinearSymbol(symbol) {
   return null;
 }
 
+function normalizeLinearUsdtPerpetualSymbol(symbol) {
+  const raw = String(symbol || "").trim().toUpperCase();
+  if (!raw) return "";
+  // Backend normally provides DOGEUSDT/BTCUSDT. Keep the UI tolerant to
+  // legacy display forms such as DOGE/USDT or DOGE-USDT, but never build the
+  // obsolete locale-specific base/quote route for Bybit derivative charts.
+  const compact = raw.replace(/[^A-Z0-9]/g, "");
+  if (compact.endsWith("USDT") && compact.length > "USDT".length) return compact;
+  return raw;
+}
+
 function futuresGridBotCreateUrl() {
   return "https://www.bybit.com/ru-RU/tradingbot/fgrid-create/";
 }
 
 function bybitChartUrl(venue, symbol) {
-  if (venue === "linear") {
-    const parts = splitLinearSymbol(symbol);
-    if (parts) return `https://www.bybit.com/ru-RU/trade/linear/${encodeURIComponent(parts.base)}/${encodeURIComponent(parts.quote)}`;
-  }
-  return `https://www.bybit.com/trade/usdt/${encodeURIComponent(symbol || "")}`;
+  const chartSymbol = venue === "linear"
+    ? normalizeLinearUsdtPerpetualSymbol(symbol)
+    : String(symbol || "").trim().toUpperCase();
+  return `https://www.bybit.com/trade/usdt/${encodeURIComponent(chartSymbol)}`;
 }
 
 function iconSvg(kind) {
@@ -864,7 +874,7 @@ function pillStatus(status) {
   if (status === "recommended" || status === "active") cls += " good";
   else if (status === "blocked") cls += " bad";
   else cls += " warn";
-  return `<span class="${cls}">${status}</span>`;
+  return `<span class="${cls}">${escapeHtml(status || "—")}</span>`;
 }
 
 function getConfModel(item) {
@@ -1510,7 +1520,7 @@ function renderRecoTable(items) {
       <td>${i + 1}</td>
       <td>
         <div class="symbol-cell">
-          <b>${it.symbol}</b>
+          <b>${escapeHtml(it.symbol || "—")}</b>
           ${symbolLinksHtml(it)}
         </div>
       </td>
@@ -1519,8 +1529,8 @@ function renderRecoTable(items) {
       <td>${scoreUiCellHtml(scoreUi)}</td>
       <td>${confCell(it)}</td>
       <td>${fmt(it.expected_rr)}</td>
-      <td>${pillStatus(it.status)}</td>
-      <td><button class="btn tiny" data-act="details" data-id="${it.rec_id}">Карточка</button></td>
+      <td data-cell="status">${pillStatus(it.status)}</td>
+      <td><button class="btn tiny" data-act="details" data-id="${escapeHtml(it.rec_id)}">Карточка</button></td>
     `;
     body.appendChild(tr);
   });
@@ -1944,12 +1954,12 @@ document.addEventListener("click", async (e) => {
           row.classList.remove("row-recommended");
           row.style.opacity = "0.45";
 
-          // Update the status cell (column index 9, 0-based)
-          const cells = row.querySelectorAll("td");
-          if (cells.length >= 10) {
+          // Update the status cell without depending on the visible column count.
+          const statusCell = row.querySelector('[data-cell="status"]');
+          if (statusCell) {
             const statusClass = action === "executed" ? "op-executed" : "op-ignored";
-            cells[9].innerHTML =
-              `<span class="op-status-label ${statusClass}">${action}</span>`;
+            statusCell.innerHTML =
+              `<span class="op-status-label ${statusClass}">${escapeHtml(action)}</span>`;
           }
 
           // Remove execute/ignore buttons but keep Детали and JSON

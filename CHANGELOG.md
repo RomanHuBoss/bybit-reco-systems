@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-14 — Bybit chart URL and operator UI hardening
+
+- Fixed operator chart links for Bybit Linear USDT perpetuals: UI now opens `https://www.bybit.com/trade/usdt/<SYMBOL>` (for example `DOGEUSDT`) instead of the obsolete locale-specific base/quote route.
+- Added symbol normalization for legacy display forms such as `DOGE/USDT` before chart-link construction.
+- Hardened recommendation-table HTML rendering by escaping symbol, status and `rec_id` attributes.
+- Removed stale column-index coupling from operator action status updates by marking and selecting the status cell explicitly.
+- Bumped static asset cache key to `manual-ui-v24`.
+- Added regression coverage in `tests/test_iteration146_bybit_chart_url_and_ui_hardening.py`; validation: `477 passed` across split pytest runs, `node --check app/ui/static/app.js`, `python -m compileall -q app tests main.py`.
+
 ## 2026-05-11 — Fail-closed operator guard re-audit
 
 - Preserved raw missing Bybit `category`/`symbol` metadata instead of masking it with requested values.
