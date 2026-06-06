@@ -594,21 +594,28 @@ function buildOperatorValues(it) {
   const params = (it || {}).params || {};
   const plan = params.trade_plan || {};
   const levels = plan.levels || {};
+  const range = levels.range || {};
   const ks = levels.kill_switch || {};
   const tpPerLeg = levels.tp_per_leg || {};
   const gridStep = levels.grid_step || {};
+  const operatorSheet = params.operator_sheet || {};
   const meta = (it || {}).bybit_meta || {};
-  const rangeLower = formatBybitPrice(params.price_range_lower, meta, "down");
-  const rangeUpper = formatBybitPrice(params.price_range_upper, meta, "up");
-  const entryRef = formatBybitPrice(params.price_ref, meta, "nearest");
+  const rangeLowerRaw = firstFiniteValue([range, params, operatorSheet], ["lower", "price_range_lower", "range_lower"]);
+  const rangeUpperRaw = firstFiniteValue([range, params, operatorSheet], ["upper", "price_range_upper", "range_upper"]);
+  const entryRefRaw = firstFiniteValue([plan, params, operatorSheet], ["reference_price", "price_ref"]);
+  const leverageRaw = firstFiniteValue([params, operatorSheet], ["leverage"]);
+  const marginModeRaw = params.margin_mode || operatorSheet.margin_mode || "isolated";
+  const rangeLower = formatBybitPrice(rangeLowerRaw, meta, "down");
+  const rangeUpper = formatBybitPrice(rangeUpperRaw, meta, "up");
+  const entryRef = formatBybitPrice(entryRefRaw, meta, "nearest");
   const killLower = formatBybitPrice(ks.lower, meta, "down");
   const killUpper = formatBybitPrice(ks.upper, meta, "up");
   const gridStepAbs = formatBybitPrice(gridStep.step_abs, meta, "nearest");
   const tpLegAbs = formatBybitPrice(tpPerLeg.abs, meta, "nearest");
-  const stepPct = formatPercentDot(params.grid_spacing_pct, 4, false);
+  const stepPct = formatPercentDot(params.grid_spacing_pct ?? gridStep.step_pct, 4, false);
   const tpLegPct = formatPercentDot(tpPerLeg.pct, 4, false);
-  const leverage = it.venue === "linear" ? String(params.leverage ?? 1) : "—";
-  const marginMode = it.venue === "linear" ? marginModeRu(params.margin_mode || "isolated") : "—";
+  const leverage = it.venue === "linear" ? String(leverageRaw ?? 1) : "—";
+  const marginMode = it.venue === "linear" ? marginModeRu(marginModeRaw) : "—";
   const exits = operatorExitLevels((it || {}).direction, killLower, killUpper);
   const canonicalExits = operatorExitLevelsFromBackend((it || {}).directional_exit_levels, exits, meta);
   return {
@@ -839,7 +846,8 @@ function buildOperatorFieldSpecs(it, ov) {
     ]
   ) ?? (marginRequired !== null && Number.isFinite(leverage) ? marginRequired * leverage : null);
   const symbolParts = splitLinearSymbol((it || {}).symbol);
-  const referencePrice = toFiniteNumber(params.price_ref);
+  const plan = params.trade_plan || {};
+  const referencePrice = firstFiniteValue([plan, params], ["reference_price", "price_ref"]);
   const explicitPositionQty = firstFiniteValue(
     [sizing, economics, params],
     ["estimated_position_qty", "position_qty", "total_qty", "estimated_total_qty", "max_position_qty"]
@@ -859,7 +867,7 @@ function buildOperatorFieldSpecs(it, ov) {
     { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под бота с указанным плечом." },
     { label: "Диапазон входа", value: rangeValue, mono: true, help: "Нижняя и верхняя границы основного диапазона сетки, которые оператор переносит в Bybit." },
     { label: "Цена входа", value: ov.entryRef, mono: true, help: "Расчётная цена входа из рекомендации. Используется при создании бота и остаётся обязательным полем основной панели." },
-    { label: "Кол-во сеток", value: params.grid_count ?? params.grid_levels ?? "—", help: "Количество ценовых интервалов сетки. Должно соответствовать ограничениям Bybit Futures Grid." },
+    { label: "Кол-во сеток", value: params.grid_count ?? plan.grid_count ?? params.grid_levels ?? "—", help: "Количество ценовых интервалов сетки. Должно соответствовать ограничениям Bybit Futures Grid." },
     { label: "Плечо", value: ov.leverage, help: "Кредитное плечо linear USDT futures. Увеличивает и прибыль, и риск ликвидации." },
     { label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true, help: "Take Profit — уровень фиксации прибыли. Для лонга он выше входа, для шорта ниже входа." },
     { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help: "Stop Loss / kill-switch — защитный уровень остановки убытка. Для лонга ниже входа, для шорта выше входа." },

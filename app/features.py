@@ -52,15 +52,20 @@ def _normalize_ticker_quotes(ticker: dict[str, Any] | None) -> tuple[float | Non
 
 
 def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ticker: dict[str, Any] | None) -> dict[str, Any] | None:
-    # expects rows ordered old->new with keys close/high/low/volume/ts
+    # rows may arrive from DB/API/tests in either order; indicators below require
+    # a strictly chronological, closed-bar series.  Normalize here as a defensive
+    # boundary so callers cannot accidentally introduce look-ahead by passing
+    # newest-first rows or duplicated timestamps.
     if not ohlcv_rows or len(ohlcv_rows) < 30:
         return None
 
-    normalized_rows: list[dict[str, float | int]] = []
+    rows_by_ts: dict[int, dict[str, float | int]] = {}
     # Защита от «отравленных» исторических строк: legacy NaN/inf не должны тихо
     # превращаться в NaN-признаки и дальше раздувать scorer/LLM payload. Плохие
     # свечи просто выкидываем; если валидной истории осталось мало — fail-closed.
     for row in ohlcv_rows:
+        if not isinstance(row, dict):
+            continue
         close = _finite_float(row.get("close"))
         high = _finite_float(row.get("high"))
         low = _finite_float(row.get("low"))
@@ -70,7 +75,8 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
         except Exception:
             continue
         if (
-            close is None or high is None or low is None or volume is None
+            ts <= 0
+            or close is None or high is None or low is None or volume is None
             or close <= 0 or high <= 0 or low <= 0 or volume < 0
             or high < low
             # Защита в самом feature-layer, а не только в DB/collector: если
@@ -79,7 +85,12 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
             or high < close or low > close
         ):
             continue
-        normalized_rows.append({"ts": ts, "close": close, "high": high, "low": low, "volume": volume})
+        # Last write wins for duplicated ts. This mirrors replacement semantics of
+        # market-data backfills and avoids double-counting one candle in rolling
+        # volatility/ATR/MA windows.
+        rows_by_ts[ts] = {"ts": ts, "close": close, "high": high, "low": low, "volume": volume}
+
+    normalized_rows = [rows_by_ts[ts] for ts in sorted(rows_by_ts)]
 
     if len(normalized_rows) < 30:
         return None
@@ -227,7 +238,7 @@ def funding_signal(funding_rate: float | None, funding_interval_min: int | float
 
 def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    oi_series: [{ts, oi}] newest-first (from db.get_oi_series)
+    oi_series: [{ts, oi}] in any order; normalized newest-first internally
     Returns:
       oi_now:    latest OI value
       oi_24h_chg_pct: % change vs 24h ago
@@ -247,8 +258,11 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     if not oi_series or len(oi_series) < 2:
         return empty
 
-    normalized: list[tuple[int | None, float]] = []
+    normalized_by_ts: dict[int | None, float] = {}
+    synthetic_counter = -1
     for row in oi_series:
+        if not isinstance(row, dict):
+            continue
         try:
             oi = float(row.get("oi"))
         except Exception:
@@ -259,9 +273,19 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
             ts = int(row.get("ts"))
         except Exception:
             ts = None
-        normalized.append((ts, oi))
-    if len(normalized) < 2:
+        # Preserve duplicate-timestamp replacement semantics. Rows without a real
+        # timestamp stay usable for synthetic tests but never collide with each other.
+        key = ts if ts is not None else synthetic_counter
+        synthetic_counter -= 1
+        normalized_by_ts[key] = oi
+    if len(normalized_by_ts) < 2:
         return empty
+
+    normalized: list[tuple[int | None, float]] = sorted(
+        normalized_by_ts.items(),
+        key=lambda item: int(item[0]) if item[0] is not None else -10**18,
+        reverse=True,
+    )
 
     oi_now = normalized[0][1]
 
@@ -342,8 +366,13 @@ def btc_beta(
 
     # log returns
     def _rets(closes: list[float]) -> list[float]:
-        c = closes[-(window + 1):]
-        return [math.log(c[i] / c[i-1]) for i in range(1, len(c)) if c[i-1] > 0]
+        cleaned: list[float] = []
+        for raw in closes:
+            value = _finite_float(raw)
+            if value is not None and value > 0:
+                cleaned.append(value)
+        c = cleaned[-(window + 1):]
+        return [math.log(c[i] / c[i-1]) for i in range(1, len(c)) if c[i] > 0 and c[i-1] > 0]
 
     sym_r = _rets(symbol_closes)
     btc_r = _rets(btc_closes)
