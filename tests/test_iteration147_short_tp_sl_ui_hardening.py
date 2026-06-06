@@ -30,15 +30,15 @@ def test_operator_details_no_longer_use_one_sided_tp_sl_for_all_directions() -> 
     assert "const stopLossValue = killLower;" not in app_js
     assert "const takeProfitValue = killUpper;" not in app_js
     assert "const exits = operatorExitLevels((it || {}).direction, killLower, killUpper);" in app_js
-    assert '{ label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true }' in app_js
-    assert '{ label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true }' in app_js
+    assert 'ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true, help:' in app_js
+    assert 'ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help:' in app_js
 
 
 def test_static_asset_cache_key_bumped_after_short_tp_sl_fix() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v26" in index
-    assert "app.js?v=manual-ui-v26" in index
+    assert "styles.css?v=manual-ui-v27" in index
+    assert "app.js?v=manual-ui-v27" in index
 
 
 def test_directional_grid_range_geometry_keeps_short_profit_side_below_reference() -> None:

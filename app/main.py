@@ -549,7 +549,145 @@ def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
     ).as_dict()
 
 
-def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
+def _pct_delta(value: float | None, reference: float | None) -> float | None:
+    if value is None or reference is None or reference <= 0:
+        return None
+    return (float(value) - float(reference)) / float(reference) * 100.0
+
+
+def _operator_decision_context_for_reco(
+    rec: dict[str, Any],
+    *,
+    conn: Any | None = None,
+    guard: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compact, operator-facing decision context for the Details panel.
+
+    This is intentionally not another source of trading semantics. It summarizes
+    already canonical trade_plan/economics/preflight fields so the UI can answer
+    the operator's pre-launch questions without parsing raw diagnostics.
+    """
+    now = int(time.time())
+    ctx = _trade_plan_price_context(rec)
+    params, plan = _rec_params_and_plan(rec)
+    economics = _first_mapping(params.get("economics"), plan.get("economics"))
+    cost_model = _cost_model_from_rec(rec)
+
+    reference_price = ctx.get("reference_price")
+    range_lower = ctx.get("range_lower")
+    range_upper = ctx.get("range_upper")
+    kill_lower = ctx.get("kill_switch_lower")
+    kill_upper = ctx.get("kill_switch_upper")
+
+    rec_ts = _safe_int_or_none(rec.get("ts"))
+    ttl_sec = _safe_int_or_none(rec.get("ttl_sec"))
+    age_sec = None if rec_ts is None else max(0, now - int(rec_ts))
+    expires_in_sec = None
+    if rec_ts is not None and ttl_sec is not None and ttl_sec > 0:
+        expires_in_sec = int(rec_ts) + int(ttl_sec) - now
+
+    ticker: dict[str, Any] | None = None
+    if conn is not None:
+        try:
+            ticker = db.get_latest_ticker(conn, str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
+        except Exception:
+            ticker = None
+    current_price = _current_price_from_ticker(ticker)
+    ticker_ts = _safe_int_or_none((ticker or {}).get("ts"))
+    ticker_age_sec = None if ticker_ts is None else max(0, now - int(ticker_ts))
+
+    price_status = "missing"
+    if current_price is not None:
+        if range_lower is not None and range_upper is not None:
+            price_status = "inside_range" if range_lower <= current_price <= range_upper else "outside_range"
+        else:
+            price_status = "available"
+
+    direction = str(rec.get("direction") or "").strip().lower()
+    leverage = _finite_float_or_none(params.get("leverage"))
+    liq_price = _finite_float_or_none(economics.get("estimated_liquidation_price"))
+    liq_buffer = _finite_float_or_none(economics.get("liquidation_buffer_pct"))
+    if liq_price is None and reference_price is not None and leverage is not None and leverage > 0 and direction in {"long", "short"}:
+        try:
+            estimated = estimate_linear_liq_price(direction, reference_price, leverage)
+            liq_price = float(estimated) if estimated is not None else None
+        except Exception:
+            liq_price = None
+    if liq_buffer is None and reference_price is not None and liq_price is not None and direction in {"long", "short"}:
+        try:
+            buffer_value = liquidation_buffer_pct(direction, reference_price, liq_price)
+            liq_buffer = float(buffer_value) if buffer_value is not None else None
+        except Exception:
+            liq_buffer = None
+
+    guard_errors = guard.get("errors") if isinstance(guard, dict) and isinstance(guard.get("errors"), list) else []
+    guard_warnings = guard.get("warnings") if isinstance(guard, dict) and isinstance(guard.get("warnings"), list) else []
+    if isinstance(guard, dict) and guard.get("ok") is True:
+        preflight_status = "ok"
+    elif guard_errors:
+        preflight_status = "blocked"
+    elif guard_warnings:
+        preflight_status = "warning"
+    elif isinstance(guard, dict):
+        preflight_status = "unknown"
+    else:
+        preflight_status = "not_checked"
+
+    net_profit_bps = _finite_float_or_none(economics.get("net_profit_bps"))
+    gross_profit_bps = _finite_float_or_none(economics.get("gross_profit_bps"))
+    execution_cost_bps = _finite_float_or_none(economics.get("execution_cost_bps"))
+    if execution_cost_bps is None:
+        execution_cost_bps = _finite_float_or_none(cost_model.get("execution_cost_bps"))
+    funding_cost_bps = _finite_float_or_none(economics.get("funding_cost_bps"))
+    if funding_cost_bps is None:
+        expected_funding = _finite_float_or_none(cost_model.get("expected_funding_bps"))
+        funding_cost_bps = None if expected_funding is None else max(0.0, expected_funding)
+
+    if liq_buffer is None:
+        risk_profile = "unknown"
+    elif liq_buffer < 12.0:
+        risk_profile = "critical"
+    elif liq_buffer < 20.0:
+        risk_profile = "high"
+    elif liq_buffer < 35.0:
+        risk_profile = "moderate"
+    else:
+        risk_profile = "low"
+
+    return {
+        "recommendation_ts": rec_ts,
+        "recommendation_age_sec": age_sec,
+        "ttl_sec": ttl_sec,
+        "expires_in_sec": expires_in_sec,
+        "is_expired": bool(expires_in_sec is not None and expires_in_sec <= 0),
+        "current_price": current_price,
+        "ticker_ts": ticker_ts,
+        "ticker_age_sec": ticker_age_sec,
+        "price_status": price_status,
+        "entry_price": reference_price,
+        "price_drift_from_entry_pct": _pct_delta(current_price, reference_price),
+        "range_lower": range_lower,
+        "range_upper": range_upper,
+        "distance_to_lower_pct": None if current_price is None else _pct_delta(current_price, range_lower),
+        "distance_to_upper_pct": None if current_price is None else _pct_delta(range_upper, current_price),
+        "kill_switch_lower": kill_lower,
+        "kill_switch_upper": kill_upper,
+        "distance_to_kill_lower_pct": None if current_price is None else _pct_delta(current_price, kill_lower),
+        "distance_to_kill_upper_pct": None if current_price is None else _pct_delta(kill_upper, current_price),
+        "net_profit_bps": net_profit_bps,
+        "gross_profit_bps": gross_profit_bps,
+        "execution_cost_bps": execution_cost_bps,
+        "funding_cost_bps": funding_cost_bps,
+        "estimated_liquidation_price": liq_price,
+        "liquidation_buffer_pct": liq_buffer,
+        "risk_profile": risk_profile,
+        "preflight_status": preflight_status,
+        "preflight_error_count": len(guard_errors),
+        "preflight_warning_count": len(guard_warnings),
+    }
+
+
+def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dict[str, Any]:
     out = dict(rec)
     out["directional_exit_levels"] = _directional_exit_payload_for_reco(out)
     venue = str(out.get("venue") or "")
@@ -574,6 +712,7 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
         guard["critical"] = True
         out["bybit_operator_guard"] = guard
         _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
+        out["operator_decision_context"] = _operator_decision_context_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
         _apply_llm_effective_pending_guard(out)
         return out
     out = _snap_reco_payload_to_bybit_meta(out, bybit_meta)
@@ -582,6 +721,7 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
     out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True, require_execution_plan=True)
     _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
+    out["operator_decision_context"] = _operator_decision_context_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
     _apply_llm_effective_pending_guard(out)
     return out
 
@@ -2900,7 +3040,7 @@ def api_recommendations(
             strict_min_conf=strict_min_conf,
             collapse_chains=collapse_chains,
         )
-        augmented_items = [_augment_reco_for_ui(item) for item in raw_items]
+        augmented_items = [_augment_reco_for_ui(item, conn=conn) for item in raw_items]
         items = _filter_operator_items_by_effective_status(augmented_items, statuses, top_n)
 
         status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
@@ -2956,7 +3096,7 @@ def api_reco_details(rec_id: str) -> dict[str, Any]:
         r = db.get_recommendation_by_id(conn, str(rec_id))
         if not r:
             raise HTTPException(status_code=404, detail="rec_id not found")
-        return _augment_reco_for_ui(r)
+        return _augment_reco_for_ui(r, conn=conn)
 
 
 @app.get("/api/v1/risk/status")

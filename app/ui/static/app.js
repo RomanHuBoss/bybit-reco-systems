@@ -425,15 +425,16 @@ function launchDecisionDiagnostics(it, scoreMeta) {
   rows.push({
     label: "Ранг в выборке",
     value: `${scoreMeta?.percentile ?? 0}/100 ${scoreMeta?.grade || "E"}`,
-    note: "относительное место среди видимых монет; не approval-score",
+    note: "относительное место среди видимых монет; не разрешение запуска",
   });
   if (rawScore !== null) {
     const cmp = scoreThreshold !== null ? (rawScore >= scoreThreshold ? "≥" : "<") : "";
     const thr = scoreThreshold !== null ? ` ${cmp} порога ${formatDotNumber(scoreThreshold, 3)}` : "";
     rows.push({
-      label: "Launch-score",
+      code: "launch_score",
+      label: "Оценка запуска",
       value: `${formatDotNumber(rawScore, 3)}${thr}`,
-      note: "абсолютный backend-score для решения о запуске",
+      note: "внутренняя серверная оценка для решения о запуске",
     });
   }
   if (confidence !== null) {
@@ -441,15 +442,17 @@ function launchDecisionDiagnostics(it, scoreMeta) {
     const cmp = showThreshold ? (confidence >= confidenceThreshold ? "≥" : "<") : "";
     const thr = showThreshold ? ` ${cmp} порога ${formatDotNumber(confidenceThreshold, 3)}` : "";
     rows.push({
-      label: "Confidence gate",
+      code: "confidence_gate",
+      label: "Порог уверенности",
       value: `${formatDotNumber(confidence, 3)}${thr}`,
       note: confidenceGateApplied ? "участвует в запуске" : "не включён для этого решения",
     });
   }
   rows.push({
-    label: "Decision gates",
+    code: "decision_gates",
+    label: "Проверки решения",
     value: [thesisStatus, executionStatus, finalStatus].filter(Boolean).join(" / ") || "—",
-    note: "финальный статус задаётся абсолютными гейтами, а не UI-рангом",
+    note: "финальный статус задаётся обязательными проверками, а не UI-рангом",
   });
   return rows;
 }
@@ -474,13 +477,13 @@ function launchDecisionDiagnosticsHtml(it, scoreMeta) {
 
 function noTradeDecisionMessage(it, scoreMeta) {
   const rows = launchDecisionDiagnostics(it, scoreMeta);
-  const launchRow = rows.find(row => row.label === "Launch-score");
-  const confidenceRow = rows.find(row => row.label === "Confidence gate");
-  const gateRow = rows.find(row => row.label === "Decision gates");
+  const launchRow = rows.find(row => row.code === "launch_score");
+  const confidenceRow = rows.find(row => row.code === "confidence_gate");
+  const gateRow = rows.find(row => row.code === "decision_gates");
   const parts = [];
   if (launchRow) parts.push(launchRow.value);
-  if (confidenceRow && !confidenceRow.value.includes("не включ")) parts.push(`confidence ${confidenceRow.value}`);
-  if (gateRow && gateRow.value !== "—") parts.push(`gates: ${gateRow.value}`);
+  if (confidenceRow && !confidenceRow.value.includes("не включ")) parts.push(`уверенность ${confidenceRow.value}`);
+  if (gateRow && gateRow.value !== "—") parts.push(`проверки: ${gateRow.value}`);
   const gateSummary = parts.length ? ` ${parts.join("; ")}.` : "";
   return `Запуск grid сейчас не рекомендован. Ранг ${scoreMeta?.percentile ?? 0}/100 (${scoreMeta?.grade || "E"} · ${scoreMeta?.zoneLabel || ""}) — это только относительное место в текущей выборке, не разрешение запуска.${gateSummary}`;
 }
@@ -490,14 +493,17 @@ function copyButton(copyValue) {
   return `<button class="copy-chip" data-act="copy-field" data-copy="${escapeHtml(copyValue)}">копия</button>`;
 }
 
-function fieldBox(label, value, copyValue = null, extraClass = "") {
+function fieldBox(label, value, copyValue = null, extraClass = "", helpText = "") {
   const safeValue = value ?? "—";
   const effectiveCopy = copyValue === null ? safeValue : copyValue;
   const inputValue = escapeHtml(String(safeValue));
   const inputClass = extraClass ? `field-input ${extraClass}` : "field-input";
+  const help = helpText
+    ? `<span class="field-help" title="${escapeHtml(helpText)}" aria-label="${escapeHtml(helpText)}">?</span>`
+    : "";
   return `
     <div class="field-box">
-      <div class="field-label">${escapeHtml(label)}</div>
+      <div class="field-label"><span>${escapeHtml(label)}</span>${help}</div>
       <div class="field-value-row field-value-input-row">
         <input class="${inputClass}" type="text" readonly value="${inputValue}" data-copy-source="${escapeHtml(effectiveCopy)}">
         ${copyButton(effectiveCopy)}
@@ -642,6 +648,146 @@ function formatHoursValue(value) {
   return `${formatDotNumber(days, days % 1 === 0 ? 0 : 1)} д`;
 }
 
+function formatDurationValue(seconds) {
+  const s = toFiniteNumber(seconds);
+  if (s === null) return "—";
+  const abs = Math.abs(s);
+  const sign = s < 0 ? "−" : "";
+  if (abs < 60) return `${sign}${formatDotNumber(abs, 0)} с`;
+  if (abs < 3600) return `${sign}${formatDotNumber(abs / 60, 0)} мин`;
+  if (abs < 86400) return `${sign}${formatDotNumber(abs / 3600, abs % 3600 === 0 ? 0 : 1)} ч`;
+  return `${sign}${formatDotNumber(abs / 86400, abs % 86400 === 0 ? 0 : 1)} д`;
+}
+
+function decisionContext(it) {
+  const ctx = it?.operator_decision_context;
+  return ctx && typeof ctx === "object" ? ctx : {};
+}
+
+function priceStatusRu(status) {
+  if (status === "inside_range") return "внутри диапазона";
+  if (status === "outside_range") return "вне диапазона";
+  if (status === "available") return "цена доступна";
+  return "нет текущей цены";
+}
+
+function preflightStatusRu(status) {
+  if (status === "ok") return "OK — запуск технически допустим";
+  if (status === "blocked") return "Блокировка";
+  if (status === "warning") return "Есть предупреждения";
+  if (status === "not_checked") return "не проверено";
+  return "н/д";
+}
+
+function riskProfileRu(profile) {
+  if (profile === "low") return "низкий";
+  if (profile === "moderate") return "умеренный";
+  if (profile === "high") return "повышенный";
+  if (profile === "critical") return "критический";
+  return "не оценён";
+}
+
+function buildPriceFreshnessFields(it, ov) {
+  const ctx = decisionContext(it);
+  const meta = it?.bybit_meta || {};
+  const currentPrice = ctx.current_price ?? null;
+  const drift = ctx.price_drift_from_entry_pct;
+  const tickerAge = ctx.ticker_age_sec;
+  const recAge = ctx.recommendation_age_sec;
+  const expiresIn = ctx.expires_in_sec;
+  const ttlText = ctx.is_expired === true
+    ? `истекла ${formatDurationValue(Math.abs(expiresIn ?? 0))} назад`
+    : expiresIn !== null && expiresIn !== undefined
+      ? `осталось ${formatDurationValue(expiresIn)}`
+      : "TTL не задан";
+  return [
+    {
+      label: "Цена входа",
+      value: ov.entryRef,
+      mono: true,
+      help: "Расчётная цена входа из рекомендации. Используется оператором при создании grid-бота и не должна удаляться из панели.",
+    },
+    {
+      label: "Текущая цена",
+      value: formatBybitPrice(currentPrice, meta, "nearest"),
+      mono: true,
+      help: "Последняя доступная биржевая цена или середина bid/ask. Нужна, чтобы понять, не устарели ли уровни сетки.",
+    },
+    {
+      label: "Отклонение от входа",
+      value: drift === null || drift === undefined ? "—" : formatPercentDot(drift, 2, true),
+      help: "Насколько текущая цена ушла от расчётной цены входа. Большое отклонение означает, что рекомендацию нужно пересчитать.",
+    },
+    {
+      label: "Положение цены",
+      value: priceStatusRu(ctx.price_status),
+      help: "Показывает, находится ли текущая цена внутри рекомендованного диапазона запуска.",
+    },
+    {
+      label: "До нижней границы",
+      value: ctx.distance_to_lower_pct === null || ctx.distance_to_lower_pct === undefined ? "—" : formatPercentDot(ctx.distance_to_lower_pct, 2, true),
+      help: "Запас от текущей цены до нижней границы основного диапазона сетки.",
+    },
+    {
+      label: "До верхней границы",
+      value: ctx.distance_to_upper_pct === null || ctx.distance_to_upper_pct === undefined ? "—" : formatPercentDot(ctx.distance_to_upper_pct, 2, true),
+      help: "Запас от текущей цены до верхней границы основного диапазона сетки.",
+    },
+    {
+      label: "Возраст цены",
+      value: tickerAge === null || tickerAge === undefined ? "—" : formatDurationValue(tickerAge),
+      help: "Сколько времени прошло с последнего биржевого снимка цены. Старый снимок нельзя считать надёжным основанием для запуска.",
+    },
+    {
+      label: "Актуальность рекомендации",
+      value: `${recAge === null || recAge === undefined ? "—" : formatDurationValue(recAge)} · ${ttlText}`,
+      help: "Возраст рекомендации и оставшееся время до её автоматического устаревания.",
+    },
+  ];
+}
+
+function buildRiskEconomicsFields(it) {
+  const ctx = decisionContext(it);
+  return [
+    {
+      label: "Предпроверка запуска",
+      value: preflightStatusRu(ctx.preflight_status),
+      help: "Результат технической проверки перед запуском: Bybit-метаданные, диапазон, размеры, tick/qty/min-notional и защитные уровни.",
+    },
+    {
+      label: "Профиль риска",
+      value: riskProfileRu(ctx.risk_profile),
+      help: "Сводная оценка риска по запасу до ликвидации. Это ориентир для оператора, а не гарантия биржевой ликвидационной цены.",
+    },
+    {
+      label: "Запас до ликвидации",
+      value: ctx.liquidation_buffer_pct === null || ctx.liquidation_buffer_pct === undefined ? "—" : formatPercentDot(ctx.liquidation_buffer_pct, 2, false),
+      help: "Оценочный процентный запас до ликвидации с учётом стороны и плеча. Точная цена ликвидации зависит от Bybit risk tier, mark price и маржи аккаунта.",
+    },
+    {
+      label: "Расчётная ликвидация",
+      value: ctx.estimated_liquidation_price === null || ctx.estimated_liquidation_price === undefined ? "—" : formatBybitPrice(ctx.estimated_liquidation_price, it?.bybit_meta || {}, "nearest"),
+      mono: true,
+      help: "Приблизительная цена ликвидации для isolated linear USDT. Используется как защитная оценка, не как точная биржевая величина.",
+    },
+    {
+      label: "Чистая прибыль/сетка",
+      value: ctx.net_profit_bps === null || ctx.net_profit_bps === undefined ? "—" : formatBps(ctx.net_profit_bps, 2, true),
+      help: "Ожидаемая прибыль одной сетки после комиссий, спреда, проскальзывания и неблагоприятного funding. bps = базисные пункты: 1 bps = 0,01%.",
+    },
+    {
+      label: "Издержки исполнения",
+      value: ctx.execution_cost_bps === null || ctx.execution_cost_bps === undefined ? "—" : formatBps(ctx.execution_cost_bps, 2, false),
+      help: "Оценка расходов на вход/выход: комиссия, спред и возможное проскальзывание. bps = 0,01%.",
+    },
+    {
+      label: "Funding-риск",
+      value: ctx.funding_cost_bps === null || ctx.funding_cost_bps === undefined ? "—" : formatBps(ctx.funding_cost_bps, 2, false),
+      help: "Ожидаемый неблагоприятный funding за горизонт удержания. Funding — периодические платежи между long и short на perpetual futures.",
+    },
+  ];
+}
+
 function formatBotLifetimeValue(params = {}) {
   const plan = params.trade_plan || {};
   const horizon = plan.expected_horizon || {};
@@ -707,16 +853,16 @@ function buildOperatorFieldSpecs(it, ov) {
   const positionValue = formatPositionSizeValue(positionNotional, positionQty, symbolParts?.base || "");
   const botLifetimeValue = formatBotLifetimeValue(params);
   const fields = [
-    { label: "Сторона", value: directionRu((it || {}).direction), mono: false },
-    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true },
-    { label: "Время работы", value: botLifetimeValue, copyValue: botLifetimeValue },
-    { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue },
-    { label: "Диапазон входа", value: rangeValue, mono: true },
-    { label: "Цена входа", value: ov.entryRef, mono: true },
-    { label: "Кол-во сеток", value: params.grid_count ?? params.grid_levels ?? "—" },
-    { label: "Плечо", value: ov.leverage },
-    { label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true },
-    { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true },
+    { label: "Сторона", value: directionRu((it || {}).direction), mono: false, help: "Направление идеи: лонг зарабатывает на росте, шорт — на снижении. Нейтральная grid-логика не должна подменяться направленным TP/SL." },
+    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Оценочная максимальная экспозиция бота. Это не маржа: при плече экспозиция больше внесённой маржи." },
+    { label: "Время работы", value: botLifetimeValue, copyValue: botLifetimeValue, help: "Рекомендуемый горизонт удержания бота, а не срок действия самой рекомендации." },
+    { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под бота с указанным плечом." },
+    { label: "Диапазон входа", value: rangeValue, mono: true, help: "Нижняя и верхняя границы основного диапазона сетки, которые оператор переносит в Bybit." },
+    { label: "Цена входа", value: ov.entryRef, mono: true, help: "Расчётная цена входа из рекомендации. Используется при создании бота и остаётся обязательным полем основной панели." },
+    { label: "Кол-во сеток", value: params.grid_count ?? params.grid_levels ?? "—", help: "Количество ценовых интервалов сетки. Должно соответствовать ограничениям Bybit Futures Grid." },
+    { label: "Плечо", value: ov.leverage, help: "Кредитное плечо linear USDT futures. Увеличивает и прибыль, и риск ликвидации." },
+    { label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true, help: "Take Profit — уровень фиксации прибыли. Для лонга он выше входа, для шорта ниже входа." },
+    { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help: "Stop Loss / kill-switch — защитный уровень остановки убытка. Для лонга ниже входа, для шорта выше входа." },
   ];
   return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
 }
@@ -775,6 +921,7 @@ function buildTechPayload(it) {
     sentiment_agg: reasons.sentiment_agg || {},
     bybit_meta: it.bybit_meta || {},
     bybit_plan_validation: it.bybit_plan_validation || {},
+    operator_decision_context: it.operator_decision_context || {},
     factors: {
       positive: reasons.top_positive_factors || [],
       negative: reasons.top_negative_factors || [],
@@ -796,6 +943,8 @@ function buildDetailsHtml(it) {
   const bybitWarnings = Array.isArray(bybitValidation.warnings) ? bybitValidation.warnings : [];
   const ov = buildOperatorValues(it);
   const operatorFields = buildOperatorFieldSpecs(it, ov);
+  const priceFreshnessFields = buildPriceFreshnessFields(it, ov);
+  const riskEconomicsFields = buildRiskEconomicsFields(it);
   const techPayload = JSON.stringify(buildTechPayload(it), null, 2);
 
   $("details").dataset.tech = techPayload;
@@ -813,23 +962,23 @@ function buildDetailsHtml(it) {
   const pendingDecision = status === "pending";
   const decisionClass = launchable ? "go" : explicitHardBlocked ? "stop" : "wait";
   const decisionTitle = launchable
-    ? "Можно запускать после preflight"
+    ? "Можно запускать после предпроверки"
     : explicitHardBlocked
       ? "Не запускать"
       : noTradeDecision
         ? "Не запускать сейчас"
         : pendingDecision
-          ? "Ждать LLM-review"
+          ? "Ждать LLM-проверку"
           : "Ждать / перепроверить";
   const decisionText = launchable
-    ? "Верхний блок содержит только значения, которые оператор переносит в Bybit Futures Grid."
+    ? "Проверьте цену, актуальность, риск и экономику; затем используйте блок параметров запуска для создания бота."
     : explicitHardBlocked
       ? "Есть жёсткий блокер, запрещающий ручное создание grid-бота. Причина показана ниже."
       : noTradeDecision
-        ? "no_trade означает: grid сейчас не запускать. Это не технический Bybit/preflight-блокер; решение принято абсолютными launch-гейтами, а не относительным рангом в таблице."
+        ? "no_trade означает: grid сейчас не запускать. Это не технический блокер Bybit; решение принято обязательными launch-проверками, а не относительным рангом в таблице."
         : pendingDecision
-          ? "Рекомендация удержана до завершения LLM-review. Это не no_trade и не Bybit/preflight-блокер; дождитесь финального статуса recommended/active либо отказа."
-          : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live preflight.";
+          ? "Рекомендация удержана до завершения LLM-проверки. Это не no_trade и не Bybit/preflight-блокер; дождитесь финального статуса recommended/active либо отказа."
+          : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live-предпроверки.";
 
   const llmDirection = llmReview?.execution_direction || llmReview?.thesis_direction || "neutral";
   const llmRecommendation = llmReview ? directionRu(llmDirection) : "нет данных";
@@ -892,21 +1041,35 @@ function buildDetailsHtml(it) {
 
       ${launchDecisionDiagnosticsHtml(it, scoreMeta)}
 
+      <div class="operator-card price-freshness-card">
+        <h3>Цена и актуальность</h3>
+        <div class="operator-grid two decision-context-grid">
+          ${priceFreshnessFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
+        </div>
+      </div>
+
+      <div class="operator-card risk-economics-card">
+        <h3>Риск и экономика запуска</h3>
+        <div class="operator-grid two decision-context-grid">
+          ${riskEconomicsFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? null, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
+        </div>
+      </div>
+
       <div class="operator-card primary-launch-card">
         <h3>Параметры запуска Bybit Futures Grid</h3>
         <div class="operator-grid two minimal-launch-grid">
-          ${operatorFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "")).join("")}
+          ${operatorFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
         </div>
       </div>
 
       <div class="operator-card llm-operator-card">
         <h3>LLM-рекомендация</h3>
         <div class="operator-grid three minimal-llm-grid">
-          ${fieldBox("Рекомендация LLM", llmRecommendation, null)}
-          ${fieldBox("Вероятность LLM", llmProbability, null)}
-          ${fieldBox("Сравнение с алгоритмом", llmAgreement, null)}
+          ${fieldBox("Рекомендация LLM", llmRecommendation, null, "", "LLM — языковая модель, которая дополнительно проверяет идею. Это не самостоятельное разрешение запуска без серверных и предпусковых риск-проверок.")}
+          ${fieldBox("Вероятность LLM", llmProbability, null, "", "Уверенность LLM в собственном выводе. Это не биржевая вероятность прибыли и не замена риск-проверкам.")}
+          ${fieldBox("Сравнение с алгоритмом", llmAgreement, null, "", "Показывает, совпадает ли вывод LLM с направлением и исполнением алгоритма.")}
         </div>
-        ${llmSummary ? `<div class="llm-summary-box compact-llm-summary">${escapeHtml(llmSummary)}</div>` : `<div class="helper-text">LLM review отсутствует для этой рекомендации.</div>`}
+        ${llmSummary ? `<div class="llm-summary-box compact-llm-summary">${escapeHtml(llmSummary)}</div>` : `<div class="helper-text">LLM-проверка отсутствует для этой рекомендации.</div>`}
       </div>
 
       ${blockersHtml}
