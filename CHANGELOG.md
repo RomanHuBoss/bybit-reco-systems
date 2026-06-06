@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-06
+
+- Fixed operator Details TP/SL display for short Futures Grid recommendations: short TP now maps to the lower kill-switch and short SL to the upper kill-switch.
+- Added neutral-grid fail-safe copy: no directional TP is shown; both kill-switch boundaries are displayed as the stop/kill-switch control.
+- Bumped static asset cache key to `manual-ui-v25`.
+- Validation: `node --check app/ui/static/app.js`, `python -m compileall -q app tests main.py`, `pytest -q` → 481 passed.
+
 ## 2026-05-14 — Bybit chart URL and operator UI hardening
 
 - Fixed operator chart links for Bybit Linear USDT perpetuals: UI now opens `https://www.bybit.com/trade/usdt/<SYMBOL>` (for example `DOGEUSDT`) instead of the obsolete locale-specific base/quote route.

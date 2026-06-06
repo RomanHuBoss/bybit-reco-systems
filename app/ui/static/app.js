@@ -534,6 +534,35 @@ function clearDetailsHeaderLinks() {
   if (bot) bot.classList.add("hidden");
 }
 
+function operatorExitLevels(direction, killLower, killUpper) {
+  const dir = String(direction || "").trim().toLowerCase();
+  if (dir === "short") {
+    return {
+      takeProfitValue: killLower,
+      stopLossValue: killUpper,
+      takeProfitLabel: "Take Profit",
+      stopLossLabel: "Stop Loss",
+      exitGeometry: "short: TP ниже диапазона, SL выше диапазона",
+    };
+  }
+  if (dir === "long") {
+    return {
+      takeProfitValue: killUpper,
+      stopLossValue: killLower,
+      takeProfitLabel: "Take Profit",
+      stopLossLabel: "Stop Loss",
+      exitGeometry: "long: TP выше диапазона, SL ниже диапазона",
+    };
+  }
+  return {
+    takeProfitValue: "—",
+    stopLossValue: `${killLower} / ${killUpper}`,
+    takeProfitLabel: "Take Profit",
+    stopLossLabel: "Stop Loss / Kill-switch",
+    exitGeometry: "neutral: нет направленного TP; контроль выхода по нижнему/верхнему kill-switch",
+  };
+}
+
 function buildOperatorValues(it) {
   const params = (it || {}).params || {};
   const plan = params.trade_plan || {};
@@ -553,10 +582,7 @@ function buildOperatorValues(it) {
   const tpLegPct = formatPercentDot(tpPerLeg.pct, 4, false);
   const leverage = it.venue === "linear" ? String(params.leverage ?? 1) : "—";
   const marginMode = it.venue === "linear" ? marginModeRu(params.margin_mode || "isolated") : "—";
-  const stopLossLabel = "Стоп-лосс";
-  const takeProfitLabel = "Тейк-профит";
-  const stopLossValue = killLower;
-  const takeProfitValue = killUpper;
+  const exits = operatorExitLevels((it || {}).direction, killLower, killUpper);
   return {
     rangeLower,
     rangeUpper,
@@ -569,10 +595,7 @@ function buildOperatorValues(it) {
     tpLegPct,
     leverage,
     marginMode,
-    stopLossLabel,
-    stopLossValue,
-    takeProfitLabel,
-    takeProfitValue,
+    ...exits,
   };
 }
 
@@ -670,8 +693,8 @@ function buildOperatorFieldSpecs(it, ov) {
     { label: "Цена входа", value: ov.entryRef, mono: true },
     { label: "Кол-во сеток", value: params.grid_count ?? params.grid_levels ?? "—" },
     { label: "Плечо", value: ov.leverage },
-    { label: "Take Profit", value: ov.takeProfitValue, mono: true },
-    { label: "Stop Loss", value: ov.stopLossValue, mono: true },
+    { label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true },
+    { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true },
   ];
   return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
 }
