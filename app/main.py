@@ -36,6 +36,7 @@ from . import db
 from .db_backend import describe_target
 from .bot_types import sql_in_clause
 from .grid_math import estimate_linear_liq_price, liquidation_buffer_pct, quantize_step
+from .trading_semantics import directional_exit_levels, validate_directional_exit_geometry
 import logging
 
 logger = logging.getLogger(__name__)
@@ -539,8 +540,18 @@ def _merge_bybit_operator_guard_into_ui_payload(out: dict[str, Any], guard: dict
     out["reasons"] = reasons
 
 
+def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
+    ctx = _trade_plan_price_context(rec)
+    return directional_exit_levels(
+        rec.get("direction"),
+        ctx.get("kill_switch_lower"),
+        ctx.get("kill_switch_upper"),
+    ).as_dict()
+
+
 def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
     out = dict(rec)
+    out["directional_exit_levels"] = _directional_exit_payload_for_reco(out)
     venue = str(out.get("venue") or "")
     symbol = str(out.get("symbol") or "")
     try:
@@ -566,6 +577,7 @@ def _augment_reco_for_ui(rec: dict[str, Any]) -> dict[str, Any]:
         _apply_llm_effective_pending_guard(out)
         return out
     out = _snap_reco_payload_to_bybit_meta(out, bybit_meta)
+    out["directional_exit_levels"] = _directional_exit_payload_for_reco(out)
     out["bybit_meta"] = bybit_meta
     out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
     out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True, require_execution_plan=True)
@@ -1754,6 +1766,14 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             "code": "KILL_SWITCH_INSIDE_MAIN_RANGE",
             "msg": f"kill_switch.upper={upper_ks} находится внутри основного диапазона и не защищает верхнюю границу {upper}.",
         })
+
+    if direction in {"long", "short"}:
+        exits = directional_exit_levels(direction, lower_ks, upper_ks)
+        for err in validate_directional_exit_geometry(direction, reference_price, exits.take_profit, exits.stop_loss):
+            errors.append({
+                "code": err.get("code", "DIRECTIONAL_EXIT_GEOMETRY_INVALID"),
+                "msg": err.get("msg", "Directional TP/SL geometry is invalid."),
+            })
 
     snapped_step = None
     if step_abs is not None and tick_size is not None and step_abs < tick_size:

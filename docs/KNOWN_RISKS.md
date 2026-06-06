@@ -45,7 +45,7 @@ Execution-time validation теперь fail-closed блокирует futures/li
 расширения execution-логики на hedge/cross сценарии.
 
 ## 11. Рекомендательный сервис по-прежнему не заменяет внешний reconciliation с биржей
-Даже после усиления row-level locking в PostgreSQL и DB-level инвариантов publication-chain проект видит только операторские `trades`, а не реальный поток ордеров/исполнений Bybit. Поэтому окончательная truth-модель позиции, funding и liquidation всё ещё должна жить во внешнем execution/reconciliation контуре.
+Даже после усиления row-level locking в PostgreSQL, DB-level инвариантов publication-chain и canonical directional semantics (`app.trading_semantics`) проект видит только операторские `trades`, а не реальный поток ордеров/исполнений Bybit. Поэтому окончательная truth-модель позиции, funding и liquidation всё ещё должна жить во внешнем execution/reconciliation контуре. При добавлении live executor его side/reduceOnly mapping должен быть привязан к `bybit_linear_order_semantics()` и покрыт testnet/private API tests.
 
 ## 12. Глубокие исторические retrofit-операции больше не выполняются автоматически на каждом старте
 Это сознательное решение на безопасность эксплуатации. Иначе штатный restart на БД с накопленной историей может превращаться в тяжёлый full-scan recommendations/ohlcv и визуально выглядеть как зависание сервиса.

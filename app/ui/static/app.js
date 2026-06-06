@@ -563,6 +563,27 @@ function operatorExitLevels(direction, killLower, killUpper) {
   };
 }
 
+function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
+  if (!exitLevels || typeof exitLevels !== "object") return fallback;
+  const dir = String(exitLevels.direction || "").trim().toLowerCase();
+  const lower = formatBybitPrice(exitLevels.kill_switch_lower, meta, "down");
+  const upper = formatBybitPrice(exitLevels.kill_switch_upper, meta, "up");
+  const hasDirectionalTp = exitLevels.has_directional_take_profit === true;
+  const takeProfitValue = hasDirectionalTp
+    ? formatBybitPrice(exitLevels.take_profit, meta, dir === "short" ? "down" : "up")
+    : "—";
+  const stopLossValue = hasDirectionalTp
+    ? formatBybitPrice(exitLevels.stop_loss, meta, dir === "short" ? "up" : "down")
+    : `${lower} / ${upper}`;
+  return {
+    takeProfitValue,
+    stopLossValue,
+    takeProfitLabel: exitLevels.take_profit_label || fallback.takeProfitLabel || "Take Profit",
+    stopLossLabel: exitLevels.stop_loss_label || fallback.stopLossLabel || "Stop Loss",
+    exitGeometry: exitLevels.geometry || fallback.exitGeometry || "",
+  };
+}
+
 function buildOperatorValues(it) {
   const params = (it || {}).params || {};
   const plan = params.trade_plan || {};
@@ -583,6 +604,7 @@ function buildOperatorValues(it) {
   const leverage = it.venue === "linear" ? String(params.leverage ?? 1) : "—";
   const marginMode = it.venue === "linear" ? marginModeRu(params.margin_mode || "isolated") : "—";
   const exits = operatorExitLevels((it || {}).direction, killLower, killUpper);
+  const canonicalExits = operatorExitLevelsFromBackend((it || {}).directional_exit_levels, exits, meta);
   return {
     rangeLower,
     rangeUpper,
@@ -595,7 +617,7 @@ function buildOperatorValues(it) {
     tpLegPct,
     leverage,
     marginMode,
-    ...exits,
+    ...canonicalExits,
   };
 }
 

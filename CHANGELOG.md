@@ -1,3 +1,10 @@
+## 2026-06-06 — directional semantics hardening
+
+- Added `app.trading_semantics` as the canonical source for long/short/neutral exit mapping and Bybit one-way side/reduceOnly semantics.
+- API recommendations now include `directional_exit_levels`; operator UI consumes the backend payload with legacy fallback.
+- Execution preflight now rejects invalid directional TP/SL geometry fail-closed.
+- Added regression tests for swapped short TP/SL, backend/UI consistency and Bybit close/open side mapping.
+
 # Changelog
 
 ## 2026-06-06

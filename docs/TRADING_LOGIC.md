@@ -124,3 +124,8 @@ UI обязан показывать этот блок рядом с execution/l
 ## UI score segmentation
 
 `score` остаётся raw эвристическим числом для backend-гейтов и tie-break diagnostics, но операторский `Ранг в выборке` не должен выглядеть как точная вероятность или точное качество идеи. UI строит percentile по видимым кандидатам с near-tie группировкой: raw-score отличия `<= 0.025` считаются практически неразличимыми, группа получает общий averaged percentile/grade. Это предотвращает ложное разделение малой выборки, например `0.245 / 0.242 / 0.232`, на жёсткие `100 / 50 / 0`.
+
+## Directional TP/SL semantics
+
+Canonical long/short/neutral exit mapping lives in `app.trading_semantics` and is also exposed to the operator API as `directional_exit_levels`. For `long`, Take Profit is above entry/reference and Stop Loss is below. For `short`, Take Profit is below entry/reference and Stop Loss is above. For `neutral` futures grid there is no single directional Take Profit; both outer bounds are kill-switch exits. Execution preflight validates this geometry fail-closed for directional grids.
+
