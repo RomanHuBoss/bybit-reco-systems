@@ -555,6 +555,27 @@ def _pct_delta(value: float | None, reference: float | None) -> float | None:
     return (float(value) - float(reference)) / float(reference) * 100.0
 
 
+def _distance_from_current_to_bound_pct(current_price: float | None, bound: float | None, *, side: str) -> float | None:
+    """Signed distance from current price to a range/kill-switch bound.
+
+    Both lower and upper distances use the same denominator: current price.
+    This keeps the operator UI symmetric and avoids overstating downside room
+    when the lower bound is far below the current price. Positive means the
+    current price is still inside the relevant side of the bound; negative means
+    that side has already been breached.
+    """
+    current = _finite_float_or_none(current_price)
+    level = _finite_float_or_none(bound)
+    if current is None or level is None or current <= 0:
+        return None
+    side_norm = str(side or "").strip().lower()
+    if side_norm == "lower":
+        return (current - level) / current * 100.0
+    if side_norm == "upper":
+        return (level - current) / current * 100.0
+    return None
+
+
 def _operator_decision_context_for_reco(
     rec: dict[str, Any],
     *,
@@ -668,12 +689,12 @@ def _operator_decision_context_for_reco(
         "price_drift_from_entry_pct": _pct_delta(current_price, reference_price),
         "range_lower": range_lower,
         "range_upper": range_upper,
-        "distance_to_lower_pct": None if current_price is None else _pct_delta(current_price, range_lower),
-        "distance_to_upper_pct": None if current_price is None else _pct_delta(range_upper, current_price),
+        "distance_to_lower_pct": _distance_from_current_to_bound_pct(current_price, range_lower, side="lower"),
+        "distance_to_upper_pct": _distance_from_current_to_bound_pct(current_price, range_upper, side="upper"),
         "kill_switch_lower": kill_lower,
         "kill_switch_upper": kill_upper,
-        "distance_to_kill_lower_pct": None if current_price is None else _pct_delta(current_price, kill_lower),
-        "distance_to_kill_upper_pct": None if current_price is None else _pct_delta(kill_upper, current_price),
+        "distance_to_kill_lower_pct": _distance_from_current_to_bound_pct(current_price, kill_lower, side="lower"),
+        "distance_to_kill_upper_pct": _distance_from_current_to_bound_pct(current_price, kill_upper, side="upper"),
         "net_profit_bps": net_profit_bps,
         "gross_profit_bps": gross_profit_bps,
         "execution_cost_bps": execution_cost_bps,

@@ -163,8 +163,9 @@ function formatProbability(value) {
 }
 
 function directionRu(dir) {
-  if (dir === "long") return "Лонг";
-  if (dir === "short") return "Шорт";
+  const normalized = String(dir || "").trim().toLowerCase();
+  if (normalized === "long") return "Лонг";
+  if (normalized === "short") return "Шорт";
   return "Нейтральный";
 }
 
@@ -574,7 +575,7 @@ function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
   const dir = String(exitLevels.direction || "").trim().toLowerCase();
   const lower = formatBybitPrice(exitLevels.kill_switch_lower, meta, "down");
   const upper = formatBybitPrice(exitLevels.kill_switch_upper, meta, "up");
-  const hasDirectionalTp = exitLevels.has_directional_take_profit === true;
+  const hasDirectionalTp = exitLevels.has_directional_take_profit === true && (dir === "long" || dir === "short");
   const takeProfitValue = hasDirectionalTp
     ? formatBybitPrice(exitLevels.take_profit, meta, dir === "short" ? "down" : "up")
     : "—";
