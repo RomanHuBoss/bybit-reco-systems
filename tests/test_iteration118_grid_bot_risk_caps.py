@@ -64,6 +64,7 @@ def test_risk_limits_include_per_bot_leverage_notional_and_margin_caps() -> None
         {},
     )
 
+    assert limits["min_leverage"] == 2
     assert limits["max_leverage"] == 2
     assert limits["max_position_notional_usdt"] == 750.0
     assert limits["max_margin_per_bot_usdt"] == 250.0

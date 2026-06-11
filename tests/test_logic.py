@@ -2811,7 +2811,8 @@ def test_load_settings_falls_back_when_risk_limits_json_is_malformed(monkeypatch
         "max_daily_dd_usdt": 200.0,
         "cooldown_after_loss_min": 30,
         "max_symbol_bots": 1,
-        "max_leverage": 3,
+        "min_leverage": 5,
+        "max_leverage": 5,
         "max_position_notional_usdt": 5000.0,
         "max_margin_per_bot_usdt": 1000.0,
     }
@@ -2882,7 +2883,8 @@ def test_get_risk_limits_normalizes_corrupted_active_limits(tmp_path: Path):
         "max_daily_dd_usdt": 0.0,
         "cooldown_after_loss_min": 30,
         "max_symbol_bots": 1,
-        "max_leverage": 3,
+        "min_leverage": 5,
+        "max_leverage": 5,
         "max_position_notional_usdt": 5000.0,
         "max_margin_per_bot_usdt": 1000.0,
     }

@@ -9,7 +9,7 @@ from typing import Any
 from . import db
 from .features import compute_features_from_ohlcv, liquidity_tier, funding_signal, oi_trend, btc_beta
 from .regime import classify_regime
-from .risk import gate_candidate, compute_risk_status as _compute_risk_status
+from .risk import gate_candidate, compute_risk_status as _compute_risk_status, normalize_risk_limits
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
@@ -2067,15 +2067,33 @@ def _params(
     }
 
     if venue == "linear":
+        try:
+            effective_limits = normalize_risk_limits(getattr(settings, "risk_limits", {}) or {})
+        except Exception:
+            effective_limits = {"min_leverage": 5, "max_leverage": 5}
+        min_operator_leverage = int(effective_limits.get("min_leverage") or 1)
+        max_operator_leverage = int(effective_limits.get("max_leverage") or max(1, min_operator_leverage))
+        target_leverage = max(1, min(max_operator_leverage, max(1, min_operator_leverage)))
+
         leverage = 1
-        if direction != "neutral" and dir_strength >= 0.20 and atr_pct <= 0.035:
-            leverage = 2
+        leverage_policy_note = "blocked_or_observation_only"
+        # Operator policy: do not publish low-leverage actionable futures grids.
+        # We only upgrade to the operator minimum when the signal quality/cost envelope
+        # is strong enough; otherwise the downstream MIN_LEVERAGE_PER_BOT gate fails closed.
         if direction != "neutral" and dir_strength >= 0.45 and atr_pct <= 0.020 and execution_cost_bps <= 10.0:
-            leverage = 3
+            leverage = target_leverage
+            leverage_policy_note = "operator_minimum_selected"
         if atr_pct >= 0.05 or execution_cost_bps >= 18.0:
             leverage = 1
+            leverage_policy_note = "unsafe_volatility_or_execution_cost"
         params["leverage"] = int(leverage)
         params["margin_mode"] = "isolated"
+        params["leverage_policy"] = {
+            "min_operator_leverage": int(min_operator_leverage),
+            "max_operator_leverage": int(max_operator_leverage),
+            "selected_leverage": int(leverage),
+            "note": leverage_policy_note,
+        }
     else:
         params["leverage"] = 1
         params["margin_mode"] = "isolated"
@@ -3323,8 +3341,11 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     blocks.append({"code": "GRID_GROSS_EDGE_BELOW_COSTS", "msg": f"gross_profit_per_grid={gross_profit_bps:.2f} bps почти не покрывает execution_cost={execution_cost_bps:.2f} bps"})
                 if venue == "linear" and liq_buffer_pct is not None and liq_buffer_pct < 12.0:
                     blocks.append({"code": "LIQUIDATION_BUFFER_TOO_LOW", "msg": f"estimated liquidation buffer={liq_buffer_pct:.2f}% < 12%"})
+                min_leverage = _finite_or_none(limits.get("min_leverage") if isinstance(limits, dict) else None)
                 max_leverage = _finite_or_none(limits.get("max_leverage") if isinstance(limits, dict) else None)
                 leverage_used = _finite_or_none(params.get("leverage"))
+                if min_leverage is not None and min_leverage > 0 and leverage_used is not None and leverage_used < min_leverage:
+                    blocks.append({"code": "MIN_LEVERAGE_PER_BOT", "msg": f"leverage={leverage_used:.0f}x < operator minimum={min_leverage:.0f}x"})
                 if max_leverage is not None and max_leverage > 0 and leverage_used is not None and leverage_used > max_leverage:
                     blocks.append({"code": "MAX_LEVERAGE_PER_BOT", "msg": f"leverage={leverage_used:.0f}x > runtime cap={max_leverage:.0f}x"})
 

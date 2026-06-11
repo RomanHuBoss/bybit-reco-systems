@@ -701,13 +701,22 @@ function buildPriceFreshnessFields(it, ov) {
   const currentPrice = ctx.current_price ?? null;
   const drift = ctx.price_drift_from_entry_pct;
   const tickerAge = ctx.ticker_age_sec;
-  const recAge = ctx.recommendation_age_sec;
+  const recAge = ctx.recommendation_row_age_sec ?? ctx.recommendation_age_sec;
+  const chainAge = ctx.publication_chain_age_sec;
+  const chainUpdates = ctx.publication_chain_update_count;
+  const chainStartedTs = ctx.publication_chain_started_ts;
+  const chainExpiresIn = ctx.publication_chain_expires_in_sec;
   const expiresIn = ctx.expires_in_sec;
   const ttlText = ctx.is_expired === true
     ? `истекла ${formatDurationValue(Math.abs(expiresIn ?? 0))} назад`
     : expiresIn !== null && expiresIn !== undefined
       ? `осталось ${formatDurationValue(expiresIn)}`
       : "TTL не задан";
+  const chainTtlText = ctx.is_publication_chain_expired === true
+    ? `цепочка истекла ${formatDurationValue(Math.abs(chainExpiresIn ?? 0))} назад`
+    : chainExpiresIn !== null && chainExpiresIn !== undefined
+      ? `цепочка: осталось ${formatDurationValue(chainExpiresIn)}`
+      : "TTL цепочки не задан";
   return [
     {
       label: "Цена входа",
@@ -747,9 +756,14 @@ function buildPriceFreshnessFields(it, ov) {
       help: "Сколько времени прошло с последнего биржевого снимка цены. Старый снимок нельзя считать надёжным основанием для запуска.",
     },
     {
-      label: "Актуальность рекомендации",
+      label: "Возраст текущей строки",
       value: `${recAge === null || recAge === undefined ? "—" : formatDurationValue(recAge)} · ${ttlText}`,
-      help: "Возраст рекомендации и оставшееся время до её автоматического устаревания.",
+      help: "Возраст именно текущей записи рекомендации. Она могла заменить более раннюю рекомендацию той же публикационной цепочки.",
+    },
+    {
+      label: "Возраст идеи с первого сигнала",
+      value: `${chainAge === null || chainAge === undefined ? "—" : formatDurationValue(chainAge)} · обновлений: ${chainUpdates ?? "—"} · ${chainTtlText}`,
+      help: `Сколько прошло с первого root-сигнала этой публикационной цепочки. Старт цепочки: ${formatTs(chainStartedTs)}. Если это сильно больше возраста текущей строки, рекомендация может выглядеть свежей, хотя идея уже долго живёт.`,
     },
   ];
 }

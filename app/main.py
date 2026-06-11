@@ -576,6 +576,86 @@ def _distance_from_current_to_bound_pct(current_price: float | None, bound: floa
     return None
 
 
+def _publication_chain_context_for_reco(
+    conn: Any | None,
+    rec: dict[str, Any],
+    *,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Return first-root lineage timing for a recommendation publication chain.
+
+    A row can be superseded by a sharper recommendation while reusing the same
+    publication_root_rec_id. Row age alone then understates how long the original
+    idea has been alive. Execution/UI must expose both values.
+    """
+    now = int(now_ts or time.time())
+    rec_id = str(rec.get("rec_id") or "").strip()
+    root_id = str(rec.get("publication_root_rec_id") or rec_id).strip() or rec_id or None
+    row_ts = _safe_int_or_none(rec.get("ts"))
+    row_age_sec = None if row_ts is None else max(0, now - int(row_ts))
+
+    first_ts = row_ts
+    last_ts = row_ts
+    update_count = 1 if rec_id or row_ts is not None else 0
+    if conn is not None and root_id:
+        try:
+            cur = conn.execute(
+                """SELECT MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS update_count
+                     FROM recommendations
+                    WHERE publication_root_rec_id = ? OR rec_id = ?""",
+                (root_id, root_id),
+            )
+            row = cur.fetchone()
+            if row and int(row["update_count"] or 0) > 0:
+                first_ts = _safe_int_or_none(row["first_ts"])
+                last_ts = _safe_int_or_none(row["last_ts"])
+                update_count = int(row["update_count"] or 0)
+        except Exception:
+            first_ts = row_ts
+            last_ts = row_ts
+            update_count = 1 if rec_id or row_ts is not None else 0
+
+    chain_age_sec = None if first_ts is None else max(0, now - int(first_ts))
+    return {
+        "publication_root_rec_id": root_id,
+        "recommendation_row_age_sec": row_age_sec,
+        "publication_chain_started_ts": first_ts,
+        "publication_chain_updated_ts": last_ts,
+        "publication_chain_age_sec": chain_age_sec,
+        "publication_chain_update_count": int(update_count or 0),
+    }
+
+
+def _execution_recommendation_freshness_blocks(
+    conn: Any | None,
+    rec: dict[str, Any],
+    *,
+    now_ts: int | None = None,
+) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    now = int(now_ts or time.time())
+    ttl_sec = _safe_int_or_none(rec.get("ttl_sec"))
+    if ttl_sec is None or ttl_sec <= 0:
+        return blocks
+
+    chain = _publication_chain_context_for_reco(conn, rec, now_ts=now)
+    row_age = _safe_int_or_none(chain.get("recommendation_row_age_sec"))
+    chain_age = _safe_int_or_none(chain.get("publication_chain_age_sec"))
+    if row_age is not None and row_age > ttl_sec:
+        blocks.append({
+            "code": "RECOMMENDATION_ROW_EXPIRED",
+            "msg": f"current recommendation row age={row_age}s exceeds ttl={ttl_sec}s",
+        })
+    if chain_age is not None and chain_age > ttl_sec:
+        blocks.append({
+            "code": "PUBLICATION_CHAIN_TOO_OLD",
+            "msg": f"publication chain age from first root={chain_age}s exceeds ttl={ttl_sec}s",
+            "publication_root_rec_id": chain.get("publication_root_rec_id"),
+            "publication_chain_update_count": chain.get("publication_chain_update_count"),
+        })
+    return blocks
+
+
 def _operator_decision_context_for_reco(
     rec: dict[str, Any],
     *,
@@ -602,10 +682,15 @@ def _operator_decision_context_for_reco(
 
     rec_ts = _safe_int_or_none(rec.get("ts"))
     ttl_sec = _safe_int_or_none(rec.get("ttl_sec"))
-    age_sec = None if rec_ts is None else max(0, now - int(rec_ts))
+    chain_ctx = _publication_chain_context_for_reco(conn, rec, now_ts=now)
+    age_sec = chain_ctx.get("recommendation_row_age_sec")
     expires_in_sec = None
     if rec_ts is not None and ttl_sec is not None and ttl_sec > 0:
         expires_in_sec = int(rec_ts) + int(ttl_sec) - now
+    chain_expires_in_sec = None
+    chain_started_ts = _safe_int_or_none(chain_ctx.get("publication_chain_started_ts"))
+    if chain_started_ts is not None and ttl_sec is not None and ttl_sec > 0:
+        chain_expires_in_sec = int(chain_started_ts) + int(ttl_sec) - now
 
     ticker: dict[str, Any] | None = None
     if conn is not None:
@@ -678,9 +763,17 @@ def _operator_decision_context_for_reco(
     return {
         "recommendation_ts": rec_ts,
         "recommendation_age_sec": age_sec,
+        "recommendation_row_age_sec": age_sec,
+        "publication_root_rec_id": chain_ctx.get("publication_root_rec_id"),
+        "publication_chain_started_ts": chain_ctx.get("publication_chain_started_ts"),
+        "publication_chain_updated_ts": chain_ctx.get("publication_chain_updated_ts"),
+        "publication_chain_age_sec": chain_ctx.get("publication_chain_age_sec"),
+        "publication_chain_update_count": chain_ctx.get("publication_chain_update_count"),
+        "publication_chain_expires_in_sec": chain_expires_in_sec,
         "ttl_sec": ttl_sec,
         "expires_in_sec": expires_in_sec,
         "is_expired": bool(expires_in_sec is not None and expires_in_sec <= 0),
+        "is_publication_chain_expired": bool(chain_expires_in_sec is not None and chain_expires_in_sec <= 0),
         "current_price": current_price,
         "ticker_ts": ticker_ts,
         "ticker_age_sec": ticker_age_sec,
@@ -2282,6 +2375,7 @@ def _execution_preflight(
         bybit_meta = dict(bybit_meta)
 
     rec_for_validation = _snap_reco_payload_to_bybit_meta(rec, bybit_meta)
+    blocks.extend(_execution_recommendation_freshness_blocks(conn, rec_for_validation, now_ts=now))
     blocks.extend(_execution_market_data_blocks(conn, rec_for_validation, now_ts=now))
     blocks.extend(_execution_live_price_blocks(conn, rec_for_validation))
     blocks.extend(_execution_funding_blocks(conn, rec_for_validation, now_ts=now))
