@@ -1633,6 +1633,98 @@ def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None =
     return blocks
 
 
+def _first_finite_from_mappings(mappings: list[Any], keys: tuple[str, ...]) -> tuple[str | None, float | None]:
+    for mapping in mappings:
+        key, value = _first_finite_from_mapping(mapping if isinstance(mapping, dict) else {}, keys)
+        if value is not None:
+            return key, value
+    return None, None
+
+
+def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, Any]) -> list[dict[str, Any]]:
+    """Re-check per-bot leverage/notional/margin caps at operator execution time.
+
+    Recommendation-time risk gates are only a snapshot. Runtime limits may be
+    tightened after publication, and auto-snap can increase qty/notional to satisfy
+    Bybit minNotional/qtyStep. Execute-path must therefore validate the exact
+    snapped payload that will be stored in the bot instance.
+    """
+    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+        return []
+    if str(rec.get("venue") or "").strip().lower() != "linear":
+        return []
+
+    effective_limits = normalize_risk_limits(limits, limits)
+    params, plan = _rec_params_and_plan(rec)
+    sizing_maps: list[Any] = [
+        params.get("sizing"),
+        plan.get("sizing"),
+        params.get("economics"),
+        plan.get("economics"),
+        params.get("risk_report"),
+        plan.get("risk_report"),
+        params,
+        plan,
+    ]
+
+    blocks: list[dict[str, Any]] = []
+    leverage = _finite_float_or_none(params.get("leverage"))
+    if leverage is None:
+        leverage = _finite_float_or_none(plan.get("leverage"))
+
+    max_leverage = _finite_float_or_none(effective_limits.get("max_leverage"))
+    if leverage is not None and max_leverage is not None and max_leverage > 0 and leverage > max_leverage:
+        blocks.append({
+            "code": "MAX_LEVERAGE_PER_BOT_AT_EXECUTION",
+            "msg": f"execution payload leverage={leverage:.8g}x выше текущего runtime max_leverage={max_leverage:.8g}x.",
+        })
+
+    notional_key, estimated_notional = _first_finite_from_mappings(
+        sizing_maps,
+        (
+            "estimated_max_position_notional_usdt",
+            "max_position_notional_usdt",
+            "estimated_total_order_notional_usdt",
+            "total_order_notional_usdt",
+            "position_notional_usdt",
+            "notional_usdt",
+        ),
+    )
+    margin_key, estimated_margin = _first_finite_from_mappings(
+        sizing_maps,
+        (
+            "estimated_margin_required_usdt",
+            "margin_required_usdt",
+            "capital_required_usdt",
+            "margin_usdt",
+            "investment_usdt",
+        ),
+    )
+
+    if estimated_margin is None and estimated_notional is not None and leverage is not None and leverage > 0:
+        estimated_margin = float(estimated_notional) / max(1.0, float(leverage))
+        margin_key = "estimated_max_position_notional_usdt/leverage"
+    if estimated_notional is None and estimated_margin is not None and leverage is not None and leverage > 0:
+        estimated_notional = float(estimated_margin) * max(1.0, float(leverage))
+        notional_key = "estimated_margin_required_usdt*leverage"
+
+    max_notional = _finite_float_or_none(effective_limits.get("max_position_notional_usdt"))
+    if max_notional is not None and max_notional > 0 and estimated_notional is not None and estimated_notional > max_notional:
+        blocks.append({
+            "code": "MAX_POSITION_NOTIONAL_PER_BOT_AT_EXECUTION",
+            "msg": f"execution {notional_key or 'position_notional'}={estimated_notional:.8g} USDT выше текущего runtime cap={max_notional:.8g} USDT.",
+        })
+
+    max_margin = _finite_float_or_none(effective_limits.get("max_margin_per_bot_usdt"))
+    if max_margin is not None and max_margin > 0 and estimated_margin is not None and estimated_margin > max_margin:
+        blocks.append({
+            "code": "MAX_MARGIN_PER_BOT_AT_EXECUTION",
+            "msg": f"execution {margin_key or 'margin_required'}={estimated_margin:.8g} USDT выше текущего runtime cap={max_margin:.8g} USDT.",
+        })
+
+    return blocks
+
+
 def _active_symbol_disable_state(conn, venue: str, symbol: str, *, now_ts: int | None = None) -> dict[str, Any] | None:
     now = int(now_ts or time.time())
     cur = conn.execute(
@@ -2992,6 +3084,12 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
 
     rec_for_execution = _snap_reco_payload_to_bybit_meta(rec, bybit_meta)
+    size_risk_blocks = _execution_runtime_size_risk_blocks(rec_for_execution, limits)
+    if size_risk_blocks:
+        db.log_decision(conn, "EXECUTION_SIZE_RISK_BLOCKED", rec_id, operator, {"blocks": size_risk_blocks})
+        codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in size_risk_blocks)
+        raise HTTPException(status_code=409, detail=f"execution blocked by runtime size/leverage risk caps: {codes}")
+
     preflight = _execution_preflight(conn, rec_for_execution, now_ts=int(time.time()), bybit_meta=bybit_meta)
     preflight_blocks = list(preflight.get("blocks") or [])
     if preflight_blocks:

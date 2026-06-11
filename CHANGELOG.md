@@ -1,3 +1,11 @@
+
+## 2026-06-11 — runtime risk caps re-audit
+
+- Added execution-time size/leverage risk cap validation for Bybit Linear USDT futures-grid payloads after Bybit snapping and before bot materialization.
+- New guard blocks stale/oversized recommendations if current runtime `max_leverage`, `max_position_notional_usdt`, or `max_margin_per_bot_usdt` would be breached at operator action time.
+- Added regression tests in `tests/test_iteration154_execution_runtime_risk_caps.py`.
+- Added a dedicated runtime-risk-caps re-audit document under `docs/`.
+
 ## 2026-06-06 — directional semantics hardening
 
 - Added `app.trading_semantics` as the canonical source for long/short/neutral exit mapping and Bybit one-way side/reduceOnly semantics.
