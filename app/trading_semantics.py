@@ -125,6 +125,93 @@ def validate_directional_exit_geometry(direction: Any, entry_price: Any, take_pr
     return errors
 
 
+@dataclass(frozen=True)
+class DirectionalTradeMath:
+    """Executable long/short price semantics for one-way linear USDT positions.
+
+    Profit and loss are returned as positive magnitudes in USDT.  Invalid or
+    swapped TP/SL geometry is rejected by returning ``None`` from the factory
+    below instead of silently producing a negative risk/reward value.
+    """
+
+    direction: str
+    entry_price: float
+    take_profit: float
+    stop_loss: float
+    qty: float
+    gross_profit_usdt: float
+    gross_loss_usdt: float
+    reward_pct: float
+    risk_pct: float
+    risk_reward: float | None
+    take_profit_distance_pct: float
+    stop_loss_distance_pct: float
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def directional_trade_math(
+    direction: Any,
+    entry_price: Any,
+    take_profit: Any,
+    stop_loss: Any,
+    qty: Any = 1.0,
+) -> DirectionalTradeMath | None:
+    """Return canonical PnL/risk/reward semantics for a directional trade.
+
+    Long: TP must be above entry and SL below entry.  Short: TP must be below
+    entry and SL above entry.  The function is intentionally fail-closed so any
+    UI, test, or future execution adapter can share the same sign model.
+    """
+    direction_norm = normalize_execution_direction(direction)
+    if direction_norm not in DIRECTIONAL_EXECUTION_DIRECTIONS:
+        return None
+
+    entry = _finite_float(entry_price)
+    tp = _finite_float(take_profit)
+    sl = _finite_float(stop_loss)
+    quantity = _finite_float(qty)
+    if entry is None or tp is None or sl is None or quantity is None:
+        return None
+    if entry <= 0 or tp <= 0 or sl <= 0 or quantity <= 0:
+        return None
+    if validate_directional_exit_geometry(direction_norm, entry, tp, sl):
+        return None
+
+    if direction_norm == "long":
+        profit_per_unit = tp - entry
+        loss_per_unit = entry - sl
+    else:
+        profit_per_unit = entry - tp
+        loss_per_unit = sl - entry
+
+    if profit_per_unit <= 0 or loss_per_unit <= 0:
+        return None
+
+    gross_profit = float(profit_per_unit * quantity)
+    gross_loss = float(loss_per_unit * quantity)
+    notional = float(entry * quantity)
+    reward_pct = float(gross_profit / notional * 100.0)
+    risk_pct = float(gross_loss / notional * 100.0)
+    risk_reward = float(gross_profit / gross_loss) if gross_loss > 0 else None
+
+    return DirectionalTradeMath(
+        direction=direction_norm,
+        entry_price=float(entry),
+        take_profit=float(tp),
+        stop_loss=float(sl),
+        qty=float(quantity),
+        gross_profit_usdt=gross_profit,
+        gross_loss_usdt=gross_loss,
+        reward_pct=reward_pct,
+        risk_pct=risk_pct,
+        risk_reward=risk_reward,
+        take_profit_distance_pct=reward_pct,
+        stop_loss_distance_pct=risk_pct,
+    )
+
+
 def bybit_linear_order_semantics(direction: Any, action: str) -> dict[str, Any]:
     """Canonical one-way Bybit V5 side/reduceOnly mapping for directional orders.
 
@@ -156,3 +243,34 @@ def bybit_linear_order_semantics(direction: Any, action: str) -> dict[str, Any]:
         "reduceOnly": reduce_only,
         "closeOnTrigger": bool(reduce_only),
     }
+
+
+def bybit_linear_protective_order_semantics(direction: Any, exit_kind: str) -> dict[str, Any]:
+    """Canonical one-way Bybit V5 semantics for TP/SL protective exits.
+
+    A protective TP/SL must always reduce or close the existing position.  It
+    must therefore use the same side as a close order, set reduceOnly and
+    closeOnTrigger, and never be allowed to increase exposure.
+    """
+    exit_norm = str(exit_kind or "").strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "tp": "take_profit",
+        "takeprofit": "take_profit",
+        "take_profit": "take_profit",
+        "sl": "stop_loss",
+        "stoploss": "stop_loss",
+        "stop_loss": "stop_loss",
+    }
+    purpose = aliases.get(exit_norm)
+    if purpose is None:
+        raise ValueError("exit_kind must be one of: take_profit, stop_loss")
+    semantics = bybit_linear_order_semantics(direction, "close")
+    semantics.update({
+        "exit_kind": purpose,
+        "orderFilter": "StopOrder",
+        "triggerPurpose": "takeProfit" if purpose == "take_profit" else "stopLoss",
+        "reduceOnly": True,
+        "closeOnTrigger": True,
+    })
+    return semantics
+

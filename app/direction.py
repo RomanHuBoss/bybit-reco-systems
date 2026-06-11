@@ -93,7 +93,63 @@ TF_WEIGHTS = {
     24*60*60: 3.0,
 }
 
+
+def _safe_ohlc_vectors(
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+) -> tuple[list[float], list[float], list[float]]:
+    """Sanitize OHLC vectors before indicator voting.
+
+    The recommender already feeds closed candles, but this function is also used
+    by tests and future adapters.  It therefore cannot assume non-empty, equally
+    sized, finite positive inputs.  Bad rows are skipped; malformed standalone
+    calls fail neutral instead of raising or leaking a distorted directional sign.
+    """
+    n = min(len(closes or []), len(highs or []), len(lows or []))
+    if n <= 0:
+        return [], [], []
+    c_out: list[float] = []
+    h_out: list[float] = []
+    l_out: list[float] = []
+    for raw_c, raw_h, raw_l in zip(list(closes)[-n:], list(highs)[-n:], list(lows)[-n:]):
+        try:
+            c = float(raw_c)
+            h = float(raw_h)
+            l = float(raw_l)
+        except Exception:
+            continue
+        if not (math.isfinite(c) and math.isfinite(h) and math.isfinite(l)):
+            continue
+        if c <= 0 or h <= 0 or l <= 0:
+            continue
+        high = max(h, c, l)
+        low = min(h, c, l)
+        c_out.append(c)
+        h_out.append(high)
+        l_out.append(low)
+    return c_out, h_out, l_out
+
+
+def _neutral_tf_vote(reason: str = "insufficient_or_invalid_ohlc") -> dict[str, Any]:
+    return {
+        "atr_pct": 0.0,
+        "slope": 0.0,
+        "slope_norm": 0.0,
+        "macd_hist": 0.0,
+        "rsi14": 50.0,
+        "contrib": {"ma_slope": 0.0, "macd": 0.0, "rsi": 0.0},
+        "score": 0.0,
+        "trend_strength": 0.0,
+        "neutral_veto": 0.8,
+        "data_quality": reason,
+    }
+
 def vote_for_tf(closes: list[float], highs: list[float], lows: list[float]) -> dict[str, Any]:
+    closes, highs, lows = _safe_ohlc_vectors(closes, highs, lows)
+    if len(closes) < 2:
+        return _neutral_tf_vote()
+
     # Raw indicators
     slope = ma_slope(closes)
     rsi = rsi14(closes)
