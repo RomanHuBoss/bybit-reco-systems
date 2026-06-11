@@ -2239,24 +2239,143 @@ def update_recommendation_status(
 
 # ── TTL expiry ────────────────────────────────────────────────────────────────
 
+def _recommendation_chain_first_ts(conn: sqlite3.Connection, root_rec_id: str) -> int | None:
+    root = str(root_rec_id or "").strip()
+    if not root:
+        return None
+    row = conn.execute(
+        """SELECT MIN(ts) AS first_ts
+             FROM recommendations
+            WHERE publication_root_rec_id = ? OR rec_id = ?""",
+        (root, root),
+    ).fetchone()
+    if not row or row["first_ts"] is None:
+        return None
+    try:
+        return int(row["first_ts"])
+    except Exception:
+        return None
+
+
+def recommendation_chain_expiry_context(
+    conn: sqlite3.Connection,
+    *,
+    rec_id: str,
+    publication_root_rec_id: str | None,
+    row_ts: int | None,
+    ttl_sec: int | None,
+    ts_now: int | None = None,
+) -> dict[str, Any]:
+    """Return row-vs-publication-chain TTL state for a recommendation.
+
+    A recommendation can be republished many times under the same
+    ``publication_root_rec_id``. The executable market idea must expire from the
+    first root signal, not from the most recent replacement row. Otherwise a
+    stale idea can stay visually active forever by receiving tiny updates.
+    """
+    now = int(ts_now if ts_now is not None else now_ts())
+    rec_id_norm = str(rec_id or "").strip()
+    root = str(publication_root_rec_id or rec_id_norm).strip() or rec_id_norm
+    try:
+        ttl = int(ttl_sec) if ttl_sec is not None else 0
+    except Exception:
+        ttl = 0
+    try:
+        row_ts_int = int(row_ts) if row_ts is not None else None
+    except Exception:
+        row_ts_int = None
+
+    chain_first_ts = _recommendation_chain_first_ts(conn, root) if root else None
+    if chain_first_ts is None:
+        chain_first_ts = row_ts_int
+
+    row_age_sec = None if row_ts_int is None else max(0, now - int(row_ts_int))
+    chain_age_sec = None if chain_first_ts is None else max(0, now - int(chain_first_ts))
+    row_expires_in_sec = None if row_ts_int is None or ttl <= 0 else int(row_ts_int) + ttl - now
+    chain_expires_in_sec = None if chain_first_ts is None or ttl <= 0 else int(chain_first_ts) + ttl - now
+    return {
+        "publication_root_rec_id": root,
+        "recommendation_row_age_sec": row_age_sec,
+        "publication_chain_started_ts": chain_first_ts,
+        "publication_chain_age_sec": chain_age_sec,
+        "recommendation_row_expires_in_sec": row_expires_in_sec,
+        "publication_chain_expires_in_sec": chain_expires_in_sec,
+        "is_recommendation_row_expired": bool(row_expires_in_sec is not None and row_expires_in_sec <= 0),
+        "is_publication_chain_expired": bool(chain_expires_in_sec is not None and chain_expires_in_sec <= 0),
+    }
+
+
 def expire_stale_recommendations(conn: sqlite3.Connection) -> int:
-    """Mark transient recs as expired if ts + ttl_sec < now.
-    Only expires statuses 'recommended', 'active', 'pending' — operator-set statuses are preserved.
-    Returns count of expired rows.
+    """Mark transient recs as expired when either the row or its root chain exceeds TTL.
+
+    Operator-set statuses are preserved. Expiring by row ``ts + ttl`` alone is
+    unsafe for republished signals: a stale idea can keep a fresh child row and
+    remain actionable. This function therefore expires the whole transient
+    publication chain from the earliest root timestamp.
     """
     ts_now = now_ts()
     placeholders = ",".join("?" for _ in EXPIRABLE_RECOMMENDATION_STATUSES)
+    rows = conn.execute(
+        f"""SELECT rec_id, ts, ttl_sec, publication_root_rec_id
+               FROM recommendations
+              WHERE status IN ({placeholders})""",
+        [*EXPIRABLE_RECOMMENDATION_STATUSES],
+    ).fetchall()
+
+    expired_ids: list[str] = []
+    row_expired_count = 0
+    chain_expired_count = 0
+    root_first_ts_cache: dict[str, int | None] = {}
+    for row in rows:
+        rec_id = str(row["rec_id"] or "").strip()
+        if not rec_id:
+            continue
+        try:
+            ttl_sec = int(row["ttl_sec"] or 0)
+        except Exception:
+            ttl_sec = 0
+        if ttl_sec <= 0:
+            continue
+        try:
+            row_ts = int(row["ts"] or 0)
+        except Exception:
+            row_ts = 0
+        root = str(row["publication_root_rec_id"] or rec_id).strip() or rec_id
+        if root not in root_first_ts_cache:
+            root_first_ts_cache[root] = _recommendation_chain_first_ts(conn, root)
+        chain_first_ts = root_first_ts_cache.get(root) or row_ts
+        row_expired = bool(row_ts > 0 and row_ts + ttl_sec <= ts_now)
+        chain_expired = bool(chain_first_ts > 0 and chain_first_ts + ttl_sec <= ts_now)
+        if row_expired or chain_expired:
+            expired_ids.append(rec_id)
+            row_expired_count += int(row_expired)
+            chain_expired_count += int(chain_expired)
+
+    if not expired_ids:
+        conn.commit()
+        return 0
+
+    update_placeholders = ",".join("?" for _ in expired_ids)
     cur = conn.execute(
-        f"""UPDATE recommendations
-           SET status='expired'
-           WHERE status IN ({placeholders})
-             AND (ts + ttl_sec) < ?""",
-        [*EXPIRABLE_RECOMMENDATION_STATUSES, ts_now],
+        f"UPDATE recommendations SET status='expired' WHERE rec_id IN ({update_placeholders})",
+        expired_ids,
     )
     conn.commit()
-    expired = cur.rowcount
+    expired = int(cur.rowcount or 0)
     if expired > 0:
-        log_decision(conn, "TTL_EXPIRED", None, None, {"count": expired, "ts": ts_now})
+        log_decision(
+            conn,
+            "TTL_EXPIRED",
+            None,
+            None,
+            {
+                "count": expired,
+                "ts": ts_now,
+                "row_expired_count": int(row_expired_count),
+                "chain_expired_count": int(chain_expired_count),
+                "mode": "row_or_publication_chain",
+            },
+        )
     return expired
 
 

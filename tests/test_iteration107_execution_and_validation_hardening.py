@@ -247,7 +247,7 @@ def test_open_position_lock_uses_actual_first_tradeable_candle_after_signal(tmp_
             rec_id="R-open-root",
             ts_now=signal_ts,
             status="recommended",
-            ttl_sec=3600,
+            ttl_sec=horizon + 7200,
             features_ref_ts=signal_ts,
         )
         db.upsert_ohlcv(

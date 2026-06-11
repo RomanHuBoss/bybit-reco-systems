@@ -2661,6 +2661,16 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
         if not _recommendation_row_is_publication_actionable(row):
             continue
         publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
+        expiry = db.recommendation_chain_expiry_context(
+            conn,
+            rec_id=str(row["rec_id"]),
+            publication_root_rec_id=publication_root_rec_id,
+            row_ts=row["ts"],
+            ttl_sec=row["ttl_sec"],
+            ts_now=ts_now,
+        )
+        if expiry.get("is_publication_chain_expired"):
+            continue
         return {
             "rec_id": row["rec_id"],
             "ts": row["ts"],
@@ -2690,7 +2700,7 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
     старый outcome так и не был вычислен.
     """
     cur = conn.execute(
-        """SELECT r.rec_id, r.ts, r.features_ref_ts, r.bot_type, r.status,
+        """SELECT r.rec_id, r.ts, r.ttl_sec, r.features_ref_ts, r.bot_type, r.status,
                   r.score, r.confidence, r.expected_rr,
                   r.params_json, r.reasons_json, r.publication_root_rec_id, r.is_outcome_label_root
            FROM recommendations r
@@ -2740,6 +2750,16 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
         if int(ts_now) >= lock_until_ts:
             continue
         publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
+        expiry = db.recommendation_chain_expiry_context(
+            conn,
+            rec_id=str(row["rec_id"]),
+            publication_root_rec_id=publication_root_rec_id,
+            row_ts=row["ts"],
+            ttl_sec=row["ttl_sec"],
+            ts_now=ts_now,
+        )
+        if expiry.get("is_publication_chain_expired"):
+            continue
         return {
             "rec_id": row["rec_id"],
             "ts": row["ts"],

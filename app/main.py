@@ -401,6 +401,49 @@ def _llm_status_from_reasons_dict(reasons: Any) -> str:
     return str(llm_review.get("status") or "none").strip().lower() or "none"
 
 
+def _apply_publication_chain_effective_expiry_guard(out: dict[str, Any]) -> None:
+    """Expose expired recommendation chains as non-actionable without relying on a background sweep."""
+    ctx = out.get("operator_decision_context") if isinstance(out.get("operator_decision_context"), dict) else {}
+    if not bool(ctx.get("is_publication_chain_expired")):
+        return
+    current_status = str(out.get("status") or "").strip().lower()
+    if current_status not in {"recommended", "active", "pending"}:
+        return
+    out["stored_status"] = out.get("stored_status") or current_status
+    out["status"] = "expired"
+    out["effective_status"] = "expired"
+    block = {
+        "code": "PUBLICATION_CHAIN_EXPIRED",
+        "msg": "publication chain TTL expired; this recommendation is historical and must not be traded",
+        "publication_root_rec_id": ctx.get("publication_root_rec_id"),
+        "publication_chain_age_sec": ctx.get("publication_chain_age_sec"),
+        "ttl_sec": ctx.get("ttl_sec"),
+    }
+    blocks = out.get("blocks") if isinstance(out.get("blocks"), list) else []
+    seen = {str(item.get("code") or "") for item in blocks if isinstance(item, dict)}
+    if block["code"] not in seen:
+        blocks.append(block)
+    out["blocks"] = blocks
+
+    params = out.get("params") if isinstance(out.get("params"), dict) else {}
+    risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
+    risk_report["decision"] = "not_recommended"
+    rejections = risk_report.get("rejection_reasons") if isinstance(risk_report.get("rejection_reasons"), list) else []
+    msg = "Recommendation chain TTL expired; do not execute this stale idea."
+    if msg not in [str(x) for x in rejections]:
+        rejections.append(msg)
+    risk_report["rejection_reasons"] = rejections
+    params["risk_report"] = risk_report
+    out["params"] = params
+
+    reasons = out.get("reasons") if isinstance(out.get("reasons"), dict) else {}
+    decision_layers = reasons.get("decision_layers") if isinstance(reasons.get("decision_layers"), dict) else {}
+    decision_layers["publication_chain_ttl"] = "expired"
+    decision_layers["final_status"] = "expired"
+    reasons["decision_layers"] = decision_layers
+    out["reasons"] = reasons
+
+
 def _apply_llm_effective_pending_guard(out: dict[str, Any]) -> None:
     """Operator-facing guard: actionable rows require an OK LLM verdict.
 
@@ -828,6 +871,7 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
         _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
         out["operator_decision_context"] = _operator_decision_context_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
         _apply_llm_effective_pending_guard(out)
+        _apply_publication_chain_effective_expiry_guard(out)
         return out
     out = _snap_reco_payload_to_bybit_meta(out, bybit_meta)
     out["directional_exit_levels"] = _directional_exit_payload_for_reco(out)
@@ -837,6 +881,7 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
     _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
     out["operator_decision_context"] = _operator_decision_context_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
     _apply_llm_effective_pending_guard(out)
+    _apply_publication_chain_effective_expiry_guard(out)
     return out
 
 
@@ -936,7 +981,7 @@ def _filter_operator_items_by_effective_status(items: list[dict[str, Any]], stat
         return []
     out: list[dict[str, Any]] = []
     for item in items:
-        effective_status = str(item.get("status") or "").strip().lower()
+        effective_status = str(item.get("effective_status") or item.get("status") or "").strip().lower()
         if effective_status not in allowed:
             continue
         out.append(item)
@@ -2908,6 +2953,13 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             raise HTTPException(status_code=409, detail=f"recommendation status={current_status} cannot be executed")
         if not _is_supported_execution_direction(str(rec.get("bot_type") or ""), str(rec.get("venue") or ""), str(rec.get("direction") or "")):
             raise HTTPException(status_code=409, detail="recommendation direction is not executable for this bot_type/venue")
+        freshness_blocks = _execution_recommendation_freshness_blocks(conn, rec, now_ts=int(time.time()))
+        if freshness_blocks:
+            codes = {str(block.get("code") or "") for block in freshness_blocks if isinstance(block, dict)}
+            if codes & {"RECOMMENDATION_ROW_EXPIRED", "PUBLICATION_CHAIN_TOO_OLD"}:
+                db.update_recommendation_status(conn, rec_id, "expired", operator)
+            db.log_decision(conn, "EXECUTION_STALE_RECOMMENDATION_BLOCKED", rec_id, operator, {"blocks": freshness_blocks})
+            raise HTTPException(status_code=409, detail="recommendation publication chain already expired")
 
     publication_root_rec_id = str(rec.get("publication_root_rec_id") or rec_id).strip() or rec_id
     if publication_root_rec_id:
@@ -3121,6 +3173,7 @@ def api_recommendations(
 ) -> dict[str, Any]:
     top_n = _bounded_limit(top_n, default=20, max_value=200)
     with closing(_get_conn()) as conn:
+        db.expire_stale_recommendations(conn)
         statuses: list[str] = []
         if show_recommended:
             statuses.extend(["recommended", "active"])
@@ -3161,7 +3214,7 @@ def api_recommendations(
         status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
         snapshot_age_sec = None if snapshot_ts is None else max(0, int(time.time()) - int(snapshot_ts))
         snapshot_is_stale = bool(snapshot_age_sec is not None and snapshot_age_sec > max(180, int(settings.reco_interval_sec) * 3))
-        no_trade = not any(str(item.get("status") or "").strip().lower() in {"recommended", "active"} for item in items)
+        no_trade = not any(str(item.get("effective_status") or item.get("status") or "").strip().lower() in {"recommended", "active"} for item in items)
 
         cur = conn.execute("SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1")
         row = cur.fetchone()
@@ -3208,6 +3261,7 @@ def api_recommendations(
 @app.get("/api/v1/recommendations/{rec_id}")
 def api_reco_details(rec_id: str) -> dict[str, Any]:
     with closing(_get_conn()) as conn:
+        db.expire_stale_recommendations(conn)
         r = db.get_recommendation_by_id(conn, str(rec_id))
         if not r:
             raise HTTPException(status_code=404, detail="rec_id not found")

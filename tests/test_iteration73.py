@@ -106,7 +106,7 @@ def test_sentiment_thread_rolls_back_partial_write_when_lock_is_lost(tmp_path: P
         sys.modules.pop("app.main", None)
 
 
-def _insert_recent_reco(conn, rec_id: str, ts: int, *, confidence: float = 0.60, score: float = 0.20):
+def _insert_recent_reco(conn, rec_id: str, ts: int, *, confidence: float = 0.60, score: float = 0.20, ttl_sec: int = 1800):
     db.insert_recommendations(
         conn,
         [{
@@ -126,7 +126,7 @@ def _insert_recent_reco(conn, rec_id: str, ts: int, *, confidence: float = 0.60,
             "reasons": {},
             "blocks": [],
             "status": "recommended",
-            "ttl_sec": 1800,
+            "ttl_sec": ttl_sec,
             "model_version": "test",
             "features_ref_ts": ts,
         }],
@@ -179,7 +179,7 @@ def test_recent_publication_dedupe_allows_material_upgrade_after_previous_chain_
     try:
         ts_now = int(time.time())
         ts_prev = ts_now - 120
-        _insert_recent_reco(conn, "R-prev", ts_prev, confidence=0.55, score=0.18)
+        _insert_recent_reco(conn, "R-prev", ts_prev, confidence=0.55, score=0.18, ttl_sec=12 * 3600)
         db.insert_outcome(
             conn,
             {
@@ -239,7 +239,7 @@ def test_open_position_lock_keeps_same_direction_signal_in_existing_chain_after_
     try:
         ts_now = int(time.time())
         ts_prev = ts_now - (2 * 3600)
-        _insert_recent_reco(conn, "R-prev", ts_prev, confidence=0.55, score=0.18)
+        _insert_recent_reco(conn, "R-prev", ts_prev, confidence=0.55, score=0.18, ttl_sec=12 * 3600)
 
         recs = [{
             "rec_id": "R-new",
@@ -285,7 +285,7 @@ def test_open_position_lock_releases_chain_after_horizon_elapsed(tmp_path: Path)
     try:
         ts_now = int(time.time())
         ts_prev = ts_now - (13 * 3600)
-        _insert_recent_reco(conn, "R-prev", ts_prev, confidence=0.55, score=0.18)
+        _insert_recent_reco(conn, "R-prev", ts_prev, confidence=0.55, score=0.18, ttl_sec=12 * 3600)
 
         recs = [{
             "rec_id": "R-new",
