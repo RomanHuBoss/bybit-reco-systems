@@ -86,7 +86,7 @@ def directional_exit_levels(direction: Any, kill_switch_lower: Any, kill_switch_
         stop_loss=None,
         kill_switch_lower=lower,
         kill_switch_upper=upper,
-        take_profit_label="Take Profit",
+        take_profit_label="Directional TP unavailable",
         stop_loss_label="Kill-switch lower / upper",
         geometry="neutral: направленного TP нет; оба внешних уровня являются kill-switch exits",
         has_directional_take_profit=False,
@@ -265,10 +265,15 @@ def bybit_linear_protective_order_semantics(direction: Any, exit_kind: str) -> d
     if purpose is None:
         raise ValueError("exit_kind must be one of: take_profit, stop_loss")
     semantics = bybit_linear_order_semantics(direction, "close")
+    # Bybit V5 requires triggerDirection for linear/inverse conditional orders:
+    # 1 means the trigger price is reached on an upward move, 2 on a downward move.
+    # Long TP and short SL trigger on rises; short TP and long SL trigger on falls.
+    trigger_direction = 1 if (semantics["direction"] == "long") == (purpose == "take_profit") else 2
     semantics.update({
         "exit_kind": purpose,
         "orderFilter": "StopOrder",
         "triggerPurpose": "takeProfit" if purpose == "take_profit" else "stopLoss",
+        "triggerDirection": trigger_direction,
         "reduceOnly": True,
         "closeOnTrigger": True,
     })

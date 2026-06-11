@@ -564,10 +564,20 @@ function operatorExitLevels(direction, killLower, killUpper) {
   return {
     takeProfitValue: "—",
     stopLossValue: `${killLower} / ${killUpper}`,
-    takeProfitLabel: "Take Profit",
+    takeProfitLabel: "Directional TP unavailable",
     stopLossLabel: "Stop Loss / Kill-switch",
     exitGeometry: "neutral: нет направленного TP; контроль выхода по нижнему/верхнему kill-switch",
   };
+}
+
+function directionalExitGeometryOk(direction, takeProfit, stopLoss) {
+  const dir = String(direction || "").trim().toLowerCase();
+  const tp = toFiniteNumber(takeProfit);
+  const sl = toFiniteNumber(stopLoss);
+  if (dir !== "long" && dir !== "short") return true;
+  if (tp === null || sl === null || tp <= 0 || sl <= 0) return false;
+  if (dir === "long") return tp > sl;
+  return tp < sl;
 }
 
 function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
@@ -576,6 +586,13 @@ function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
   const lower = formatBybitPrice(exitLevels.kill_switch_lower, meta, "down");
   const upper = formatBybitPrice(exitLevels.kill_switch_upper, meta, "up");
   const hasDirectionalTp = exitLevels.has_directional_take_profit === true && (dir === "long" || dir === "short");
+  const backendGeometryOk = exitLevels.geometry_valid !== false && directionalExitGeometryOk(dir, exitLevels.take_profit, exitLevels.stop_loss);
+  if (hasDirectionalTp && !backendGeometryOk) {
+    return {
+      ...fallback,
+      exitGeometry: `backend directional TP/SL invalid; using local kill-switch mapping · ${fallback.exitGeometry || ""}`.trim(),
+    };
+  }
   const takeProfitValue = hasDirectionalTp
     ? formatBybitPrice(exitLevels.take_profit, meta, dir === "short" ? "down" : "up")
     : "—";
@@ -585,7 +602,7 @@ function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
   return {
     takeProfitValue,
     stopLossValue,
-    takeProfitLabel: exitLevels.take_profit_label || fallback.takeProfitLabel || "Take Profit",
+    takeProfitLabel: exitLevels.take_profit_label || fallback.takeProfitLabel || (hasDirectionalTp ? "Take Profit" : "Directional TP unavailable"),
     stopLossLabel: exitLevels.stop_loss_label || fallback.stopLossLabel || "Stop Loss",
     exitGeometry: exitLevels.geometry || fallback.exitGeometry || "",
   };

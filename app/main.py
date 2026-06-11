@@ -585,11 +585,27 @@ def _merge_bybit_operator_guard_into_ui_payload(out: dict[str, Any], guard: dict
 
 def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
     ctx = _trade_plan_price_context(rec)
-    return directional_exit_levels(
+    levels = directional_exit_levels(
         rec.get("direction"),
         ctx.get("kill_switch_lower"),
         ctx.get("kill_switch_upper"),
     ).as_dict()
+    direction = str(levels.get("direction") or "neutral").strip().lower()
+    reference_price = ctx.get("reference_price")
+    levels["reference_price"] = reference_price
+    if direction in {"long", "short"}:
+        errors = validate_directional_exit_geometry(
+            direction,
+            reference_price,
+            levels.get("take_profit"),
+            levels.get("stop_loss"),
+        )
+        levels["geometry_valid"] = len(errors) == 0
+        levels["geometry_errors"] = errors
+    else:
+        levels["geometry_valid"] = True
+        levels["geometry_errors"] = []
+    return levels
 
 
 def _pct_delta(value: float | None, reference: float | None) -> float | None:
@@ -1672,6 +1688,15 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
     if leverage is None:
         leverage = _finite_float_or_none(plan.get("leverage"))
 
+    if leverage is None:
+        blocks.append({
+            "code": "LEVERAGE_MISSING_AT_EXECUTION",
+            "msg": "execution payload не содержит явное leverage; нельзя проверить runtime leverage caps, margin и liquidation semantics.",
+        })
+
+    # Lower leverage is not an exposure-increasing runtime hazard. It can increase
+    # required margin, which is checked below through max_margin_per_bot_usdt.
+    # Bybit's actual lower bound is still enforced in _validate_trade_plan_against_bybit_meta.
     max_leverage = _finite_float_or_none(effective_limits.get("max_leverage"))
     if leverage is not None and max_leverage is not None and max_leverage > 0 and leverage > max_leverage:
         blocks.append({
@@ -1709,13 +1734,44 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
         notional_key = "estimated_margin_required_usdt*leverage"
 
     max_notional = _finite_float_or_none(effective_limits.get("max_position_notional_usdt"))
+    max_margin = _finite_float_or_none(effective_limits.get("max_margin_per_bot_usdt"))
+    size_context_keys = {
+        "estimated_max_position_notional_usdt",
+        "max_position_notional_usdt",
+        "estimated_total_order_notional_usdt",
+        "total_order_notional_usdt",
+        "position_notional_usdt",
+        "notional_usdt",
+        "estimated_margin_required_usdt",
+        "margin_required_usdt",
+        "capital_required_usdt",
+        "margin_usdt",
+        "investment_usdt",
+        "order_qty",
+        "qty",
+        "qty_per_order",
+        "qty_per_leg",
+        "order_notional_usdt",
+        "order_notional",
+        "notional_per_order",
+    }
+    size_context_present = any(
+        isinstance(mapping, dict) and any(key in mapping for key in size_context_keys)
+        for mapping in sizing_maps
+    )
+    size_caps_active = (max_notional is not None and max_notional > 0) or (max_margin is not None and max_margin > 0)
+    if estimated_notional is None and estimated_margin is None and size_context_present and size_caps_active:
+        blocks.append({
+            "code": "POSITION_SIZE_MISSING_AT_EXECUTION",
+            "msg": "execution payload contains sizing/economics context but no estimated notional/margin; runtime max_position_notional_usdt и max_margin_per_bot_usdt cannot be verified fail-closed.",
+        })
+
     if max_notional is not None and max_notional > 0 and estimated_notional is not None and estimated_notional > max_notional:
         blocks.append({
             "code": "MAX_POSITION_NOTIONAL_PER_BOT_AT_EXECUTION",
             "msg": f"execution {notional_key or 'position_notional'}={estimated_notional:.8g} USDT выше текущего runtime cap={max_notional:.8g} USDT.",
         })
 
-    max_margin = _finite_float_or_none(effective_limits.get("max_margin_per_bot_usdt"))
     if max_margin is not None and max_margin > 0 and estimated_margin is not None and estimated_margin > max_margin:
         blocks.append({
             "code": "MAX_MARGIN_PER_BOT_AT_EXECUTION",
@@ -2267,7 +2323,11 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         errors.append({"code": "TP_PER_LEG_PCT_NON_POSITIVE", "msg": f"tp_per_leg.pct должен быть > 0, получено {tp_pct}."})
 
     if bot_type == "futures_grid" and venue == "linear" and leverage is None:
-        warnings.append({"code": "LEVERAGE_DEFAULTED_TO_ONE", "msg": "leverage не указан в legacy/manual payload; для preflight принимается только безопасный default 1x, новые рекомендации должны хранить явный leverage."})
+        leverage_missing_msg = "leverage не указан; execution-time preflight не может подтвердить плечо, маржу и liquidation buffer."
+        if require_execution_plan:
+            errors.append({"code": "LEVERAGE_MISSING_FOR_EXECUTION", "msg": leverage_missing_msg})
+        else:
+            warnings.append({"code": "LEVERAGE_DEFAULTED_TO_ONE", "msg": "leverage не указан в legacy/manual payload; для preflight принимается только безопасный default 1x, новые рекомендации должны хранить явный leverage."})
     if leverage is not None and leverage <= 0:
         errors.append({"code": "LEVERAGE_NON_POSITIVE", "msg": f"Leverage должен быть > 0, получено {leverage}."})
     if min_leverage is not None and leverage is not None and leverage < min_leverage:
@@ -2430,6 +2490,12 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             funding_cost_bps = _finite_float_or_none(economics.get("funding_cost_bps"))
             if funding_cost_bps is None:
                 funding_cost_bps = max(0.0, _finite_float_or_none(cost_model.get("expected_funding_bps")) or 0.0)
+            if gross_profit_bps is not None and gross_profit_bps < 0.0:
+                errors.append({"code": "GRID_GROSS_PROFIT_NEGATIVE", "msg": f"gross_profit_bps={gross_profit_bps:.2f} не может быть отрицательным."})
+            if execution_cost_bps is not None and execution_cost_bps < 0.0:
+                errors.append({"code": "GRID_EXECUTION_COST_NEGATIVE", "msg": f"execution_cost_bps={execution_cost_bps:.2f} не может быть отрицательным."})
+            if funding_cost_bps is not None and funding_cost_bps < 0.0:
+                errors.append({"code": "GRID_FUNDING_COST_NEGATIVE", "msg": f"funding_cost_bps={funding_cost_bps:.2f} не может быть отрицательным; funding benefit должен храниться отдельно как signed diagnostic."})
             if net_profit_bps is not None and net_profit_bps <= 0.0:
                 errors.append({"code": "GRID_NET_PROFIT_NON_POSITIVE", "msg": f"net_profit_bps={net_profit_bps:.2f} после execution/funding costs <= 0."})
             elif net_profit_bps is not None and net_profit_bps < EXECUTION_MIN_NET_PROFIT_BPS:
@@ -3084,11 +3150,6 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
 
     rec_for_execution = _snap_reco_payload_to_bybit_meta(rec, bybit_meta)
-    size_risk_blocks = _execution_runtime_size_risk_blocks(rec_for_execution, limits)
-    if size_risk_blocks:
-        db.log_decision(conn, "EXECUTION_SIZE_RISK_BLOCKED", rec_id, operator, {"blocks": size_risk_blocks})
-        codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in size_risk_blocks)
-        raise HTTPException(status_code=409, detail=f"execution blocked by runtime size/leverage risk caps: {codes}")
 
     preflight = _execution_preflight(conn, rec_for_execution, now_ts=int(time.time()), bybit_meta=bybit_meta)
     preflight_blocks = list(preflight.get("blocks") or [])
@@ -3107,6 +3168,12 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         )
         codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in preflight_blocks)
         raise HTTPException(status_code=409, detail=f"execution blocked by preflight checks: {codes}")
+
+    size_risk_blocks = _execution_runtime_size_risk_blocks(rec_for_execution, limits)
+    if size_risk_blocks:
+        db.log_decision(conn, "EXECUTION_SIZE_RISK_BLOCKED", rec_id, operator, {"blocks": size_risk_blocks})
+        codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in size_risk_blocks)
+        raise HTTPException(status_code=409, detail=f"execution blocked by runtime size/leverage risk caps: {codes}")
 
     bot = {
         "bot_id": f"B-{int(time.time())}-{rec['symbol']}-{secrets.token_hex(4)}",
