@@ -120,7 +120,9 @@ def test_bybit_protective_orders_include_directional_trigger_direction(
     assert order["side"] == expected_side
     assert order["reduceOnly"] is True
     assert order["closeOnTrigger"] is True
-    assert order["orderFilter"] == "StopOrder"
+    assert "orderFilter" not in order
+    assert order["triggerBy"] == "LastPrice"
+    assert order["orderType"] == "Market"
     assert order["triggerDirection"] == expected_trigger_direction
 
 
@@ -202,6 +204,6 @@ def test_execution_preflight_rejects_negative_grid_economics_components(app_main
 def test_operator_ui_rejects_invalid_backend_exit_payload_before_rendering_short_tp_sl() -> None:
     app_js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "function directionalExitGeometryOk(direction, takeProfit, stopLoss)" in app_js
+    assert "function directionalExitGeometryOk(direction, takeProfit, stopLoss, referencePrice = null)" in app_js
     assert "backend directional TP/SL invalid; using local kill-switch mapping" in app_js
     assert "Directional TP unavailable" in app_js

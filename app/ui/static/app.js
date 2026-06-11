@@ -570,14 +570,15 @@ function operatorExitLevels(direction, killLower, killUpper) {
   };
 }
 
-function directionalExitGeometryOk(direction, takeProfit, stopLoss) {
+function directionalExitGeometryOk(direction, takeProfit, stopLoss, referencePrice = null) {
   const dir = String(direction || "").trim().toLowerCase();
   const tp = toFiniteNumber(takeProfit);
   const sl = toFiniteNumber(stopLoss);
+  const ref = toFiniteNumber(referencePrice);
   if (dir !== "long" && dir !== "short") return true;
-  if (tp === null || sl === null || tp <= 0 || sl <= 0) return false;
-  if (dir === "long") return tp > sl;
-  return tp < sl;
+  if (tp === null || sl === null || ref === null || tp <= 0 || sl <= 0 || ref <= 0) return false;
+  if (dir === "long") return tp > ref && sl < ref;
+  return tp < ref && sl > ref;
 }
 
 function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
@@ -586,7 +587,7 @@ function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
   const lower = formatBybitPrice(exitLevels.kill_switch_lower, meta, "down");
   const upper = formatBybitPrice(exitLevels.kill_switch_upper, meta, "up");
   const hasDirectionalTp = exitLevels.has_directional_take_profit === true && (dir === "long" || dir === "short");
-  const backendGeometryOk = exitLevels.geometry_valid !== false && directionalExitGeometryOk(dir, exitLevels.take_profit, exitLevels.stop_loss);
+  const backendGeometryOk = exitLevels.geometry_valid !== false && directionalExitGeometryOk(dir, exitLevels.take_profit, exitLevels.stop_loss, exitLevels.reference_price);
   if (hasDirectionalTp && !backendGeometryOk) {
     return {
       ...fallback,

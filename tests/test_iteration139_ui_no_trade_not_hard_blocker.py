@@ -34,5 +34,5 @@ def test_no_trade_warning_card_is_not_rendered_as_blocker_card() -> None:
 def test_static_asset_cache_key_bumped_after_no_trade_copy_fix() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v28" in index
-    assert "app.js?v=manual-ui-v28" in index
+    assert "styles.css?v=manual-ui-v29" in index
+    assert "app.js?v=manual-ui-v29" in index

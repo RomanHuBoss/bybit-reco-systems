@@ -78,7 +78,9 @@ def test_bybit_protective_tp_sl_orders_are_always_reduce_only_close_orders(direc
         assert order["side"] == expected_side
         assert order["reduceOnly"] is True
         assert order["closeOnTrigger"] is True
-        assert order["orderFilter"] == "StopOrder"
+        assert "orderFilter" not in order
+        assert order["triggerBy"] == "LastPrice"
+        assert order["orderType"] == "Market"
 
     assert tp["triggerPurpose"] == "takeProfit"
     assert sl["triggerPurpose"] == "stopLoss"

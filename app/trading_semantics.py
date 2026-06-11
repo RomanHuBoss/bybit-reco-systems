@@ -271,9 +271,15 @@ def bybit_linear_protective_order_semantics(direction: Any, exit_kind: str) -> d
     trigger_direction = 1 if (semantics["direction"] == "long") == (purpose == "take_profit") else 2
     semantics.update({
         "exit_kind": purpose,
-        "orderFilter": "StopOrder",
+        # Do not emit Bybit V5 `orderFilter` here: the official Place Order
+        # schema marks Order/StopOrder/tpslOrder filters as spot-only.  Linear
+        # perps/futures conditional exits are identified by triggerPrice plus
+        # triggerDirection/triggerBy, while reduceOnly+closeOnTrigger prevents a
+        # protective exit from increasing or flipping exposure.
         "triggerPurpose": "takeProfit" if purpose == "take_profit" else "stopLoss",
         "triggerDirection": trigger_direction,
+        "triggerBy": "LastPrice",
+        "orderType": "Market",
         "reduceOnly": True,
         "closeOnTrigger": True,
     })
