@@ -590,8 +590,11 @@ function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
   const backendGeometryOk = exitLevels.geometry_valid !== false && directionalExitGeometryOk(dir, exitLevels.take_profit, exitLevels.stop_loss, exitLevels.reference_price);
   if (hasDirectionalTp && !backendGeometryOk) {
     return {
-      ...fallback,
-      exitGeometry: `backend directional TP/SL invalid; using local kill-switch mapping · ${fallback.exitGeometry || ""}`.trim(),
+      takeProfitValue: "—",
+      stopLossValue: `${lower} / ${upper}`,
+      takeProfitLabel: "Directional TP blocked",
+      stopLossLabel: "Stop Loss / Kill-switch",
+      exitGeometry: `backend directional TP/SL invalid; rendering kill-switch only · ${fallback.exitGeometry || ""}`.trim(),
     };
   }
   const takeProfitValue = hasDirectionalTp
