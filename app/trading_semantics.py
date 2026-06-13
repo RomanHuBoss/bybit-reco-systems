@@ -245,13 +245,7 @@ def bybit_linear_order_semantics(direction: Any, action: str) -> dict[str, Any]:
     }
 
 
-def bybit_linear_protective_order_semantics(direction: Any, exit_kind: str) -> dict[str, Any]:
-    """Canonical one-way Bybit V5 semantics for TP/SL protective exits.
-
-    A protective TP/SL must always reduce or close the existing position.  It
-    must therefore use the same side as a close order, set reduceOnly and
-    closeOnTrigger, and never be allowed to increase exposure.
-    """
+def _normalize_exit_kind(exit_kind: Any) -> str:
     exit_norm = str(exit_kind or "").strip().lower().replace(" ", "_").replace("-", "_")
     aliases = {
         "tp": "take_profit",
@@ -264,11 +258,25 @@ def bybit_linear_protective_order_semantics(direction: Any, exit_kind: str) -> d
     purpose = aliases.get(exit_norm)
     if purpose is None:
         raise ValueError("exit_kind must be one of: take_profit, stop_loss")
-    semantics = bybit_linear_order_semantics(direction, "close")
+    return purpose
+
+
+def _protective_trigger_direction(direction: str, purpose: str) -> int:
     # Bybit V5 requires triggerDirection for linear/inverse conditional orders:
     # 1 means the trigger price is reached on an upward move, 2 on a downward move.
     # Long TP and short SL trigger on rises; short TP and long SL trigger on falls.
-    trigger_direction = 1 if (semantics["direction"] == "long") == (purpose == "take_profit") else 2
+    return 1 if (direction == "long") == (purpose == "take_profit") else 2
+
+
+def bybit_linear_protective_order_semantics(direction: Any, exit_kind: str) -> dict[str, Any]:
+    """Canonical one-way Bybit V5 semantics for TP/SL protective exits.
+
+    A protective TP/SL must always reduce or close the existing position.  It
+    must therefore use the same side as a close order, set reduceOnly and
+    closeOnTrigger, and never be allowed to increase exposure.
+    """
+    purpose = _normalize_exit_kind(exit_kind)
+    semantics = bybit_linear_order_semantics(direction, "close")
     semantics.update({
         "exit_kind": purpose,
         # Do not emit Bybit V5 `orderFilter` here: the official Place Order
@@ -277,11 +285,94 @@ def bybit_linear_protective_order_semantics(direction: Any, exit_kind: str) -> d
         # triggerDirection/triggerBy, while reduceOnly+closeOnTrigger prevents a
         # protective exit from increasing or flipping exposure.
         "triggerPurpose": "takeProfit" if purpose == "take_profit" else "stopLoss",
-        "triggerDirection": trigger_direction,
+        "triggerDirection": _protective_trigger_direction(semantics["direction"], purpose),
         "triggerBy": "LastPrice",
         "orderType": "Market",
         "reduceOnly": True,
         "closeOnTrigger": True,
     })
     return semantics
+
+
+def validate_protective_trigger_geometry(
+    direction: Any,
+    exit_kind: Any,
+    reference_price: Any,
+    trigger_price: Any,
+) -> list[dict[str, str]]:
+    """Validate a concrete Bybit protective trigger against one-way direction.
+
+    This is stricter than generic order-side mapping: it catches the dangerous
+    class of bugs where short TP/SL prices or triggerDirection are visually or
+    programmatically inverted while the reduce-only side still looks plausible.
+    """
+    direction_norm = normalize_execution_direction(direction)
+    purpose = _normalize_exit_kind(exit_kind)
+    ref = _finite_float(reference_price)
+    trigger = _finite_float(trigger_price)
+    errors: list[dict[str, str]] = []
+
+    if direction_norm not in DIRECTIONAL_EXECUTION_DIRECTIONS:
+        errors.append({"code": "PROTECTIVE_DIRECTION_INVALID", "msg": "protective TP/SL requires long or short direction."})
+        return errors
+    if ref is None or ref <= 0:
+        errors.append({"code": "PROTECTIVE_REFERENCE_PRICE_INVALID", "msg": "protective TP/SL requires a positive finite reference price."})
+        return errors
+    if trigger is None or trigger <= 0:
+        errors.append({"code": "PROTECTIVE_TRIGGER_PRICE_INVALID", "msg": "protective TP/SL requires a positive finite trigger price."})
+        return errors
+
+    if direction_norm == "long" and purpose == "take_profit" and trigger <= ref:
+        errors.append({"code": "LONG_TP_TRIGGER_NOT_ABOVE_REFERENCE", "msg": f"long TP trigger={trigger} must be above reference={ref}."})
+    elif direction_norm == "long" and purpose == "stop_loss" and trigger >= ref:
+        errors.append({"code": "LONG_SL_TRIGGER_NOT_BELOW_REFERENCE", "msg": f"long SL trigger={trigger} must be below reference={ref}."})
+    elif direction_norm == "short" and purpose == "take_profit" and trigger >= ref:
+        errors.append({"code": "SHORT_TP_TRIGGER_NOT_BELOW_REFERENCE", "msg": f"short TP trigger={trigger} must be below reference={ref}."})
+    elif direction_norm == "short" and purpose == "stop_loss" and trigger <= ref:
+        errors.append({"code": "SHORT_SL_TRIGGER_NOT_ABOVE_REFERENCE", "msg": f"short SL trigger={trigger} must be above reference={ref}."})
+
+    expected_direction = _protective_trigger_direction(direction_norm, purpose)
+    moves_up = trigger > ref
+    if (expected_direction == 1 and not moves_up) or (expected_direction == 2 and moves_up):
+        errors.append({
+            "code": "PROTECTIVE_TRIGGER_DIRECTION_MISMATCH",
+            "msg": f"triggerDirection={expected_direction} is inconsistent with trigger={trigger} and reference={ref}.",
+        })
+    return errors
+
+
+def bybit_linear_protective_order_plan(
+    direction: Any,
+    exit_kind: Any,
+    trigger_price: Any,
+    reference_price: Any | None = None,
+) -> dict[str, Any]:
+    """Return executable protective-order intent plus fail-closed geometry flags.
+
+    The returned structure is intentionally UI/API-safe: it exposes the Bybit
+    one-way close side, triggerDirection and triggerPrice that correspond to the
+    same canonical TP/SL model used for backend validation.
+    """
+    semantics = bybit_linear_protective_order_semantics(direction, str(exit_kind))
+    trigger = _finite_float(trigger_price)
+    ref = _finite_float(reference_price)
+    geometry_errors: list[dict[str, str]] = []
+    if ref is not None:
+        geometry_errors = validate_protective_trigger_geometry(
+            semantics["direction"],
+            semantics["exit_kind"],
+            ref,
+            trigger,
+        )
+    elif trigger is None or trigger <= 0:
+        geometry_errors = [{"code": "PROTECTIVE_TRIGGER_PRICE_INVALID", "msg": "protective TP/SL requires a positive finite trigger price."}]
+
+    plan = dict(semantics)
+    plan.update({
+        "triggerPrice": trigger,
+        "reference_price": ref,
+        "geometry_valid": len(geometry_errors) == 0,
+        "geometry_errors": geometry_errors,
+    })
+    return plan
 

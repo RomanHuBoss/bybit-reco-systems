@@ -896,6 +896,14 @@ function buildOperatorFieldSpecs(it, ov) {
   const capitalValue = formatUsdValue(marginRequired);
   const positionValue = formatPositionSizeValue(positionNotional, positionQty, symbolParts?.base || "");
   const botLifetimeValue = formatBotLifetimeValue(params);
+  const exitMath = ((it || {}).directional_exit_levels || {}).trade_math || {};
+  const tpDistancePct = toFiniteNumber(exitMath.take_profit_distance_pct);
+  const slDistancePct = toFiniteNumber(exitMath.stop_loss_distance_pct);
+  const rrValue = toFiniteNumber(exitMath.risk_reward);
+  const distanceValue = tpDistancePct === null && slDistancePct === null
+    ? "—"
+    : `TP ${tpDistancePct === null ? "—" : formatPercentDot(tpDistancePct, 2, false)} / SL ${slDistancePct === null ? "—" : formatPercentDot(slDistancePct, 2, false)}`;
+  const riskRewardValue = rrValue === null ? "—" : formatDotNumber(rrValue, 3, false);
   const fields = [
     { label: "Сторона", value: directionRu((it || {}).direction), mono: false, help: "Направление идеи: лонг зарабатывает на росте, шорт — на снижении. Нейтральная grid-логика не должна подменяться направленным TP/SL." },
     { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Оценочная максимальная экспозиция бота. Это не маржа: при плече экспозиция больше внесённой маржи." },
@@ -907,6 +915,8 @@ function buildOperatorFieldSpecs(it, ov) {
     { label: "Плечо", value: ov.leverage, help: "Кредитное плечо linear USDT futures. Увеличивает и прибыль, и риск ликвидации." },
     { label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true, help: "Take Profit — уровень фиксации прибыли. Для лонга он выше входа, для шорта ниже входа." },
     { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help: "Stop Loss / kill-switch — защитный уровень остановки убытка. Для лонга ниже входа, для шорта выше входа." },
+    { label: "TP/SL дистанция", value: distanceValue, mono: true, help: "Направленные расстояния от расчётного входа до TP и SL. Для short TP считается вниз, SL — вверх; знак не инвертируется форматированием." },
+    { label: "Risk/Reward TP/SL", value: riskRewardValue, mono: true, help: "Отношение потенциальной прибыли к потенциальному убытку по тем же направленным TP/SL уровням, которые валидирует backend." },
   ];
   return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
 }

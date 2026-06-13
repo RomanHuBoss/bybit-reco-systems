@@ -36,7 +36,12 @@ from . import db
 from .db_backend import describe_target
 from .bot_types import sql_in_clause
 from .grid_math import estimate_linear_liq_price, liquidation_buffer_pct, quantize_step
-from .trading_semantics import directional_exit_levels, validate_directional_exit_geometry
+from .trading_semantics import (
+    bybit_linear_protective_order_plan,
+    directional_exit_levels,
+    directional_trade_math,
+    validate_directional_exit_geometry,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -593,6 +598,8 @@ def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
     direction = str(levels.get("direction") or "neutral").strip().lower()
     reference_price = ctx.get("reference_price")
     levels["reference_price"] = reference_price
+    levels["trade_math"] = None
+    levels["bybit_protective_orders"] = {}
     if direction in {"long", "short"}:
         errors = validate_directional_exit_geometry(
             direction,
@@ -602,6 +609,33 @@ def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
         )
         levels["geometry_valid"] = len(errors) == 0
         levels["geometry_errors"] = errors
+        math_payload = directional_trade_math(
+            direction,
+            reference_price,
+            levels.get("take_profit"),
+            levels.get("stop_loss"),
+        )
+        if math_payload is not None:
+            math_dict = math_payload.as_dict()
+            levels["trade_math"] = math_dict
+            levels["take_profit_distance_pct"] = math_dict.get("take_profit_distance_pct")
+            levels["stop_loss_distance_pct"] = math_dict.get("stop_loss_distance_pct")
+            levels["risk_reward"] = math_dict.get("risk_reward")
+        if len(errors) == 0 and math_payload is not None:
+            levels["bybit_protective_orders"] = {
+                "take_profit": bybit_linear_protective_order_plan(
+                    direction,
+                    "take_profit",
+                    levels.get("take_profit"),
+                    reference_price,
+                ),
+                "stop_loss": bybit_linear_protective_order_plan(
+                    direction,
+                    "stop_loss",
+                    levels.get("stop_loss"),
+                    reference_price,
+                ),
+            }
     else:
         levels["geometry_valid"] = True
         levels["geometry_errors"] = []
