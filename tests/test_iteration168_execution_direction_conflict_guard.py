@@ -87,7 +87,7 @@ def test_one_way_execution_treats_neutral_as_incompatible_with_directional_bot(c
     assert blocks[0]["candidate_direction"] == "long"
 
 
-def test_one_way_execution_skips_same_publication_root_for_idempotent_reattach(conn):
+def test_one_way_execution_skips_same_publication_root_only_for_same_direction_reattach(conn):
     assert (
         db.insert_bot_instance(
             conn,
@@ -101,7 +101,29 @@ def test_one_way_execution_skips_same_publication_root_for_idempotent_reattach(c
         == "inserted"
     )
 
-    assert _execution_symbol_direction_conflict_blocks(conn, _candidate("short", rec_id="R-new", root="ROOT-1")) == []
+    assert _execution_symbol_direction_conflict_blocks(conn, _candidate("long", rec_id="R-new", root="ROOT-1")) == []
+
+
+def test_one_way_execution_blocks_same_publication_root_direction_flip(conn):
+    assert (
+        db.insert_bot_instance(
+            conn,
+            _running_bot(
+                bot_id="B-chain-long",
+                direction="long",
+                origin_rec_id="R-old",
+                publication_root_rec_id="ROOT-FLIP",
+            ),
+        )
+        == "inserted"
+    )
+
+    blocks = _execution_symbol_direction_conflict_blocks(conn, _candidate("short", rec_id="R-new", root="ROOT-FLIP"))
+
+    assert [block["code"] for block in blocks] == ["OPPOSITE_SYMBOL_DIRECTION_RUNNING"]
+    assert blocks[0]["existing_direction"] == "long"
+    assert blocks[0]["candidate_direction"] == "short"
+    assert blocks[0]["same_publication_root"] is True
 
 
 def test_one_way_execution_blocks_when_existing_bot_direction_is_unknown(conn):

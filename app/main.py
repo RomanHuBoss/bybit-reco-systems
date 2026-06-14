@@ -3438,11 +3438,6 @@ def _execution_symbol_direction_conflict_blocks(conn, rec: dict[str, Any]) -> li
         if str(bot.get("symbol") or "").strip().upper() != symbol:
             continue
 
-        existing_root = str(bot.get("publication_root_rec_id") or bot.get("origin_rec_id") or "").strip()
-        if publication_root and existing_root == publication_root:
-            # The caller handles idempotent re-attachment to the same publication chain.
-            continue
-
         mode = bot.get("mode") if isinstance(bot.get("mode"), dict) else {}
         existing_direction = str(mode.get("direction") or "").strip().lower()
         if existing_direction not in {"neutral", "long", "short"}:
@@ -3460,20 +3455,76 @@ def _execution_symbol_direction_conflict_blocks(conn, rec: dict[str, Any]) -> li
             )
             continue
 
+        existing_root = str(bot.get("publication_root_rec_id") or bot.get("origin_rec_id") or "").strip()
+        same_publication_root = bool(publication_root and existing_root == publication_root)
+        if same_publication_root and existing_direction == direction:
+            # Safe idempotent re-attachment: same chain, same one-way direction.
+            continue
+
         if existing_direction != direction:
             blocks.append(
                 {
                     "code": "OPPOSITE_SYMBOL_DIRECTION_RUNNING",
                     "msg": (
                         f"{venue}:{symbol} already has running {existing_direction} bot {bot.get('bot_id')}; "
-                        f"cannot start {direction} bot without explicit hedge-mode support."
+                        f"cannot start or reattach {direction} bot without explicit hedge-mode support."
                     ),
                     "bot_id": bot.get("bot_id"),
                     "existing_direction": existing_direction,
                     "candidate_direction": direction,
+                    "same_publication_root": same_publication_root,
                 }
             )
     return blocks
+
+
+def _running_publication_root_bot_direction_blocks(existing_bot: dict[str, Any], rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Block idempotent publication-chain reuse if the live bot is another side.
+
+    Reusing a live bot for a later recommendation in the same chain is only safe
+    while the executable one-way direction is unchanged. If the chain flips from
+    long to short (or directional to neutral), returning the existing bot would
+    falsely mark a different side as executed and hide exposure/TP/SL conflict.
+    """
+    if not existing_bot:
+        return []
+    if str(rec.get("bot_type") or "").strip() != "futures_grid":
+        return []
+    if str(rec.get("venue") or "").strip().lower() != "linear":
+        return []
+    candidate_direction = str(rec.get("direction") or "").strip().lower()
+    if candidate_direction not in {"neutral", "long", "short"}:
+        return []
+
+    mode = existing_bot.get("mode") if isinstance(existing_bot.get("mode"), dict) else {}
+    existing_direction = str(mode.get("direction") or "").strip().lower()
+    if existing_direction not in {"neutral", "long", "short"}:
+        return [
+            {
+                "code": "EXISTING_CHAIN_DIRECTION_UNKNOWN",
+                "msg": (
+                    f"publication-chain bot {existing_bot.get('bot_id')} has unknown direction; "
+                    "cannot prove one-way TP/SL/exposure semantics for idempotent reattach."
+                ),
+                "bot_id": existing_bot.get("bot_id"),
+                "existing_direction": existing_direction or None,
+                "candidate_direction": candidate_direction,
+            }
+        ]
+    if existing_direction != candidate_direction:
+        return [
+            {
+                "code": "PUBLICATION_CHAIN_DIRECTION_CHANGED",
+                "msg": (
+                    f"publication-chain bot {existing_bot.get('bot_id')} is {existing_direction}, "
+                    f"but candidate recommendation is {candidate_direction}; reattach would mark the wrong side executed."
+                ),
+                "bot_id": existing_bot.get("bot_id"),
+                "existing_direction": existing_direction,
+                "candidate_direction": candidate_direction,
+            }
+        ]
+    return []
 
 
 def _prefetch_execution_bybit_meta(conn, rec_id: str) -> dict[str, Any]:
@@ -3546,6 +3597,18 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         # signal was executed while leaving the operator with no running position.
         chain_existing = db.get_bot_by_publication_root(conn, publication_root_rec_id, status="running")
         if chain_existing:
+            chain_direction_blocks = _running_publication_root_bot_direction_blocks(chain_existing, rec)
+            if chain_direction_blocks:
+                db.log_decision(
+                    conn,
+                    "EXECUTION_PUBLICATION_CHAIN_DIRECTION_BLOCKED",
+                    rec_id,
+                    operator,
+                    {"blocks": chain_direction_blocks},
+                    commit=False,
+                )
+                codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in chain_direction_blocks)
+                raise HTTPException(status_code=409, detail=f"execution blocked by publication-chain direction state: {codes}")
             if current_status != "executed":
                 db.update_recommendation_status(conn, rec_id, "executed", operator, commit=False)
                 conn.commit()
@@ -3652,6 +3715,18 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         if insert_result == "duplicate_publication_root_running":
             existing = db.get_bot_by_publication_root(conn, publication_root_rec_id, status="running")
             if existing:
+                chain_direction_blocks = _running_publication_root_bot_direction_blocks(existing, rec)
+                if chain_direction_blocks:
+                    db.log_decision(
+                        conn,
+                        "EXECUTION_PUBLICATION_CHAIN_DIRECTION_BLOCKED",
+                        rec_id,
+                        operator,
+                        {"blocks": chain_direction_blocks},
+                        commit=False,
+                    )
+                    codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in chain_direction_blocks)
+                    raise HTTPException(status_code=409, detail=f"execution blocked by publication-chain direction state: {codes}")
                 if rec.get("status") != "executed":
                     db.update_recommendation_status(conn, rec_id, "executed", operator)
                     conn.commit()

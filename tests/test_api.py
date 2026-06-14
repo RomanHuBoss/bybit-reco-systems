@@ -1703,6 +1703,85 @@ def test_api_execute_chain_member_reuses_existing_publication_root_bot(client_an
     assert active_rec['status'] == 'executed'
 
 
+def test_api_execute_chain_member_blocks_direction_flip_reattach(client_and_conn):
+    client, conn = client_and_conn
+    ts_now = int(time.time())
+
+    db.insert_recommendations(
+        conn,
+        [
+            {
+                'rec_id': 'R-chain-flip-root',
+                'ts': ts_now,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'long',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.44,
+                'confidence': 0.74,
+                'expected_rr': 1.5,
+                'risk_score': 0.2,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'recommended',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now,
+                'publication_root_rec_id': 'R-chain-flip-root',
+                'is_outcome_label_root': True,
+            },
+            {
+                'rec_id': 'R-chain-flip-active',
+                'ts': ts_now + 60,
+                'venue': 'linear',
+                'symbol': 'BTCUSDT',
+                'bot_type': 'futures_grid',
+                'direction': 'short',
+                'account_mode': 'one_way',
+                'margin_mode': 'isolated',
+                'score': 0.45,
+                'confidence': 0.75,
+                'expected_rr': 1.55,
+                'risk_score': 0.19,
+                'params': {'grid_levels': 8},
+                'reasons': {},
+                'blocks': [],
+                'status': 'active',
+                'ttl_sec': 1800,
+                'model_version': 'test',
+                'features_ref_ts': ts_now + 60,
+                'publication_root_rec_id': 'R-chain-flip-root',
+                'is_outcome_label_root': False,
+            },
+        ],
+    )
+
+    first_exec = client.post(
+        '/api/v1/recommendations/R-chain-flip-root/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert first_exec.status_code == 200
+
+    second_exec = client.post(
+        '/api/v1/recommendations/R-chain-flip-active/action',
+        json={'action': 'executed', 'operator': 'tester'},
+        headers={'X-API-Key': 'test-admin-key'},
+    )
+    assert second_exec.status_code == 409
+    assert 'PUBLICATION_CHAIN_DIRECTION_CHANGED' in second_exec.json()['detail']
+
+    bots = db.list_bot_instances(conn)
+    assert len(bots) == 1
+    assert bots[0]['mode']['direction'] == 'long'
+
+    flipped_rec = db.get_recommendation_by_id(conn, 'R-chain-flip-active')
+    assert flipped_rec is not None
+    assert flipped_rec['status'] == 'active'
+
 
 def test_api_execute_active_chain_member_starts_new_bot_after_previous_chain_bot_stopped(client_and_conn):
     client, conn = client_and_conn
