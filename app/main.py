@@ -766,8 +766,10 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
 
     The UI should not imply that gross TP/SL PnL is for one coin when the
     recommendation already carries total grid exposure. Prefer explicit total
-    position qty, then derive qty from total notional/reference price, then fall
-    back to qty_per_order * grid_count, and finally to a single leg qty.
+    position qty, then explicit per-grid qty multiplied by grid_count. If only
+    notional is available, derive qty with the same price convention that
+    produced the notional: worst-case notional uses max executable grid price,
+    while legacy/reference notional uses reference_price.
     """
     if not isinstance(rec, dict):
         return {"qty": None, "qty_source": None}
@@ -821,20 +823,6 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
         return {"qty": qty, "qty_source": key}
 
     ref = finite(reference_price)
-    total_notional_keys = (
-        "estimated_worst_case_total_order_notional_usdt",
-        "estimated_max_position_notional_usdt",
-        "max_position_notional_usdt",
-        "estimated_total_order_notional_usdt",
-        "total_order_notional_usdt",
-        "position_notional_usdt",
-        "notional_usdt",
-    )
-    if ref is not None:
-        key, notional = find_first(sizing_maps, total_notional_keys)
-        if notional is not None:
-            return {"qty": float(notional) / float(ref), "qty_source": f"{key}/reference_price"}
-
     per_order_qty_keys = (
         "qty_per_order",
         "order_qty",
@@ -851,6 +839,31 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
         if grid_count is not None and grid_count > 1:
             return {"qty": float(per_order_qty) * float(grid_count), "qty_source": f"{key}*grid_count"}
         return {"qty": per_order_qty, "qty_source": key}
+
+    if ref is not None:
+        levels = plan.get("levels") if isinstance(plan.get("levels"), dict) else {}
+        range_levels = levels.get("range") if isinstance(levels.get("range"), dict) else {}
+        range_lower = finite(range_levels.get("lower")) or finite(params.get("price_range_lower"))
+        range_upper = finite(range_levels.get("upper")) or finite(params.get("price_range_upper"))
+        worst_notional_price = _grid_max_notional_price(ref, range_lower, range_upper)
+        worst_total_notional_keys = (
+            "estimated_worst_case_total_order_notional_usdt",
+            "estimated_max_position_notional_usdt",
+        )
+        key, notional = find_first(sizing_maps, worst_total_notional_keys)
+        if notional is not None and worst_notional_price is not None and worst_notional_price > 0:
+            return {"qty": float(notional) / float(worst_notional_price), "qty_source": f"{key}/max_grid_price"}
+
+        total_notional_keys = (
+            "max_position_notional_usdt",
+            "estimated_total_order_notional_usdt",
+            "total_order_notional_usdt",
+            "position_notional_usdt",
+            "notional_usdt",
+        )
+        key, notional = find_first(sizing_maps, total_notional_keys)
+        if notional is not None:
+            return {"qty": float(notional) / float(ref), "qty_source": f"{key}/reference_price"}
 
     if ref is not None:
         key, notional = find_first(
