@@ -3411,6 +3411,71 @@ def _is_supported_execution_direction(bot_type: str, venue: str, direction: str)
     return bot_type == "futures_grid" and venue == "linear" and direction in ("neutral", "long", "short")
 
 
+def _execution_symbol_direction_conflict_blocks(conn, rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fail closed when a one-way Linear USDT symbol already has another direction running.
+
+    The execution layer models Bybit Linear USDT futures grids as one-way/isolated
+    bots unless hedge-mode support is added explicitly. ``gate_candidate`` enforces
+    numeric symbol caps, but operators can intentionally raise ``max_symbol_bots``.
+    That must not allow a second local bot with an incompatible direction on the
+    same venue/symbol, because protective TP/SL, exposure and reconciliation would
+    no longer have a single directional source of truth.
+    """
+    venue = str(rec.get("venue") or "").strip().lower()
+    symbol = str(rec.get("symbol") or "").strip().upper()
+    direction = str(rec.get("direction") or "").strip().lower()
+    bot_type = str(rec.get("bot_type") or "").strip()
+    if bot_type != "futures_grid" or venue != "linear" or direction not in {"neutral", "long", "short"}:
+        return []
+
+    publication_root = str(rec.get("publication_root_rec_id") or rec.get("rec_id") or "").strip()
+    blocks: list[dict[str, Any]] = []
+    for bot in db.list_bot_instances(conn, status="running", limit=10000):
+        if str(bot.get("bot_type") or "").strip() != "futures_grid":
+            continue
+        if str(bot.get("venue") or "").strip().lower() != venue:
+            continue
+        if str(bot.get("symbol") or "").strip().upper() != symbol:
+            continue
+
+        existing_root = str(bot.get("publication_root_rec_id") or bot.get("origin_rec_id") or "").strip()
+        if publication_root and existing_root == publication_root:
+            # The caller handles idempotent re-attachment to the same publication chain.
+            continue
+
+        mode = bot.get("mode") if isinstance(bot.get("mode"), dict) else {}
+        existing_direction = str(mode.get("direction") or "").strip().lower()
+        if existing_direction not in {"neutral", "long", "short"}:
+            blocks.append(
+                {
+                    "code": "EXISTING_SYMBOL_DIRECTION_UNKNOWN",
+                    "msg": (
+                        f"{venue}:{symbol} already has running bot {bot.get('bot_id')} with unknown direction; "
+                        "one-way Linear USDT execution cannot prove TP/SL and exposure semantics."
+                    ),
+                    "bot_id": bot.get("bot_id"),
+                    "existing_direction": existing_direction or None,
+                    "candidate_direction": direction,
+                }
+            )
+            continue
+
+        if existing_direction != direction:
+            blocks.append(
+                {
+                    "code": "OPPOSITE_SYMBOL_DIRECTION_RUNNING",
+                    "msg": (
+                        f"{venue}:{symbol} already has running {existing_direction} bot {bot.get('bot_id')}; "
+                        f"cannot start {direction} bot without explicit hedge-mode support."
+                    ),
+                    "bot_id": bot.get("bot_id"),
+                    "existing_direction": existing_direction,
+                    "candidate_direction": direction,
+                }
+            )
+    return blocks
+
+
 def _prefetch_execution_bybit_meta(conn, rec_id: str) -> dict[str, Any]:
     """Заранее подтягивает metadata Bybit без удержания write-lock SQLite.
 
@@ -3503,6 +3568,18 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         db.log_decision(conn, "EXECUTION_BLOCKED", rec_id, operator, {"blocks": exec_blocks})
         codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in exec_blocks)
         raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
+
+    direction_conflict_blocks = _execution_symbol_direction_conflict_blocks(conn, rec)
+    if direction_conflict_blocks:
+        db.log_decision(
+            conn,
+            "EXECUTION_SYMBOL_DIRECTION_CONFLICT_BLOCKED",
+            rec_id,
+            operator,
+            {"blocks": direction_conflict_blocks},
+        )
+        codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in direction_conflict_blocks)
+        raise HTTPException(status_code=409, detail=f"execution blocked by current symbol direction state: {codes}")
 
     rec_for_execution = _snap_reco_payload_to_bybit_meta(rec, bybit_meta)
 

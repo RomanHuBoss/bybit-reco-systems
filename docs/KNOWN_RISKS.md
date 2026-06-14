@@ -65,3 +65,18 @@ Auto-generated operator payloads are now snapped conservatively against Bybit me
 `how_to_trade.png` и `docs/HOW_TO_TRADE_INFOGRAPHIC.md` описывают quick-reference для оператора. Исполнимость всегда определяется runtime guards: risk status, Bybit metadata, live ticker, funding snapshot, publication-chain TTL, minNotional/qtyStep/minQty и LLM gate, если он включён.
 
 Текущий shipped-профиль использует `min_leverage=5` и `max_leverage=5`. Это повышает чувствительность к ликвидации по сравнению с 1-3x и допустимо только при fail-closed liquidation-buffer проверках, малой марже на bot и явном резерве капитала вне позиции. Если оператор хочет lower-risk профиль, он должен явно снизить `max_leverage` в `RISK_LIMITS_JSON` и принять, что часть идей останется `no_trade`/`blocked`, а не станет автоматически исполнимой.
+
+---
+
+## 2026-06-14 Independent full re-audit additions
+
+### RESOLVED/HIGH: one-way same-symbol direction conflict at execution materialization
+- **Files**: `app/main.py`, `tests/test_iteration168_execution_direction_conflict_guard.py`
+- **Risk**: when `max_symbol_bots` is deliberately raised above 1, the numeric risk gate alone is not enough to prove that a Bybit Linear USDT one-way symbol cannot get incompatible local bot directions. A running long/short/neutral grid on the same symbol must remain the single directional source of truth unless hedge-mode is implemented explicitly.
+- **Mitigation added**: execution materialization now checks running bots on the same `(venue, symbol)` inside the serialized write transaction and fail-closed blocks different or unknown directions, while still allowing idempotent re-attach to the same publication root.
+
+### LOW/RESIDUAL: calibration fallback remains advisory and proxy-based
+- **File**: `app/calibration.py`
+- **Clarification**: the full LogReg + Platt path already uses chronological out-of-fold logits for the Platt-on-top stage, so the issue is not a blanket absence of time-aware validation. The score-only fallback still fits Platt on available historical proxy outcomes when the dataset is below `logreg_min_samples`.
+- **Risk**: calibrated confidence can remain over-optimistic on small/non-stationary samples, especially because labels are proxy outcomes rather than real fill/funding/liquidation truth.
+- **Mitigation**: effective-sample and class-balance gates remain in place; confidence must still pass risk, shock, freshness, funding, Bybit metadata and execution-preflight gates.
