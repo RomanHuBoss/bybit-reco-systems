@@ -1036,9 +1036,9 @@ function buildDetailsHtml(it) {
   const decisionText = launchable
     ? "Проверьте цену, актуальность, риск и экономику; затем используйте блок параметров запуска для создания бота."
     : explicitHardBlocked
-      ? "Есть жёсткий блокер, запрещающий ручное создание grid-бота. Причина показана ниже."
+      ? "Есть жёсткий блокер, запрещающий ручное создание grid-бота. Фактическая причина показана сразу под этим решением."
       : noTradeDecision
-        ? "no_trade означает: grid сейчас не запускать. Это не технический блокер Bybit; решение принято обязательными launch-проверками, а не относительным рангом в таблице."
+        ? "no_trade означает: grid сейчас не запускать. Это не технический блокер Bybit; причина показана сразу под этим решением и отделена от относительного ранга в таблице."
         : pendingDecision
           ? "Рекомендация удержана до завершения LLM-проверки. Это не no_trade и не Bybit/preflight-блокер; дождитесь финального статуса recommended/active либо отказа."
           : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live-предпроверки.";
@@ -1073,7 +1073,7 @@ function buildDetailsHtml(it) {
     ...bybitWarnings.slice(0, 4).map(b => ({ code: b.code || "BYBIT_WARN", msg: b.msg || "", critical: false })),
   ].slice(0, 8);
   const blockersTitle = explicitHardBlocked
-    ? "Блокеры / предупреждения"
+    ? "Фактическая причина блокировки / предупреждения"
     : noTradeDecision
       ? "Почему запуск не рекомендован / предупреждения"
       : "Предупреждения";
@@ -1101,6 +1101,8 @@ function buildDetailsHtml(it) {
         </div>
         <div class="decision-text">${escapeHtml(decisionText)}</div>
       </div>
+
+      ${blockersHtml}
 
       ${launchDecisionDiagnosticsHtml(it, scoreMeta)}
 
@@ -1135,7 +1137,6 @@ function buildDetailsHtml(it) {
         ${llmSummary ? `<div class="llm-summary-box compact-llm-summary">${escapeHtml(llmSummary)}</div>` : `<div class="helper-text">LLM-проверка отсутствует для этой рекомендации.</div>`}
       </div>
 
-      ${blockersHtml}
     </div>
   `;
 }
@@ -1809,9 +1810,9 @@ function renderRecoTable(items) {
   if (!hasActionable) {
     const shock = (statusPayload || {}).market_shock || {};
     if (shock && shock.state && shock.state !== "normal") {
-      banner.innerHTML = `NO-TRADE: <b>${escapeHtml(shock.title || "Guard")}</b>. ${escapeHtml(shock.operator_note || "Новые входы заблокированы.")}`;
+      banner.innerHTML = `НЕТ ЗАПУСКАЕМЫХ: <b>${escapeHtml(shock.title || "Guard")}</b>. ${escapeHtml(shock.operator_note || "Новые входы заблокированы.")}`;
     } else {
-      banner.innerHTML = 'NO-TRADE: нет актуальных рекомендаций со статусом <b>recommended</b> или <b>active</b> по текущим фильтрам/гейтам.';
+      banner.innerHTML = 'НЕТ ЗАПУСКАЕМЫХ: нет эффективных <b>recommended</b>/<b>active</b> по текущим фильтрам. <b>blocked</b> = жёсткий риск/Bybit/preflight-блокер; <b>no_trade</b> = запуск не прошёл launch-score/confidence/economics gates.';
     }
     banner.classList.remove("hidden");
   } else {

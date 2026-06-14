@@ -1,0 +1,605 @@
+# Static scan — operator blocked/no_trade clarity patch — 2026-06-14
+
+## Trading semantics symbols
+app/alerts.py:11:import httpx
+app/alerts.py:40:        url = f"https://api.telegram.org/bot{token}/sendMessage"
+app/alerts.py:41:        response = httpx.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=8.0)
+app/alerts.py:58:        return str(row.get("status") or "").strip().lower()
+app/alerts.py:107:    # Otherwise warm-up / data outages would generate a misleading grid alert.
+app/alerts.py:112:            f"Рынок в risk-off режиме или все символы заблокированы."
+app/bybit_client.py:7:import httpx
+app/bybit_client.py:37:    normalized = str(symbol or "").strip().upper()
+app/bybit_client.py:50:    normalized = str(category or "").strip().lower()
+app/bybit_client.py:67:    symbol = str(item.get("symbol") or "").strip().upper()
+app/bybit_client.py:83:    return [item for item in scoped if str(item.get("symbol") or "").strip().upper() == target]
+app/bybit_client.py:116:        self._client = httpx.Client(timeout=timeout)
+app/bybit_client.py:132:    def _is_retryable_http_status(self, status_code: int) -> bool:
+app/bybit_client.py:136:        msg = str(ret_msg or "").lower()
+app/bybit_client.py:153:        msg = str(exc).lower()
+app/bybit_client.py:170:                if self._is_retryable_http_status(response.status_code):
+app/bybit_client.py:172:                        time.sleep(self._retry_delay(attempt, retry_after))
+app/bybit_client.py:180:                        time.sleep(self._retry_delay(attempt, retry_after))
+app/bybit_client.py:185:                        time.sleep(self._retry_delay(attempt, retry_after))
+app/bybit_client.py:194:                        time.sleep(self._retry_delay(attempt, retry_after))
+app/bybit_client.py:200:                        time.sleep(self._retry_delay(attempt, _header_value(response, "Retry-After")))
+app/bybit_client.py:207:                if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+app/bybit_client.py:213:                time.sleep(self._retry_delay(attempt))
+app/bybit_client.py:270:            item_symbol = str(item.get("symbol") or "").strip().upper()
+app/bybit_client.py:387:        The endpoint reports ``category`` at ``result.category`` rather than inside
+app/bybit_client.py:398:        result_category = str(result.get("category") or "").strip().lower()
+app/bybit_client.py:402:            item_symbol = str(item.get("symbol") or "").strip().upper()
+app/calibration.py:7:Stage 2: Platt scaling on top of LogReg probability output.
+app/calibration.py:192:    train/inference skew when later code or defaults reconstruct features slightly
+app/calibration.py:270:    liq_tier_str = str(liq_block.get("tier") or "medium").lower()
+app/calibration.py:328:        # Pad with zeros if incoming vector is shorter (schema drift / older snapshots).
+app/collector.py:12:# config may be corrected at runtime, and transient exchange-side validation glitches should self-heal.
+app/collector.py:52:# High-frequency bars are updated aggressively; slow bars are throttled and/or derived locally.
+app/collector.py:81:# In-memory throttle for slow REST paths. This is intentionally process-local: it protects the
+app/collector.py:142:    item_symbol = str((item or {}).get("symbol") or "").strip().upper()
+app/collector.py:143:    target_symbol = str(symbol or "").strip().upper()
+app/collector.py:180:    disabled[str(symbol or "").upper()] = retry_at
+app/collector.py:185:    key = (str(venue or "").lower(), str(symbol or "").upper())
+app/collector.py:197:    msg_l = msg.lower()
+app/collector.py:214:    normalized = str(symbol or "").strip().upper()
+app/collector.py:223:        sym = str(raw or "").strip().upper()
+app/collector.py:333:    item_symbol = str(info.get("symbol") or "").strip().upper()
+app/collector.py:334:    target_symbol = str(symbol or "").strip().upper()
+app/collector.py:336:    quote_coin = str(info.get("quoteCoin") or "").strip().upper()
+app/collector.py:337:    settle_coin = str(info.get("settleCoin") or "").strip().upper()
+app/collector.py:338:    status = str(info.get("status") or "").strip().lower()
+app/collector.py:339:    is_pre_listing = str(info.get("isPreListing") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+app/collector.py:402:            sym = str(item.get("symbol") or "").upper()
+app/collector.py:497:    local series is too short for warm-up requirements, the anchor is forced to
+app/collector.py:499:    This prevents a fresh-but-short 1h/1d series from getting stuck below the
+app/collector.py:598:    # only burns API budget and can create misleading bootstrap errors.
+app/collector.py:763:    missing_symbol_set = {str(sym or "").strip().upper() for sym in missing_symbols}
+app/collector.py:767:    # cycle; otherwise the recommender can see fresh OHLCV beside stale or absent
+app/collector.py:1122:    Funding rate is refreshed from the linear ticker batch inside collect_once().
+app/db.py:27:    return str(status or "").strip().lower() in ACTIONABLE_RECOMMENDATION_STATUSES
+app/db.py:31:    return str(status or "").strip().lower() in EXPIRABLE_RECOMMENDATION_STATUSES
+app/db.py:61:    side before making any business-logic decisions so the read-check-write sequence
+app/db.py:267:        active_reuse = bool(dedupe.get("active_reuse")) or str(dedupe.get("decision") or "").strip().lower() == "reuse_active"
+app/db.py:297:    return str(llm_review.get("publish_target_status") or "").strip().lower()
+app/db.py:302:    status_norm = str(status or "").strip().lower()
+app/db.py:492:        return str(value).strip().upper()
+app/db.py:495:    return str(value or "").strip().upper()
+app/db.py:499:    msg = str(exc).lower()
+app/db.py:514:def _execute_lock_write_with_retry(op, *, attempts: int = 6, sleep_sec: float = 0.05):
+app/db.py:523:            time.sleep(float(sleep_sec) * (attempt + 1))
+app/db.py:678:    sleep_sec: float = 0.05,
+app/db.py:694:            time.sleep(float(sleep_sec) * (attempt + 1))
+app/db.py:786:            r["score"], r["confidence"], r["expected_rr"], r["risk_score"],
+app/db.py:797:            score,confidence,expected_rr,risk_score,
+app/db.py:1119:        if publication_root_rec_id and str(bot.get("status") or "").strip().lower() == "running":
+app/db.py:1255:        _require_finite_float("pnl", trade.get("pnl") or 0.0),
+app/db.py:1260:        """SELECT bot_id, ts, symbol, pnl, fee, meta_json
+app/db.py:1270:            float(row["pnl"]),
+app/db.py:1283:            """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)
+app/db.py:1292:            """SELECT bot_id, ts, symbol, pnl, fee, meta_json
+app/db.py:1302:                float(row["pnl"]),
+app/db.py:1330:        "pnl": _finite_float_or_default(r["pnl"], 0.0),
+app/db.py:1351:            "pnl": _finite_float_or_default(r["pnl"], 0.0),
+app/db.py:1361:        """SELECT ts, pnl, fee
+app/db.py:1367:    realized_pnl_gross = 0.0
+app/db.py:1372:        realized_pnl_gross += _finite_float_or_default(row["pnl"], 0.0)
+app/db.py:1378:    realized_pnl_net = realized_pnl_gross - realized_fee
+app/db.py:1381:        "realized_pnl_gross": realized_pnl_gross,
+app/db.py:1383:        "realized_pnl_net": realized_pnl_net,
+app/db.py:1384:        "realized_pnl": realized_pnl_net,
+app/db.py:1457:            "risk_score": r["risk_score"],
+app/db.py:1496:        "risk_score": r["risk_score"],
+app/db.py:1627:def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str, Any], is_active: bool = True, *, commit: bool = True) -> None:
+app/db.py:1629:        conn.execute("""UPDATE risk_limits SET is_active=0""")
+app/db.py:1631:        """INSERT INTO risk_limits(version, limits_json, is_active, created_ts) VALUES(?,?,?,?)""",
+app/db.py:1637:def get_active_risk_limits(conn: sqlite3.Connection) -> dict[str, Any] | None:
+app/db.py:1638:    cur = conn.execute("""SELECT limits_json FROM risk_limits WHERE is_active=1 ORDER BY created_ts DESC LIMIT 1""")
+app/db.py:1708:def sum_daily_gross_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
+app/db.py:1709:    cur = conn.execute("SELECT pnl FROM trades WHERE ts>=?", (day_start_ts,))
+app/db.py:1710:    return sum(_finite_float_or_default(row["pnl"], 0.0) for row in cur.fetchall())
+app/db.py:1718:def sum_daily_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
+app/db.py:1722:    Ignore non-finite rows so one corrupted trade cannot poison the whole day's risk status.
+app/db.py:1724:    cur = conn.execute("SELECT pnl, fee FROM trades WHERE ts>=?", (day_start_ts,))
+app/db.py:1727:        total += _finite_float_or_default(row["pnl"], 0.0) - _finite_float_or_default(row["fee"], 0.0)
+app/db.py:1866:            "risk_score": r["risk_score"],
+app/db.py:1914:        llm_status = str((review or {}).get("status") or "none").strip().lower()
+app/db.py:1956:    A symbol is considered ready when:
+app/db.py:1970:    active = {str(v or '').strip().lower() for v in (active_venues or ['linear']) if str(v or '').strip()}
+app/db.py:1976:            sym = str(raw or '').strip().upper()
+app/db.py:2008:                reasons.append('tf_60_short')
+app/db.py:2015:                    reasons.append(f'tf_{int(tf_sec)}_short')
+app/db.py:2385:    value = str(direction or fallback).strip().lower()
+app/db.py:2386:    return value if value in ("long", "short", "neutral") else fallback
+app/db.py:2406:        agree = agree.strip().lower() in {"1", "true", "yes", "y"}
+app/db.py:2416:    risk_flags_raw = llm_review.get("risk_flags")
+app/db.py:2417:    if isinstance(risk_flags_raw, list):
+app/db.py:2418:        risk_flags = [str(x) for x in risk_flags_raw[:8]]
+app/db.py:2419:    elif isinstance(risk_flags_raw, str) and risk_flags_raw.strip():
+app/db.py:2420:        risk_flags = [risk_flags_raw.strip()]
+app/db.py:2422:        risk_flags = []
+app/db.py:2449:        "risk_flags": risk_flags,
+app/db.py:2464:    status_norm = str(status or "").strip().lower()
+app/db.py:2470:    llm_status = str(llm_review.get("status") or "").strip().lower()
+app/db.py:2501:    if execution_direction == "neutral" and raw_direction == "short":
+app/db.py:2593:    true neutral thesis and linear short neutralisation (raw short -> execution neutral).
+app/db.py:2832:      disabled:       True if SYMBOL_DISABLED is still inside retry window
+app/db.py:2921:    active_set = {str(v or "").strip().lower() for v in (active_venues or ["linear"])}
+app/db.py:2928:            sym = str(raw_sym or "").strip().upper()
+app/db.py:3012:    # silently kills the 1d branch after the system has been running for a month, because
+app/db.py:3013:    # tf=86400 can never accumulate enough history again. Keep short TFs compact, but
+app/db.py:3014:    # retain enough slow-TF history for the actual inference contract.
+app/db_backend.py:38:    value = str(target or "").strip().lower()
+app/db_backend.py:99:        translated_sql, translated_params = translate_sql(sql, params, engine=POSTGRES)
+app/db_backend.py:101:        cur.execute(translated_sql, translated_params)
+app/db_backend.py:105:        translated_sql, _ = translate_sql(sql, (), engine=POSTGRES)
+app/db_backend.py:107:        cur.executemany(translated_sql, list(seq_of_params))
+app/db_backend.py:112:            translated_sql, translated_params = translate_sql(statement, (), engine=POSTGRES)
+app/db_backend.py:113:            if not translated_sql.strip():
+app/db_backend.py:117:                cur.execute(translated_sql, translated_params)
+app/db_backend.py:175:def translate_sql(sql: str, params: Iterable[Any] | None = None, *, engine: str | None = None) -> tuple[str, tuple[Any, ...]]:
+app/db_backend.py:176:    target_engine = str(engine or SQLITE).strip().lower()
+app/db_backend.py:185:    pragma_table = _translate_pragma_table_info(text)
+app/db_backend.py:189:    if text.upper().startswith("PRAGMA "):
+app/db_backend.py:195:    text = _translate_insert_or_replace(text)
+app/db_backend.py:196:    text = _translate_json_extract(text)
+app/db_backend.py:211:def _translate_pragma_table_info(sql: str) -> str | None:
+app/db_backend.py:226:def _translate_insert_or_replace(sql: str) -> str:
+app/db_backend.py:254:def _translate_json_extract(sql: str) -> str:
+app/direction.py:68:def ma_slope(closes: list[float], fast: int = 20, slow: int = 60) -> float:
+app/direction.py:69:    if len(closes) < slow + 2:
+app/direction.py:72:    s = _sma(closes, slow)
+app/direction.py:137:        "slope": 0.0,
+app/direction.py:138:        "slope_norm": 0.0,
+app/direction.py:141:        "contrib": {"ma_slope": 0.0, "macd": 0.0, "rsi": 0.0},
+app/direction.py:154:    slope = ma_slope(closes)
+app/direction.py:161:    slope_norm = slope / max(1e-6, ap)
+app/direction.py:162:    # Increased sensitivity: 0.22 vs old 0.15 — slope is the most reliable trend signal
+app/direction.py:163:    slope_c = _clamp(slope_norm * 0.22, -1.0, 1.0)
+app/direction.py:179:    bb_b = _clamp((closes[-1] - (sma20 - 2 * std20)) / max(1e-9, 4 * std20), 0.0, 1.0)  # 0=lower band, 1=upper band
+app/direction.py:182:    # Soft directional score — slope dominates; MACD/RSI/BB supplement
+app/direction.py:183:    score = 0.55 * slope_c + 0.22 * hist_c + 0.15 * rsi_c + 0.08 * bb_c
+app/direction.py:186:    # Trendiness proxy: combination of absolute slope and MACD agreement
+app/direction.py:187:    trend_strength = float(_clamp(abs(slope_c) * 0.75 + abs(hist_c) * 0.25, 0.0, 1.0))
+app/direction.py:189:    # Neutral veto: lowered threshold — only veto very flat markets
+app/direction.py:198:        "slope": float(slope),
+app/direction.py:199:        "slope_norm": float(slope_norm),
+app/direction.py:202:        "contrib": {"ma_slope": float(slope_c), "macd": float(hist_c), "rsi": float(rsi_c)},
+app/direction.py:290:        bias = "long"
+app/direction.py:292:        bias = "short"
+app/direction.py:309:            range_bias_direction = "long" if all_sign > 0 else "short"
+app/direction.py:316:        direction = "long" if s_all > 0 else "short"
+app/direction.py:321:        desired = "long" if struct_sign > 0 else "short"
+app/direction.py:331:    # Base lowered from 0.45 → 0.30 to increase dynamic range.
+app/direction.py:360:        "direction": direction,                    # long/short/neutral
+app/direction.py:361:        "bias": bias,                              # long/short
+app/direction.py:363:            "range_biased" if range_biased and direction in ("long", "short") else (
+app/direction.py:364:                "directional_grid_bias" if direction in ("long", "short") else "neutral"
+app/features.py:119:    sma_slow = _sma(closes, 60)
+app/features.py:120:    slope = (sma_fast - sma_slow) / last if last else 0.0
+app/features.py:123:    trend_strength = min(1.0, abs(slope) * 20.0)  # heuristic scaling
+app/features.py:143:        "sma_slow": sma_slow,
+app/features.py:144:        "slope": slope,
+app/features.py:195:        bullish  = funding < -0.01%  (longs being paid)
+app/features.py:196:        bearish  = funding > +0.03%  (longs paying high premium)
+app/features.py:219:        signal = "bullish"   # shorts overpaying → price pressure up
+app/features.py:221:        signal = "bearish"   # longs overpaying → crowded long, fragile
+app/features.py:249:        price down + OI growing → capitulation / shorts piling in (bearish)
+app/features.py:357:      beta:        price sensitivity (symbol_ret / btc_ret slope)
+app/grid_math.py:52:def linear_pnl_usdt(side: str, qty: Any, entry_price: Any, exit_price: Any) -> Decimal:
+app/grid_math.py:55:    exitp = dec(exit_price)
+app/grid_math.py:56:    if q <= ZERO or entry <= ZERO or exitp <= ZERO:
+app/grid_math.py:58:    side_norm = str(side or "").strip().lower()
+app/grid_math.py:59:    if side_norm == "long":
+app/grid_math.py:60:        return q * (exitp - entry)
+app/grid_math.py:61:    if side_norm == "short":
+app/grid_math.py:62:        return q * (entry - exitp)
+app/grid_math.py:63:    # Fail closed: a mistyped side must not silently become a long PnL.
+app/grid_math.py:72:def funding_cashflow_usdt(side: str, position_notional: Any, funding_rate: Any, events: Any = 1) -> Decimal:
+app/grid_math.py:73:    """Positive means cost paid by this side; negative means funding received."""
+app/grid_math.py:80:    side_norm = str(side or "").strip().lower()
+app/grid_math.py:81:    if side_norm == "long":
+app/grid_math.py:83:    elif side_norm == "short":
+app/grid_math.py:86:        # Unknown side: do not guess the funding payer/receiver.
+app/grid_math.py:91:def margin_required_usdt(notional: Any, leverage: Any) -> Decimal:
+app/grid_math.py:92:    lev = dec(leverage, "1")
+app/grid_math.py:98:def estimate_linear_liq_price(side: str, entry_price: Any, leverage: Any, mmr: Any = "0.005", fee_buffer_rate: Any = "0.001") -> Decimal | None:
+app/grid_math.py:104:    Bybit's exact value depends on risk tiers, account balance, mark price and
+app/grid_math.py:105:    maintenance margin. This estimate is used only for buffer gates and UI risk.
+app/grid_math.py:108:    lev = dec(leverage, "1")
+app/grid_math.py:114:    side_norm = str(side or "").strip().lower()
+app/grid_math.py:115:    if side_norm == "short":
+app/grid_math.py:117:    elif side_norm == "long":
+app/grid_math.py:120:        # Unknown side must not silently become a long liquidation estimate.
+app/grid_math.py:127:def liquidation_buffer_pct(side: str, reference_price: Any, liq_price: Any) -> Decimal | None:
+app/grid_math.py:132:    side_norm = str(side or "").strip().lower()
+app/grid_math.py:133:    if side_norm == "short":
+app/grid_math.py:135:    if side_norm == "long":
+app/grid_math.py:156:    # fees, spread and slippage. If a caller accidentally passes a lower value,
+app/grid_math.py:161:    # ``expected_funding_bps`` is signed: positive means this side pays funding,
+app/llm_review.py:10:import httpx
+app/llm_review.py:12:ALLOWED_DIRECTIONS = {"long", "short", "neutral"}
+app/llm_review.py:23:    "Для futures_grid поле execution_direction может быть long, short или neutral. "
+app/llm_review.py:24:    "Значения thesis_direction и execution_direction возвращай только как long, short или neutral. "
+app/llm_review.py:25:    "Поля regime_view, risk_flags и summary пиши по-русски. "
+app/llm_review.py:28:    '{"thesis_direction":"long|short|neutral","execution_direction":"long|short|neutral",'
+app/llm_review.py:29:    '"confidence":0.0,"regime_view":"русский текст","risk_flags":["русский флаг"],"summary":"краткое русское резюме"}'
+app/llm_review.py:114:    risk_flags: list[str] = field(default_factory=list)
+app/llm_review.py:163:def normalize_direction(value: Any, *, allow_short: bool = True) -> str:
+app/llm_review.py:164:    s = str(value or "").strip().lower()
+app/llm_review.py:166:        "лонг": "long",
+app/llm_review.py:167:        "длинная": "long",
+app/llm_review.py:168:        "длинный": "long",
+app/llm_review.py:169:        "длинная позиция": "long",
+app/llm_review.py:170:        "long bias": "long",
+app/llm_review.py:171:        "шорт": "short",
+app/llm_review.py:172:        "короткая": "short",
+app/llm_review.py:173:        "короткий": "short",
+app/llm_review.py:174:        "короткая позиция": "short",
+app/llm_review.py:175:        "short bias": "short",
+app/llm_review.py:185:        if s == "short" and not allow_short:
+app/llm_review.py:198:        p = part.strip().lower()
+app/llm_review.py:286:    allow_short_exec = True
+app/llm_review.py:289:        allow_short=True,
+app/llm_review.py:293:        allow_short=allow_short_exec,
+app/llm_review.py:298:    risk_flags_raw = obj.get("risk_flags") or []
+app/llm_review.py:299:    if isinstance(risk_flags_raw, str):
+app/llm_review.py:300:        risk_flags = [risk_flags_raw.strip()] if risk_flags_raw.strip() else []
+app/llm_review.py:301:    elif isinstance(risk_flags_raw, list):
+app/llm_review.py:302:        risk_flags = [str(x).strip() for x in risk_flags_raw if str(x).strip()][:8]
+app/llm_review.py:304:        risk_flags = []
+app/llm_review.py:314:        "risk_flags": risk_flags,
+app/llm_review.py:316:        "agree_with_engine": execution_direction == normalize_direction(engine_direction, allow_short=allow_short_exec),
+app/llm_review.py:350:            "risk_score": _safe_payload_number(rec.get("risk_score")),
+app/llm_review.py:353:            "price_range_lower": params.get("price_range_lower"),
+app/llm_review.py:354:            "price_range_upper": params.get("price_range_upper"),
+app/llm_review.py:399:        self.base_url = str(base_url or "http://127.0.0.1:11434").rstrip("/")
+app/llm_review.py:404:    def _http_timeout(self) -> httpx.Timeout:
+app/llm_review.py:407:        return httpx.Timeout(connect=connect_timeout, read=read_timeout, write=15.0, pool=15.0)
+app/llm_review.py:420:        with httpx.Client(timeout=self._http_timeout()) as client:
+app/llm_review.py:428:            "http_status": status_code,
+app/main.py:33:from .risk import get_risk_limits, compute_risk_status, gate_candidate, normalize_risk_limits
+app/main.py:49:RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
+app/main.py:95:        # поток может висеть в `sleep()` ещё весь интервал и переживать lifespan.
+app/main.py:97:    # If the previous iteration overran, do not add another full sleep on top.
+app/main.py:125:        active = db.get_active_risk_limits(conn)
+app/main.py:127:            bootstrap_limits = normalize_risk_limits(settings.risk_limits, settings.risk_limits)
+app/main.py:128:            db.upsert_risk_limits(conn, version="bootstrap", limits=bootstrap_limits, is_active=True)
+app/main.py:169:    venue_norm = str(venue or "").strip().lower()
+app/main.py:170:    symbol_norm = str(symbol or "").strip().upper()
+app/main.py:211:            "category": str(info.get("category") or "").strip().lower(),
+app/main.py:212:            "symbol": str(info.get("symbol") or "").strip().upper(),
+app/main.py:214:            "base_coin": str(info.get("baseCoin") or "").strip().upper(),
+app/main.py:215:            "quote_coin": str(info.get("quoteCoin") or "").strip().upper(),
+app/main.py:216:            "settle_coin": str(info.get("settleCoin") or "").strip().upper(),
+app/main.py:220:            "upper_funding_rate": info.get("upperFundingRate"),
+app/main.py:221:            "lower_funding_rate": info.get("lowerFundingRate"),
+app/main.py:233:            "min_leverage": (info.get("leverageFilter") or {}).get("minLeverage"),
+app/main.py:234:            "max_leverage": (info.get("leverageFilter") or {}).get("maxLeverage"),
+app/main.py:235:            "leverage_step": (info.get("leverageFilter") or {}).get("leverageStep"),
+app/main.py:381:def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: str, symbol: str, ts: int | None, pnl: float, fee: float, meta: dict[str, Any]) -> bool:
+app/main.py:391:        pnl_match = math.isclose(float(existing.get("pnl") or 0.0), float(pnl), rel_tol=1e-12, abs_tol=1e-12)
+app/main.py:395:    if not (pnl_match and fee_match):
+app/main.py:406:    return str(llm_review.get("status") or "none").strip().lower() or "none"
+app/main.py:414:    current_status = str(out.get("status") or "").strip().lower()
+app/main.py:434:    risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
+app/main.py:435:    risk_report["decision"] = "not_recommended"
+app/main.py:436:    rejections = risk_report.get("rejection_reasons") if isinstance(risk_report.get("rejection_reasons"), list) else []
+app/main.py:440:    risk_report["rejection_reasons"] = rejections
+app/main.py:441:    params["risk_report"] = risk_report
+app/main.py:461:    status = str(out.get("status") or "").strip().lower()
+app/main.py:497:    risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
+app/main.py:498:    risk_report["decision"] = "not_recommended"
+app/main.py:499:    warnings = risk_report.get("warnings") if isinstance(risk_report.get("warnings"), list) else []
+app/main.py:503:    risk_report["warnings"] = warnings
+app/main.py:504:    params["risk_report"] = risk_report
+app/main.py:514:    lot, min-notional and leverage constraints. This keeps the UI from showing an
+app/main.py:525:    # must not remain launchable if the fresh operator guard found execution-risk
+app/main.py:548:    current_status = str(out.get("status") or "").strip().lower()
+app/main.py:555:    risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
+app/main.py:556:    risk_report["decision"] = "not_recommended"
+app/main.py:557:    existing_rejections = risk_report.get("rejection_reasons")
+app/main.py:565:    risk_report["rejection_reasons"] = existing_rejections
+app/main.py:566:    params["risk_report"] = risk_report
+app/main.py:570:    risk_checks = reasons.get("risk_checks") if isinstance(reasons.get("risk_checks"), dict) else {}
+app/main.py:571:    risk_checks["passed"] = False
+
+## Status/block/no_trade paths
+app/collector.py:24:    """Raised when the active collector loses the runtime leadership lock mid-cycle."""
+app/collector.py:82:# active leader from hammering Bybit, while warm DB state still survives process restarts.
+app/collector.py:769:    active_symbols = [sym for sym in symbols2 if sym not in missing_symbol_set]
+app/collector.py:772:    stats["symbols_with_current_ticker"] = len(active_symbols)
+app/collector.py:773:    stats["symbols_skipped_without_ticker"] = len(symbols2) - len(active_symbols)
+app/collector.py:793:    active_api_fetch_tfs = tuple(api_fetch_tfs or _API_FETCH_TFS)
+app/collector.py:806:    for tf_sec in active_api_fetch_tfs:
+app/collector.py:810:        for sym in active_symbols:
+app/collector.py:866:            for sym in active_symbols:
+app/collector.py:915:        for sym in active_symbols:
+app/collector.py:1130:    oi_pending_rows: list[tuple[str, list[dict[str, Any]]]] = []
+app/collector.py:1177:                oi_pending_rows.append((sym, oi_rows))
+app/collector.py:1182:    for sym, oi_rows in oi_pending_rows:
+app/collector.py:1186:    if oi_pending_rows or oi_log_events:
+app/db.py:19:ACTIONABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active"})
+app/db.py:21:ACTIVE_PUBLICATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "executed"})
+app/db.py:22:EXPIRABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "pending"})
+app/db.py:267:        active_reuse = bool(dedupe.get("active_reuse")) or str(dedupe.get("decision") or "").strip().lower() == "reuse_active"
+app/db.py:271:        if active_reuse and previous_rec_id:
+app/db.py:294:def _recommendation_pending_hold_target(reasons_json: str | None) -> str:
+app/db.py:305:    if status_norm != "pending":
+app/db.py:307:    return _recommendation_pending_hold_target(reasons_json) in ACTIONABLE_RECOMMENDATION_STATUSES
+app/db.py:370:def repair_async_llm_pending_publication_chains(conn: sqlite3.Connection) -> int:
+app/db.py:371:    """Retrofit lineage for roots duplicated while async LLM review kept prior rows pending.
+app/db.py:373:    Historical bug: publish-time dedupe ignored the previous cycle's `pending` rows even
+app/db.py:375:    `recommended`/`active`. That allowed a new same-direction root every minute or two.
+app/db.py:396:    active_chains: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+app/db.py:408:        prev = active_chains.get(key)
+app/db.py:410:            active_chains.pop(key, None)
+app/db.py:442:            active_chains[key] = {
+app/db.py:475:        # операцией через `repair_async_llm_pending_publication_chains()`.
+app/db.py:1019:def get_active_bots(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+app/db.py:1029:def count_active_bots_for_symbol(conn: sqlite3.Connection, venue: str, symbol: str) -> int:
+app/db.py:1389:def _recommended_row_passes_conf_filter(row: sqlite3.Row, min_conf: float, strict_min_conf: bool = False) -> bool:
+app/db.py:1402:    gate_applied = confidence_model.get("confidence_gate_applied")
+app/db.py:1439:    q += " ORDER BY CASE status WHEN 'recommended' THEN 0 WHEN 'active' THEN 1 WHEN 'executed' THEN 2 WHEN 'ignored' THEN 3 WHEN 'pending' THEN 4 WHEN 'blocked' THEN 5 WHEN 'no_trade' THEN 6 WHEN 'suppressed' THEN 7 ELSE 8 END, confidence DESC, score DESC, ts DESC"
+app/db.py:1443:        if not _recommended_row_passes_conf_filter(r, min_conf=min_conf, strict_min_conf=strict_min_conf):
+app/db.py:1627:def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str, Any], is_active: bool = True, *, commit: bool = True) -> None:
+app/db.py:1628:    if is_active:
+app/db.py:1629:        conn.execute("""UPDATE risk_limits SET is_active=0""")
+app/db.py:1631:        """INSERT INTO risk_limits(version, limits_json, is_active, created_ts) VALUES(?,?,?,?)""",
+app/db.py:1632:        (version, _json_dumps_safe(limits), 1 if is_active else 0, now_ts()),
+app/db.py:1637:def get_active_risk_limits(conn: sqlite3.Connection) -> dict[str, Any] | None:
+app/db.py:1638:    cur = conn.execute("""SELECT limits_json FROM risk_limits WHERE is_active=1 ORDER BY created_ts DESC LIMIT 1""")
+app/db.py:1836:    _eligible_status_params = ["recommended", "active", "pending"]
+app/db.py:1903:            return {"ok": 0, "pending": 0, "error": 0, "skipped": 0, "none": 0, "other": 0}
+app/db.py:1908:    counts = {"ok": 0, "pending": 0, "error": 0, "skipped": 0, "none": 0, "other": 0}
+app/db.py:1911:        if not _recommended_row_passes_conf_filter(row, min_conf=min_conf, strict_min_conf=strict_min_conf):
+app/db.py:1937:    counts = {k: 0 for k in ("recommended", "active", "pending", "blocked", "no_trade", "suppressed", "expired", "executed", "ignored")}
+app/db.py:1952:    active_venues: list[str] | None = None,
+app/db.py:1970:    active = {str(v or '').strip().lower() for v in (active_venues or ['linear']) if str(v or '').strip()}
+app/db.py:1985:        if venue not in active:
+app/db.py:2191:OPERATOR_STATUSES = {"executed", "ignored", "recommended", "active", "pending", "blocked", "no_trade", "suppressed", "expired"}
+app/db.py:2192:TERMINAL_RECOMMENDATION_STATUSES = {"executed", "ignored", "expired", "blocked", "no_trade", "suppressed"}
+app/db.py:2196:    "recommended": {"recommended", "active", "pending", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
+app/db.py:2197:    "active": {"active", "pending", "executed", "ignored", "blocked", "no_trade", "suppressed", "expired"},
+app/db.py:2198:    "pending": {"pending", "recommended", "active", "ignored", "blocked", "no_trade", "suppressed", "expired"},
+app/db.py:2202:    "blocked": {"blocked"},
+app/db.py:2203:    "no_trade": {"no_trade"},
+app/db.py:2204:    "suppressed": {"suppressed"},
+app/db.py:2274:    stale idea can stay visually active forever by receiving tiny updates.
+app/db.py:2460:    Async LLM mode temporarily parks actionable recommendations in `pending`. Those
+app/db.py:2465:    if status_norm in {"pending", "blocked", "no_trade", "suppressed"}:
+app/db.py:2821:    active_venues: list[str] | None = None,
+app/db.py:2824:    Returns health status for each configured symbol on active venues:
+app/db.py:2865:    # historic disable event in the last 24h as still active.
+app/db.py:2921:    active_set = {str(v or "").strip().lower() for v in (active_venues or ["linear"])}
+app/db.py:2923:    if "linear" in active_set:
+app/db.py:3075:        if not _recommended_row_passes_conf_filter(r, min_conf=min_conf, strict_min_conf=strict_min_conf):
+app/direction.py:252:        active_coverage = _clamp(total / max(total_possible, 1e-9), 0.0, 1.0)
+app/direction.py:253:        coherence = float(0.5 + (agree_ratio - 0.5) * active_coverage)
+app/features.py:342:        "signal": "pending",  # set in recommender after combining with price direction
+app/features.py:371:        # value in the active beta window therefore makes the beta unknown instead
+app/llm_review.py:181:        "no_trade": "neutral",
+app/main.py:125:        active = db.get_active_risk_limits(conn)
+app/main.py:126:        if not active:
+app/main.py:128:            db.upsert_risk_limits(conn, version="bootstrap", limits=bootstrap_limits, is_active=True)
+app/main.py:415:    if current_status not in {"recommended", "active", "pending"}:
+app/main.py:419:    out["effective_status"] = "expired"
+app/main.py:435:    risk_report["decision"] = "not_recommended"
+app/main.py:452:def _apply_llm_effective_pending_guard(out: dict[str, Any]) -> None:
+app/main.py:455:    Legacy rows can already be persisted as recommended/active with no LLM verdict
+app/main.py:462:    if status not in {"recommended", "active"}:
+app/main.py:469:    out["status"] = "pending"
+app/main.py:470:    out["effective_status"] = "pending"
+app/main.py:480:        llm_review["status"] = "pending"
+app/main.py:483:    llm_review["gate_decision"] = "pending"
+app/main.py:490:        "effective_status": "pending",
+app/main.py:494:    decision_layers["final_status"] = "pending"
+app/main.py:498:    risk_report["decision"] = "not_recommended"
+app/main.py:500:    warning_text = "LLM-review ещё не завершён: запуск grid удержан в pending до OK-вердикта."
+app/main.py:540:        msg = str(err.get("msg") or "Bybit exchange-constraint guard blocked this futures-grid recommendation.")
+app/main.py:549:    if current_status in {"recommended", "pending", "active"}:
+app/main.py:551:        out["status"] = "blocked"
+app/main.py:552:        out["effective_status"] = "blocked"
+app/main.py:556:    risk_report["decision"] = "not_recommended"
+app/main.py:587:    decision_layers["bybit_operator_guard"] = "blocked"
+app/main.py:588:    decision_layers["final_status"] = "blocked"
+app/main.py:593:def _ensure_effective_status(out: dict[str, Any]) -> None:
+app/main.py:595:    effective = str(out.get("effective_status") or "").strip().lower()
+app/main.py:599:    out["effective_status"] = status or "unknown"
+app/main.py:606:    # solely to satisfy Bybit metadata validation; do not retroactively reinterpret
+app/main.py:615:def _mark_operator_payload_blocked(
+app/main.py:634:        msg = str(block.get("msg") or "Operator runtime guard blocked this futures-grid recommendation.")
+app/main.py:646:    if current_status in {"recommended", "active", "pending"}:
+app/main.py:648:    out["status"] = "blocked"
+app/main.py:649:    out["effective_status"] = "blocked"
+app/main.py:653:    risk_report["decision"] = "not_recommended"
+app/main.py:683:    decision_layers[decision_layer_key] = "blocked"
+app/main.py:684:    decision_layers["final_status"] = "blocked"
+app/main.py:734:        _mark_operator_payload_blocked(
+app/main.py:744:    if status not in {"recommended", "active", "pending"}:
+app/main.py:748:    _mark_operator_payload_blocked(
+app/main.py:1114:        preflight_status = "blocked"
+app/main.py:1211:        if str(out.get("status") or "").strip().lower() in {"recommended", "active", "pending"}:
+app/main.py:1213:            out["status"] = "blocked"
+app/main.py:1214:            out["effective_status"] = "blocked"
+app/main.py:1218:        _apply_llm_effective_pending_guard(out)
+app/main.py:1220:        _ensure_effective_status(out)
+app/main.py:1230:    _apply_llm_effective_pending_guard(out)
+app/main.py:1232:    _ensure_effective_status(out)
+app/main.py:1241:    нужна вся цепочка near-identical `active` updates поверх одного root — это
+app/main.py:1249:        "recommended": 0,
+app/main.py:1250:        "active": 1,
+app/main.py:1253:        "pending": 4,
+app/main.py:1254:        "blocked": 5,
+app/main.py:1255:        "no_trade": 6,
+app/main.py:1256:        "suppressed": 7,
+app/main.py:1294:    turn a persisted recommended/active/pending row into blocked without mutating
+app/main.py:1295:    the audit row. Therefore a blocked-only view must also scan actionable DB rows
+app/main.py:1296:    that may become blocked after augmentation.
+app/main.py:1299:    if "blocked" in out:
+app/main.py:1300:        for convertible in ("recommended", "active", "pending"):
+app/main.py:1303:    if bool(getattr(settings, "llm_reviewer_enabled", False)) and "pending" in out:
+app/main.py:1304:        for convertible in ("recommended", "active"):
+app/main.py:1321:    if "blocked" in set(statuses):
+app/main.py:1326:def _filter_operator_items_by_effective_status(items: list[dict[str, Any]], statuses: list[str], top_n: int) -> list[dict[str, Any]]:
+app/main.py:1332:        effective_status = str(item.get("effective_status") or item.get("status") or "").strip().lower()
+app/main.py:1333:        if effective_status not in allowed:
+app/main.py:1355:    publication-chain не начинала доминировать десятками `active` updates. Тогда
+app/main.py:1909:    funding turns the net grid edge negative, execution must be blocked rather
+app/main.py:2105:    size_caps_active = (max_notional is not None and max_notional > 0) or (max_margin is not None and max_margin > 0)
+app/main.py:2106:    if estimated_notional is None and estimated_margin is None and size_context_present and size_caps_active:
+app/main.py:2127:def _active_symbol_disable_state(conn, venue: str, symbol: str, *, now_ts: int | None = None) -> dict[str, Any] | None:
+app/main.py:2184:    disabled = _active_symbol_disable_state(conn, venue, symbol, now_ts=now)
+app/main.py:2868:            est_active_orders = _finite_float_or_none(economics.get("estimated_active_orders"))
+app/main.py:2869:            if est_active_orders is not None and grid_levels is not None and int(round(est_active_orders)) != int(grid_levels):
+app/main.py:2872:                    "msg": f"estimated_active_orders={est_active_orders:.0f}, но grid_count={grid_levels}; маржа/ношинал рассчитаны для другого числа ордеров.",
+app/main.py:3210:        active_venues=list(settings.venues),
+app/main.py:3272:    active_venues = list(getattr(settings, "venues", []) or [])
+app/main.py:3279:        active_venues=active_venues,
+app/main.py:3282:    boot_grace_active = (
+app/main.py:3286:    if boot_grace_active:
+app/main.py:3299:        "venues": active_venues,
+app/main.py:3302:        "boot_grace_active": bool(boot_grace_active),
+app/main.py:3459:    # бы тихо перевести `pending`/`ignored`/`expired` запись в `executed` только
+app/main.py:3465:        if current_status in {"blocked", "no_trade", "suppressed", "pending", "expired", "ignored"}:
+app/main.py:3480:        # `active` recommendation to a historical *stopped* bot makes the API claim the
+app/main.py:3505:        raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
+app/main.py:3525:        raise HTTPException(status_code=409, detail=f"execution blocked by preflight checks: {codes}")
+app/main.py:3531:        raise HTTPException(status_code=409, detail=f"execution blocked by runtime size/leverage risk caps: {codes}")
+app/main.py:3630:    actionable_statuses = ["recommended", "active"]
+app/main.py:3686:    show_recommended: bool = True,
+app/main.py:3687:    show_pending: bool = False,
+app/main.py:3688:    show_blocked: bool = False,
+app/main.py:3689:    show_no_trade: bool = False,
+app/main.py:3690:    show_suppressed: bool = False,
+app/main.py:3698:        if show_recommended:
+app/main.py:3699:            statuses.extend(["recommended", "active"])
+app/main.py:3700:        if show_pending:
+app/main.py:3701:            statuses.append("pending")
+app/main.py:3702:        if show_blocked:
+app/main.py:3703:            statuses.append("blocked")
+app/main.py:3704:        if show_no_trade:
+app/main.py:3705:            statuses.append("no_trade")
+app/main.py:3706:        if show_suppressed:
+app/main.py:3707:            statuses.append("suppressed")
+app/main.py:3738:                _ensure_effective_status(item)
+app/main.py:3739:        items = _filter_operator_items_by_effective_status(augmented_items, statuses, top_n)
+app/main.py:3742:        no_trade = not any(str(item.get("effective_status") or item.get("status") or "").strip().lower() in {"recommended", "active"} for item in items)
+app/main.py:3775:            "no_trade": no_trade,
+app/main.py:3803:            "active_bots": rs.active_bots,
+app/main.py:3806:            "cooldown_active": rs.cooldown_active,
+app/main.py:3823:            db.upsert_risk_limits(conn, version=version, limits=effective_limits, is_active=True, commit=False)
+app/main.py:4075:                "active": meta["boot_grace_active"],
+app/main.py:4091:                "pending_timeout_sec": int(getattr(settings, "llm_reviewer_pending_timeout_sec", 900) or 900),
+app/main.py:4437:                        check_and_alert(token=settings.telegram_token, chat_id=settings.telegram_chat_id, symbol_health=health, collect_errors_10m=err_count, reco_count=int(result.get("count_actionable", result.get("count_recommended", 0))))
+app/main.py:4467:                    interval_sec = eager_interval if int(stats.get("pending_after", 0) or 0) > 0 else base_interval
+app/main.py:4491:        active_recommendations = int(conn.execute(
+app/main.py:4492:            "SELECT COUNT(*) AS c FROM recommendations WHERE status IN ('recommended','active')"
+app/main.py:4511:            "# TYPE bybit_reco_recommendations_active gauge",
+app/main.py:4512:            f"bybit_reco_recommendations_active {active_recommendations}",
+app/main.py:4632:            return True, "pending_refit"
+app/main.py:4638:            logreg_active = bool(m and m.fitted and len(m.coef) > 0)
+app/main.py:4648:            if fitted and logreg_active:
+app/main.py:4654:                "logreg_active": logreg_active,
+app/main.py:4656:                "rows_dropped_for_fit": max(0, int(stats["total"]) - int(m.n_samples)) if m and m.fitted and logreg_active else 0,
+app/main.py:4731:                "pending_timeout_sec": int(getattr(settings, "llm_reviewer_pending_timeout_sec", 900) or 900),
+app/outcomes.py:499:           AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'pending')"""
+app/recommender.py:204:    return "recommended" if status_norm in {"recommended", "active"} else "not_recommended"
+app/recommender.py:214:    """Move an actionable recommendation to pending while LLM reviewer has no OK verdict.
+app/recommender.py:216:    Operator-facing recommendations must never be launchable as recommended/active
+app/recommender.py:217:    when LLM review is enabled but still absent, pending, errored or timed out.
+app/recommender.py:235:    if not isinstance(llm_review, dict) or str(llm_review.get("status") or "").strip().lower() not in {"pending", "error"}:
+app/recommender.py:236:        llm_review = _make_pending_llm_review(rec, mode, reviewer, reason=reason)
+app/recommender.py:240:        llm_review.setdefault("gate_decision", "pending")
+app/recommender.py:248:    rec["status"] = "pending"
+app/recommender.py:300:    if current != "pending":
+app/recommender.py:316:def _llm_review_pending_timeout_sec(settings) -> int:
+app/recommender.py:318:        explicit = int(getattr(settings, "llm_reviewer_pending_timeout_sec", LLM_REVIEWER_DEFAULT_PENDING_TIMEOUT_SEC) or LLM_REVIEWER_DEFAULT_PENDING_TIMEOUT_SEC)
+app/recommender.py:520:LLM_REVIEW_ELIGIBLE_STATUSES = frozenset({"recommended", "active"})
+app/recommender.py:533:def _make_pending_llm_review(rec: dict[str, Any], mode: str, reviewer: OllamaCandleReviewer | None, *, reason: str = "queued") -> dict[str, Any]:
+app/recommender.py:539:        "status": "pending",
+app/recommender.py:541:        "gate_decision": "pending",
+app/recommender.py:618:            reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason="queued_async")
+app/recommender.py:622:            reasons["llm_review"] = _make_pending_llm_review(rec, mode, reviewer, reason=f"deferred_candidate_cap ({max_candidates})")
+app/recommender.py:648:    if current_status != "pending":
+app/recommender.py:667:def _llm_pending_sort_key(rec: dict[str, Any]) -> tuple[int, float, float]:
+app/recommender.py:672:def _llm_pending_first_seen_ts(rec: dict[str, Any]) -> int:
+app/recommender.py:685:def _selected_recent_pending_llm_pool(conn, settings, *, snapshot_ts: int | None = None, limit: int = 4000) -> list[dict[str, Any]]:
+app/recommender.py:693:    pending = [r for r in recent_pool if _should_enqueue_llm_review(r)]
+app/recommender.py:694:    if not pending:
+app/recommender.py:697:        return pending
+app/recommender.py:698:    latest_pending = [r for r in pending if int(r.get("ts") or 0) == int(snapshot_ts)]
+app/recommender.py:699:    if not latest_pending:
+app/recommender.py:700:        return pending
+app/recommender.py:701:    selected_keys = {_llm_cache_key(r) for r in latest_pending}
+app/recommender.py:702:    return [r for r in pending if int(r.get("ts") or 0) == int(snapshot_ts) or _llm_cache_key(r) in selected_keys]
+app/recommender.py:706:def _recent_pending_llm_candidates(conn, settings, max_candidates: int, *, snapshot_ts: int | None = None) -> list[dict[str, Any]]:
+app/recommender.py:710:    pending = _selected_recent_pending_llm_pool(conn, settings, snapshot_ts=snapshot_ts, limit=limit)
+app/recommender.py:711:    if not pending:
+app/recommender.py:714:    grouped_pending: dict[str, list[dict[str, Any]]] = {}
+app/recommender.py:715:    for rec in pending:
+app/recommender.py:716:        grouped_pending.setdefault(_llm_cache_key(rec), []).append(rec)
+app/recommender.py:719:    for peers in grouped_pending.values():
+app/recommender.py:720:        peers.sort(key=_llm_pending_sort_key, reverse=True)
+app/recommender.py:721:        first_seen_ts = min(_llm_pending_first_seen_ts(peer) for peer in peers)
+app/recommender.py:723:    ordered_groups.sort(key=lambda item: (item[0], -_llm_pending_sort_key(item[1][0])[0], -_llm_pending_sort_key(item[1][0])[1], -_llm_pending_sort_key(item[1][0])[2]))
+app/recommender.py:732:def _count_recent_pending_llm_candidates(conn, settings, *, snapshot_ts: int | None = None) -> int:
+app/recommender.py:733:    pool = _selected_recent_pending_llm_pool(conn, settings, snapshot_ts=snapshot_ts, limit=4000 if snapshot_ts is not None else 2000)
+app/recommender.py:737:def _llm_pending_age_sec(rec: dict[str, Any], *, now_ts: int) -> int:
+app/recommender.py:738:    first_seen = _llm_pending_first_seen_ts(rec)
+app/recommender.py:744:def _resolve_stale_llm_pending(
+app/recommender.py:755:    `no_trade` and cannot be launched manually. This prevents stale async holds
+app/recommender.py:759:    pending_timeout_sec = _llm_review_pending_timeout_sec(settings)
+app/recommender.py:771:        is_pending_hold = current_status == "pending"
+app/recommender.py:777:        if not (is_pending_hold or is_nonblocking_advisory_review):
+app/recommender.py:779:        age_sec = _llm_pending_age_sec(rec, now_ts=now_val)
+app/recommender.py:780:        if age_sec < pending_timeout_sec:
+app/recommender.py:782:        new_status = "no_trade"
+app/recommender.py:790:            "reason": "llm_timeout_no_trade",
+app/recommender.py:791:            "error": f"LLM reviewer did not finish within {pending_timeout_sec}s; launch was blocked fail-closed because an OK LLM verdict is required.",
+app/recommender.py:794:            "pending_timeout_sec": pending_timeout_sec,
+app/recommender.py:809:            "pending_timeout_sec": pending_timeout_sec,
+app/recommender.py:828:        "pending_before": 0,
+app/recommender.py:829:        "pending_after": 0,
+app/recommender.py:830:        "pending_timeout_sec": _llm_review_pending_timeout_sec(settings),
+app/recommender.py:853:    pending_scope = _selected_recent_pending_llm_pool(conn, settings, snapshot_ts=snapshot_ts, limit=4000)
+app/recommender.py:854:    stats["pending_before"] = len(pending_scope)
+app/recommender.py:855:    stale_stats = _resolve_stale_llm_pending(conn, pending_scope, settings, reason="pre_sweep")
+app/recommender.py:860:        pending_scope = _selected_recent_pending_llm_pool(conn, settings, snapshot_ts=snapshot_ts, limit=4000)
+app/recommender.py:861:    scope_keys = {_llm_cache_key(r) for r in pending_scope if int(r.get("ts") or 0) == int(snapshot_ts)}
+app/recommender.py:862:    scope_has_latest_pending = bool(scope_keys)
+app/recommender.py:869:        stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
+app/recommender.py:875:        stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
+app/recommender.py:890:    # Scan the whole latest pending snapshot (capped) and only apply the live-call cap after
+app/recommender.py:892:    candidate_scan_budget = max(stats["max_candidates"], min(300, int(stats.get("pending_before", 0) or 0)))
+app/recommender.py:893:    candidates = _recent_pending_llm_candidates(conn, settings, candidate_scan_budget, snapshot_ts=snapshot_ts)
+app/recommender.py:897:        stats["pending_after"] = 0
+app/recommender.py:961:        if scope_has_latest_pending:
+app/recommender.py:963:            stats["pending_after"] = sum(
+app/recommender.py:969:            stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
+app/recommender.py:1062:    if scope_has_latest_pending:
+app/recommender.py:1064:        stats["pending_after"] = sum(
+app/recommender.py:1070:        stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
+app/recommender.py:1111:        rec["status"] = "no_trade"
+app/recommender.py:1468:    The previous implementation hard-blocked only expensive longs, which created a
+app/recommender.py:1947:    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 5x.
+app/recommender.py:2097:                "estimated_active_orders": 0,
+app/recommender.py:2107:                "risk_profile": "blocked",
+app/recommender.py:2115:                "estimated_active_orders": 0,
+app/recommender.py:2132:    # dense grid whose gross step cannot plausibly pay the carry, only to be blocked
+app/recommender.py:2288:    active_grid_intervals = max(1, int(grid_levels))
+app/recommender.py:2289:    total_order_notional = order_notional_usdt * active_grid_intervals
+app/recommender.py:2331:            "estimated_active_orders": int(active_grid_intervals),
+app/recommender.py:2356:            "estimated_active_orders": int(active_grid_intervals),
+app/recommender.py:2374:        "estimated_active_orders": int(active_grid_intervals),
+app/recommender.py:2384:# Tracks consecutive recommended cycles for the SAME logical signal.
+app/recommender.py:2389:_prev_recommended: dict[tuple, dict[str, int]] = {}
+app/recommender.py:2395:def _load_prev_recommended(conn) -> dict[tuple, dict[str, int]]:
+app/recommender.py:2414:def _save_prev_recommended(conn, state: dict[tuple, dict[str, int]], fresh_gap: int, *, commit: bool = True) -> None:
+app/recommender.py:2430:    global _prev_recommended
+app/recommender.py:2432:    state = _prev_recommended.get(pkey) or {"ts": 0, "count": 0}
+app/recommender.py:2437:    _prev_recommended[pkey] = state
+app/recommender.py:2441:            _prev_recommended.pop(other_key, None)
+app/recommender.py:2446:    global _prev_recommended
+app/recommender.py:2448:        _prev_recommended.pop((venue, sym, bot_type, other_dir), None)
+app/recommender.py:2804:    """Treat async-LLM held `pending` rows as actionable publication-chain members.
+app/recommender.py:2808:    When the reviewer later restores those rows back to recommended/active, the UI
+app/recommender.py:2813:    if status_norm in {"recommended", "active", "executed"}:

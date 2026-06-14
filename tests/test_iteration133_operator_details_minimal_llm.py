@@ -36,7 +36,7 @@ def test_details_panel_shows_blockers_only_when_they_matter() -> None:
 
     assert "explicitHardBlocked" in app_js
     assert "blockerItems" in app_js
-    assert "Блокеры / предупреждения" in app_js
+    assert "Фактическая причина блокировки / предупреждения" in app_js
     assert "bybitErrors.length" in app_js
     assert "riskReportRejected.length" in app_js
     assert "Есть жёсткий блокер, запрещающий ручное создание grid-бота" in app_js
@@ -45,5 +45,5 @@ def test_details_panel_shows_blockers_only_when_they_matter() -> None:
 def test_static_asset_cache_key_bumped_after_minimal_llm_details() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v31" in index
-    assert "app.js?v=manual-ui-v31" in index
+    assert "styles.css?v=manual-ui-v32" in index
+    assert "app.js?v=manual-ui-v32" in index
