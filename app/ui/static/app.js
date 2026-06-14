@@ -494,6 +494,27 @@ function noTradeDecisionMessage(it, scoreMeta) {
   return `Запуск grid сейчас не рекомендован. Ранг ${scoreMeta?.percentile ?? 0}/100 (${scoreMeta?.grade || "E"} · ${scoreMeta?.zoneLabel || ""}) — это только относительное место в текущей выборке, не разрешение запуска.${gateSummary}`;
 }
 
+function operatorNextActionsHtml(it) {
+  const actions = Array.isArray(decisionContext(it).operator_next_actions)
+    ? decisionContext(it).operator_next_actions.slice(0, 5)
+    : [];
+  if (!actions.length) return "";
+  return `
+    <div class="operator-card operator-next-actions-card">
+      <h3>Что делать дальше</h3>
+      <div class="small-blocks">
+        ${actions.map(a => `
+          <div class="small-block ${a.severity === "danger" ? "small-block-critical" : ""}">
+            <code>${escapeHtml(a.code || "ACTION")}</code><br>
+            <b>${escapeHtml(a.title || "Действие")}</b><br>
+            ${escapeHtml(a.detail || "")}
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function copyButton(copyValue) {
   if (copyValue === null || copyValue === undefined || copyValue === "" || copyValue === "—") return "";
   return `<button class="copy-chip" data-act="copy-field" data-copy="${escapeHtml(copyValue)}">копия</button>`;
@@ -1122,6 +1143,7 @@ function buildDetailsHtml(it) {
       </div>
     `
     : "";
+  const nextActionsHtml = operatorNextActionsHtml(it);
 
   return `
     <div class="operator-sheet compact-details-sheet operator-minimal-sheet">
@@ -1137,6 +1159,8 @@ function buildDetailsHtml(it) {
       </div>
 
       ${blockersHtml}
+
+      ${nextActionsHtml}
 
       ${launchDecisionDiagnosticsHtml(it, scoreMeta)}
 

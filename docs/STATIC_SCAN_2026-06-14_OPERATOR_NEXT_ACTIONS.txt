@@ -1,0 +1,33 @@
+# Static scan summary — operator next actions patch
+tp: 1219
+sl: 1107
+stop: 985
+take: 823
+upper: 1468
+lower: 1760
+short: 1925
+long: 2034
+side: 1488
+Buy: 468
+Sell: 443
+reduceOnly: 543
+kill: 1129
+leverage: 1771
+pnl: 659
+roi: 155
+risk: 3038
+notional: 968
+margin: 819
+liquidation: 552
+recommendation: 1099
+blocked: 367
+no_trade: 294
+operator_next_actions: 6
+
+Changed hits reviewed:
+
+Manual review of changed hits:
+- app/main.py: SAFE. Added advisory operator_next_actions only; it never changes recommendation status, guard ok=false, blocks, execution preflight, TP/SL, side, PnL, ROI, risk:reward or Bybit Buy/Sell/reduceOnly semantics.
+- app/ui/static/app.js: SAFE. Renders backend-provided next actions between blocker details and rank diagnostics; no launchability predicate was changed.
+- app/ui/static/index.html: SAFE. Static cache-bust only.
+- tests/test_iteration174_operator_next_actions.py: SAFE. Regression coverage for liquidation-buffer remediation text and UI placement.

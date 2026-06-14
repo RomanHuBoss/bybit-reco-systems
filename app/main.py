@@ -58,6 +58,7 @@ EXECUTION_FUNDING_MAX_STALENESS_SEC = 60 * 60
 EXECUTION_FUNDING_WORSE_DELTA_BLOCK_BPS = 3.0
 EXECUTION_FUNDING_EXTREME_BPS = 6.0
 EXECUTION_MIN_NET_PROFIT_BPS = 2.0
+OPERATOR_MIN_LIQUIDATION_BUFFER_PCT = 12.0
 EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER = 1.10
 BACKGROUND_THREAD_STATE_APP_KEY_PREFIX = "runtime_thread_state:"
 BACKGROUND_THREAD_RESTART_DELAY_SEC = 5.0
@@ -1077,6 +1078,155 @@ def _execution_recommendation_freshness_blocks(
     return blocks
 
 
+def _guard_item_code_set(items: Any) -> set[str]:
+    return {
+        str(item.get("code") or "").strip().upper()
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict) and str(item.get("code") or "").strip()
+    }
+
+
+def _estimated_max_safe_leverage_for_liq_buffer(
+    direction: str,
+    reference_price: float | None,
+    lower_adverse_price: float | None,
+    upper_adverse_price: float | None,
+    *,
+    min_buffer_pct: float = OPERATOR_MIN_LIQUIDATION_BUFFER_PCT,
+    max_leverage: int = 100,
+) -> int | None:
+    """Return highest integer leverage whose approximate liq buffer stays above the floor.
+
+    This is deliberately advisory: exact Bybit liquidation depends on risk tier,
+    mark price and account margin.  The calculation uses the same conservative
+    approximation as the execution guard, so it can explain *why* a row is blocked
+    without becoming a separate permission model.
+    """
+    ref = _finite_float_or_none(reference_price)
+    if ref is None or ref <= 0:
+        return None
+    dir_norm = str(direction or "").strip().lower()
+    sides = ("long", "short") if dir_norm == "neutral" else (dir_norm,)
+    if any(side not in {"long", "short"} for side in sides):
+        return None
+
+    max_lev = int(max(1, min(int(max_leverage or 1), 100)))
+    best: int | None = None
+    for lev in range(1, max_lev + 1):
+        ok = True
+        for side in sides:
+            adverse = lower_adverse_price if side == "long" else upper_adverse_price
+            adverse_ref = _finite_float_or_none(adverse) or ref
+            if adverse_ref <= 0:
+                ok = False
+                break
+            liq = estimate_linear_liq_price(side, ref, lev)
+            buf = liquidation_buffer_pct(side, adverse_ref, liq) if liq is not None else None
+            if buf is None or float(buf) < float(min_buffer_pct):
+                ok = False
+                break
+        if ok:
+            best = int(lev)
+    return best
+
+
+def _operator_next_actions_for_reco(
+    rec: dict[str, Any],
+    *,
+    ctx: dict[str, Any],
+    guard_errors: list[Any],
+    guard_warnings: list[Any],
+) -> list[dict[str, Any]]:
+    """Operator-facing remediation hints; never grant launch permission.
+
+    The UI previously showed the fail-closed reason but not the next safe action,
+    so a portfolio dominated by `blocked` rows looked like the recommender was
+    simply broken.  These hints explain what to change or wait for while keeping
+    the hard guard semantics intact.
+    """
+    actions: list[dict[str, Any]] = []
+    error_codes = _guard_item_code_set(guard_errors)
+    warning_codes = _guard_item_code_set(guard_warnings)
+    params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+    economics = _first_mapping(params.get("economics"), (params.get("trade_plan") or {}).get("economics") if isinstance(params.get("trade_plan"), dict) else {})
+    direction = str(rec.get("direction") or "neutral").strip().lower()
+    leverage = _finite_float_or_none(params.get("leverage"))
+    liq_buffer = _finite_float_or_none(ctx.get("liquidation_buffer_pct"))
+    liq_floor = OPERATOR_MIN_LIQUIDATION_BUFFER_PCT
+
+    def add(code: str, title: str, detail: str, severity: str = "info") -> None:
+        if any(item.get("code") == code for item in actions):
+            return
+        actions.append({
+            "code": code,
+            "title": title,
+            "detail": detail,
+            "severity": severity,
+        })
+
+    if "LIQUIDATION_BUFFER_TOO_LOW" in error_codes:
+        safe_lev = _estimated_max_safe_leverage_for_liq_buffer(
+            direction,
+            ctx.get("entry_price"),
+            _finite_float_or_none(economics.get("liquidation_buffer_adverse_boundary_long")) or ctx.get("kill_switch_lower") or ctx.get("range_lower"),
+            _finite_float_or_none(economics.get("liquidation_buffer_adverse_boundary_short")) or ctx.get("kill_switch_upper") or ctx.get("range_upper"),
+            min_buffer_pct=liq_floor,
+        )
+        buffer_txt = f"{liq_buffer:.2f}%" if liq_buffer is not None else "не оценён"
+        lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущее плечо"
+        safe_lev_txt = (
+            f"Оценочно безопасный максимум по текущей геометрии: ≤{safe_lev}x."
+            if safe_lev is not None and leverage is not None and safe_lev < leverage
+            else "Текущая геометрия не даёт запаса даже после простого целочисленного подбора плеча; нужен новый расчёт диапазона/маржи."
+        )
+        add(
+            "DO_NOT_LAUNCH_LOW_LIQUIDATION_BUFFER",
+            "Не запускать текущий grid",
+            f"Запас до ликвидации {buffer_txt} ниже обязательного пола {liq_floor:.0f}% при {lev_txt}. Это корректная fail-closed блокировка, а не отсутствие сигнала. {safe_lev_txt}",
+            "danger",
+        )
+        add(
+            "RECALCULATE_WITH_LOWER_LEVERAGE_OR_NARROWER_RANGE",
+            "Пересчитать профиль риска",
+            "Снизьте fixed leverage profile в RISK_LIMITS_JSON либо сузьте adverse-сторону диапазона/kill-switch и дождитесь новой публикации. Не снижайте 12% liquidation-buffer floor ради прохождения проверки.",
+            "warning",
+        )
+
+    if "GRID_NET_PROFIT_TOO_THIN" in error_codes or "GRID_NET_PROFIT_NON_POSITIVE" in error_codes or "GRID_GROSS_EDGE_BELOW_COSTS" in error_codes:
+        add(
+            "WAIT_FOR_WIDER_NET_EDGE",
+            "Ждать более широкой сеточной прибыли",
+            "Издержки исполнения/funding съедают edge. Без роста net_profit_per_grid или снижения spread/slippage запуск оставлять no_trade/blocked.",
+            "warning",
+        )
+
+    if "FUNDING_INTERVAL_UNCONFIRMED" in error_codes or "FUNDING_SNAPSHOT_STALE" in error_codes or "EXECUTION_FUNDING_WORSE_THAN_PUBLICATION" in error_codes:
+        add(
+            "REFRESH_FUNDING_AND_RECOMMENDER",
+            "Обновить funding snapshot",
+            "Перезапустите collector/futures metadata и дождитесь новой рекомендации; запуск по устаревшему funding остаётся заблокированным.",
+            "warning",
+        )
+
+    if "CURRENT_PRICE_OUTSIDE_GRID_RANGE" in error_codes or "CURRENT_PRICE_BEYOND_KILL_SWITCH" in error_codes:
+        add(
+            "REFRESH_STALE_PRICE_PLAN",
+            "Дождаться нового расчёта уровней",
+            "Цена уже ушла из рекомендованного диапазона/kill-switch. Не переносите уровни вручную; нужна новая рекомендация на текущем market snapshot.",
+            "danger",
+        )
+
+    if not actions and (guard_errors or guard_warnings):
+        add(
+            "READ_GUARD_AND_REFRESH",
+            "Разобрать blocker и пересчитать",
+            "Сохранена fail-closed проверка. Откройте технические подробности, устраните указанную причину и дождитесь свежей публикации, а не переводите blocked в recommended вручную.",
+            "info",
+        )
+
+    return actions[:5]
+
+
 def _operator_decision_context_for_reco(
     rec: dict[str, Any],
     *,
@@ -1172,7 +1322,7 @@ def _operator_decision_context_for_reco(
 
     if liq_buffer is None:
         risk_profile = "unknown"
-    elif liq_buffer < 12.0:
+    elif liq_buffer < OPERATOR_MIN_LIQUIDATION_BUFFER_PCT:
         risk_profile = "critical"
     elif liq_buffer < 20.0:
         risk_profile = "high"
@@ -1181,7 +1331,7 @@ def _operator_decision_context_for_reco(
     else:
         risk_profile = "low"
 
-    return {
+    context = {
         "recommendation_ts": rec_ts,
         "recommendation_age_sec": age_sec,
         "recommendation_row_age_sec": age_sec,
@@ -1220,6 +1370,13 @@ def _operator_decision_context_for_reco(
         "preflight_error_count": len(guard_errors),
         "preflight_warning_count": len(guard_warnings),
     }
+    context["operator_next_actions"] = _operator_next_actions_for_reco(
+        rec,
+        ctx=context,
+        guard_errors=guard_errors,
+        guard_warnings=guard_warnings,
+    )
+    return context
 
 
 def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dict[str, Any]:
