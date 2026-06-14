@@ -21,6 +21,16 @@
 ## Режимы, которые система считает поддержанными
 - `futures_grid`: `venue=linear`, `account_mode=unified`, `margin_mode=isolated`
 
+## Операторский профиль плеча и малого счёта
+
+Текущая shipped-политика риска синхронизирована с `settings.py`, `.env.example`, `README.md`, операторской DOCX/PDF-инструкцией и `how_to_trade.png`:
+
+- один `running` grid-bot на счёт и один bot на symbol/publication-chain;
+- `min_leverage=5`, `max_leverage=5` как базовый операторский профиль этой ревизии;
+- 1-3x больше не является базовым actionable-режимом: слабая/дорогая/волатильная идея остаётся non-actionable и блокируется `MIN_LEVERAGE_PER_BOT`, а не публикуется как безопасная low-leverage сделка;
+- если оператор задаёт `max_leverage` ниже 5, это более строгий safety-cap; effective minimum снижается до cap только чтобы не нарушать верхний лимит;
+- 10x и выше не являются default-политикой для малого счёта; это отдельный осознанный профиль, который должен быть подтверждён в `RISK_LIMITS_JSON` и worst-boundary liquidation buffer.
+
 `account_mode=one_way` допускается только как legacy-алиас старых payload'ов и помечается warning'ом;
 штатной моделью ревизии он не считается. Поддержка `cross`, `hedge mode`, order-routing и real fill reconciliation
 в этой ревизии отсутствует. Если такие режимы или пустой `margin_mode` появятся в данных вручную,
@@ -28,7 +38,7 @@ execution-time validation должна блокировать исполнени
 
 ## Как строится grid idea
 
-1. Берётся reference price.
+1. Берётся reference price. Если price отсутствует, не положителен, `NaN` или не finite, генератор не подставляет synthetic fallback: рекомендация получает `INVALID_MARKET_REFERENCE_PRICE`, нулевую геометрию/экономику и fail-closed статус.
 2. По ATR и stability/range context выбирается минимальный экономический шаг `economic_min_grid_spacing_pct`, который обязан покрывать execution-cost и adverse expected funding carry.
 3. По тому же контексту выбирается число интервалов `grid_count` / legacy `grid_levels`.
 4. Строится основной диапазон `price_range_lower/upper`; для Bybit arithmetic grid исполнимый шаг публикуется как `grid_spacing_pct = (upper - lower) / grid_count / reference_price`.

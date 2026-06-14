@@ -1,5 +1,7 @@
 # Operator infographic update — 100–500 USDT accounts
 
+> Superseded note (2026-06-14): the shipped risk profile now uses `min_leverage=5`, `max_leverage=5` and the current root `how_to_trade.png` no longer presents 1-3x as the baseline actionable profile. Keep this file as historical context only; use `docs/HOW_TO_TRADE_INFOGRAPHIC.md` for the current operator infographic source.
+
 ## Scope
 
 Updated the root `how_to_trade.png` infographic so it matches the current product state:

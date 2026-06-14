@@ -53,7 +53,8 @@
 - операторский UI;
 - REST API для рекомендаций, risk status, sentiment, bot lifecycle и trade ingestion;
 - persistence layer с decision log и outcome history (SQLite или PostgreSQL);
-- краткая инструкция оператора в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`.
+- краткая инструкция оператора в `docs/instrukciya_operatora_bybit_recommender.docx` и `docs/instrukciya_operatora_bybit_recommender.pdf`;
+- операторская инфографика `how_to_trade.png` и её текстовый source-of-truth `docs/HOW_TO_TRADE_INFOGRAPHIC.md`.
 
 ## Ограничения дизайна
 - рекомендации не являются финансовым советом и не гарантируют доходность;
@@ -66,6 +67,16 @@
 - risk limits начинают полноценно отражать реальность только если в `trades` действительно пишутся realized fills / PnL / fee;
 - локальный LLM-reviewer — это **консервативный reviewer поверх движка**, а не замена scoring/risk/calibration;
 - проект не предназначен для немедленного запуска на полный объём капитала без staging-прогона.
+
+## Операторский профиль 100-500 USDT
+
+`how_to_trade.png` является быстрым регламентом для малого счёта, но не заменяет backend preflight. Текущая синхронизированная модель:
+
+- проект - recommendation/audit service, а не OMS/EMS: он не выставляет реальные ордера на Bybit;
+- поддерживается только `futures_grid` для Bybit Linear USDT Perpetual, `account_mode=unified`, `margin_mode=isolated`, `grid_type=arithmetic`;
+- shipped risk profile: 1 running bot на счёт и `min_leverage=5`, `max_leverage=5`; low-leverage 1-3x больше не считается базовым actionable-режимом этой ревизии;
+- если оператор задаёт `max_leverage < 5`, это трактуется как более строгий risk cap, а не как обещание, что каждая идея станет исполнимой на низком плече;
+- любой `critical`/`blocking` preflight, `INVALID_MARKET_REFERENCE_PRICE`, устаревшая publication-chain, цена вне range/kill-switch, неподтверждённый funding/minNotional/qtyStep или отсутствие OK LLM-gate при включённом reviewer означает `NO TRADE`.
 
 ## Как читать ключевые поля
 - `status` — итоговый допуск идеи к рассмотрению.
@@ -129,7 +140,7 @@ ruff check app tests main.py
 - `SYMBOLS_LINEAR` — список только USDT perpetual symbols для `venue=linear`; дубли удаляются, а не-USDT symbols fail-closed отфильтровываются на bootstrap, чтобы нецелевой Bybit payload не попал в сбор и scoring;
 - `MIN_SCORE_TO_RECOMMEND`, `MIN_CONF_TO_RECOMMEND` — publish thresholds;
 - `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
-- `RISK_LIMITS_JSON` — runtime risk caps; `max_concurrent_bots` и `max_symbol_bots` дополнительно clamp-ятся к product cap 50 Futures Grid Bots, даже если оператор передал большее значение; `max_leverage`, `max_position_notional_usdt` и `max_margin_per_bot_usdt` блокируют публикацию/запуск grid-рекомендаций, если расчётный leverage/notional/margin превышает операторский лимит;
+- `RISK_LIMITS_JSON` — runtime risk caps; `max_concurrent_bots` и `max_symbol_bots` дополнительно clamp-ятся к product cap 50 Futures Grid Bots, даже если оператор передал большее значение; `min_leverage` задаёт минимальное операторское плечо для actionable futures-grid идей, `max_leverage`, `max_position_notional_usdt` и `max_margin_per_bot_usdt` блокируют публикацию/запуск grid-рекомендаций, если расчётный leverage/notional/margin превышает операторский лимит; shipped-профиль использует `min_leverage=5` и `max_leverage=5`, а значения ниже 5x должны быть осознанным safety-cap, при котором низкоплечевые идеи не становятся actionable автоматически;
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
 - `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи; после этого окна same-direction сигнал всё равно не откроет новый outcome-root, пока предыдущая псевдо-сделка той же chain не доживёт до своего horizon или не получит outcome;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
