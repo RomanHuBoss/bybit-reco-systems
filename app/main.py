@@ -1032,6 +1032,13 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
         guard["ok"] = False
         guard["critical"] = True
         out["bybit_operator_guard"] = guard
+        # Empty/corrupted legacy payloads intentionally keep params/reasons/blocks
+        # untouched for API-shape compatibility, but they still must not look
+        # actionable in list banners, status badges or effective-status filters.
+        if str(out.get("status") or "").strip().lower() in {"recommended", "active", "pending"}:
+            out["stored_status"] = out.get("stored_status") or out.get("status")
+            out["status"] = "blocked"
+            out["effective_status"] = "blocked"
         _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
         out["operator_decision_context"] = _operator_decision_context_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
         _apply_llm_effective_pending_guard(out)

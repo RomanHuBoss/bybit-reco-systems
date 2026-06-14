@@ -28,6 +28,7 @@ Bottom note:
 All of these must be true:
 
 - `bot_type=futures_grid`; `venue/category=linear`.
+- Complete `params.trade_plan` exists; no empty/corrupted payload.
 - `symbol` exact USDT perpetual, for example `BTCUSDT`, not `BTC/USDT`.
 - `settleCoin/quoteCoin=USDT`; `contractType=LinearPerpetual`.
 - `account_mode=unified`; `margin_mode=isolated`.

@@ -68,7 +68,7 @@ def client_conn_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 
-def test_api_recommendations_and_details_fail_open_on_malformed_json_shapes(client_conn_app):
+def test_api_recommendations_and_details_fail_closed_on_malformed_json_shapes(client_conn_app):
     client, conn, _ = client_conn_app
     ts_now = int(time.time())
 
@@ -106,7 +106,14 @@ def test_api_recommendations_and_details_fail_open_on_malformed_json_shapes(clie
 
     resp = client.get('/api/v1/recommendations')
     assert resp.status_code == 200
-    item = next(x for x in resp.json()['items'] if x['rec_id'] == 'R-bad-json')
+    assert all(x['rec_id'] != 'R-bad-json' for x in resp.json()['items'])
+
+    blocked_resp = client.get('/api/v1/recommendations?show_blocked=true')
+    assert blocked_resp.status_code == 200
+    item = next(x for x in blocked_resp.json()['items'] if x['rec_id'] == 'R-bad-json')
+    assert item['status'] == 'blocked'
+    assert item['effective_status'] == 'blocked'
+    assert item['stored_status'] == 'recommended'
     assert item['params'] == {}
     assert item['reasons'] == {}
     assert item['blocks'] == []
@@ -114,6 +121,9 @@ def test_api_recommendations_and_details_fail_open_on_malformed_json_shapes(clie
     detail = client.get('/api/v1/recommendations/R-bad-json')
     assert detail.status_code == 200
     body = detail.json()
+    assert body['status'] == 'blocked'
+    assert body['effective_status'] == 'blocked'
+    assert body['stored_status'] == 'recommended'
     assert body['params'] == {}
     assert body['reasons'] == {}
     assert body['blocks'] == []
