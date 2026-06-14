@@ -1924,6 +1924,79 @@ def _mode(venue: str, direction: str) -> tuple[str, str]:
     return venue, "default"
 
 
+def _select_operator_grid_leverage(
+    *,
+    direction: str,
+    dir_strength: float,
+    range_score: float,
+    trendiness: float,
+    atr_pct: float,
+    execution_cost_bps: float,
+    funding_cost_bps: float,
+    gross_profit_bps_est: float,
+    min_operator_leverage: int,
+    max_operator_leverage: int,
+) -> tuple[int, str, dict[str, Any]]:
+    """Choose the recommendation leverage used by the grid payload.
+
+    The old gate used a fixed ``execution_cost_bps <= 10`` condition before
+    allowing the operator minimum leverage. With the default linear taker fee
+    (6 bps per side), the round-trip fee floor is already 12 bps and the cost
+    model adds at least minimal slippage, so the condition was practically
+    unreachable. That made every otherwise viable setup fall back to 1x and then
+    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 5x.
+
+    Leverage selection must be based on *net grid edge after costs*, not on a
+    hard-coded cost ceiling that can be below the configured fee floor.
+    """
+    min_lev = max(1, int(min_operator_leverage or 1))
+    max_lev = max(1, int(max_operator_leverage or min_lev))
+    target_leverage = max(1, min(max_lev, min_lev))
+
+    dir_norm = str(direction or "neutral").strip().lower()
+    dir_strength = _clamp(float(dir_strength or 0.0), 0.0, 1.0)
+    range_score = _clamp(float(range_score or 0.0), 0.0, 1.0)
+    trendiness = _clamp(float(trendiness or 0.0), 0.0, 1.0)
+    atr_pct = max(0.0, float(atr_pct or 0.0))
+    exec_bps = max(0.0, float(execution_cost_bps or 0.0))
+    funding_bps = max(0.0, float(funding_cost_bps or 0.0))
+    gross_bps = max(0.0, float(gross_profit_bps_est or 0.0))
+    projected_net_bps = gross_bps - exec_bps - funding_bps
+
+    diagnostics = {
+        "min_operator_leverage": int(min_lev),
+        "max_operator_leverage": int(max_lev),
+        "target_leverage": int(target_leverage),
+        "direction": dir_norm,
+        "direction_bias_strength": float(dir_strength),
+        "range_score": float(range_score),
+        "trendiness": float(trendiness),
+        "atr_pct": float(atr_pct),
+        "gross_profit_bps_est": float(gross_bps),
+        "execution_cost_bps": float(exec_bps),
+        "funding_cost_bps": float(funding_bps),
+        "projected_net_profit_bps_est": float(projected_net_bps),
+        "min_projected_net_profit_bps": 2.0,
+    }
+
+    if target_leverage <= 1:
+        return 1, "operator_minimum_is_one", diagnostics
+    if atr_pct >= 0.05 or exec_bps >= 45.0:
+        return 1, "unsafe_volatility_or_execution_cost", diagnostics
+    if atr_pct > 0.025:
+        return 1, "atr_too_high_for_operator_minimum", diagnostics
+    if projected_net_bps < 2.0:
+        return 1, "insufficient_net_edge_for_operator_minimum", diagnostics
+
+    directional_quality = dir_norm in {"long", "short"} and dir_strength >= 0.45
+    neutral_range_quality = dir_norm == "neutral" and range_score >= 0.70 and trendiness <= 0.35
+    diagnostics["directional_quality"] = bool(directional_quality)
+    diagnostics["neutral_range_quality"] = bool(neutral_range_quality)
+    if directional_quality or neutral_range_quality:
+        return int(target_leverage), "operator_minimum_selected", diagnostics
+    return 1, "signal_quality_too_low_for_operator_minimum", diagnostics
+
+
 def _params(
     bot_type: str,
     venue: str,
@@ -2073,19 +2146,21 @@ def _params(
             effective_limits = {"min_leverage": 5, "max_leverage": 5}
         min_operator_leverage = int(effective_limits.get("min_leverage") or 1)
         max_operator_leverage = int(effective_limits.get("max_leverage") or max(1, min_operator_leverage))
-        target_leverage = max(1, min(max_operator_leverage, max(1, min_operator_leverage)))
 
-        leverage = 1
-        leverage_policy_note = "blocked_or_observation_only"
-        # Operator policy: do not publish low-leverage actionable futures grids.
-        # We only upgrade to the operator minimum when the signal quality/cost envelope
-        # is strong enough; otherwise the downstream MIN_LEVERAGE_PER_BOT gate fails closed.
-        if direction != "neutral" and dir_strength >= 0.45 and atr_pct <= 0.020 and execution_cost_bps <= 10.0:
-            leverage = target_leverage
-            leverage_policy_note = "operator_minimum_selected"
-        if atr_pct >= 0.05 or execution_cost_bps >= 18.0:
-            leverage = 1
-            leverage_policy_note = "unsafe_volatility_or_execution_cost"
+        gross_profit_bps_est = float(actual_grid_spacing_pct_frac * 10000.0 * 0.70)
+        trendiness = _clamp(float(agg.get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
+        leverage, leverage_policy_note, leverage_policy_diag = _select_operator_grid_leverage(
+            direction=direction,
+            dir_strength=dir_strength,
+            range_score=range_score,
+            trendiness=trendiness,
+            atr_pct=atr_pct,
+            execution_cost_bps=execution_cost_bps,
+            funding_cost_bps=funding_cost_bps_for_spacing,
+            gross_profit_bps_est=gross_profit_bps_est,
+            min_operator_leverage=min_operator_leverage,
+            max_operator_leverage=max_operator_leverage,
+        )
         params["leverage"] = int(leverage)
         params["margin_mode"] = "isolated"
         params["leverage_policy"] = {
@@ -2093,6 +2168,7 @@ def _params(
             "max_operator_leverage": int(max_operator_leverage),
             "selected_leverage": int(leverage),
             "note": leverage_policy_note,
+            "diagnostics": leverage_policy_diag,
         }
     else:
         params["leverage"] = 1
