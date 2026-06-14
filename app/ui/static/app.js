@@ -870,13 +870,18 @@ function buildOperatorFieldSpecs(it, ov) {
   const economics = params.economics || {};
   const sizing = params.sizing || {};
   const rangeValue = `${ov.rangeLower} — ${ov.rangeUpper}`;
+  const plan = params.trade_plan || {};
+  const operatorSheet = params.operator_sheet || {};
+  const operatorSizing = operatorSheet.sizing || {};
+  const operatorEconomics = operatorSheet.economics || {};
   const marginRequired = firstFiniteValue(
-    [sizing, economics, params],
+    [sizing, economics, operatorSizing, operatorEconomics, params, operatorSheet],
     ["estimated_margin_required_usdt", "margin_required_usdt", "capital_required_usdt", "margin_usdt", "investment_usdt"]
   );
-  const leverage = Math.max(1, Number(params.leverage || 1));
+  const leverageRaw = firstFiniteValue([params, plan, operatorSheet], ["leverage"]);
+  const leverage = Math.max(1, Number(leverageRaw || 1));
   const positionNotional = firstFiniteValue(
-    [sizing, economics, params],
+    [sizing, economics, operatorSizing, operatorEconomics, params, operatorSheet],
     [
       "estimated_max_position_notional_usdt",
       "max_position_notional_usdt",
@@ -887,10 +892,9 @@ function buildOperatorFieldSpecs(it, ov) {
     ]
   ) ?? (marginRequired !== null && Number.isFinite(leverage) ? marginRequired * leverage : null);
   const symbolParts = splitLinearSymbol((it || {}).symbol);
-  const plan = params.trade_plan || {};
-  const referencePrice = firstFiniteValue([plan, params], ["reference_price", "price_ref"]);
+  const referencePrice = firstFiniteValue([plan, params, operatorSheet], ["reference_price", "price_ref"]);
   const explicitPositionQty = firstFiniteValue(
-    [sizing, economics, params],
+    [sizing, economics, operatorSizing, operatorEconomics, params, operatorSheet],
     ["estimated_position_qty", "position_qty", "total_qty", "estimated_total_qty", "max_position_qty"]
   );
   const positionQty = explicitPositionQty ?? (

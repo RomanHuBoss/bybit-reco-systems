@@ -2314,13 +2314,21 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     min_leverage = _finite_float_or_none((meta or {}).get("min_leverage"))
     max_leverage = _finite_float_or_none((meta or {}).get("max_leverage"))
     leverage_step = _finite_float_or_none((meta or {}).get("leverage_step"))
-    leverage = _finite_float_or_none(params.get("leverage"))
+    operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
+    leverage = _first_finite_from_mapping(
+        params,
+        ("leverage",),
+    )[1]
+    if leverage is None:
+        leverage = _first_finite_from_mapping(plan, ("leverage",))[1]
+    if leverage is None:
+        leverage = _first_finite_from_mapping(operator_sheet, ("leverage",))[1]
 
     bot_type = str(rec.get("bot_type") or "").strip()
     venue = str(rec.get("venue") or "").strip().lower()
     direction = str(rec.get("direction") or "").strip().lower()
-    account_mode = str(rec.get("account_mode") or "").strip().lower()
-    margin_mode = str(rec.get("margin_mode") or params.get("margin_mode") or "").strip().lower()
+    account_mode = str(rec.get("account_mode") or params.get("account_mode") or operator_sheet.get("account_mode") or "").strip().lower()
+    margin_mode = str(rec.get("margin_mode") or params.get("margin_mode") or plan.get("margin_mode") or operator_sheet.get("margin_mode") or "").strip().lower()
     meta_category = str((meta or {}).get("category") or "").strip().lower()
     meta_symbol = str((meta or {}).get("symbol") or "").strip().upper()
     meta_status = str((meta or {}).get("status") or "").strip()
@@ -2719,8 +2727,11 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     sizing_candidates = [
         plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {},
         params.get("sizing") if isinstance(params.get("sizing"), dict) else {},
+        operator_sheet.get("sizing") if isinstance(operator_sheet.get("sizing"), dict) else {},
         params.get("economics") if isinstance(params.get("economics"), dict) else {},
         plan.get("economics") if isinstance(plan.get("economics"), dict) else {},
+        operator_sheet.get("economics") if isinstance(operator_sheet.get("economics"), dict) else {},
+        operator_sheet,
     ]
     qty_keys = (
         "order_qty",
@@ -2812,6 +2823,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         economics_candidates = [
             params.get("economics") if isinstance(params.get("economics"), dict) else {},
             plan.get("economics") if isinstance(plan.get("economics"), dict) else {},
+            operator_sheet.get("economics") if isinstance(operator_sheet.get("economics"), dict) else {},
         ]
         economics: dict[str, Any] = {}
         for candidate in economics_candidates:
