@@ -822,6 +822,7 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
 
     ref = finite(reference_price)
     total_notional_keys = (
+        "estimated_worst_case_total_order_notional_usdt",
         "estimated_max_position_notional_usdt",
         "max_position_notional_usdt",
         "estimated_total_order_notional_usdt",
@@ -1717,25 +1718,35 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                         mapping[key] = float(snapped_qty)
             if reference_price is not None and reference_price > 0:
                 order_notional = float(snapped_qty) * float(reference_price)
+                upper_price = _finite_float_or_none((levels.get("range") or {}).get("upper")) if isinstance(levels.get("range"), dict) else None
+                worst_notional_price = _grid_max_notional_price(reference_price, lower_price, upper_price)
+                worst_order_notional = float(snapped_qty) * float(worst_notional_price or reference_price)
                 grid_count = int(_safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")) or _safe_int_or_none(plan.get("grid_count")) or 1)
                 leverage_used = float(params.get("leverage") or 1.0) or 1.0
                 total_notional = order_notional * max(1, grid_count)
+                worst_total_notional = worst_order_notional * max(1, grid_count)
                 margin_required = total_notional / max(1.0, leverage_used)
+                worst_margin_required = worst_total_notional / max(1.0, leverage_used)
                 for mapping in sizing_maps:
                     for key in ("order_notional_usdt", "order_notional"):
                         if key in mapping or key == "order_notional_usdt":
                             mapping[key] = float(order_notional)
+                    mapping["estimated_worst_case_order_notional_usdt"] = float(worst_order_notional)
+                    mapping["estimated_worst_case_total_order_notional_usdt"] = float(worst_total_notional)
+                    mapping["estimated_worst_case_margin_required_usdt"] = float(worst_margin_required)
                     if "estimated_total_order_notional_usdt" in mapping:
                         mapping["estimated_total_order_notional_usdt"] = float(total_notional)
                     if "estimated_margin_required_usdt" in mapping:
                         mapping["estimated_margin_required_usdt"] = float(margin_required)
                     if "estimated_max_position_notional_usdt" in mapping:
-                        mapping["estimated_max_position_notional_usdt"] = float(total_notional)
+                        mapping["estimated_max_position_notional_usdt"] = max(float(mapping.get("estimated_max_position_notional_usdt") or 0.0), float(worst_total_notional))
                 risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else None
                 if risk_report is not None:
-                    risk_report["capital_required_usdt"] = float(margin_required)
+                    risk_report["capital_required_usdt"] = float(max(float(risk_report.get("capital_required_usdt") or 0.0), worst_margin_required))
+                    risk_report["estimated_worst_case_margin_required_usdt"] = float(worst_margin_required)
                 if isinstance(operator_sheet, dict) and isinstance(operator_sheet.get("economics"), dict):
-                    operator_sheet["economics"]["capital_required_usdt"] = float(margin_required)
+                    operator_sheet["economics"]["capital_required_usdt"] = float(max(float(operator_sheet["economics"].get("capital_required_usdt") or 0.0), worst_margin_required))
+                    operator_sheet["economics"]["estimated_worst_case_margin_required_usdt"] = float(worst_margin_required)
 
     out["params"] = params
     return out
@@ -1787,6 +1798,24 @@ def _grid_min_notional_price(reference_price: Any, lower: Any, upper: Any) -> fl
     if not candidates:
         return None
     return min(candidates)
+
+
+def _grid_max_notional_price(reference_price: Any, lower: Any, upper: Any) -> float | None:
+    """Worst executable price for exposure/margin caps across a fixed-qty grid.
+
+    Minimum-notional checks must use the lowest positive grid price, but risk caps
+    need the opposite side: Bybit linear order value is qty * order price.  A
+    range whose upper boundary is above reference can breach max notional/margin
+    even when ``qty * reference_price * grid_count`` looks safe.
+    """
+    candidates: list[float] = []
+    for raw in (lower, reference_price, upper):
+        num = _finite_float_or_none(raw)
+        if num is not None and num > 0:
+            candidates.append(float(num))
+    if not candidates:
+        return None
+    return max(candidates)
 
 
 def _is_exact_linear_usdt_symbol(symbol: str | None) -> bool:
@@ -2050,6 +2079,7 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
     notional_key, estimated_notional = _first_finite_from_mappings(
         sizing_maps,
         (
+            "estimated_worst_case_total_order_notional_usdt",
             "estimated_max_position_notional_usdt",
             "max_position_notional_usdt",
             "estimated_total_order_notional_usdt",
@@ -2061,6 +2091,7 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
     margin_key, estimated_margin = _first_finite_from_mappings(
         sizing_maps,
         (
+            "estimated_worst_case_margin_required_usdt",
             "estimated_margin_required_usdt",
             "margin_required_usdt",
             "capital_required_usdt",
@@ -2069,9 +2100,48 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
         ),
     )
 
+    ctx = _trade_plan_price_context(rec)
+    worst_price = _grid_max_notional_price(ctx.get("reference_price"), ctx.get("range_lower"), ctx.get("range_upper"))
+    _, order_qty_for_worst = _first_finite_from_mappings(
+        sizing_maps,
+        (
+            "order_qty",
+            "qty_per_order",
+            "qty_per_leg",
+            "base_qty_per_order",
+            "order_size_qty",
+            "leg_qty",
+        ),
+    )
+    grid_count_for_worst = (
+        _safe_int_or_none(ctx.get("grid_levels"))
+        or _safe_int_or_none(params.get("grid_count"))
+        or _safe_int_or_none(params.get("grid_levels"))
+        or _safe_int_or_none(plan.get("grid_count"))
+        or 1
+    )
+    derived_worst_notional = None
+    notional_understatement_block: dict[str, Any] | None = None
+    if order_qty_for_worst is not None and worst_price is not None and worst_price > 0:
+        derived_worst_notional = float(order_qty_for_worst) * float(worst_price) * max(1, int(grid_count_for_worst))
+        if estimated_notional is None:
+            estimated_notional = float(derived_worst_notional)
+            notional_key = "order_qty*max_grid_price*grid_count"
+        elif derived_worst_notional > float(estimated_notional) * 1.005:
+            notional_understatement_block = {
+                "code": "POSITION_NOTIONAL_UNDERSTATED_BY_GRID_PRICE",
+                "msg": (
+                    f"execution {notional_key or 'position_notional'}={estimated_notional:.8g} USDT is below "
+                    f"worst-case grid notional qty*max(range/reference price)*grid_count={derived_worst_notional:.8g} USDT; "
+                    "runtime risk caps must use the upper executable price for fixed-qty linear futures grids."
+                ),
+            }
+            estimated_notional = float(derived_worst_notional)
+            notional_key = "order_qty*max_grid_price*grid_count"
+
     if estimated_margin is None and estimated_notional is not None and leverage is not None and leverage > 0:
         estimated_margin = float(estimated_notional) / max(1.0, float(leverage))
-        margin_key = "estimated_max_position_notional_usdt/leverage"
+        margin_key = f"{notional_key or 'estimated_notional'}/leverage"
     if estimated_notional is None and estimated_margin is not None and leverage is not None and leverage > 0:
         estimated_notional = float(estimated_margin) * max(1.0, float(leverage))
         notional_key = "estimated_margin_required_usdt*leverage"
@@ -2079,12 +2149,15 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
     max_notional = _finite_float_or_none(effective_limits.get("max_position_notional_usdt"))
     max_margin = _finite_float_or_none(effective_limits.get("max_margin_per_bot_usdt"))
     size_context_keys = {
+        "estimated_worst_case_total_order_notional_usdt",
+        "estimated_worst_case_order_notional_usdt",
         "estimated_max_position_notional_usdt",
         "max_position_notional_usdt",
         "estimated_total_order_notional_usdt",
         "total_order_notional_usdt",
         "position_notional_usdt",
         "notional_usdt",
+        "estimated_worst_case_margin_required_usdt",
         "estimated_margin_required_usdt",
         "margin_required_usdt",
         "capital_required_usdt",
@@ -2110,6 +2183,8 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
         })
 
     if max_notional is not None and max_notional > 0 and estimated_notional is not None and estimated_notional > max_notional:
+        if notional_understatement_block is not None:
+            blocks.append(notional_understatement_block)
         blocks.append({
             "code": "MAX_POSITION_NOTIONAL_PER_BOT_AT_EXECUTION",
             "msg": f"execution {notional_key or 'position_notional'}={estimated_notional:.8g} USDT выше текущего runtime cap={max_notional:.8g} USDT.",

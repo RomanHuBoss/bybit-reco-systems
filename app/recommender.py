@@ -2287,8 +2287,14 @@ def _params(
     order_qty, order_notional_usdt, sizing_assumption = _fallback_order_qty_for_linear_grid(price, target_notional_usdt=25.0)
     active_grid_intervals = max(1, int(grid_levels))
     total_order_notional = order_notional_usdt * active_grid_intervals
+    # Runtime risk caps must account for fixed-qty grid orders at the highest
+    # executable price, not only qty * reference_price.  Otherwise an upper grid
+    # boundary can understate notional/margin for long and neutral/short grids.
+    worst_case_order_notional = float(order_qty) * max(float(price), float(lower), float(upper))
+    worst_case_total_notional = worst_case_order_notional * active_grid_intervals
     leverage_used = max(1, int(params.get("leverage") or 1))
     margin_required = float(margin_required_usdt(total_order_notional, leverage_used))
+    worst_case_margin_required = float(margin_required_usdt(worst_case_total_notional, leverage_used))
     grid_econ = grid_leg_economics(
         reference_price=price,
         step_pct=params.get("grid_spacing_pct"),
@@ -2330,8 +2336,11 @@ def _params(
             "grid_count": int(grid_levels),
             "estimated_active_orders": int(active_grid_intervals),
             "estimated_total_order_notional_usdt": float(total_order_notional),
+            "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
+            "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
             "estimated_margin_required_usdt": float(margin_required),
-            "estimated_max_position_notional_usdt": float(total_order_notional),
+            "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
+            "estimated_max_position_notional_usdt": float(max(total_order_notional, worst_case_total_notional)),
             "estimated_liquidation_price_long": long_metrics.get("estimated_liquidation_price"),
             "estimated_liquidation_price_short": short_metrics.get("estimated_liquidation_price"),
             "liquidation_buffer_pct_long_reference": long_metrics.get("liquidation_buffer_pct_reference"),
@@ -2355,8 +2364,11 @@ def _params(
             "grid_count": int(grid_levels),
             "estimated_active_orders": int(active_grid_intervals),
             "estimated_total_order_notional_usdt": float(total_order_notional),
+            "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
+            "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
             "estimated_margin_required_usdt": float(margin_required),
-            "estimated_max_position_notional_usdt": float(total_order_notional),
+            "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
+            "estimated_max_position_notional_usdt": float(max(total_order_notional, worst_case_total_notional)),
             "estimated_liquidation_price": metrics.get("estimated_liquidation_price"),
             "liquidation_buffer_pct_reference": metrics.get("liquidation_buffer_pct_reference"),
             "liquidation_buffer_pct_adverse_boundary": metrics.get("liquidation_buffer_pct_adverse_boundary"),
@@ -2373,7 +2385,10 @@ def _params(
         "grid_count": int(grid_levels),
         "estimated_active_orders": int(active_grid_intervals),
         "estimated_total_order_notional_usdt": float(total_order_notional),
+        "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
+        "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
         "estimated_margin_required_usdt": float(margin_required),
+        "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
         "exchange_filter_assumption": sizing_assumption,
         "note": "Размер заявки — минимальный ориентир, округлённый вверх по fallback qty step до live Bybit preflight. Перед запуском preflight сверяет Bybit minNotional/qtyStep/minQty, оператор должен сверить доступную маржу.",
     }
