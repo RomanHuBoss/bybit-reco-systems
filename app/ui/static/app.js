@@ -105,15 +105,15 @@ function quantizeByStep(value, step, mode = "nearest") {
   const tick = toFiniteNumber(step);
   if (v === null || tick === null || tick <= 0) return null;
   const decimals = countDecimalsFromStep(tick);
-  const factor = 10 ** Math.max(0, Number(decimals || 0));
-  const scaledValue = Math.round(v * factor);
-  const scaledStep = Math.max(1, Math.round(tick * factor));
+  const precision = Math.max(0, Number(decimals || 0));
+  const unitsRaw = v / tick;
+  const eps = Math.max(1e-12, Math.abs(unitsRaw) * 1e-12);
   let units;
-  if (mode === "down") units = Math.floor((scaledValue + 1e-9) / scaledStep);
-  else if (mode === "up") units = Math.ceil((scaledValue - 1e-9) / scaledStep);
-  else units = Math.round(scaledValue / scaledStep);
-  const snapped = (units * scaledStep) / factor;
-  return snapped.toFixed(Math.max(0, Number(decimals || 0)));
+  if (mode === "down") units = Math.floor(unitsRaw + eps);
+  else if (mode === "up") units = Math.ceil(unitsRaw - eps);
+  else units = Math.round(unitsRaw);
+  const snapped = units * tick;
+  return snapped.toFixed(precision);
 }
 
 function formatBybitPrice(value, meta = {}, mode = "nearest") {

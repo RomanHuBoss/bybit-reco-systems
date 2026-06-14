@@ -366,13 +366,20 @@ def btc_beta(
 
     # log returns
     def _rets(closes: list[float]) -> list[float]:
+        # Do not independently compress away bad prices: with close-only vectors
+        # there is no timestamp left to re-align symbol and BTC returns.  A malformed
+        # value in the active beta window therefore makes the beta unknown instead
+        # of creating a spurious correlation from shifted observations.
+        c = list(closes)[-(window + 1):]
+        if len(c) < window + 1:
+            return []
         cleaned: list[float] = []
-        for raw in closes:
+        for raw in c:
             value = _finite_float(raw)
-            if value is not None and value > 0:
-                cleaned.append(value)
-        c = cleaned[-(window + 1):]
-        return [math.log(c[i] / c[i-1]) for i in range(1, len(c)) if c[i] > 0 and c[i-1] > 0]
+            if value is None or value <= 0:
+                return []
+            cleaned.append(value)
+        return [math.log(cleaned[i] / cleaned[i-1]) for i in range(1, len(cleaned))]
 
     sym_r = _rets(symbol_closes)
     btc_r = _rets(btc_closes)
