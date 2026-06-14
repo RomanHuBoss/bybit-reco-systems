@@ -876,13 +876,23 @@ function buildOperatorFieldSpecs(it, ov) {
   const operatorEconomics = operatorSheet.economics || {};
   const marginRequired = firstFiniteValue(
     [sizing, economics, operatorSizing, operatorEconomics, params, operatorSheet],
-    ["estimated_margin_required_usdt", "margin_required_usdt", "capital_required_usdt", "margin_usdt", "investment_usdt"]
+    [
+      "estimated_worst_case_margin_required_usdt",
+      "worst_case_margin_required_usdt",
+      "estimated_margin_required_usdt",
+      "margin_required_usdt",
+      "capital_required_usdt",
+      "margin_usdt",
+      "investment_usdt",
+    ]
   );
   const leverageRaw = firstFiniteValue([params, plan, operatorSheet], ["leverage"]);
   const leverage = Math.max(1, Number(leverageRaw || 1));
   const positionNotional = firstFiniteValue(
     [sizing, economics, operatorSizing, operatorEconomics, params, operatorSheet],
     [
+      "estimated_worst_case_total_order_notional_usdt",
+      "worst_case_total_order_notional_usdt",
       "estimated_max_position_notional_usdt",
       "max_position_notional_usdt",
       "estimated_total_order_notional_usdt",
@@ -915,9 +925,9 @@ function buildOperatorFieldSpecs(it, ov) {
   const riskRewardValue = rrValue === null ? "—" : formatDotNumber(rrValue, 3, false);
   const fields = [
     { label: "Сторона", value: directionRu((it || {}).direction), mono: false, help: "Направление идеи: лонг зарабатывает на росте, шорт — на снижении. Нейтральная grid-логика не должна подменяться направленным TP/SL." },
-    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Оценочная максимальная экспозиция бота. Это не маржа: при плече экспозиция больше внесённой маржи." },
+    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Оценочная максимальная экспозиция бота. При наличии worst-case grid-полей UI показывает верхнюю оценку по максимальной цене диапазона, а не legacy reference-price notional." },
     { label: "Время работы", value: botLifetimeValue, copyValue: botLifetimeValue, help: "Рекомендуемый горизонт удержания бота, а не срок действия самой рекомендации." },
-    { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под бота с указанным плечом." },
+    { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под бота с указанным плечом. При наличии worst-case margin UI не должен откатываться к менее консервативной legacy-марже." },
     { label: "Диапазон входа", value: rangeValue, mono: true, help: "Нижняя и верхняя границы основного диапазона сетки, которые оператор переносит в Bybit." },
     { label: "Цена входа", value: ov.entryRef, mono: true, help: "Расчётная цена входа из рекомендации. Используется при создании бота и остаётся обязательным полем основной панели." },
     { label: "Кол-во сеток", value: params.grid_count ?? plan.grid_count ?? params.grid_levels ?? "—", help: "Количество ценовых интервалов сетки. Должно соответствовать ограничениям Bybit Futures Grid." },

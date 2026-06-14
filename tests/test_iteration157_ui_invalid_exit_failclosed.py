@@ -19,5 +19,5 @@ def test_operator_ui_does_not_render_invalid_backend_directional_tp_sl_as_local_
 def test_static_asset_cache_key_bumped_after_invalid_exit_failclosed_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v32" in index
-    assert "app.js?v=manual-ui-v32" in index
+    assert "styles.css?v=manual-ui-v33" in index
+    assert "app.js?v=manual-ui-v33" in index
