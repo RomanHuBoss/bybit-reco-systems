@@ -3196,6 +3196,24 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 "code": "ORDER_NOTIONAL_BELOW_MIN",
                 "msg": f"{notional_source or 'order_notional'}={order_notional} ниже Bybit min_notional={min_notional}.",
             })
+        if min_notional is not None and order_notional >= min_notional:
+            notional_price = _grid_min_notional_price(reference_price, lower, upper)
+            if reference_price is not None and reference_price > 0 and notional_price is not None and notional_price > 0:
+                # A quote-notional-only payload is normally estimated at reference_price.
+                # For fixed-base Bybit grid orders, lower levels have notional
+                # order_notional * grid_min_price / reference_price, so a value barely
+                # above the Bybit floor at reference can still be rejected on lower grid levels.
+                grid_min_notional = float(order_notional) * float(notional_price) / float(reference_price)
+                if grid_min_notional < min_notional:
+                    errors.append({
+                        "code": "ORDER_NOTIONAL_BELOW_MIN",
+                        "msg": f"Минимальный расчётный notional={grid_min_notional:.12g} по {notional_source or 'order_notional'}={order_notional:.12g}, reference_price={reference_price:.12g} и grid_min_price={notional_price:.12g} ниже Bybit min_notional={min_notional}; lower-grid заявки могут быть отклонены биржей.",
+                    })
+            elif order_qty is None:
+                warnings.append({
+                    "code": "MIN_NOTIONAL_NOT_CHECKED",
+                    "msg": f"Bybit min_notional={min_notional}, но reference/range price отсутствуют; notional-only sizing нельзя консервативно пересчитать для lower-grid уровней.",
+                })
 
     if order_qty is not None and order_notional is not None and reference_price is not None and reference_price > 0:
         implied_notional = order_qty * reference_price
