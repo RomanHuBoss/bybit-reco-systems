@@ -798,6 +798,18 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
                     return key, value
         return None, None
 
+    def find_first_positive_int(mappings: list[Any], keys: tuple[str, ...]) -> tuple[str | None, int | None]:
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            for key in keys:
+                if key not in mapping:
+                    continue
+                value = _safe_int_or_none(mapping.get(key))
+                if value is not None and value > 0:
+                    return key, int(value)
+        return None, None
+
     sizing_maps: list[Any] = [
         plan.get("sizing"),
         params.get("sizing"),
@@ -835,9 +847,24 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
     )
     key, per_order_qty = find_first(sizing_maps, per_order_qty_keys)
     if per_order_qty is not None:
-        grid_count = _safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(plan.get("grid_count")) or _safe_int_or_none(params.get("grid_levels"))
+        # Generated payloads may carry the executable grid/order count inside
+        # trade_plan.sizing/economics, params.sizing/economics or only on the
+        # legacy top-level params/trade_plan object.  Missing that nested count
+        # understates the TP/SL PnL context by showing one grid order instead of
+        # total active grid exposure.
+        grid_count_key, grid_count = find_first_positive_int(
+            sizing_maps,
+            (
+                "grid_count",
+                "estimated_active_orders",
+                "active_grid_intervals",
+                "grid_levels",
+                "levels_count",
+                "orders_count",
+            ),
+        )
         if grid_count is not None and grid_count > 1:
-            return {"qty": float(per_order_qty) * float(grid_count), "qty_source": f"{key}*grid_count"}
+            return {"qty": float(per_order_qty) * float(grid_count), "qty_source": f"{key}*{grid_count_key}"}
         return {"qty": per_order_qty, "qty_source": key}
 
     if ref is not None:
