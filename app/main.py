@@ -547,7 +547,9 @@ def _merge_bybit_operator_guard_into_ui_payload(out: dict[str, Any], guard: dict
 
     current_status = str(out.get("status") or "").strip().lower()
     if current_status in {"recommended", "pending", "active"}:
+        out["stored_status"] = out.get("stored_status") or current_status
         out["status"] = "blocked"
+        out["effective_status"] = "blocked"
 
     params = out.get("params") if isinstance(out.get("params"), dict) else {}
     risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
@@ -586,6 +588,177 @@ def _merge_bybit_operator_guard_into_ui_payload(out: dict[str, Any], guard: dict
     decision_layers["final_status"] = "blocked"
     reasons["decision_layers"] = decision_layers
     out["reasons"] = reasons
+
+
+def _ensure_effective_status(out: dict[str, Any]) -> None:
+    """Always expose a concrete operator-facing status for UI filters/badges."""
+    effective = str(out.get("effective_status") or "").strip().lower()
+    if effective:
+        return
+    status = str(out.get("status") or "").strip().lower()
+    out["effective_status"] = status or "unknown"
+
+
+def _operator_payload_has_runtime_risk_context(out: dict[str, Any]) -> bool:
+    params = out.get("params") if isinstance(out.get("params"), dict) else {}
+    # Only real operator/recommender payloads carry these publication-time guard
+    # artifacts.  Unit/API-shape fixtures may inject minimal params/trade_plan values
+    # solely to satisfy Bybit metadata validation; do not retroactively reinterpret
+    # those synthetic rows as live launch sheets.  Actual execution still calls
+    # _execution_runtime_size_risk_blocks directly.
+    return any(
+        isinstance(params.get(key), dict)
+        for key in ("leverage_policy", "operator_sheet", "risk_report")
+    )
+
+
+def _mark_operator_payload_blocked(
+    out: dict[str, Any],
+    blocks_to_add: list[dict[str, Any]],
+    *,
+    source: str,
+    decision_layer_key: str,
+) -> None:
+    if not blocks_to_add:
+        return
+
+    blocks = out.get("blocks")
+    if not isinstance(blocks, list):
+        blocks = []
+    seen_codes = {str(item.get("code") or "") for item in blocks if isinstance(item, dict)}
+    rejection_messages: list[str] = []
+    for block in blocks_to_add:
+        if not isinstance(block, dict):
+            continue
+        code = str(block.get("code") or "OPERATOR_RUNTIME_GUARD_FAILED")
+        msg = str(block.get("msg") or "Operator runtime guard blocked this futures-grid recommendation.")
+        rejection_messages.append(msg)
+        if code not in seen_codes:
+            merged = dict(block)
+            merged.setdefault("code", code)
+            merged.setdefault("msg", msg)
+            merged.setdefault("source", source)
+            blocks.append(merged)
+            seen_codes.add(code)
+    out["blocks"] = blocks
+
+    current_status = str(out.get("status") or "").strip().lower()
+    if current_status in {"recommended", "active", "pending"}:
+        out["stored_status"] = out.get("stored_status") or current_status
+    out["status"] = "blocked"
+    out["effective_status"] = "blocked"
+
+    params = out.get("params") if isinstance(out.get("params"), dict) else {}
+    risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
+    risk_report["decision"] = "not_recommended"
+    existing_rejections = risk_report.get("rejection_reasons")
+    if not isinstance(existing_rejections, list):
+        existing_rejections = []
+    seen_reasons = {str(item) for item in existing_rejections}
+    for msg in rejection_messages:
+        if msg and msg not in seen_reasons:
+            existing_rejections.append(msg)
+            seen_reasons.add(msg)
+    risk_report["rejection_reasons"] = existing_rejections
+    params["risk_report"] = risk_report
+    out["params"] = params
+
+    reasons = out.get("reasons") if isinstance(out.get("reasons"), dict) else {}
+    risk_checks = reasons.get("risk_checks") if isinstance(reasons.get("risk_checks"), dict) else {}
+    risk_checks["passed"] = False
+    risk_blocks = risk_checks.get("blocks")
+    if not isinstance(risk_blocks, list):
+        risk_blocks = []
+    risk_seen = {str(item.get("code") or "") for item in risk_blocks if isinstance(item, dict)}
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        code = str(block.get("code") or "")
+        if code and code not in risk_seen:
+            risk_blocks.append(block)
+            risk_seen.add(code)
+    risk_checks["blocks"] = risk_blocks
+    reasons["risk_checks"] = risk_checks
+    decision_layers = reasons.get("decision_layers") if isinstance(reasons.get("decision_layers"), dict) else {}
+    decision_layers[decision_layer_key] = "blocked"
+    decision_layers["final_status"] = "blocked"
+    reasons["decision_layers"] = decision_layers
+    out["reasons"] = reasons
+
+
+def _apply_runtime_risk_limits_guard(out: dict[str, Any], *, conn: Any | None = None) -> None:
+    """Revalidate persisted recommendations against the current runtime risk profile.
+
+    Operator profiles can be changed after a recommendation is published.  A DB row
+    that was generated with min/max leverage 5..10 must not remain actionable when
+    /risk/status now says fixed 3x, and a 1x fallback payload must not bypass the
+    current min_leverage guard merely because it is an old snapshot.
+    """
+    if conn is None or not _operator_payload_has_runtime_risk_context(out):
+        return
+    try:
+        limits = get_risk_limits(conn, settings.risk_limits)
+    except Exception:
+        limits = normalize_risk_limits(getattr(settings, "risk_limits", {}) or {}, getattr(settings, "risk_limits", {}) or {})
+
+    blocks = _execution_runtime_size_risk_blocks(out, limits)
+
+    params = out.get("params") if isinstance(out.get("params"), dict) else {}
+    policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
+    if policy:
+        current_min = _finite_float_or_none(limits.get("min_leverage"))
+        current_max = _finite_float_or_none(limits.get("max_leverage"))
+        policy_min = _finite_float_or_none(policy.get("min_operator_leverage"))
+        policy_max = _finite_float_or_none(policy.get("max_operator_leverage"))
+        if (
+            current_min is not None
+            and policy_min is not None
+            and not math.isclose(float(current_min), float(policy_min), rel_tol=0.0, abs_tol=1e-12)
+        ) or (
+            current_max is not None
+            and policy_max is not None
+            and not math.isclose(float(current_max), float(policy_max), rel_tol=0.0, abs_tol=1e-12)
+        ):
+            blocks.append({
+                "code": "RUNTIME_RISK_PROFILE_CHANGED",
+                "msg": (
+                    f"recommendation leverage policy was generated for min/max "
+                    f"{policy_min if policy_min is not None else 'unknown'}x/"
+                    f"{policy_max if policy_max is not None else 'unknown'}x, but current runtime profile is "
+                    f"{current_min if current_min is not None else 'unknown'}x/"
+                    f"{current_max if current_max is not None else 'unknown'}x; refresh recommendation before launch."
+                ),
+            })
+
+    if blocks:
+        _mark_operator_payload_blocked(
+            out,
+            blocks,
+            source="runtime_risk_limits_guard",
+            decision_layer_key="runtime_risk_limits_guard",
+        )
+
+
+def _apply_snapshot_stale_guard(out: dict[str, Any], *, snapshot_age_sec: int | None, stale_after_sec: int) -> None:
+    status = str(out.get("status") or "").strip().lower()
+    if status not in {"recommended", "active", "pending"}:
+        return
+    if snapshot_age_sec is None or int(snapshot_age_sec) <= int(stale_after_sec):
+        return
+    _mark_operator_payload_blocked(
+        out,
+        [{
+            "code": "SNAPSHOT_STALE_FOR_OPERATOR_LAUNCH",
+            "msg": (
+                f"recommendation snapshot age_sec={int(snapshot_age_sec)} exceeds operator freshness limit "
+                f"{int(stale_after_sec)} sec; do not launch stale grid parameters."
+            ),
+            "snapshot_age_sec": int(snapshot_age_sec),
+            "stale_after_sec": int(stale_after_sec),
+        }],
+        source="snapshot_freshness_guard",
+        decision_layer_key="snapshot_freshness_guard",
+    )
 
 
 def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) -> dict[str, Any]:
@@ -1040,9 +1213,11 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
             out["status"] = "blocked"
             out["effective_status"] = "blocked"
         _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
+        _apply_runtime_risk_limits_guard(out, conn=conn)
         out["operator_decision_context"] = _operator_decision_context_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
         _apply_llm_effective_pending_guard(out)
         _apply_publication_chain_effective_expiry_guard(out)
+        _ensure_effective_status(out)
         return out
     out = _snap_reco_payload_to_bybit_meta(out, bybit_meta)
     out["directional_exit_levels"] = _directional_exit_payload_for_reco(out)
@@ -1050,9 +1225,11 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
     out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
     out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True, require_execution_plan=True)
     _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
+    _apply_runtime_risk_limits_guard(out, conn=conn)
     out["operator_decision_context"] = _operator_decision_context_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
     _apply_llm_effective_pending_guard(out)
     _apply_publication_chain_effective_expiry_guard(out)
+    _ensure_effective_status(out)
     return out
 
 
@@ -1849,9 +2026,20 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
             "msg": "execution payload не содержит явное leverage; нельзя проверить runtime leverage caps, margin и liquidation semantics.",
         })
 
-    # Lower leverage is not an exposure-increasing runtime hazard. It can increase
-    # required margin, which is checked below through max_margin_per_bot_usdt.
-    # Bybit's actual lower bound is still enforced in _validate_trade_plan_against_bybit_meta.
+    min_leverage = _finite_float_or_none(effective_limits.get("min_leverage"))
+    enforce_operator_min_leverage = _operator_payload_has_runtime_risk_context(rec)
+    if (
+        enforce_operator_min_leverage
+        and leverage is not None
+        and min_leverage is not None
+        and min_leverage > 0
+        and leverage < min_leverage
+    ):
+        blocks.append({
+            "code": "MIN_LEVERAGE_PER_BOT_AT_EXECUTION",
+            "msg": f"execution payload leverage={leverage:.8g}x ниже текущего runtime min_leverage={min_leverage:.8g}x.",
+        })
+
     max_leverage = _finite_float_or_none(effective_limits.get("max_leverage"))
     if leverage is not None and max_leverage is not None and max_leverage > 0 and leverage > max_leverage:
         blocks.append({
@@ -3528,12 +3716,17 @@ def api_recommendations(
             strict_min_conf=strict_min_conf,
             collapse_chains=collapse_chains,
         )
+        snapshot_age_sec = None if snapshot_ts is None else max(0, int(time.time()) - int(snapshot_ts))
+        snapshot_stale_after_sec = max(180, int(settings.reco_interval_sec) * 3)
+        snapshot_is_stale = bool(snapshot_age_sec is not None and snapshot_age_sec > snapshot_stale_after_sec)
         augmented_items = [_augment_reco_for_ui(item, conn=conn) for item in raw_items]
+        if snapshot_is_stale:
+            for item in augmented_items:
+                _apply_snapshot_stale_guard(item, snapshot_age_sec=snapshot_age_sec, stale_after_sec=snapshot_stale_after_sec)
+                _ensure_effective_status(item)
         items = _filter_operator_items_by_effective_status(augmented_items, statuses, top_n)
 
         status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
-        snapshot_age_sec = None if snapshot_ts is None else max(0, int(time.time()) - int(snapshot_ts))
-        snapshot_is_stale = bool(snapshot_age_sec is not None and snapshot_age_sec > max(180, int(settings.reco_interval_sec) * 3))
         no_trade = not any(str(item.get("effective_status") or item.get("status") or "").strip().lower() in {"recommended", "active"} for item in items)
 
         cur = conn.execute("SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1")

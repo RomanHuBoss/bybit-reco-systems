@@ -10,7 +10,7 @@ def test_operator_ui_hides_create_bot_link_for_non_actionable_recommendations() 
     app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
 
     assert "function isLaunchableGridRecommendation(it)" in app_js
-    assert 'it.status === "recommended" || it.status === "active"' in app_js
+    assert 'status === "recommended" || status === "active"' in app_js
     assert 'riskDecision !== "recommended"' in app_js
     assert 'errors.length === 0' in app_js
     assert 'const botLink = isLaunchableGridRecommendation(it)' in app_js

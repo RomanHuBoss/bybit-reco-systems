@@ -32,7 +32,7 @@ def test_operator_table_escapes_symbol_status_and_rec_id_in_rendered_html() -> N
 def test_operator_action_status_update_no_longer_depends_on_stale_column_index() -> None:
     app_js = _app_js()
 
-    assert '<td data-cell="status">${pillStatus(it.status)}</td>' in app_js
+    assert '<td data-cell="status">${pillStatus(operatorEffectiveStatus(it))}</td>' in app_js
     assert "row.querySelector('[data-cell=\"status\"]')" in app_js
     assert "cells[9]" not in app_js
     assert "column index 9" not in app_js

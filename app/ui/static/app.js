@@ -176,9 +176,14 @@ function botTypeLabel(botType) {
   return botType === SUPPORTED_GRID_BOT_TYPE ? "Futures Grid" : "—";
 }
 
+function operatorEffectiveStatus(it) {
+  return String(it?.effective_status || it?.status || "").trim().toLowerCase();
+}
+
 function isLaunchableGridRecommendation(it) {
   if (!it || it.bot_type !== SUPPORTED_GRID_BOT_TYPE || it.venue !== SUPPORTED_GRID_VENUE) return false;
-  if (!(it.status === "recommended" || it.status === "active")) return false;
+  const status = operatorEffectiveStatus(it);
+  if (!(status === "recommended" || status === "active")) return false;
   const params = it.params && typeof it.params === "object" ? it.params : {};
   if (!params.trade_plan || typeof params.trade_plan !== "object") return false;
   const riskDecision = params?.risk_report?.decision;
@@ -1007,7 +1012,7 @@ function buildDetailsHtml(it) {
 
   const launchable = isLaunchableGridRecommendation(it);
   const scoreMeta = ensureUiScoreMeta(it);
-  const status = String(it.status || "").trim().toLowerCase();
+  const status = operatorEffectiveStatus(it);
   const explicitHardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || status === "blocked";
   // risk_report.decision is intentionally conservative for pending async-LLM holds:
   // backend may store it as not_recommended until the reviewer finalizes the row.
@@ -1086,7 +1091,7 @@ function buildDetailsHtml(it) {
         <div class="decision-title-row">
           <div>
             <h3>${escapeHtml(it.symbol)} · ${escapeHtml(decisionTitle)}</h3>
-            <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(it.status)}</div>
+            <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(operatorEffectiveStatus(it))}</div>
           </div>
           <button class="ghost-chip" data-act="show-tech">Техподробности</button>
         </div>
@@ -1727,7 +1732,7 @@ async function loadRecommendations() {
   updateCalibrationUi(items);
 
   const banner = $("noTrade");
-  const hasActionable = items.some(it => it.status === "recommended" || it.status === "active");
+  const hasActionable = items.some(it => { const s = operatorEffectiveStatus(it); return s === "recommended" || s === "active"; });
   if (!hasActionable) banner.classList.remove("hidden");
   else banner.classList.add("hidden");
 }
@@ -1772,12 +1777,12 @@ function renderRecoTable(items) {
   body.innerHTML = "";
   let hasActionable = false;
   sorted.forEach((it, i) => {
-    if (it.status === "recommended" || it.status === "active") hasActionable = true;
+    { const s = operatorEffectiveStatus(it); if (s === "recommended" || s === "active") hasActionable = true; }
     const dirAgg = (it.reasons || {}).direction_agg || {};
     const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
     const scoreUi = ensureUiScoreMeta(it, items);
     const tr = document.createElement("tr");
-    if (it.status === "recommended" || it.status === "active") tr.classList.add("row-recommended");
+    { const s = operatorEffectiveStatus(it); if (s === "recommended" || s === "active") tr.classList.add("row-recommended"); }
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td>
@@ -1791,7 +1796,7 @@ function renderRecoTable(items) {
       <td>${scoreUiCellHtml(scoreUi)}</td>
       <td>${confCell(it)}</td>
       <td>${fmt(it.expected_rr)}</td>
-      <td data-cell="status">${pillStatus(it.status)}</td>
+      <td data-cell="status">${pillStatus(operatorEffectiveStatus(it))}</td>
       <td><button class="btn tiny" data-act="details" data-id="${escapeHtml(it.rec_id)}">Карточка</button></td>
     `;
     body.appendChild(tr);

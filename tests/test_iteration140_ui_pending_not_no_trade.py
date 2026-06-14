@@ -14,7 +14,7 @@ def _details_logic_fragment() -> str:
 def test_pending_status_is_not_rendered_as_no_trade_when_risk_report_is_conservative() -> None:
     fragment = _details_logic_fragment()
 
-    assert 'const status = String(it.status || "").trim().toLowerCase()' in fragment
+    assert 'const status = operatorEffectiveStatus(it)' in fragment
     assert 'const noTradeDecision = status === "no_trade"' in fragment
     assert 'const pendingDecision = status === "pending"' in fragment
     assert 'riskReport.decision === "not_recommended"' not in fragment

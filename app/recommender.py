@@ -2008,6 +2008,7 @@ def _params(
     direction_bias_strength: float,
     atr_pct_for_grid: float | None,
     cost_model: dict[str, Any] | None = None,
+    risk_limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cost_model = dict(cost_model or {})
     price_input = _finite_or_none(f.get("price"))
@@ -2243,7 +2244,11 @@ def _params(
 
     if venue == "linear":
         try:
-            effective_limits = normalize_risk_limits(getattr(settings, "risk_limits", {}) or {})
+            # Recommendation leverage must be tied to the exact runtime/operator risk
+            # profile used for publication blocks.  Using only settings.risk_limits
+            # here makes DB/runtime overrides invisible inside params and can publish
+            # a 1x payload while /risk/status already requires a fixed 3x/5x profile.
+            effective_limits = normalize_risk_limits(risk_limits, getattr(settings, "risk_limits", {}) or {})
         except Exception:
             effective_limits = {"min_leverage": 5, "max_leverage": 5}
         min_operator_leverage = int(effective_limits.get("min_leverage") or 1)
@@ -3178,7 +3183,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     market_shock = compute_market_shock(conn, settings, sent_agg, symbol_feature_map, ts_now)
     db.set_app_config_json(conn, MARKET_SHOCK_APP_KEY, market_shock, commit=False)
 
-    limits = db.get_active_risk_limits(conn) or settings.risk_limits
+    limits = normalize_risk_limits(db.get_active_risk_limits(conn), settings.risk_limits)
     model_version = "bybit-taxonomy-v2"
     if bool(getattr(settings, "llm_reviewer_enabled", False)):
         model_version += "+llm-review-v1"
@@ -3493,6 +3498,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 direction_bias_strength=float((_dir_agg_cal.get("strength", {}) or {}).get("all", 0.0) if isinstance(_dir_agg_cal.get("strength"), dict) else float(_dir_agg_cal.get("strength", 0.0))),
                 atr_pct_for_grid=f.get("_atr_pct_1h"),
                 cost_model=cost_model,
+                risk_limits=limits,
             )
             if params.get("price_input_valid") is False:
                 blocks.append({

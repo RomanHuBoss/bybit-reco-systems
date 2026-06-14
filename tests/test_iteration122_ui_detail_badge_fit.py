@@ -13,7 +13,7 @@ def test_details_subtitle_no_long_bot_type_badge() -> None:
     assert "Bybit Linear USDT Futures Grid" not in app_js
     assert "Linear USDT Grid" not in app_js
     assert "directionBadge(it.direction)" in app_js
-    assert "statusBadgeHtml(it.status)" in app_js
+    assert "statusBadgeHtml(operatorEffectiveStatus(it))" in app_js
 
 
 def test_details_subtitle_wraps_instead_of_overflowing_panel() -> None:
