@@ -1979,22 +1979,36 @@ def _select_operator_grid_leverage(
         "min_projected_net_profit_bps": 2.0,
     }
 
+    def _approve(note: str) -> tuple[int, str, dict[str, Any]]:
+        diagnostics["operator_minimum_approved"] = True
+        diagnostics["not_actionable_reason"] = None
+        return int(target_leverage), note, diagnostics
+
+    def _decline(note: str) -> tuple[int, str, dict[str, Any]]:
+        # Do not publish a synthetic 1x payload under a fixed higher operator
+        # profile.  The recommendation is later marked no_trade/not_actionable,
+        # while the payload still records the active profile it was evaluated
+        # against.  Legacy 1x rows remain blocked by execution-time guards.
+        diagnostics["operator_minimum_approved"] = False
+        diagnostics["not_actionable_reason"] = note
+        return int(target_leverage), note, diagnostics
+
     if target_leverage <= 1:
-        return 1, "operator_minimum_is_one", diagnostics
+        return _approve("operator_minimum_is_one")
     if atr_pct >= 0.05 or exec_bps >= 45.0:
-        return 1, "unsafe_volatility_or_execution_cost", diagnostics
+        return _decline("unsafe_volatility_or_execution_cost")
     if atr_pct > 0.025:
-        return 1, "atr_too_high_for_operator_minimum", diagnostics
+        return _decline("atr_too_high_for_operator_minimum")
     if projected_net_bps < 2.0:
-        return 1, "insufficient_net_edge_for_operator_minimum", diagnostics
+        return _decline("insufficient_net_edge_for_operator_minimum")
 
     directional_quality = dir_norm in {"long", "short"} and dir_strength >= 0.45
     neutral_range_quality = dir_norm == "neutral" and range_score >= 0.70 and trendiness <= 0.35
     diagnostics["directional_quality"] = bool(directional_quality)
     diagnostics["neutral_range_quality"] = bool(neutral_range_quality)
     if directional_quality or neutral_range_quality:
-        return int(target_leverage), "operator_minimum_selected", diagnostics
-    return 1, "signal_quality_too_low_for_operator_minimum", diagnostics
+        return _approve("operator_minimum_selected")
+    return _decline("signal_quality_too_low_for_operator_minimum")
 
 
 def _params(
@@ -2274,6 +2288,8 @@ def _params(
             "min_operator_leverage": int(min_operator_leverage),
             "max_operator_leverage": int(max_operator_leverage),
             "selected_leverage": int(leverage),
+            "operator_minimum_approved": bool(leverage_policy_diag.get("operator_minimum_approved", leverage_policy_note in {"operator_minimum_is_one", "operator_minimum_selected"})),
+            "not_actionable_reason": leverage_policy_diag.get("not_actionable_reason"),
             "note": leverage_policy_note,
             "diagnostics": leverage_policy_diag,
         }
@@ -3515,6 +3531,25 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 cost_model=cost_model,
                 risk_limits=limits,
             )
+            no_trade_reasons: list[dict[str, str]] = []
+            leverage_policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
+            if (
+                bot_type == "futures_grid"
+                and venue == "linear"
+                and leverage_policy
+                and leverage_policy.get("operator_minimum_approved") is False
+            ):
+                selected_leverage = _finite_or_none(params.get("leverage"))
+                policy_note = str(leverage_policy.get("not_actionable_reason") or leverage_policy.get("note") or "operator_minimum_not_approved")
+                no_trade_reasons.append({
+                    "code": "OPERATOR_LEVERAGE_PROFILE_NOT_ACTIONABLE",
+                    "msg": (
+                        f"идея не проходит текущий fixed leverage profile без ослабления risk policy; "
+                        f"evaluated_leverage={selected_leverage:.0f}x, reason={policy_note}"
+                        if selected_leverage is not None
+                        else f"идея не проходит текущий fixed leverage profile без ослабления risk policy; reason={policy_note}"
+                    ),
+                })
             if params.get("price_input_valid") is False:
                 blocks.append({
                     "code": "INVALID_MARKET_REFERENCE_PRICE",
@@ -3579,12 +3614,19 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     blocks.append({"code": "MAX_POSITION_NOTIONAL_PER_BOT", "msg": f"estimated_max_position_notional={estimated_notional:.2f} USDT > runtime cap={max_notional:.2f} USDT"})
 
                 max_margin = _finite_or_none(limits.get("max_margin_per_bot_usdt") if isinstance(limits, dict) else None)
-                estimated_margin = _finite_or_none((params.get("sizing") or {}).get("estimated_margin_required_usdt") if isinstance(params.get("sizing"), dict) else None)
+                sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
+                estimated_margin = _finite_or_none(sizing.get("estimated_worst_case_margin_required_usdt"))
+                margin_label = "estimated_worst_case_margin_required"
+                if estimated_margin is None:
+                    estimated_margin = _finite_or_none(sizing.get("estimated_margin_required_usdt"))
+                    margin_label = "estimated_margin_required"
                 if max_margin is not None and max_margin > 0 and estimated_margin is not None and estimated_margin > max_margin:
-                    blocks.append({"code": "MAX_MARGIN_PER_BOT", "msg": f"estimated_margin_required={estimated_margin:.2f} USDT > runtime cap={max_margin:.2f} USDT"})
+                    blocks.append({"code": "MAX_MARGIN_PER_BOT", "msg": f"{margin_label}={estimated_margin:.2f} USDT > runtime cap={max_margin:.2f} USDT"})
 
             if blocks:
                 status = "blocked"
+            elif no_trade_reasons:
+                status = "no_trade"
 
             funding_benefit_excluded_bps = _finite_or_none(econ.get("funding_benefit_excluded_bps")) if isinstance(econ, dict) else None
             signed_net_profit_bps = _finite_or_none(econ.get("net_profit_with_signed_funding_bps")) if isinstance(econ, dict) else None
@@ -3605,10 +3647,19 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "funding_benefit_excluded_bps": funding_benefit_excluded_bps,
                 "funding_interval_min": cost_model.get("funding_interval_min"),
                 "liquidation_buffer_pct": liq_buffer_pct,
-                "capital_required_usdt": _finite_or_none((params.get("sizing") or {}).get("estimated_margin_required_usdt")) if isinstance(params.get("sizing"), dict) else None,
+                "capital_required_usdt": (
+                    (
+                        _finite_or_none((params.get("sizing") or {}).get("estimated_worst_case_margin_required_usdt"))
+                        if _finite_or_none((params.get("sizing") or {}).get("estimated_worst_case_margin_required_usdt")) is not None
+                        else _finite_or_none((params.get("sizing") or {}).get("estimated_margin_required_usdt"))
+                    )
+                    if isinstance(params.get("sizing"), dict)
+                    else None
+                ),
                 "max_adverse_scenario": "цена выходит за range/kill-switch, сетка накапливает направленную позицию против движения; funding/fees продолжают ухудшать equity",
                 "approval_reasons": [str(x.get("msg") or x.get("code") or "") for x in (reasons.get("top_positive_factors") or [])[:5] if isinstance(x, dict)],
                 "rejection_reasons": [str(x.get("msg") or x.get("code") or "") for x in blocks[:8] if isinstance(x, dict)],
+                "no_trade_reasons": [str(x.get("msg") or x.get("code") or "") for x in no_trade_reasons[:8] if isinstance(x, dict)],
                 "warnings": risk_warnings,
             }
 
@@ -3621,8 +3672,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             thesis_ok = bool(score >= settings.min_score_to_recommend and (not confidence_gate_applied or conf >= settings.min_conf_to_recommend))
             reasons2["decision_layers"] = {
                 "thesis_status": "favored" if thesis_ok else "unfavorable",
-                "execution_status": "blocked" if blocks else "allowed",
+                "execution_status": "blocked" if blocks else ("not_actionable" if no_trade_reasons else "allowed"),
                 "final_status": status,
+                "no_trade_reasons": no_trade_reasons,
                 "score_threshold": float(settings.min_score_to_recommend),
                 "confidence_threshold": float(settings.min_conf_to_recommend),
                 "confidence_gate_applied": bool(confidence_gate_applied),

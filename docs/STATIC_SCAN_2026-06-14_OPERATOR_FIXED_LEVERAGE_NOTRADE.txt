@@ -1,0 +1,34 @@
+Static scan summary — 2026-06-14 operator fixed-leverage no-trade patch
+
+Scope: app/*.py, app/ui/static/*.js|*.html, tests/*.py, docs/*.md.
+
+Keyword counts after patch:
+- tp: 1214 hits / 124 files
+- sl: 806 hits / 117 files
+- stop: 397 hits / 68 files
+- take: 273 hits / 70 files
+- upper: 611 hits / 91 files
+- lower: 709 hits / 100 files
+- short: 761 hits / 85 files
+- long: 804 hits / 117 files
+- side: 395 hits / 89 files
+- Buy: 75 hits / 32 files
+- Sell: 69 hits / 30 files
+- reduceOnly: 85 hits / 35 files
+- kill: 389 hits / 85 files
+- leverage: 954 hits / 112 files
+- pnl: 323 hits / 74 files
+- roi: 25 hits / 21 files
+- risk: 1425 hits / 148 files
+- notional: 813 hits / 100 files
+- margin: 664 hits / 121 files
+- no_trade: 173 hits / 41 files
+
+Reviewed changed hits:
+- app/recommender.py:_select_operator_grid_leverage — SAFE. New decline path returns active operator target leverage and marks operator_minimum_approved=false, preventing synthetic 1x payloads under fixed 5x/5x profiles.
+- app/recommender.py:recommendation assembly — SAFE. OPERATOR_LEVERAGE_PROFILE_NOT_ACTIONABLE is carried as no_trade_reasons, not as blocks; status becomes no_trade only when no hard block exists.
+- app/recommender.py:recommendation-time margin cap — SAFE. max_margin_per_bot_usdt now prefers estimated_worst_case_margin_required_usdt.
+- app/ui/static/app.js:buildDetailsHtml — SAFE. no_trade_reasons are rendered as non-critical no_trade explanations; hard blocker list is deduplicated by message text to avoid duplicate BLOCK/RISK rows.
+- app/ui/static/index.html — SAFE. Cache key bumped to manual-ui-v34 to prevent stale JS.
+
+No new unsafe directional TP/SL, Buy/Sell, reduceOnly, kill-switch, PnL, ROI or risk:reward implementation bypassing app/trading_semantics.py was introduced by this patch.

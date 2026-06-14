@@ -65,7 +65,7 @@ def test_operator_min_leverage_is_not_unreachable_below_default_fee_floor(monkey
     assert params["economics"]["net_profit_bps"] >= 2.0
 
 
-def test_leverage_selector_keeps_unsafe_or_thin_edge_ideas_at_one_x() -> None:
+def test_leverage_selector_marks_unsafe_or_thin_edge_ideas_not_actionable_without_one_x_payload() -> None:
     leverage, note, diag = _select_operator_grid_leverage(
         direction="long",
         dir_strength=0.80,
@@ -79,9 +79,11 @@ def test_leverage_selector_keeps_unsafe_or_thin_edge_ideas_at_one_x() -> None:
         max_operator_leverage=5,
     )
 
-    assert leverage == 1
+    assert leverage == 5
     assert note == "insufficient_net_edge_for_operator_minimum"
     assert diag["projected_net_profit_bps_est"] == 1.0
+    assert diag["operator_minimum_approved"] is False
+    assert diag["not_actionable_reason"] == note
 
 
 def test_neutral_high_quality_range_can_use_operator_minimum_with_liq_checks_downstream(monkeypatch) -> None:

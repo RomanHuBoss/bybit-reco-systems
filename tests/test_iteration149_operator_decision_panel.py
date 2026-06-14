@@ -133,5 +133,5 @@ def test_details_panel_tooltips_explain_abbreviations_and_english_exchange_terms
 def test_static_asset_cache_key_bumped_after_decision_panel_update() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v33" in index
-    assert "app.js?v=manual-ui-v33" in index
+    assert "styles.css?v=manual-ui-v34" in index
+    assert "app.js?v=manual-ui-v34" in index

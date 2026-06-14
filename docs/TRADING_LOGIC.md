@@ -141,3 +141,17 @@ UI обязан показывать этот блок рядом с execution/l
 
 Canonical long/short/neutral exit mapping lives in `app.trading_semantics` and is also exposed to the operator API as `directional_exit_levels`. For `long`, Take Profit is above entry/reference and Stop Loss is below. For `short`, Take Profit is below entry/reference and Stop Loss is above. For `neutral` futures grid there is no single directional Take Profit; both outer bounds are kill-switch exits. Execution preflight validates this geometry fail-closed for directional grids.
 
+
+## Operator fixed-leverage no-trade semantics
+
+Runtime `min_leverage/max_leverage` is an operator profile, not a reason to publish a synthetic lower-leverage trade idea. For Bybit Linear USDT `futures_grid`, the recommender evaluates the active profile and records the target `selected_leverage` in `params.leverage_policy`.
+
+If the grid economics, volatility or signal quality cannot justify the active operator minimum (for example a fixed `5x/5x` profile), the row must become `no_trade` / `not_actionable` with `OPERATOR_LEVERAGE_PROFILE_NOT_ACTIONABLE`. It must not publish a new `1x` payload that later becomes `blocked` only because `1x < min_leverage`. Legacy/manual rows that already contain `1x` remain fail-closed at execution time through runtime leverage guards.
+
+Risk and UI semantics are separated:
+
+- `blocks` / `risk_report.rejection_reasons` are hard fail-closed blockers;
+- `risk_report.no_trade_reasons` explains soft non-actionability such as insufficient edge for the fixed leverage profile;
+- no_trade rows cannot be executed by the API and are rendered as "do not launch now", not as a Bybit/preflight hard block.
+
+Recommendation-time margin checks and `risk_report.capital_required_usdt` must prefer `estimated_worst_case_margin_required_usdt` over reference-price margin when worst-case grid-envelope fields are present.

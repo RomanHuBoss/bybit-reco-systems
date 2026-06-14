@@ -1003,6 +1003,25 @@ function buildTechPayload(it) {
   };
 }
 
+function riskReportMessageItem(item, fallbackCode, critical = true) {
+  if (item && typeof item === "object") {
+    return { code: item.code || fallbackCode, msg: item.msg || item.message || item.reason || "", critical };
+  }
+  return { code: fallbackCode, msg: String(item || ""), critical };
+}
+
+function uniqueBlockerItems(items) {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const msgKey = String(item?.msg || "").trim().toLowerCase();
+    const codeKey = String(item?.code || "").trim().toLowerCase();
+    const key = msgKey || `${codeKey}|${String(item?.critical ?? "")}`;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function buildDetailsHtml(it) {
   const reasons = it.reasons || {};
   const params = it.params || {};
@@ -1011,7 +1030,10 @@ function buildDetailsHtml(it) {
   const bybitValidation = it.bybit_plan_validation || {};
   const riskReport = params.risk_report || {};
   const riskReportRejected = Array.isArray(riskReport.rejection_reasons) ? riskReport.rejection_reasons : [];
+  const riskReportNoTradeReasons = Array.isArray(riskReport.no_trade_reasons) ? riskReport.no_trade_reasons : [];
   const riskReportWarnings = Array.isArray(riskReport.warnings) ? riskReport.warnings : [];
+  const normalizedRiskRejected = riskReportRejected.map(msg => riskReportMessageItem(msg, "RISK", true));
+  const normalizedNoTradeReasonItems = riskReportNoTradeReasons.map(msg => riskReportMessageItem(msg, "NO_TRADE", false));
   const bybitErrors = Array.isArray(bybitValidation.errors) ? bybitValidation.errors : [];
   const bybitWarnings = Array.isArray(bybitValidation.warnings) ? bybitValidation.warnings : [];
   const ov = buildOperatorValues(it);
@@ -1064,24 +1086,26 @@ function buildDetailsHtml(it) {
   const llmSummary = llmReview?.summary || llmReview?.error || "";
 
   const noTradeReasonItems = noTradeDecision && !explicitHardBlocked
-    ? [{
-        code: "NO_TRADE",
-        msg: noTradeDecisionMessage(it, scoreMeta),
-        critical: false,
-      }]
+    ? (normalizedNoTradeReasonItems.length
+      ? normalizedNoTradeReasonItems
+      : [{
+          code: "NO_TRADE",
+          msg: noTradeDecisionMessage(it, scoreMeta),
+          critical: false,
+        }])
     : [];
   const factorWarnings = riskReportWarnings.length
     ? []
     : (reasons.top_negative_factors || []).slice(0, 4).map(item => ({ code: "WARN", msg: item.msg || item.text || item.feature || "", critical: false }));
-  const blockerItems = [
+  const blockerItems = uniqueBlockerItems([
     ...blocks.map(b => ({ code: b.code || "BLOCK", msg: b.msg || "" , critical: true })),
-    ...riskReportRejected.map(msg => ({ code: "RISK", msg, critical: true })),
+    ...normalizedRiskRejected,
     ...bybitErrors.map(b => ({ code: b.code || "BYBIT", msg: b.msg || "", critical: true })),
     ...noTradeReasonItems,
-    ...riskReportWarnings.slice(0, 4).map(msg => ({ code: "WARN", msg, critical: false })),
+    ...riskReportWarnings.slice(0, 4).map(msg => riskReportMessageItem(msg, "WARN", false)),
     ...factorWarnings,
     ...bybitWarnings.slice(0, 4).map(b => ({ code: b.code || "BYBIT_WARN", msg: b.msg || "", critical: false })),
-  ].slice(0, 8);
+  ]).slice(0, 8);
   const blockersTitle = explicitHardBlocked
     ? "Фактическая причина блокировки / предупреждения"
     : noTradeDecision

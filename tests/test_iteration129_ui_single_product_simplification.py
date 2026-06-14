@@ -50,5 +50,5 @@ def test_subwindow_tables_hide_redundant_product_and_venue_dimensions() -> None:
 def test_static_asset_cache_key_bumped_after_single_product_ui_change() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v33" in index
-    assert "app.js?v=manual-ui-v33" in index
+    assert "styles.css?v=manual-ui-v34" in index
+    assert "app.js?v=manual-ui-v34" in index
