@@ -1,0 +1,13 @@
+# Static scan summary — no_trade next actions patch
+
+Scope: app/main.py, app/ui/static/app.js, app/ui/static/index.html, tests touched by cache-key update.
+
+Reviewed tokens: no_trade, operator_next_actions, signal_quality_too_low_for_operator_minimum, leverage, funding, volatility, trend, spread, blocked, recommended, TP, SL, side, Buy, Sell, reduceOnly.
+
+Findings:
+- app/main.py: SAFE. Advisory-only operator_next_actions extended to no_trade reasons and warnings. No status, launchability, guard threshold, Bybit side, TP/SL, PnL, ROI, risk:reward or execution semantics changed.
+- app/ui/static/app.js: SAFE. Existing renderer consumes backend operator_next_actions. No launch predicate changed.
+- app/ui/static/index.html: SAFE. Cache key bumped to v36.
+- tests: SAFE. Added no_trade regression and updated static cache-key expectations.
+
+No fail-open changes found.

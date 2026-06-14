@@ -94,5 +94,54 @@ def test_frontend_renders_next_actions_after_blockers_before_rank_diagnostics() 
 def test_static_asset_cache_key_bumped_after_next_actions_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v35" in index
-    assert "app.js?v=manual-ui-v35" in index
+    assert "styles.css?v=manual-ui-v36" in index
+    assert "app.js?v=manual-ui-v36" in index
+
+
+def test_no_trade_profile_reason_exposes_next_safe_actions(app_main) -> None:
+    rec = {
+        "rec_id": "profile-not-actionable-rec",
+        "ts": int(time.time()) - 20,
+        "ttl_sec": 600,
+        "status": "no_trade",
+        "bot_type": "futures_grid",
+        "venue": "linear",
+        "symbol": "FILUSDT",
+        "direction": "short",
+        "params": {
+            "leverage": 5,
+            "price_ref": 2.0,
+            "risk_report": {
+                "decision": "not_recommended",
+                "no_trade_reasons": [
+                    "идея не проходит текущий fixed leverage profile без ослабления risk policy; evaluated_leverage=5x, reason=signal_quality_too_low_for_operator_minimum"
+                ],
+                "warnings": [
+                    "издержки исполнения и adverse funding давят на net result",
+                    "сильный тренд ломает grid",
+                    "высокая волатильность повышает риск range break",
+                    "спред ухудшает fills",
+                ],
+            },
+        },
+        "reasons": {
+            "decision_layers": {
+                "final_status": "no_trade",
+                "execution_status": "not_actionable",
+                "no_trade_reasons": [
+                    {
+                        "code": "OPERATOR_LEVERAGE_PROFILE_NOT_ACTIONABLE",
+                        "msg": "reason=signal_quality_too_low_for_operator_minimum",
+                    }
+                ],
+            }
+        },
+    }
+
+    ctx = app_main._operator_decision_context_for_reco(rec, guard={"ok": True, "errors": [], "warnings": []})
+    codes = [item["code"] for item in ctx["operator_next_actions"]]
+
+    assert "DO_NOT_LAUNCH_PROFILE_NOT_ACTIONABLE" in codes
+    assert "WAIT_FOR_STRONGER_SIGNAL_OR_RANGE" in codes
+    assert "WAIT_FOR_LOWER_VOLATILITY" in codes
+    assert "ручной запуск" in ctx["operator_next_actions"][0]["detail"]

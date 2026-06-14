@@ -1148,11 +1148,39 @@ def _operator_next_actions_for_reco(
     error_codes = _guard_item_code_set(guard_errors)
     warning_codes = _guard_item_code_set(guard_warnings)
     params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+    reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
+    risk_report = params.get("risk_report") if isinstance(params.get("risk_report"), dict) else {}
+    decision_layers = reasons.get("decision_layers") if isinstance(reasons.get("decision_layers"), dict) else {}
     economics = _first_mapping(params.get("economics"), (params.get("trade_plan") or {}).get("economics") if isinstance(params.get("trade_plan"), dict) else {})
     direction = str(rec.get("direction") or "neutral").strip().lower()
     leverage = _finite_float_or_none(params.get("leverage"))
     liq_buffer = _finite_float_or_none(ctx.get("liquidation_buffer_pct"))
     liq_floor = OPERATOR_MIN_LIQUIDATION_BUFFER_PCT
+
+    def _item_text(item: Any) -> str:
+        if isinstance(item, dict):
+            return " ".join(str(item.get(key) or "") for key in ("code", "msg", "message", "reason", "note", "text", "feature"))
+        return str(item or "")
+
+    no_trade_reason_texts = [
+        _item_text(item)
+        for item in (risk_report.get("no_trade_reasons") if isinstance(risk_report.get("no_trade_reasons"), list) else [])
+    ]
+    no_trade_reason_texts.extend(
+        _item_text(item)
+        for item in (decision_layers.get("no_trade_reasons") if isinstance(decision_layers.get("no_trade_reasons"), list) else [])
+    )
+    risk_warning_texts = [
+        _item_text(item)
+        for item in (risk_report.get("warnings") if isinstance(risk_report.get("warnings"), list) else [])
+    ]
+    risk_warning_texts.extend(
+        _item_text(item)
+        for item in (reasons.get("top_negative_factors") if isinstance(reasons.get("top_negative_factors"), list) else [])
+    )
+    no_trade_blob = " ".join(no_trade_reason_texts).lower()
+    warning_blob = " ".join(risk_warning_texts).lower()
+    status_norm = str(rec.get("effective_status") or rec.get("status") or "").strip().lower()
 
     def add(code: str, title: str, detail: str, severity: str = "info") -> None:
         if any(item.get("code") == code for item in actions):
@@ -1216,11 +1244,69 @@ def _operator_next_actions_for_reco(
             "danger",
         )
 
+    if status_norm == "no_trade" and ("operator_leverage_profile_not_actionable" in no_trade_blob or "operator_minimum" in no_trade_blob):
+        lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущем fixed leverage profile"
+        add(
+            "DO_NOT_LAUNCH_PROFILE_NOT_ACTIONABLE",
+            "Не запускать при текущем fixed leverage profile",
+            f"Идея оценена на {lev_txt}, но не прошла операторский профиль без ослабления risk policy. Оставьте no_trade: ручной запуск такого grid будет обходом safety-gate.",
+            "warning",
+        )
+    if "signal_quality_too_low_for_operator_minimum" in no_trade_blob:
+        add(
+            "WAIT_FOR_STRONGER_SIGNAL_OR_RANGE",
+            "Ждать более сильного сигнала или range-режима",
+            "Для 5x-профиля текущая directional/range quality недостаточна. Нужна новая публикация с более сильным directional bias либо устойчивым боковиком; не повышайте статус вручную из-за высокого относительного ранга.",
+            "warning",
+        )
+    if "atr_too_high_for_operator_minimum" in no_trade_blob or "unsafe_volatility_or_execution_cost" in no_trade_blob or "высокая волатильность" in warning_blob:
+        add(
+            "WAIT_FOR_LOWER_VOLATILITY",
+            "Ждать снижения волатильности",
+            "Высокий ATR/volatility повышает риск range break и ликвидационного сценария для grid. Без новой публикации с меньшей волатильностью запуск оставлять no_trade.",
+            "warning",
+        )
+    if "insufficient_net_edge_for_operator_minimum" in no_trade_blob:
+        add(
+            "WAIT_FOR_WIDER_NET_EDGE",
+            "Ждать более широкой сеточной прибыли",
+            "Текущий net edge недостаточен для fixed leverage profile после fees, spread, slippage и funding. Нужен новый расчёт с лучшей экономикой, а не ручной запуск.",
+            "warning",
+        )
+    if "funding" in warning_blob or "издержки" in warning_blob:
+        add(
+            "CHECK_COSTS_AND_FUNDING_BEFORE_NEXT_PUBLICATION",
+            "Проверить costs/funding перед следующим запуском",
+            "Издержки исполнения и adverse funding давят на net result. Дождитесь свежего funding/cost snapshot; funding receipt не считать гарантированным edge.",
+            "info",
+        )
+    if "тренд" in warning_blob or "trend" in warning_blob:
+        add(
+            "AVOID_GRID_IN_STRONG_TREND",
+            "Не запускать grid против сильного тренда",
+            "Сильный тренд ломает сеточную гипотезу и может накапливать позицию против движения. Ждите ослабления trendiness или смены режима на range.",
+            "warning",
+        )
+    if "спред" in warning_blob or "spread" in warning_blob:
+        add(
+            "WAIT_FOR_TIGHTER_SPREAD",
+            "Ждать улучшения ликвидности",
+            "Широкий spread ухудшает fills и быстро съедает grid edge. Запускать только после свежей публикации с приемлемым execution-cost профилем.",
+            "info",
+        )
+
     if not actions and (guard_errors or guard_warnings):
         add(
             "READ_GUARD_AND_REFRESH",
             "Разобрать blocker и пересчитать",
             "Сохранена fail-closed проверка. Откройте технические подробности, устраните указанную причину и дождитесь свежей публикации, а не переводите blocked в recommended вручную.",
+            "info",
+        )
+    if not actions and status_norm == "no_trade" and (no_trade_reason_texts or risk_warning_texts):
+        add(
+            "KEEP_NO_TRADE_AND_REFRESH",
+            "Оставить no_trade и ждать свежей публикации",
+            "Причина не является технической ошибкой UI: идея не прошла launch-score/confidence/economics gates. Следующее безопасное действие — пересбор market snapshot и новая рекомендация, а не ручной запуск.",
             "info",
         )
 
