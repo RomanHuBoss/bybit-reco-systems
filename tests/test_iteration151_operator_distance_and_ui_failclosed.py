@@ -98,5 +98,5 @@ def test_operator_ui_normalizes_direction_labels_and_fails_closed_for_malformed_
 def test_static_asset_cache_key_bumped_after_distance_semantics_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v36" in index
-    assert "app.js?v=manual-ui-v36" in index
+    assert "styles.css?v=manual-ui-v37" in index
+    assert "app.js?v=manual-ui-v37" in index

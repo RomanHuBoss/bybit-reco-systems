@@ -1750,6 +1750,17 @@ async function loadStatus() {
 
 // ── recommendations ───────────────────────────────────────────────────────────
 
+function shouldAutoExpandDiagnostics(data, items, filters) {
+  const counts = (data && data.status_counts) || {};
+  const onlyActionableFilter = filters.showRecommended === true
+    && filters.showPending !== true
+    && filters.showBlocked !== true
+    && filters.showNoTrade !== true
+    && filters.showSuppressed !== true;
+  const nonActionableCount = Number(counts.pending || 0) + Number(counts.blocked || 0) + Number(counts.no_trade || 0);
+  return onlyActionableFilter && Array.isArray(items) && items.length === 0 && nonActionableCount > 0;
+}
+
 async function loadRecommendations() {
   const venue = "linear";
   const topN = Number($("topN").value || 50);
@@ -1761,6 +1772,7 @@ async function loadRecommendations() {
   const showBlocked     = $("showBlocked")?.checked ?? false;
   const showNoTrade     = $("showNoTrade")?.checked ?? false;
   const showSuppressed  = $("showSuppressed")?.checked ?? false;
+  const activeFilters = { showRecommended, showPending, showBlocked, showNoTrade, showSuppressed };
 
   if (venue) qs.set("venue", venue);
   qs.set("top_n", String(topN));
@@ -1789,6 +1801,14 @@ async function loadRecommendations() {
   body.innerHTML = "";
 
   const items = data.items || [];
+  if (shouldAutoExpandDiagnostics(data, items, activeFilters)) {
+    const counts = data.status_counts || {};
+    if ((Number(counts.pending || 0) > 0) && $("showPending")) $("showPending").checked = true;
+    if ((Number(counts.blocked || 0) > 0) && $("showBlocked")) $("showBlocked").checked = true;
+    if ((Number(counts.no_trade || 0) > 0) && $("showNoTrade")) $("showNoTrade").checked = true;
+    await loadRecommendations();
+    return;
+  }
   lastItems = items;
   uiScoreMetaById = computeUiScoreMetaMap(items);
   renderRecoTable(items);
@@ -1870,7 +1890,7 @@ function renderRecoTable(items) {
     if (shock && shock.state && shock.state !== "normal") {
       banner.innerHTML = `НЕТ ЗАПУСКАЕМЫХ: <b>${escapeHtml(shock.title || "Guard")}</b>. ${escapeHtml(shock.operator_note || "Новые входы заблокированы.")}`;
     } else {
-      banner.innerHTML = 'НЕТ ЗАПУСКАЕМЫХ: нет эффективных <b>recommended</b>/<b>active</b> по текущим фильтрам. <b>blocked</b> = жёсткий риск/Bybit/preflight-блокер; <b>no_trade</b> = запуск не прошёл launch-score/confidence/economics gates.';
+      banner.innerHTML = 'НЕТ ЗАПУСКАЕМЫХ: нет эффективных <b>recommended</b>/<b>active</b> по текущим фильтрам. Если запускных строк нет, UI автоматически раскрывает диагностические <b>pending</b>/<b>blocked</b>/<b>no_trade</b> строки. <b>blocked</b> = жёсткий риск/Bybit/preflight-блокер; <b>no_trade</b> = запуск не прошёл launch-score/confidence/economics gates.';
     }
     banner.classList.remove("hidden");
   } else {

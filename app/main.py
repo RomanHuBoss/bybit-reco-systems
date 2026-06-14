@@ -1228,6 +1228,14 @@ def _operator_next_actions_for_reco(
             "warning",
         )
 
+    if "FUNDING_RATE_UNKNOWN" in error_codes:
+        add(
+            "REFRESH_FUNDING_RATE_SNAPSHOT",
+            "Обновить funding rate",
+            "Для Linear USDT futures funding rate является обязательной частью net-edge. Перезапустите collector/Bybit ticker сбор, проверьте свежесть funding_rate и дождитесь новой публикации; запуск без funding остаётся fail-closed.",
+            "warning",
+        )
+
     if "FUNDING_INTERVAL_UNCONFIRMED" in error_codes or "FUNDING_SNAPSHOT_STALE" in error_codes or "EXECUTION_FUNDING_WORSE_THAN_PUBLICATION" in error_codes:
         add(
             "REFRESH_FUNDING_AND_RECOMMENDER",
@@ -1293,6 +1301,28 @@ def _operator_next_actions_for_reco(
             "Ждать улучшения ликвидности",
             "Широкий spread ухудшает fills и быстро съедает grid edge. Запускать только после свежей публикации с приемлемым execution-cost профилем.",
             "info",
+        )
+
+    if "INSUFFICIENT_MTF_HISTORY_FOR_GRID" in error_codes:
+        add(
+            "WAIT_FOR_MTF_HISTORY",
+            "Дождаться закрытых MTF-свечей",
+            "Futures grid не публикуется без минимум 3 закрытых таймфреймов. Продолжайте сбор OHLCV и дождитесь новой публикации; не заполняйте MTF вручную будущими/неполными свечами.",
+            "info",
+        )
+    if "RANGE_EDGE_TOO_WEAK_FOR_GRID" in error_codes or "MARKET_TOO_TRENDY_FOR_GRID" in error_codes:
+        add(
+            "WAIT_FOR_RANGE_REGIME",
+            "Ждать range-режима",
+            "Текущий рынок слишком трендовый или range-edge слабый для grid. Без нового market snapshot с устойчивым диапазоном запуск оставлять blocked/no_trade.",
+            "warning",
+        )
+    if "LIQUIDITY_UNKNOWN" in error_codes or "LIQUIDITY_TOO_LOW" in error_codes or "LIQUIDITY_LOW_FUTURES" in error_codes:
+        add(
+            "WAIT_FOR_CONFIRMED_LIQUIDITY",
+            "Проверить ликвидность",
+            "Turnover/spread/liquidity не подтверждают безопасный futures grid. Дождитесь свежих ticker/liquidity данных или исключите символ из executable universe.",
+            "warning",
         )
 
     if not actions and (guard_errors or guard_warnings):
