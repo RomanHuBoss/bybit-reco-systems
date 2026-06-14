@@ -1924,6 +1924,82 @@ def _mode(venue: str, direction: str) -> tuple[str, str]:
     return venue, "default"
 
 
+def _adaptive_grid_leverage_from_quality(
+    *,
+    min_leverage: int,
+    max_leverage: int,
+    setup_quality: float,
+    projected_net_bps: float,
+    atr_pct: float,
+    execution_cost_bps: float,
+) -> tuple[int, dict[str, Any]]:
+    """Return a conservative leverage inside the operator-approved interval.
+
+    The operator interval is not a permission to always use the top leverage.
+    Promotion above the minimum requires three independent conditions:
+    signal/range quality, net edge after execution/funding costs, and low ATR.
+    Execution/preflight liquidation and risk caps still run downstream.
+    """
+    min_lev = max(1, int(min_leverage or 1))
+    max_lev = max(min_lev, int(max_leverage or min_lev))
+    span = max(0, max_lev - min_lev)
+    setup_quality = _clamp(float(setup_quality or 0.0), 0.0, 1.0)
+    projected_net_bps = float(projected_net_bps or 0.0)
+    atr_pct = max(0.0, float(atr_pct or 0.0))
+    execution_cost_bps = max(0.0, float(execution_cost_bps or 0.0))
+
+    # Quality is intentionally conservative: high leverage needs a setup that is
+    # simultaneously good, economically thick after costs, low-volatility and not
+    # execution-cost stressed. This only selects within an already-approved
+    # operator interval; it never bypasses lower/higher runtime guards.
+    edge_quality = _clamp((projected_net_bps - 2.0) / 8.0, 0.0, 1.0)
+    volatility_quality = _clamp((0.025 - atr_pct) / 0.020, 0.0, 1.0)
+    execution_quality = _clamp((45.0 - execution_cost_bps) / 30.0, 0.0, 1.0)
+    adaptive_quality_score = _clamp(
+        0.45 * setup_quality + 0.35 * edge_quality + 0.15 * volatility_quality + 0.05 * execution_quality,
+        0.0,
+        1.0,
+    )
+
+    selected = min_lev
+    accepted_promotions: list[dict[str, Any]] = []
+    rejected_promotions: list[dict[str, Any]] = []
+    for lev in range(min_lev + 1, max_lev + 1):
+        frac = (lev - min_lev) / max(1, span)
+        required_quality = 0.58 + 0.22 * frac
+        required_net_bps = 3.0 + 4.0 * frac
+        required_atr_pct = 0.023 - 0.006 * frac
+        passed = (
+            adaptive_quality_score >= required_quality
+            and projected_net_bps >= required_net_bps
+            and atr_pct <= required_atr_pct
+        )
+        row = {
+            "leverage": int(lev),
+            "interval_fraction": float(frac),
+            "required_quality_score": float(required_quality),
+            "required_projected_net_profit_bps": float(required_net_bps),
+            "required_max_atr_pct": float(required_atr_pct),
+            "passed": bool(passed),
+        }
+        if passed:
+            selected = lev
+            accepted_promotions.append(row)
+        else:
+            rejected_promotions.append(row)
+
+    return int(selected), {
+        "interval_mode": "fixed" if span == 0 else "adaptive",
+        "adaptive_quality_score": float(adaptive_quality_score),
+        "setup_quality": float(setup_quality),
+        "edge_quality": float(edge_quality),
+        "volatility_quality": float(volatility_quality),
+        "execution_quality": float(execution_quality),
+        "accepted_leverage_promotions": accepted_promotions,
+        "rejected_leverage_promotions": rejected_promotions,
+    }
+
+
 def _select_operator_grid_leverage(
     *,
     direction: str,
@@ -1936,6 +2012,7 @@ def _select_operator_grid_leverage(
     gross_profit_bps_est: float,
     min_operator_leverage: int,
     max_operator_leverage: int,
+    liquidation_safe_max_leverage: int | None = None,
 ) -> tuple[int, str, dict[str, Any]]:
     """Choose the recommendation leverage used by the grid payload.
 
@@ -1947,11 +2024,23 @@ def _select_operator_grid_leverage(
     get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 5x.
 
     Leverage selection must be based on *net grid edge after costs*, not on a
-    hard-coded cost ceiling that can be below the configured fee floor.
+    hard-coded cost ceiling that can be below the configured fee floor. When the
+    operator sets an interval such as 3x..5x, the minimum remains the base
+    actionable leverage and promotion toward the maximum is adaptive: higher
+    leverage requires stronger setup quality, thicker net edge and lower ATR.
     """
     min_lev = max(1, int(min_operator_leverage or 1))
     max_lev = max(1, int(max_operator_leverage or min_lev))
-    target_leverage = max(1, min(max_lev, min_lev))
+    if max_lev < min_lev:
+        max_lev = min_lev
+
+    liq_safe_max = None
+    if liquidation_safe_max_leverage is not None:
+        try:
+            liq_safe_max = max(1, int(liquidation_safe_max_leverage))
+        except Exception:
+            liq_safe_max = None
+    effective_max_lev = max_lev if liq_safe_max is None else max(min_lev, min(max_lev, liq_safe_max))
 
     dir_norm = str(direction or "neutral").strip().lower()
     dir_strength = _clamp(float(dir_strength or 0.0), 0.0, 1.0)
@@ -1963,10 +2052,25 @@ def _select_operator_grid_leverage(
     gross_bps = max(0.0, float(gross_profit_bps_est or 0.0))
     projected_net_bps = gross_bps - exec_bps - funding_bps
 
+    directional_setup_quality = dir_strength if dir_norm in {"long", "short"} else 0.0
+    neutral_setup_quality = range_score * (1.0 - min(0.75, trendiness * 0.75)) if dir_norm == "neutral" else 0.0
+    setup_quality = _clamp(max(directional_setup_quality, neutral_setup_quality), 0.0, 1.0)
+    selected_leverage, adaptive_diag = _adaptive_grid_leverage_from_quality(
+        min_leverage=min_lev,
+        max_leverage=effective_max_lev,
+        setup_quality=setup_quality,
+        projected_net_bps=projected_net_bps,
+        atr_pct=atr_pct,
+        execution_cost_bps=exec_bps,
+    )
+
     diagnostics = {
         "min_operator_leverage": int(min_lev),
         "max_operator_leverage": int(max_lev),
-        "target_leverage": int(target_leverage),
+        "effective_max_operator_leverage": int(effective_max_lev),
+        "liquidation_safe_max_leverage": int(liq_safe_max) if liq_safe_max is not None else None,
+        "target_leverage": int(selected_leverage),
+        "selected_leverage": int(selected_leverage),
         "direction": dir_norm,
         "direction_bias_strength": float(dir_strength),
         "range_score": float(range_score),
@@ -1977,12 +2081,15 @@ def _select_operator_grid_leverage(
         "funding_cost_bps": float(funding_bps),
         "projected_net_profit_bps_est": float(projected_net_bps),
         "min_projected_net_profit_bps": 2.0,
+        "directional_setup_quality": float(directional_setup_quality),
+        "neutral_setup_quality": float(neutral_setup_quality),
+        **adaptive_diag,
     }
 
     def _approve(note: str) -> tuple[int, str, dict[str, Any]]:
         diagnostics["operator_minimum_approved"] = True
         diagnostics["not_actionable_reason"] = None
-        return int(target_leverage), note, diagnostics
+        return int(selected_leverage), note, diagnostics
 
     def _decline(note: str) -> tuple[int, str, dict[str, Any]]:
         # Do not publish a synthetic 1x payload under a fixed higher operator
@@ -1991,9 +2098,9 @@ def _select_operator_grid_leverage(
         # against.  Legacy 1x rows remain blocked by execution-time guards.
         diagnostics["operator_minimum_approved"] = False
         diagnostics["not_actionable_reason"] = note
-        return int(target_leverage), note, diagnostics
+        return int(selected_leverage), note, diagnostics
 
-    if target_leverage <= 1:
+    if min_lev <= 1 and max_lev <= 1:
         return _approve("operator_minimum_is_one")
     if atr_pct >= 0.05 or exec_bps >= 45.0:
         return _decline("unsafe_volatility_or_execution_cost")
@@ -2007,8 +2114,71 @@ def _select_operator_grid_leverage(
     diagnostics["directional_quality"] = bool(directional_quality)
     diagnostics["neutral_range_quality"] = bool(neutral_range_quality)
     if directional_quality or neutral_range_quality:
-        return _approve("operator_minimum_selected")
+        if min_lev == max_lev or selected_leverage == min_lev:
+            return _approve("operator_minimum_selected")
+        return _approve("adaptive_interval_selected")
     return _decline("signal_quality_too_low_for_operator_minimum")
+
+
+def _max_liquidation_safe_grid_leverage(
+    *,
+    direction: str,
+    reference_price: float,
+    adverse_long_price: float,
+    adverse_short_price: float,
+    min_leverage: int,
+    max_leverage: int,
+    min_buffer_pct: float = 12.0,
+) -> int | None:
+    """Highest leverage in the operator interval passing approximate liq buffer.
+
+    This is only a pre-selector clamp. The normal economics/risk/preflight checks
+    still recompute and block fail-closed if the final payload violates the
+    liquidation-buffer floor.
+    """
+    try:
+        price = float(reference_price)
+    except Exception:
+        return None
+    if not math.isfinite(price) or price <= 0.0:
+        return None
+    min_lev = max(1, int(min_leverage or 1))
+    max_lev = max(min_lev, int(max_leverage or min_lev))
+    dir_norm = str(direction or "neutral").strip().lower()
+
+    def _side_buffer(side: str, lev: int) -> float | None:
+        liq = estimate_linear_liq_price(side, price, lev)
+        if liq is None:
+            return None
+        adverse = adverse_long_price if side == "long" else adverse_short_price
+        try:
+            adverse_f = float(adverse)
+        except Exception:
+            return None
+        if not math.isfinite(adverse_f) or adverse_f <= 0.0:
+            return None
+        return liquidation_buffer_pct(side, adverse_f, liq)
+
+    safe: int | None = None
+    for lev in range(min_lev, max_lev + 1):
+        if dir_norm == "neutral":
+            buffers = [_side_buffer("long", lev), _side_buffer("short", lev)]
+            if any(x is None for x in buffers):
+                continue
+            worst = min(float(x) for x in buffers if x is not None)
+        elif dir_norm in {"long", "short"}:
+            buf = _side_buffer(dir_norm, lev)
+            if buf is None:
+                continue
+            worst = float(buf)
+        else:
+            buffers = [_side_buffer("long", lev), _side_buffer("short", lev)]
+            if any(x is None for x in buffers):
+                continue
+            worst = min(float(x) for x in buffers if x is not None)
+        if worst >= float(min_buffer_pct):
+            safe = lev
+    return safe
 
 
 def _params(
@@ -2270,6 +2440,15 @@ def _params(
 
         gross_profit_bps_est = float(actual_grid_spacing_pct_frac * 10000.0 * 0.70)
         trendiness = _clamp(float(agg.get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
+        liquidation_safe_max_leverage = _max_liquidation_safe_grid_leverage(
+            direction=direction,
+            reference_price=price,
+            adverse_long_price=adverse_long_ref,
+            adverse_short_price=adverse_short_ref,
+            min_leverage=min_operator_leverage,
+            max_leverage=max_operator_leverage,
+            min_buffer_pct=12.0,
+        )
         leverage, leverage_policy_note, leverage_policy_diag = _select_operator_grid_leverage(
             direction=direction,
             dir_strength=dir_strength,
@@ -2281,6 +2460,7 @@ def _params(
             gross_profit_bps_est=gross_profit_bps_est,
             min_operator_leverage=min_operator_leverage,
             max_operator_leverage=max_operator_leverage,
+            liquidation_safe_max_leverage=liquidation_safe_max_leverage,
         )
         params["leverage"] = int(leverage)
         params["margin_mode"] = "isolated"
