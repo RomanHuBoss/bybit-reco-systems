@@ -2010,15 +2010,115 @@ def _params(
     cost_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cost_model = dict(cost_model or {})
-    price = float(f.get("price") or 0.0)
-    if price <= 0:
-        price = 1.0
+    price_input = _finite_or_none(f.get("price"))
+    price_input_valid = price_input is not None and price_input > 0.0
+    price = float(price_input) if price_input_valid else 0.0
 
-    atr_pct = float(atr_pct_for_grid or f.get("atr_pct") or 0.0)
-    atr_pct = max(atr_pct, 0.0015)
+    atr_raw = _finite_or_none(atr_pct_for_grid)
+    if atr_raw is None:
+        atr_raw = _finite_or_none(f.get("atr_pct"))
+    atr_pct = max(float(atr_raw or 0.0), 0.0015)
     agg = dict(f.get("_direction_agg") or {})
     range_score, _ = _stable_range_score(f, agg)
-    dir_strength = _clamp(abs(float(direction_bias_strength or 0.0)), 0.0, 1.0)
+    dir_strength = _clamp(abs(_finite_float(direction_bias_strength, 0.0)), 0.0, 1.0)
+
+    if not price_input_valid:
+        # Fail closed on missing/non-positive/non-finite market price.  A synthetic
+        # $1 reference price is dangerous for linear futures because it can create
+        # apparently valid TP/SL, liquidation and min-notional geometry for an
+        # instrument whose live price was actually unavailable.
+        funding_cost_bps_for_spacing = max(0.0, _finite_float(cost_model.get("expected_funding_bps"), 0.0))
+        execution_cost_bps = max(
+            0.0,
+            _finite_float(
+                cost_model.get("total_cost_bps")
+                or cost_model.get("execution_cost_bps")
+                or max(0.0, _finite_float(taker_fee_bps, 0.0) * 2.0),
+                0.0,
+            ),
+        )
+        params: dict[str, Any] = {
+            "bot_type": bot_type,
+            "venue": venue,
+            "direction": direction,
+            "direction_bias": direction_bias,
+            "direction_bias_strength": float(dir_strength),
+            "effective_sentiment": float(_clamp(_finite_float(global_sent, 0.0), -1.0, 1.0)),
+            "price_input_valid": False,
+            "invalid_price_fail_closed": True,
+            "price_ref": 0.0,
+            "price_range_lower": 0.0,
+            "price_range_upper": 0.0,
+            "range_span_pct_total": 0.0,
+            "grid_spacing_pct": 0.0,
+            "actual_grid_step_abs": 0.0,
+            "actual_grid_spacing_pct": 0.0,
+            "economic_min_grid_spacing_pct": 0.0,
+            "grid_spacing_cost_floor_bps": float(execution_cost_bps + funding_cost_bps_for_spacing),
+            "grid_spacing_funding_cost_bps": float(funding_cost_bps_for_spacing),
+            "grid_density_economic_cost_bps": float(execution_cost_bps + funding_cost_bps_for_spacing),
+            "grid_geometry_model": "invalid_price_fail_closed",
+            "grid_type": "arithmetic",
+            "grid_count": 0,
+            "grid_levels": 0,
+            "label_horizon_hours": int(BOT_HORIZONS.get(bot_type, 12 * 3600) // 3600),
+            "cost_model": dict(cost_model),
+            "leverage": 1,
+            "margin_mode": "isolated",
+            "leverage_policy": {
+                "min_operator_leverage": 1,
+                "max_operator_leverage": 1,
+                "selected_leverage": 1,
+                "note": "invalid_price_fail_closed",
+                "diagnostics": {"price_input_valid": False},
+            },
+            "economics": {
+                "step_abs": 0.0,
+                "gross_profit_bps": 0.0,
+                "execution_cost_bps": float(execution_cost_bps),
+                "expected_funding_bps": _finite_float(cost_model.get("expected_funding_bps"), 0.0),
+                "funding_cost_bps": float(funding_cost_bps_for_spacing),
+                "funding_benefit_excluded_bps": 0.0,
+                "net_profit_bps": 0.0,
+                "net_profit_with_signed_funding_bps": 0.0,
+                "gross_profit_usdt": 0.0,
+                "execution_cost_usdt": 0.0,
+                "expected_funding_usdt": 0.0,
+                "funding_cost_usdt": 0.0,
+                "funding_benefit_excluded_usdt": 0.0,
+                "net_profit_usdt": 0.0,
+                "net_profit_with_signed_funding_usdt": 0.0,
+                "breakeven": False,
+                "order_notional_usdt": 0.0,
+                "qty_per_order": 0.0,
+                "grid_type": "arithmetic",
+                "grid_count": 0,
+                "estimated_active_orders": 0,
+                "estimated_total_order_notional_usdt": 0.0,
+                "estimated_margin_required_usdt": 0.0,
+                "estimated_max_position_notional_usdt": 0.0,
+                "estimated_liquidation_price": None,
+                "liquidation_buffer_pct_reference": None,
+                "liquidation_buffer_pct_adverse_boundary": None,
+                "liquidation_buffer_adverse_boundary_price": None,
+                "liquidation_buffer_pct": None,
+                "liquidation_model": "invalid_price_fail_closed",
+                "risk_profile": "blocked",
+            },
+            "sizing": {
+                "basis": "invalid_price_fail_closed",
+                "order_notional_usdt": 0.0,
+                "qty_per_order": 0.0,
+                "grid_type": "arithmetic",
+                "grid_count": 0,
+                "estimated_active_orders": 0,
+                "estimated_total_order_notional_usdt": 0.0,
+                "estimated_margin_required_usdt": 0.0,
+                "exchange_filter_assumption": {"mode": "invalid_price"},
+                "note": "Market reference price is missing/non-positive/non-finite; no actionable Bybit grid sizing is published.",
+            },
+        }
+        return _sanitize_json_numbers(params)
 
     execution_cost_bps = max(
         0.0,
@@ -2115,7 +2215,9 @@ def _params(
         "direction": direction,
         "direction_bias": direction_bias,
         "direction_bias_strength": float(dir_strength),
-        "effective_sentiment": float(_clamp(float(global_sent), -1.0, 1.0)),
+        "effective_sentiment": float(_clamp(_finite_float(global_sent, 0.0), -1.0, 1.0)),
+        "price_input_valid": True,
+        "invalid_price_fail_closed": False,
         "price_ref": _round_price(price, decimals=10),
         "price_range_lower": _round_price(lower, decimals=10),
         "price_range_upper": _round_price(upper, decimals=10),
@@ -3392,6 +3494,11 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 atr_pct_for_grid=f.get("_atr_pct_1h"),
                 cost_model=cost_model,
             )
+            if params.get("price_input_valid") is False:
+                blocks.append({
+                    "code": "INVALID_MARKET_REFERENCE_PRICE",
+                    "msg": "market reference price is missing/non-positive/non-finite; futures-grid recommendation is blocked fail-closed",
+                })
             # Add execution guide for UI "Details" panel.
             params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params, cost_model=cost_model)
             params["operator_sheet"] = {

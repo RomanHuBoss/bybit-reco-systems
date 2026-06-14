@@ -118,3 +118,25 @@ def test_recommender_params_sanitize_nonfinite_atr_before_grid_geometry() -> Non
     assert params["price_range_upper"] is not None
     assert params["price_range_upper"] > params["price_range_lower"] > 0
     _assert_no_nonfinite_numbers(_sanitize_json_numbers(params))
+
+
+def test_invalid_price_params_publish_no_actionable_economics_or_leverage_policy() -> None:
+    params = _params(
+        "futures_grid",
+        "linear",
+        _feature(None),
+        global_sent=0.75,
+        direction="long",
+        taker_fee_bps=5.5,
+        direction_bias="long",
+        direction_bias_strength=0.95,
+        atr_pct_for_grid=0.02,
+        cost_model=_cost_model(),
+    )
+
+    assert params["price_input_valid"] is False
+    assert params["leverage_policy"]["note"] == "invalid_price_fail_closed"
+    assert params["economics"]["breakeven"] is False
+    assert params["economics"]["estimated_max_position_notional_usdt"] == 0.0
+    assert params["sizing"]["qty_per_order"] == 0.0
+    assert params["grid_geometry_model"] == "invalid_price_fail_closed"
