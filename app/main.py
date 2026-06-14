@@ -588,6 +588,116 @@ def _merge_bybit_operator_guard_into_ui_payload(out: dict[str, Any], guard: dict
     out["reasons"] = reasons
 
 
+def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) -> dict[str, Any]:
+    """Conservative quantity context for directional TP/SL math.
+
+    The UI should not imply that gross TP/SL PnL is for one coin when the
+    recommendation already carries total grid exposure. Prefer explicit total
+    position qty, then derive qty from total notional/reference price, then fall
+    back to qty_per_order * grid_count, and finally to a single leg qty.
+    """
+    if not isinstance(rec, dict):
+        return {"qty": None, "qty_source": None}
+    params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+    plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
+
+    def finite(value: Any) -> float | None:
+        try:
+            num = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(num) or num <= 0:
+            return None
+        return float(num)
+
+    def find_first(mappings: list[Any], keys: tuple[str, ...]) -> tuple[str | None, float | None]:
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            for key in keys:
+                if key not in mapping:
+                    continue
+                value = finite(mapping.get(key))
+                if value is not None:
+                    return key, value
+        return None, None
+
+    sizing_maps: list[Any] = [
+        plan.get("sizing"),
+        params.get("sizing"),
+        operator_sheet.get("sizing") if isinstance(operator_sheet, dict) else None,
+        plan.get("economics"),
+        params.get("economics"),
+        operator_sheet.get("economics") if isinstance(operator_sheet, dict) else None,
+        params.get("risk_report"),
+        plan.get("risk_report"),
+        params,
+        plan,
+    ]
+    total_qty_keys = (
+        "estimated_position_qty",
+        "position_qty",
+        "total_qty",
+        "estimated_total_qty",
+        "max_position_qty",
+        "estimated_max_position_qty",
+    )
+    key, qty = find_first(sizing_maps, total_qty_keys)
+    if qty is not None:
+        return {"qty": qty, "qty_source": key}
+
+    ref = finite(reference_price)
+    total_notional_keys = (
+        "estimated_max_position_notional_usdt",
+        "max_position_notional_usdt",
+        "estimated_total_order_notional_usdt",
+        "total_order_notional_usdt",
+        "position_notional_usdt",
+        "notional_usdt",
+    )
+    if ref is not None:
+        key, notional = find_first(sizing_maps, total_notional_keys)
+        if notional is not None:
+            return {"qty": float(notional) / float(ref), "qty_source": f"{key}/reference_price"}
+
+    per_order_qty_keys = (
+        "qty_per_order",
+        "order_qty",
+        "qty",
+        "qty_per_leg",
+        "base_qty_per_order",
+        "base_qty",
+        "order_size_qty",
+        "leg_qty",
+    )
+    key, per_order_qty = find_first(sizing_maps, per_order_qty_keys)
+    if per_order_qty is not None:
+        grid_count = _safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(plan.get("grid_count")) or _safe_int_or_none(params.get("grid_levels"))
+        if grid_count is not None and grid_count > 1:
+            return {"qty": float(per_order_qty) * float(grid_count), "qty_source": f"{key}*grid_count"}
+        return {"qty": per_order_qty, "qty_source": key}
+
+    if ref is not None:
+        key, notional = find_first(
+            sizing_maps,
+            (
+                "order_notional_usdt",
+                "order_notional",
+                "notional_per_order",
+                "quote_qty",
+                "quote_amount",
+                "capital_per_leg_usdt",
+                "investment_per_grid",
+                "usdt_per_order",
+            ),
+        )
+        if notional is not None:
+            return {"qty": float(notional) / float(ref), "qty_source": f"{key}/reference_price"}
+
+    return {"qty": None, "qty_source": None}
+
+
 def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
     ctx = _trade_plan_price_context(rec)
     levels = directional_exit_levels(
@@ -598,6 +708,9 @@ def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
     direction = str(levels.get("direction") or "neutral").strip().lower()
     reference_price = ctx.get("reference_price")
     levels["reference_price"] = reference_price
+    qty_context = _directional_exit_qty_for_reco(rec, reference_price)
+    levels["qty"] = qty_context.get("qty")
+    levels["qty_source"] = qty_context.get("qty_source")
     levels["trade_math"] = None
     levels["bybit_protective_orders"] = {}
     if direction in {"long", "short"}:
@@ -614,6 +727,7 @@ def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
             reference_price,
             levels.get("take_profit"),
             levels.get("stop_loss"),
+            qty_context.get("qty") or 1.0,
         )
         if math_payload is not None:
             math_dict = math_payload.as_dict()

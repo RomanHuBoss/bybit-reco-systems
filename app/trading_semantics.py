@@ -357,15 +357,20 @@ def bybit_linear_protective_order_plan(
     trigger = _finite_float(trigger_price)
     ref = _finite_float(reference_price)
     geometry_errors: list[dict[str, str]] = []
-    if ref is not None:
+    if ref is None or ref <= 0:
+        geometry_errors.append({
+            "code": "PROTECTIVE_REFERENCE_PRICE_INVALID",
+            "msg": "protective TP/SL requires a positive finite reference price to prove the trigger is on the correct side of entry.",
+        })
+        if trigger is None or trigger <= 0:
+            geometry_errors.append({"code": "PROTECTIVE_TRIGGER_PRICE_INVALID", "msg": "protective TP/SL requires a positive finite trigger price."})
+    else:
         geometry_errors = validate_protective_trigger_geometry(
             semantics["direction"],
             semantics["exit_kind"],
             ref,
             trigger,
         )
-    elif trigger is None or trigger <= 0:
-        geometry_errors = [{"code": "PROTECTIVE_TRIGGER_PRICE_INVALID", "msg": "protective TP/SL requires a positive finite trigger price."}]
 
     plan = dict(semantics)
     plan.update({
