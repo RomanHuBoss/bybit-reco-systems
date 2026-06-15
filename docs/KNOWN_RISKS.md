@@ -86,3 +86,7 @@ Auto-generated operator payloads are now snapped conservatively against Bybit me
 The shipped leverage profile is now an adaptive interval (`min_leverage=3`, `max_leverage=5`). The recommender treats ideas that cannot justify that active interval as `no_trade` / `not_actionable` instead of emitting a synthetic `1x` recommendation and letting it appear as a runtime leverage block. This does not weaken execution safety: legacy/manual `1x` rows remain blocked by execution-time leverage guards, and `no_trade` rows are not executable.
 
 Residual limitation: the service still does not know the operator's actual wallet balance or live liquidation state; external execution/reconciliation must re-check leverage, margin, available balance and Bybit account state immediately before creating any real bot.
+
+## 2026-06-15 execution-preflight liquidation boundary hardening
+
+Execution preflight now recomputes the leverage liquidation-buffer gate against the adverse grid/kill-switch boundary when `leverage > 1`, and takes the minimum of this recomputed value and any supplied `params.economics.liquidation_buffer_pct`. This prevents a manually edited or legacy payload from passing only because the reference-price buffer looks safe while the boundary-side buffer is already below the operator floor. The exact liquidation price still remains an approximation and must be rechecked by an external execution/reconciliation layer with live account data.

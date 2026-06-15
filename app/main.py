@@ -3110,18 +3110,33 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     # accumulate either long or short as the range is traversed.
     if leverage is not None and venue == "linear" and leverage > 1:
         economics = params.get("economics") if isinstance(params.get("economics"), dict) else {}
-        liq_buffer_pct = _finite_float_or_none(economics.get("liquidation_buffer_pct"))
-        if liq_buffer_pct is None and reference_price is not None:
-            candidate_buffers: list[float] = []
+        supplied_liq_buffer_pct = _finite_float_or_none(economics.get("liquidation_buffer_pct"))
+        candidate_buffers: list[float] = []
+        if reference_price is not None:
             sides = ("long", "short") if direction == "neutral" else (direction,)
             for side in sides:
                 estimated = estimate_linear_liq_price(side, reference_price, leverage)
                 liq = float(estimated) if estimated is not None else None
-                buf = liquidation_buffer_pct(side, reference_price, liq) if liq is not None else None
+                if liq is None:
+                    continue
+                # A reference-price buffer can look safe while the grid/kill-switch
+                # adverse boundary is already too close to the approximate liq price.
+                # Execution validation therefore recomputes the same worst-boundary
+                # semantics used by generated recommendations instead of trusting a
+                # manually supplied economics field.
+                adverse_reference = None
+                if side == "long":
+                    adverse_reference = lower_ks if lower_ks is not None else lower
+                elif side == "short":
+                    adverse_reference = upper_ks if upper_ks is not None else upper
+                if adverse_reference is None:
+                    adverse_reference = reference_price
+                buf = liquidation_buffer_pct(side, adverse_reference, liq)
                 if buf is not None:
                     candidate_buffers.append(float(buf))
-            if candidate_buffers:
-                liq_buffer_pct = min(candidate_buffers)
+        if supplied_liq_buffer_pct is not None:
+            candidate_buffers.append(float(supplied_liq_buffer_pct))
+        liq_buffer_pct = min(candidate_buffers) if candidate_buffers else None
         if liq_buffer_pct is None:
             warnings.append({
                 "code": "LIQUIDATION_BUFFER_NOT_ESTIMATED",
