@@ -2347,21 +2347,28 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
 
     effective_limits = normalize_risk_limits(limits, limits)
     params, plan = _rec_params_and_plan(rec)
+    operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
     sizing_maps: list[Any] = [
         params.get("sizing"),
         plan.get("sizing"),
+        operator_sheet.get("sizing"),
         params.get("economics"),
         plan.get("economics"),
+        operator_sheet.get("economics"),
         params.get("risk_report"),
         plan.get("risk_report"),
+        operator_sheet.get("risk_report"),
         params,
         plan,
+        operator_sheet,
     ]
 
     blocks: list[dict[str, Any]] = []
     leverage = _finite_float_or_none(params.get("leverage"))
     if leverage is None:
         leverage = _finite_float_or_none(plan.get("leverage"))
+    if leverage is None:
+        leverage = _finite_float_or_none(operator_sheet.get("leverage"))
 
     if leverage is None:
         blocks.append({
