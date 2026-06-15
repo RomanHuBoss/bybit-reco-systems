@@ -2593,12 +2593,16 @@ def _execution_market_data_blocks(conn, rec: dict[str, Any], *, now_ts: int | No
 
 
 def _trade_plan_price_context(rec: dict[str, Any]) -> dict[str, Any]:
-    """Достаёт ценовой контекст trade_plan в едином виде для preflight.
+    """Достаёт ценовой контекст trade_plan в едином виде для preflight/UI.
 
     В execution-time проверках нельзя повторять парсинг JSON руками в нескольких
     местах: любое расхождение между Bybit-валидацией и live-price guard создаёт
     окно, где один слой считает сетку допустимой, а другой уже не видит её
     границы. Helper намеренно возвращает только finite-числа или None.
+
+    ``params.operator_sheet`` остаётся fallback-источником только для чтения
+    legacy/operator display context. Отсутствующий полный ``trade_plan`` всё равно
+    блокируется strict execution-preflight через ``TRADE_PLAN_MISSING``.
     """
     params = rec.get("params") if isinstance(rec, dict) else {}
     if not isinstance(params, dict):
@@ -2609,6 +2613,10 @@ def _trade_plan_price_context(rec: dict[str, Any]) -> dict[str, Any]:
     kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
     grid_step = levels.get("grid_step") if isinstance(levels.get("grid_step"), dict) else {}
     tp_per_leg = levels.get("tp_per_leg") if isinstance(levels.get("tp_per_leg"), dict) else {}
+    operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
+    operator_kill_switch = operator_sheet.get("kill_switch") if isinstance(operator_sheet.get("kill_switch"), dict) else {}
+    operator_tp_per_leg = operator_sheet.get("tp_per_leg") if isinstance(operator_sheet.get("tp_per_leg"), dict) else {}
+
     return {
         "params": params,
         "plan": plan,
@@ -2617,16 +2625,17 @@ def _trade_plan_price_context(rec: dict[str, Any]) -> dict[str, Any]:
         "kill_switch": kill_switch,
         "grid_step": grid_step,
         "tp_per_leg": tp_per_leg,
-        "reference_price": _finite_float_or_none(plan.get("reference_price")),
-        "range_lower": _finite_float_or_none(range_levels.get("lower")),
-        "range_upper": _finite_float_or_none(range_levels.get("upper")),
-        "kill_switch_lower": _finite_float_or_none(kill_switch.get("lower")),
-        "kill_switch_upper": _finite_float_or_none(kill_switch.get("upper")),
-        "grid_step_abs": _finite_float_or_none(grid_step.get("step_abs")),
-        "grid_type": str(params.get("grid_type") or plan.get("grid_type") or "").strip().lower(),
-        "grid_levels": _safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(plan.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")),
-        "tp_per_leg_abs": _finite_float_or_none(tp_per_leg.get("abs")),
-        "tp_per_leg_pct": _finite_float_or_none(tp_per_leg.get("pct")),
+        "operator_sheet": operator_sheet,
+        "reference_price": _first_finite_from_mappings([plan, params, operator_sheet], ("reference_price", "price_ref"))[1],
+        "range_lower": _first_finite_from_mappings([range_levels, params, operator_sheet], ("lower", "price_range_lower", "range_lower"))[1],
+        "range_upper": _first_finite_from_mappings([range_levels, params, operator_sheet], ("upper", "price_range_upper", "range_upper"))[1],
+        "kill_switch_lower": _first_finite_from_mappings([kill_switch, operator_kill_switch], ("lower", "kill_switch_lower"))[1],
+        "kill_switch_upper": _first_finite_from_mappings([kill_switch, operator_kill_switch], ("upper", "kill_switch_upper"))[1],
+        "grid_step_abs": _first_finite_from_mappings([grid_step, operator_sheet], ("step_abs", "grid_step_abs", "actual_grid_step_abs"))[1],
+        "grid_type": str(params.get("grid_type") or plan.get("grid_type") or operator_sheet.get("grid_type") or "").strip().lower(),
+        "grid_levels": _safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(plan.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")) or _safe_int_or_none(operator_sheet.get("grid_levels")),
+        "tp_per_leg_abs": _first_finite_from_mappings([tp_per_leg, operator_tp_per_leg, operator_sheet], ("abs", "tp_per_leg_abs"))[1],
+        "tp_per_leg_pct": _first_finite_from_mappings([tp_per_leg, operator_tp_per_leg, operator_sheet], ("pct", "tp_per_leg_pct"))[1],
     }
 
 

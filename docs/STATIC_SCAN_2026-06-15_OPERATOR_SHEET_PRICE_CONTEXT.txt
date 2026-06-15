@@ -1,0 +1,19 @@
+Static scan addendum — 2026-06-15 — operator-sheet price context
+
+Scope: focused diff review for side/TP/SL/risk/kill-switch references introduced or touched by this patch.
+
+Changed/new hits reviewed:
+
+1. app/main.py::_trade_plan_price_context
+   - safe hardening: adds params.operator_sheet as a read-only fallback source for reference_price, range_lower/range_upper, kill_switch lower/upper, grid step, grid levels and TP-per-leg display context.
+   - safety invariant: strict execution preflight still checks raw params.trade_plan and still emits TRADE_PLAN_MISSING when the full trade_plan is absent. This patch does not materialize missing execution plans or downgrade blockers.
+   - directional semantics: _directional_exit_payload_for_reco continues to call app.trading_semantics.directional_exit_levels, validate_directional_exit_geometry, directional_trade_math and bybit_linear_protective_order_plan. No independent long/short TP/SL math was added.
+
+2. app/ui/static/app.js::buildOperatorValues
+   - safe hardening: kill-switch display now reads operatorSheet.kill_switch as fallback, matching the existing operatorSheet fallback already used for range/reference/leverage and matching backend fallback context.
+   - safety invariant: directional linear payloads still require backend directional_exit_levels; missing/invalid backend payload still renders "Directional TP blocked" and kill-switch-only values.
+
+3. tests/test_iteration183_operator_sheet_price_context.py
+   - regression tests cover backend operator_sheet-only display context, strict preflight remaining blocked for missing full trade_plan, and frontend kill-switch fallback.
+
+No new Buy/Sell side mapping, reduceOnly/closeOnTrigger logic, triggerDirection logic, leverage cap changes, order placement code or fail-open path was introduced.
