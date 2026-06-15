@@ -822,6 +822,10 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
         plan.get("risk_report"),
         params,
         plan,
+        # Keep backend TP/SL math in parity with operator UI lookups: generated
+        # operator sheets may expose total qty/notional on the sheet itself, not
+        # only inside nested sizing/economics blocks.
+        operator_sheet,
     ]
     total_qty_keys = (
         "estimated_position_qty",
