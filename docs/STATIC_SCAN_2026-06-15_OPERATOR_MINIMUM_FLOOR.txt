@@ -1,0 +1,1742 @@
+app/alerts.py:58:        return str(row.get("status") or "").strip().lower()
+app/alerts.py:112:            f"Рынок в risk-off режиме или все символы заблокированы."
+app/bybit_client.py:37:    normalized = str(symbol or "").strip().upper()
+app/bybit_client.py:50:    normalized = str(category or "").strip().lower()
+app/bybit_client.py:67:    symbol = str(item.get("symbol") or "").strip().upper()
+app/bybit_client.py:83:    return [item for item in scoped if str(item.get("symbol") or "").strip().upper() == target]
+app/bybit_client.py:136:        msg = str(ret_msg or "").lower()
+app/bybit_client.py:153:        msg = str(exc).lower()
+app/bybit_client.py:270:            item_symbol = str(item.get("symbol") or "").strip().upper()
+app/bybit_client.py:398:        result_category = str(result.get("category") or "").strip().lower()
+app/bybit_client.py:402:            item_symbol = str(item.get("symbol") or "").strip().upper()
+app/calibration.py:270:    liq_tier_str = str(liq_block.get("tier") or "medium").lower()
+app/collector.py:12:# config may be corrected at runtime, and transient exchange-side validation glitches should self-heal.
+app/collector.py:142:    item_symbol = str((item or {}).get("symbol") or "").strip().upper()
+app/collector.py:143:    target_symbol = str(symbol or "").strip().upper()
+app/collector.py:180:    disabled[str(symbol or "").upper()] = retry_at
+app/collector.py:185:    key = (str(venue or "").lower(), str(symbol or "").upper())
+app/collector.py:197:    msg_l = msg.lower()
+app/collector.py:214:    normalized = str(symbol or "").strip().upper()
+app/collector.py:223:        sym = str(raw or "").strip().upper()
+app/collector.py:333:    item_symbol = str(info.get("symbol") or "").strip().upper()
+app/collector.py:334:    target_symbol = str(symbol or "").strip().upper()
+app/collector.py:336:    quote_coin = str(info.get("quoteCoin") or "").strip().upper()
+app/collector.py:337:    settle_coin = str(info.get("settleCoin") or "").strip().upper()
+app/collector.py:338:    status = str(info.get("status") or "").strip().lower()
+app/collector.py:339:    is_pre_listing = str(info.get("isPreListing") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+app/collector.py:402:            sym = str(item.get("symbol") or "").upper()
+app/collector.py:497:    local series is too short for warm-up requirements, the anchor is forced to
+app/collector.py:499:    This prevents a fresh-but-short 1h/1d series from getting stuck below the
+app/collector.py:763:    missing_symbol_set = {str(sym or "").strip().upper() for sym in missing_symbols}
+app/db.py:27:    return str(status or "").strip().lower() in ACTIONABLE_RECOMMENDATION_STATUSES
+app/db.py:31:    return str(status or "").strip().lower() in EXPIRABLE_RECOMMENDATION_STATUSES
+app/db.py:61:    side before making any business-logic decisions so the read-check-write sequence
+app/db.py:267:        active_reuse = bool(dedupe.get("active_reuse")) or str(dedupe.get("decision") or "").strip().lower() == "reuse_active"
+app/db.py:297:    return str(llm_review.get("publish_target_status") or "").strip().lower()
+app/db.py:302:    status_norm = str(status or "").strip().lower()
+app/db.py:492:        return str(value).strip().upper()
+app/db.py:495:    return str(value or "").strip().upper()
+app/db.py:499:    msg = str(exc).lower()
+app/db.py:1119:        if publication_root_rec_id and str(bot.get("status") or "").strip().lower() == "running":
+app/db.py:1162:        # bot_instances, иначе два одновременных trade/stop запроса могут прочитать
+app/db.py:1255:        _require_finite_float("pnl", trade.get("pnl") or 0.0),
+app/db.py:1260:        """SELECT bot_id, ts, symbol, pnl, fee, meta_json
+app/db.py:1270:            float(row["pnl"]),
+app/db.py:1283:            """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)
+app/db.py:1292:            """SELECT bot_id, ts, symbol, pnl, fee, meta_json
+app/db.py:1302:                float(row["pnl"]),
+app/db.py:1330:        "pnl": _finite_float_or_default(r["pnl"], 0.0),
+app/db.py:1351:            "pnl": _finite_float_or_default(r["pnl"], 0.0),
+app/db.py:1361:        """SELECT ts, pnl, fee
+app/db.py:1372:        realized_pnl_gross += _finite_float_or_default(row["pnl"], 0.0)
+app/db.py:1709:    cur = conn.execute("SELECT pnl FROM trades WHERE ts>=?", (day_start_ts,))
+app/db.py:1710:    return sum(_finite_float_or_default(row["pnl"], 0.0) for row in cur.fetchall())
+app/db.py:1722:    Ignore non-finite rows so one corrupted trade cannot poison the whole day's risk status.
+app/db.py:1724:    cur = conn.execute("SELECT pnl, fee FROM trades WHERE ts>=?", (day_start_ts,))
+app/db.py:1727:        total += _finite_float_or_default(row["pnl"], 0.0) - _finite_float_or_default(row["fee"], 0.0)
+app/db.py:1914:        llm_status = str((review or {}).get("status") or "none").strip().lower()
+app/db.py:1970:    active = {str(v or '').strip().lower() for v in (active_venues or ['linear']) if str(v or '').strip()}
+app/db.py:1976:            sym = str(raw or '').strip().upper()
+app/db.py:2385:    value = str(direction or fallback).strip().lower()
+app/db.py:2386:    return value if value in ("long", "short", "neutral") else fallback
+app/db.py:2406:        agree = agree.strip().lower() in {"1", "true", "yes", "y"}
+app/db.py:2464:    status_norm = str(status or "").strip().lower()
+app/db.py:2470:    llm_status = str(llm_review.get("status") or "").strip().lower()
+app/db.py:2501:    if execution_direction == "neutral" and raw_direction == "short":
+app/db.py:2593:    true neutral thesis and linear short neutralisation (raw short -> execution neutral).
+app/db.py:2921:    active_set = {str(v or "").strip().lower() for v in (active_venues or ["linear"])}
+app/db.py:2928:            sym = str(raw_sym or "").strip().upper()
+app/db.py:3013:    # tf=86400 can never accumulate enough history again. Keep short TFs compact, but
+app/db_backend.py:38:    value = str(target or "").strip().lower()
+app/db_backend.py:176:    target_engine = str(engine or SQLITE).strip().lower()
+app/db_backend.py:189:    if text.upper().startswith("PRAGMA "):
+app/direction.py:179:    bb_b = _clamp((closes[-1] - (sma20 - 2 * std20)) / max(1e-9, 4 * std20), 0.0, 1.0)  # 0=lower band, 1=upper band
+app/direction.py:290:        bias = "long"
+app/direction.py:292:        bias = "short"
+app/direction.py:309:            range_bias_direction = "long" if all_sign > 0 else "short"
+app/direction.py:316:        direction = "long" if s_all > 0 else "short"
+app/direction.py:321:        desired = "long" if struct_sign > 0 else "short"
+app/direction.py:360:        "direction": direction,                    # long/short/neutral
+app/direction.py:361:        "bias": bias,                              # long/short
+app/direction.py:363:            "range_biased" if range_biased and direction in ("long", "short") else (
+app/direction.py:364:                "directional_grid_bias" if direction in ("long", "short") else "neutral"
+app/features.py:221:        signal = "bearish"   # longs overpaying → crowded long, fragile
+app/grid_math.py:52:def linear_pnl_usdt(side: str, qty: Any, entry_price: Any, exit_price: Any) -> Decimal:
+app/grid_math.py:58:    side_norm = str(side or "").strip().lower()
+app/grid_math.py:59:    if side_norm == "long":
+app/grid_math.py:61:    if side_norm == "short":
+app/grid_math.py:63:    # Fail closed: a mistyped side must not silently become a long PnL.
+app/grid_math.py:72:def funding_cashflow_usdt(side: str, position_notional: Any, funding_rate: Any, events: Any = 1) -> Decimal:
+app/grid_math.py:73:    """Positive means cost paid by this side; negative means funding received."""
+app/grid_math.py:80:    side_norm = str(side or "").strip().lower()
+app/grid_math.py:81:    if side_norm == "long":
+app/grid_math.py:83:    elif side_norm == "short":
+app/grid_math.py:86:        # Unknown side: do not guess the funding payer/receiver.
+app/grid_math.py:91:def margin_required_usdt(notional: Any, leverage: Any) -> Decimal:
+app/grid_math.py:92:    lev = dec(leverage, "1")
+app/grid_math.py:98:def estimate_linear_liq_price(side: str, entry_price: Any, leverage: Any, mmr: Any = "0.005", fee_buffer_rate: Any = "0.001") -> Decimal | None:
+app/grid_math.py:104:    Bybit's exact value depends on risk tiers, account balance, mark price and
+app/grid_math.py:105:    maintenance margin. This estimate is used only for buffer gates and UI risk.
+app/grid_math.py:108:    lev = dec(leverage, "1")
+app/grid_math.py:114:    side_norm = str(side or "").strip().lower()
+app/grid_math.py:115:    if side_norm == "short":
+app/grid_math.py:117:    elif side_norm == "long":
+app/grid_math.py:120:        # Unknown side must not silently become a long liquidation estimate.
+app/grid_math.py:127:def liquidation_buffer_pct(side: str, reference_price: Any, liq_price: Any) -> Decimal | None:
+app/grid_math.py:132:    side_norm = str(side or "").strip().lower()
+app/grid_math.py:133:    if side_norm == "short":
+app/grid_math.py:135:    if side_norm == "long":
+app/grid_math.py:156:    # fees, spread and slippage. If a caller accidentally passes a lower value,
+app/grid_math.py:161:    # ``expected_funding_bps`` is signed: positive means this side pays funding,
+app/llm_review.py:12:ALLOWED_DIRECTIONS = {"long", "short", "neutral"}
+app/llm_review.py:23:    "Для futures_grid поле execution_direction может быть long, short или neutral. "
+app/llm_review.py:24:    "Значения thesis_direction и execution_direction возвращай только как long, short или neutral. "
+app/llm_review.py:28:    '{"thesis_direction":"long|short|neutral","execution_direction":"long|short|neutral",'
+app/llm_review.py:164:    s = str(value or "").strip().lower()
+app/llm_review.py:166:        "лонг": "long",
+app/llm_review.py:167:        "длинная": "long",
+app/llm_review.py:168:        "длинный": "long",
+app/llm_review.py:169:        "длинная позиция": "long",
+app/llm_review.py:170:        "long bias": "long",
+app/llm_review.py:171:        "шорт": "short",
+app/llm_review.py:172:        "короткая": "short",
+app/llm_review.py:173:        "короткий": "short",
+app/llm_review.py:174:        "короткая позиция": "short",
+app/llm_review.py:175:        "short bias": "short",
+app/llm_review.py:185:        if s == "short" and not allow_short:
+app/llm_review.py:198:        p = part.strip().lower()
+app/main.py:33:from .risk import get_risk_limits, compute_risk_status, gate_candidate, normalize_risk_limits
+app/main.py:95:        # Ожидание делаем прерываемым через общий stop-event. Иначе при shutdown
+app/main.py:170:    venue_norm = str(venue or "").strip().lower()
+app/main.py:171:    symbol_norm = str(symbol or "").strip().upper()
+app/main.py:212:            "category": str(info.get("category") or "").strip().lower(),
+app/main.py:213:            "symbol": str(info.get("symbol") or "").strip().upper(),
+app/main.py:215:            "base_coin": str(info.get("baseCoin") or "").strip().upper(),
+app/main.py:216:            "quote_coin": str(info.get("quoteCoin") or "").strip().upper(),
+app/main.py:217:            "settle_coin": str(info.get("settleCoin") or "").strip().upper(),
+app/main.py:382:def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: str, symbol: str, ts: int | None, pnl: float, fee: float, meta: dict[str, Any]) -> bool:
+app/main.py:392:        pnl_match = math.isclose(float(existing.get("pnl") or 0.0), float(pnl), rel_tol=1e-12, abs_tol=1e-12)
+app/main.py:407:    return str(llm_review.get("status") or "none").strip().lower() or "none"
+app/main.py:415:    current_status = str(out.get("status") or "").strip().lower()
+app/main.py:462:    status = str(out.get("status") or "").strip().lower()
+app/main.py:515:    lot, min-notional and leverage constraints. This keeps the UI from showing an
+app/main.py:526:    # must not remain launchable if the fresh operator guard found execution-risk
+app/main.py:549:    current_status = str(out.get("status") or "").strip().lower()
+app/main.py:596:    effective = str(out.get("effective_status") or "").strip().lower()
+app/main.py:599:    status = str(out.get("status") or "").strip().lower()
+app/main.py:646:    current_status = str(out.get("status") or "").strip().lower()
+app/main.py:691:    """Revalidate persisted recommendations against the current runtime risk profile.
+app/main.py:694:    that was generated with min/max leverage 3..5 must not remain actionable when
+app/main.py:695:    /risk/status now says the 3-5x operator interval, and a 1x fallback payload must not bypass the
+app/main.py:726:                    f"recommendation leverage policy was generated for min/max "
+app/main.py:744:    status = str(out.get("status") or "").strip().lower()
+app/main.py:874:        range_lower = finite(range_levels.get("lower")) or finite(params.get("price_range_lower"))
+app/main.py:875:        range_upper = finite(range_levels.get("upper")) or finite(params.get("price_range_upper"))
+app/main.py:924:    direction = str(levels.get("direction") or "neutral").strip().lower()
+app/main.py:932:    if direction in {"long", "short"}:
+app/main.py:981:def _distance_from_current_to_bound_pct(current_price: float | None, bound: float | None, *, side: str) -> float | None:
+app/main.py:982:    """Signed distance from current price to a range/kill-switch bound.
+app/main.py:984:    Both lower and upper distances use the same denominator: current price.
+app/main.py:986:    when the lower bound is far below the current price. Positive means the
+app/main.py:987:    current price is still inside the relevant side of the bound; negative means
+app/main.py:988:    that side has already been breached.
+app/main.py:994:    side_norm = str(side or "").strip().lower()
+app/main.py:995:    if side_norm == "lower":
+app/main.py:997:    if side_norm == "upper":
+app/main.py:1011:    publication_root_rec_id. Row age alone then understates how long the original
+app/main.py:1084:        str(item.get("code") or "").strip().upper()
+app/main.py:1099:    """Return highest integer leverage whose approximate liq buffer stays above the floor.
+app/main.py:1101:    This is deliberately advisory: exact Bybit liquidation depends on risk tier,
+app/main.py:1109:    dir_norm = str(direction or "").strip().lower()
+app/main.py:1110:    sides = ("long", "short") if dir_norm == "neutral" else (dir_norm,)
+app/main.py:1111:    if any(side not in {"long", "short"} for side in sides):
+app/main.py:1118:        for side in sides:
+app/main.py:1119:            adverse = lower_adverse_price if side == "long" else upper_adverse_price
+app/main.py:1124:            liq = estimate_linear_liq_price(side, ref, lev)
+app/main.py:1125:            buf = liquidation_buffer_pct(side, adverse_ref, liq) if liq is not None else None
+app/main.py:1156:    direction = str(rec.get("direction") or "neutral").strip().lower()
+app/main.py:1157:    leverage = _finite_float_or_none(params.get("leverage"))
+app/main.py:1182:    no_trade_blob = " ".join(no_trade_reason_texts).lower()
+app/main.py:1183:    warning_blob = " ".join(risk_warning_texts).lower()
+app/main.py:1184:    status_norm = str(rec.get("effective_status") or rec.get("status") or "").strip().lower()
+app/main.py:1205:        lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущее плечо"
+app/main.py:1208:            if safe_lev is not None and leverage is not None and safe_lev < leverage
+app/main.py:1220:            "Снизьте 3-5x leverage profile в RISK_LIMITS_JSON либо сузьте adverse-сторону диапазона/kill-switch и дождитесь новой публикации. Не снижайте 12% liquidation-buffer floor ради прохождения проверки.",
+app/main.py:1252:            "Цена уже ушла из рекомендованного диапазона/kill-switch. Не переносите уровни вручную; нужна новая рекомендация на текущем market snapshot.",
+app/main.py:1257:        lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущем 3-5x leverage profile"
+app/main.py:1260:            "Не запускать при текущем 3-5x leverage profile",
+app/main.py:1261:            f"Идея оценена на {lev_txt}, но не прошла операторский профиль без ослабления risk policy. Оставьте no_trade: ручной запуск такого grid будет обходом safety-gate.",
+app/main.py:1282:            "Текущий net edge недостаточен для 3-5x leverage profile после fees, spread, slippage и funding. Нужен новый расчёт с лучшей экономикой, а не ручной запуск.",
+app/main.py:1400:    direction = str(rec.get("direction") or "").strip().lower()
+app/main.py:1401:    leverage = _finite_float_or_none(params.get("leverage"))
+app/main.py:1404:    if liq_price is None and reference_price is not None and leverage is not None and leverage > 0 and direction in {"long", "short"}:
+app/main.py:1406:            estimated = estimate_linear_liq_price(direction, reference_price, leverage)
+app/main.py:1410:    if liq_buffer is None and reference_price is not None and liq_price is not None and direction in {"long", "short"}:
+app/main.py:1473:        "distance_to_lower_pct": _distance_from_current_to_bound_pct(current_price, range_lower, side="lower"),
+app/main.py:1474:        "distance_to_upper_pct": _distance_from_current_to_bound_pct(current_price, range_upper, side="upper"),
+app/main.py:1477:        "distance_to_kill_lower_pct": _distance_from_current_to_bound_pct(current_price, kill_lower, side="lower"),
+app/main.py:1478:        "distance_to_kill_upper_pct": _distance_from_current_to_bound_pct(current_price, kill_upper, side="upper"),
+app/main.py:1526:        if str(out.get("status") or "").strip().lower() in {"recommended", "active", "pending"}:
+app/main.py:1578:            -int(status_priority.get(str(rec.get("status") or "").strip().lower(), 99)),
+app/main.py:1595:            int(status_priority.get(str(rec.get("status") or "").strip().lower(), 99)),
+app/main.py:1613:    out = list(dict.fromkeys(str(s or "").strip().lower() for s in statuses if str(s or "").strip()))
+app/main.py:1642:    allowed = {str(status or "").strip().lower() for status in statuses if str(status or "").strip()}
+app/main.py:1647:        effective_status = str(item.get("effective_status") or item.get("status") or "").strip().lower()
+app/main.py:1740:    raw = str(step).strip().lower()
+app/main.py:1849:            "range_lower": ((levels.setdefault("range", {}), "lower"), (params, "price_range_lower"), (operator_sheet, "range_lower")),
+app/main.py:1850:            "range_upper": ((levels.setdefault("range", {}), "upper"), (params, "price_range_upper"), (operator_sheet, "range_upper")),
+app/main.py:1851:            "kill_switch_lower": ((levels.setdefault("kill_switch", {}), "lower"),),
+app/main.py:1852:            "kill_switch_upper": ((levels.setdefault("kill_switch", {}), "upper"),),
+app/main.py:1857:                price_paths["kill_switch_lower"] = (*price_paths["kill_switch_lower"], (ks, "lower"))
+app/main.py:1858:                price_paths["kill_switch_upper"] = (*price_paths["kill_switch_upper"], (ks, "upper"))
+app/main.py:1862:            "range_lower": (levels.get("range") or {}).get("lower", params.get("price_range_lower")) if isinstance(levels.get("range"), dict) else params.get("price_range_lower"),
+app/main.py:1863:            "range_upper": (levels.get("range") or {}).get("upper", params.get("price_range_upper")) if isinstance(levels.get("range"), dict) else params.get("price_range_upper"),
+app/main.py:1864:            "kill_switch_lower": (levels.get("kill_switch") or {}).get("lower") if isinstance(levels.get("kill_switch"), dict) else None,
+app/main.py:1865:            "kill_switch_upper": (levels.get("kill_switch") or {}).get("upper") if isinstance(levels.get("kill_switch"), dict) else None,
+app/main.py:1869:        # move kill-switch levels inside the range, which makes the UI display a safer
+app/main.py:1870:        # plan than the exchange can actually place. Lower boundaries snap down, upper
+app/main.py:1918:            # lower/upper + Number of Grids. The displayed step is only a derived
+app/main.py:1919:            # operator hint. If we snap lower/upper and step independently, a
+app/main.py:1921:            # floor((upper-lower)/step_abs)=grid_count-1 and show a false launch
+app/main.py:1922:            # blocker. Rebuild the snapped range from the snapped lower bound, an
+app/main.py:1959:        # the economics/risk model assumed. For strict Bybit arithmetic payloads,
+app/main.py:1980:    leverage = _finite_float_or_none(params.get("leverage"))
+app/main.py:1981:    if leverage is not None and leverage_step is not None and leverage_step > 0:
+app/main.py:1982:        snapped_lev = snap(leverage, leverage_step, mode="nearest")
+app/main.py:1984:            params["leverage"] = float(snapped_lev)
+app/main.py:1986:                operator_sheet["leverage"] = float(snapped_lev)
+app/main.py:2019:    lower_price = _finite_float_or_none((levels.get("range") or {}).get("lower")) if isinstance(levels.get("range"), dict) else None
+app/main.py:2020:    notional_price = _grid_min_notional_price(reference_price, lower_price, _finite_float_or_none((levels.get("range") or {}).get("upper")) if isinstance(levels.get("range"), dict) else None)
+app/main.py:2035:                upper_price = _finite_float_or_none((levels.get("range") or {}).get("upper")) if isinstance(levels.get("range"), dict) else None
+app/main.py:2039:                leverage_used = float(params.get("leverage") or 1.0) or 1.0
+app/main.py:2099:def _grid_min_notional_price(reference_price: Any, lower: Any, upper: Any) -> float | None:
+app/main.py:2103:    passes ``qty * reference_price`` can still fail for buy levels near the lower
+app/main.py:2105:    a recommendation is not approved with lower-grid orders below minNotional.
+app/main.py:2108:    for raw in (lower, reference_price, upper):
+app/main.py:2117:def _grid_max_notional_price(reference_price: Any, lower: Any, upper: Any) -> float | None:
+app/main.py:2120:    Minimum-notional checks must use the lowest positive grid price, but risk caps
+app/main.py:2121:    need the opposite side: Bybit linear order value is qty * order price.  A
+app/main.py:2122:    range whose upper boundary is above reference can breach max notional/margin
+app/main.py:2126:    for raw in (lower, reference_price, upper):
+app/main.py:2136:    normalized = str(symbol or "").strip().upper()
+app/main.py:2148:    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+app/main.py:2206:    direction_norm = str(direction or "neutral").strip().lower()
+app/main.py:2208:    if direction_norm == "long":
+app/main.py:2210:    if direction_norm == "short":
+app/main.py:2255:    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+app/main.py:2257:    if str(rec.get("venue") or "").strip().lower() != "linear":
+app/main.py:2259:    symbol = str(rec.get("symbol") or "").strip().upper()
+app/main.py:2336:    """Re-check per-bot leverage/notional/margin caps at operator execution time.
+app/main.py:2338:    Recommendation-time risk gates are only a snapshot. Runtime limits may be
+app/main.py:2343:    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+app/main.py:2345:    if str(rec.get("venue") or "").strip().lower() != "linear":
+app/main.py:2362:    leverage = _finite_float_or_none(params.get("leverage"))
+app/main.py:2363:    if leverage is None:
+app/main.py:2364:        leverage = _finite_float_or_none(plan.get("leverage"))
+app/main.py:2366:    if leverage is None:
+app/main.py:2369:            "msg": "execution payload не содержит явное leverage; нельзя проверить runtime leverage caps, margin и liquidation semantics.",
+app/main.py:2376:        and leverage is not None
+app/main.py:2379:        and leverage < min_leverage
+app/main.py:2383:            "msg": f"execution payload leverage={leverage:.8g}x ниже текущего runtime min_leverage={min_leverage:.8g}x.",
+app/main.py:2387:    if leverage is not None and max_leverage is not None and max_leverage > 0 and leverage > max_leverage:
+app/main.py:2390:            "msg": f"execution payload leverage={leverage:.8g}x выше текущего runtime max_leverage={max_leverage:.8g}x.",
+app/main.py:2450:                    "runtime risk caps must use the upper executable price for fixed-qty linear futures grids."
+app/main.py:2456:    if estimated_margin is None and estimated_notional is not None and leverage is not None and leverage > 0:
+app/main.py:2457:        estimated_margin = float(estimated_notional) / max(1.0, float(leverage))
+app/main.py:2458:        margin_key = f"{notional_key or 'estimated_notional'}/leverage"
+app/main.py:2459:    if estimated_notional is None and estimated_margin is not None and leverage is not None and leverage > 0:
+app/main.py:2460:        estimated_notional = float(estimated_margin) * max(1.0, float(leverage))
+app/main.py:2461:        notional_key = "estimated_margin_required_usdt*leverage"
+app/main.py:2610:        "range_lower": _finite_float_or_none(range_levels.get("lower")),
+app/main.py:2611:        "range_upper": _finite_float_or_none(range_levels.get("upper")),
+app/main.py:2612:        "kill_switch_lower": _finite_float_or_none(kill_switch.get("lower")),
+app/main.py:2613:        "kill_switch_upper": _finite_float_or_none(kill_switch.get("upper")),
+app/main.py:2615:        "grid_type": str(params.get("grid_type") or plan.get("grid_type") or "").strip().lower(),
+app/main.py:2645:    lower = ctx["range_lower"]
+app/main.py:2646:    upper = ctx["range_upper"]
+app/main.py:2662:        # grid range, kill-switch and reference-price drift cannot be checked.
+app/main.py:2674:    if lower is not None and upper is not None and not (lower <= current_price <= upper):
+app/main.py:2677:            "msg": f"Текущая цена {current_price:.12g} находится вне рекомендованного диапазона [{lower}, {upper}]; нужен новый расчёт уровней.",
+app/main.py:2679:    if reference is not None and reference > 0 and lower is not None and upper is not None:
+app/main.py:2680:        span_pct = abs(upper - lower) / reference * 100.0 if reference else 0.0
+app/main.py:2707:    leverage = _first_finite_from_mapping(
+app/main.py:2709:        ("leverage",),
+app/main.py:2711:    if leverage is None:
+app/main.py:2712:        leverage = _first_finite_from_mapping(plan, ("leverage",))[1]
+app/main.py:2713:    if leverage is None:
+app/main.py:2714:        leverage = _first_finite_from_mapping(operator_sheet, ("leverage",))[1]
+app/main.py:2717:    venue = str(rec.get("venue") or "").strip().lower()
+app/main.py:2718:    direction = str(rec.get("direction") or "").strip().lower()
+app/main.py:2719:    account_mode = str(rec.get("account_mode") or params.get("account_mode") or operator_sheet.get("account_mode") or "").strip().lower()
+app/main.py:2720:    margin_mode = str(rec.get("margin_mode") or params.get("margin_mode") or plan.get("margin_mode") or operator_sheet.get("margin_mode") or "").strip().lower()
+app/main.py:2721:    meta_category = str((meta or {}).get("category") or "").strip().lower()
+app/main.py:2722:    meta_symbol = str((meta or {}).get("symbol") or "").strip().upper()
+app/main.py:2725:    meta_quote_coin = str((meta or {}).get("quote_coin") or "").strip().upper()
+app/main.py:2726:    meta_settle_coin = str((meta or {}).get("settle_coin") or "").strip().upper()
+app/main.py:2729:    rec_symbol = str(rec.get("symbol") or "").strip().upper()
+app/main.py:2760:            "msg": "У рекомендации нет полного trade_plan; execution-time preflight не может проверить reference/range/kill-switch/grid-step и должен блокировать запуск fail-closed.",
+app/main.py:2778:        if direction not in {"neutral", "long", "short"}:
+app/main.py:2784:        # Проектная логика, risk-gates и operator guidance собраны вокруг isolated futures-grid.
+app/main.py:2830:            ("BYBIT_MIN_LEVERAGE_MISSING", min_leverage, "leverageFilter.minLeverage", "невозможно проверить нижнюю границу leverage"),
+app/main.py:2831:            ("BYBIT_MAX_LEVERAGE_MISSING", max_leverage, "leverageFilter.maxLeverage", "невозможно проверить верхнюю границу leverage"),
+app/main.py:2832:            ("BYBIT_LEVERAGE_STEP_MISSING", leverage_step, "leverageFilter.leverageStep", "невозможно проверить шаг leverage"),
+app/main.py:2841:        pre_listing = _boolish_true(meta_is_pre_listing) or str(meta_status).strip().lower() in {"prelaunch", "pre-listing", "prelisting"}
+app/main.py:2875:    elif meta and meta_status and meta_status.lower() != "trading":
+app/main.py:2882:    lower = ctx["range_lower"]
+app/main.py:2883:    upper = ctx["range_upper"]
+app/main.py:2895:            ("TRADE_PLAN_RANGE_LOWER_MISSING", lower, "trade_plan.levels.range.lower"),
+app/main.py:2896:            ("TRADE_PLAN_RANGE_UPPER_MISSING", upper, "trade_plan.levels.range.upper"),
+app/main.py:2897:            ("TRADE_PLAN_KILL_SWITCH_LOWER_MISSING", lower_ks, "trade_plan.levels.kill_switch.lower"),
+app/main.py:2898:            ("TRADE_PLAN_KILL_SWITCH_UPPER_MISSING", upper_ks, "trade_plan.levels.kill_switch.upper"),
+app/main.py:2910:        "range_lower": lower,
+app/main.py:2911:        "range_upper": upper,
+app/main.py:2932:    if lower is not None and upper is not None:
+app/main.py:2933:        if upper <= lower:
+app/main.py:2935:        elif tick_size is not None and (upper - lower) < tick_size:
+app/main.py:2936:            errors.append({"code": "RANGE_TOO_NARROW_FOR_TICK", "msg": f"Ширина диапазона {upper - lower:.12f} меньше tick_size={tick_size}."})
+app/main.py:2938:    if reference_price is not None and lower is not None and upper is not None and not (lower <= reference_price <= upper):
+app/main.py:2941:            "msg": f"reference_price={reference_price} находится вне основного диапазона [{lower}, {upper}].",
+app/main.py:2945:        errors.append({"code": "INVALID_KILL_SWITCH_RANGE", "msg": "kill_switch.upper должен быть строго больше kill_switch.lower."})
+app/main.py:2946:    if lower is not None and lower_ks is not None and lower_ks > lower:
+app/main.py:2949:            "msg": f"kill_switch.lower={lower_ks} находится внутри основного диапазона и не защищает нижнюю границу {lower}.",
+app/main.py:2951:    if upper is not None and upper_ks is not None and upper_ks < upper:
+app/main.py:2954:            "msg": f"kill_switch.upper={upper_ks} находится внутри основного диапазона и не защищает верхнюю границу {upper}.",
+app/main.py:2957:    if direction in {"long", "short"}:
+app/main.py:2979:    snapped_lower = _quantize_to_step(lower, tick_size, mode="nearest") if lower is not None and tick_size is not None else lower
+app/main.py:2980:    snapped_upper = _quantize_to_step(upper, tick_size, mode="nearest") if upper is not None and tick_size is not None else upper
+app/main.py:2984:            "msg": f"После выравнивания по tick_size={tick_size} диапазон схлопывается: lower={snapped_lower}, upper={snapped_upper}.",
+app/main.py:3026:                # an operator will create from lower/upper/grid_count. Treat this as
+app/main.py:3065:    if bot_type == "futures_grid" and venue == "linear" and leverage is None:
+app/main.py:3066:        leverage_missing_msg = "leverage не указан; execution-time preflight не может подтвердить плечо, маржу и liquidation buffer."
+app/main.py:3070:            warnings.append({"code": "LEVERAGE_DEFAULTED_TO_ONE", "msg": "leverage не указан в legacy/manual payload; для preflight принимается только безопасный default 1x, новые рекомендации должны хранить явный leverage."})
+app/main.py:3071:    if leverage is not None and leverage <= 0:
+app/main.py:3072:        errors.append({"code": "LEVERAGE_NON_POSITIVE", "msg": f"Leverage должен быть > 0, получено {leverage}."})
+app/main.py:3073:    if min_leverage is not None and leverage is not None and leverage < min_leverage:
+app/main.py:3074:        errors.append({"code": "LEVERAGE_BELOW_MIN", "msg": f"Рекомендованное leverage={leverage} ниже Bybit min_leverage={min_leverage}."})
+app/main.py:3075:    if max_leverage is not None and leverage is not None and leverage > max_leverage:
+app/main.py:3076:        errors.append({"code": "LEVERAGE_ABOVE_MAX", "msg": f"Рекомендованное leverage={leverage} выше Bybit max_leverage={max_leverage}."})
+app/main.py:3077:    if leverage is not None and leverage_step is not None and leverage_step > 0:
+app/main.py:3078:        snapped_leverage = _quantize_to_step(leverage, leverage_step, mode="nearest")
+app/main.py:3080:            snapped["leverage"] = _format_step_aligned(snapped_leverage, leverage_step) or str(snapped_leverage)
+app/main.py:3081:            if abs(float(snapped_leverage) - float(leverage)) > max(1e-12, abs(leverage_step) * 1e-6):
+app/main.py:3084:                    "msg": f"Leverage {leverage} не выровнен по leverage_step={leverage_step}; ближайшее допустимое значение={snapped['leverage']}",
+app/main.py:3087:    # Linear USDT perpetual supports leverage. Do not blanket-block leverage > 1;
+app/main.py:3089:    # estimate. For neutral grids validate the worse side because inventory can
+app/main.py:3090:    # accumulate either long or short as the range is traversed.
+app/main.py:3091:    if leverage is not None and venue == "linear" and leverage > 1:
+app/main.py:3096:            sides = ("long", "short") if direction == "neutral" else (direction,)
+app/main.py:3097:            for side in sides:
+app/main.py:3098:                estimated = estimate_linear_liq_price(side, reference_price, leverage)
+app/main.py:3100:                buf = liquidation_buffer_pct(side, reference_price, liq) if liq is not None else None
+app/main.py:3108:                "msg": "Leverage > 1 требует оценки worst-side liquidation buffer; точная ликвидация зависит от risk tier и маржи аккаунта.",
+app/main.py:3113:                "msg": f"Оценочный worst-side liquidation buffer={liq_buffer_pct:.2f}% слишком мал для запуска futures grid с leverage={leverage}.",
+app/main.py:3176:            notional_price = _grid_min_notional_price(reference_price, lower, upper)
+app/main.py:3183:                        "msg": f"Минимальный расчётный notional={qty_notional:.12g} по {qty_source or 'order_qty'} и grid_min_price={notional_price:.12g} ниже Bybit min_notional={min_notional}; lower-grid заявки могут быть отклонены биржей.",
+app/main.py:3201:            notional_price = _grid_min_notional_price(reference_price, lower, upper)
+app/main.py:3204:                # For fixed-base Bybit grid orders, lower levels have notional
+app/main.py:3206:                # above the Bybit floor at reference can still be rejected on lower grid levels.
+app/main.py:3211:                        "msg": f"Минимальный расчётный notional={grid_min_notional:.12g} по {notional_source or 'order_notional'}={order_notional:.12g}, reference_price={reference_price:.12g} и grid_min_price={notional_price:.12g} ниже Bybit min_notional={min_notional}; lower-grid заявки могут быть отклонены биржей.",
+app/main.py:3216:                    "msg": f"Bybit min_notional={min_notional}, но reference/range price отсутствуют; notional-only sizing нельзя консервативно пересчитать для lower-grid уровней.",
+app/main.py:3283:            leverage_for_margin = leverage if leverage is not None and leverage > 0 else 1.0
+app/main.py:3290:                        "msg": f"estimated_margin_required={margin_est:.6g} не соответствует total_notional/leverage={expected_margin:.6g}; риск маржи рассчитан неверно.",
+app/main.py:3407:    msg = str(exc).lower()
+app/main.py:3417:    return f"{BACKGROUND_THREAD_STATE_APP_KEY_PREFIX}{str(name or '').strip().lower()}"
+app/main.py:3422:        "name": str(name or "").strip().lower(),
+app/main.py:3449:    action = BACKGROUND_THREAD_ERROR_ACTIONS.get(str(name or "").strip().lower())
+app/main.py:3453:        "component": str(name or "").strip().lower(),
+app/main.py:3791:    pnl: float = Field(..., allow_inf_nan=False, description="Gross realized PnL before fee; net PnL is computed as pnl - fee")
+app/main.py:3792:    fee: float = Field(0.0, ge=0.0, allow_inf_nan=False, description="Exchange fees for this trade; deducted from pnl to compute net")
+app/main.py:3818:    return bot_type == "futures_grid" and venue == "linear" and direction in ("neutral", "long", "short")
+app/main.py:3831:    venue = str(rec.get("venue") or "").strip().lower()
+app/main.py:3832:    symbol = str(rec.get("symbol") or "").strip().upper()
+app/main.py:3833:    direction = str(rec.get("direction") or "").strip().lower()
+app/main.py:3835:    if bot_type != "futures_grid" or venue != "linear" or direction not in {"neutral", "long", "short"}:
+app/main.py:3843:        if str(bot.get("venue") or "").strip().lower() != venue:
+app/main.py:3845:        if str(bot.get("symbol") or "").strip().upper() != symbol:
+app/main.py:3849:        existing_direction = str(mode.get("direction") or "").strip().lower()
+app/main.py:3850:        if existing_direction not in {"neutral", "long", "short"}:
+app/main.py:3889:    """Block idempotent publication-chain reuse if the live bot is another side.
+app/main.py:3893:    long to short (or directional to neutral), returning the existing bot would
+app/main.py:3894:    falsely mark a different side as executed and hide exposure/TP/SL conflict.
+app/main.py:3900:    if str(rec.get("venue") or "").strip().lower() != "linear":
+app/main.py:3902:    candidate_direction = str(rec.get("direction") or "").strip().lower()
+app/main.py:3903:    if candidate_direction not in {"neutral", "long", "short"}:
+app/main.py:3907:    existing_direction = str(mode.get("direction") or "").strip().lower()
+app/main.py:3908:    if existing_direction not in {"neutral", "long", "short"}:
+app/main.py:3927:                    f"but candidate recommendation is {candidate_direction}; reattach would mark the wrong side executed."
+app/main.py:4040:        raise HTTPException(status_code=409, detail=f"execution blocked by current risk limits: {codes}")
+app/main.py:4078:        raise HTTPException(status_code=409, detail=f"execution blocked by runtime size/leverage risk caps: {codes}")
+app/main.py:4181:    mode = str(snapshot or "latest_operator").strip().lower()
+app/main.py:4301:        no_trade = not any(str(item.get("effective_status") or item.get("status") or "").strip().lower() in {"recommended", "active"} for item in items)
+app/main.py:4328:            "snapshot_mode": str(snapshot or "latest").strip().lower(),
+app/main.py:4355:@app.get("/api/v1/risk/status")
+app/main.py:4370:@app.post("/api/v1/risk/limits")
+app/main.py:4444:@app.post("/api/v1/bots/{bot_id}/stop")
+app/main.py:4465:                raise RuntimeError("bot state update failed after stop")
+app/main.py:4494:                pnl=req.pnl,
+app/main.py:4530:            "pnl": req.pnl,
+app/main.py:4585:                    raise RuntimeError("bot state update failed after trade stop")
+app/main.py:4586:            db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot}, commit=False)
+app/main.py:5110:        if str(collector_thread_state.get("state") or "").lower() == "error":
+app/main.py:5116:        elif str(collector_thread_state.get("state") or "").lower() == "running":
+app/outcomes.py:68:    venue_norm = str(venue or "").strip().lower()
+app/outcomes.py:69:    direction_norm = str(direction or "").strip().lower()
+app/outcomes.py:71:        return venue_norm == "linear" and direction_norm in ("neutral", "long", "short")
+app/outcomes.py:161:    особенно опасны: они не роняют outcome-cycle, но тихо отключают range/kill-switch
+app/outcomes.py:247:    adverse inventory side. Outcome labels feed calibration/ranking, so they must
+app/outcomes.py:259:    return -raw if direction == "short" else raw
+app/outcomes.py:311:    if direction == "short":
+app/outcomes.py:346:        lo = _finite_positive_or_none(range_block.get("lower"))
+app/outcomes.py:348:        hi = _finite_positive_or_none(range_block.get("upper"))
+app/outcomes.py:349:    ks_lo = _finite_positive_or_none(kill_switch.get("lower")) if kill_switch else None
+app/outcomes.py:350:    ks_hi = _finite_positive_or_none(kill_switch.get("upper")) if kill_switch else None
+app/outcomes.py:364:    # Must match recommender-side economics: only a fraction of nominal spacing is
+app/outcomes.py:378:        lower = float(lo)
+app/outcomes.py:379:        upper = float(hi)
+app/outcomes.py:380:        n_levels = max(1, int(round((upper - lower) / max(step_abs, 1e-12))))
+app/outcomes.py:383:            rel = (px - lower) / max(step_abs, 1e-12)
+app/outcomes.py:402:        in_range_ratio = sum(1 for px in closes if lower <= px <= upper) / max(1, len(closes))
+app/outcomes.py:403:        range_span_pct = max(0.0, (upper - lower) / entry)
+app/outcomes.py:426:        lower = float(lo)
+app/outcomes.py:427:        upper = float(hi)
+app/outcomes.py:428:        below_main = max(0.0, lower - min_p) / entry
+app/outcomes.py:429:        above_main = max(0.0, max_p - upper) / entry
+app/outcomes.py:441:        if exitp < lower:
+app/outcomes.py:442:            exit_outside_pct = (lower - exitp) / entry
+app/outcomes.py:443:        elif exitp > upper:
+app/outcomes.py:444:            exit_outside_pct = (exitp - upper) / entry
+app/recommender.py:12:from .risk import gate_candidate, compute_risk_status as _compute_risk_status, normalize_risk_limits
+app/recommender.py:169:    take = max(1, int(limit or 1))
+app/recommender.py:170:    for row in list(rows_oldest_first)[-take:]:
+app/recommender.py:188:    provider = str(getattr(settings, "llm_reviewer_provider", "ollama") or "ollama").strip().lower()
+app/recommender.py:203:    status_norm = str(status or "").strip().lower()
+app/recommender.py:210:    return str(llm_review.get("status") or "").strip().lower() == "ok"
+app/recommender.py:222:    current_status = str(rec.get("status") or "").strip().lower()
+app/recommender.py:227:    mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
+app/recommender.py:235:    if not isinstance(llm_review, dict) or str(llm_review.get("status") or "").strip().lower() not in {"pending", "error"}:
+app/recommender.py:292:    target = str(llm_review.get("publish_target_status") or "").strip().lower()
+app/recommender.py:299:    current = str(rec.get("status") or "").strip().lower()
+app/recommender.py:409:        str(rec.get("venue") or "").lower(),
+app/recommender.py:410:        str(rec.get("symbol") or "").upper(),
+app/recommender.py:411:        str(rec.get("bot_type") or "").lower(),
+app/recommender.py:524:    return str(status or "").strip().lower() in LLM_REVIEW_ELIGIBLE_STATUSES
+app/recommender.py:534:    target_status = str(rec.get("status") or "").strip().lower()
+app/recommender.py:570:    mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
+app/recommender.py:646:    current_status = str(rec.get("status") or "").strip().lower()
+app/recommender.py:654:    llm_status = str(llm_review.get("status") or "").lower()
+app/recommender.py:762:        current_status = str(rec.get("status") or "").strip().lower()
+app/recommender.py:768:        llm_status = str((llm_review or {}).get("status") or "").strip().lower()
+app/recommender.py:769:        mode = str((llm_review or {}).get("mode") or getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
+app/recommender.py:880:    mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
+app/recommender.py:889:    # consume the whole selection budget and permanently starve lower-ranked uncached symbols.
+app/recommender.py:1167:    mode = str(getattr(settings, "llm_reviewer_mode", "advisory") or "advisory").strip().lower()
+app/recommender.py:1313:    before the next funding timestamp and gets long/short economics backwards.
+app/recommender.py:1337:        if direction == "long":
+app/recommender.py:1339:        elif direction == "short":
+app/recommender.py:1342:            # Neutral futures grids can accumulate either long or short inventory as
+app/recommender.py:1344:            # side as free carry even though the bot may end up holding the adverse
+app/recommender.py:1345:            # side. Use abs(rate) as a conservative expected cost in approvals.
+app/recommender.py:1390:    # expected-RR default must use only adverse carry. Otherwise a short/long can
+app/recommender.py:1439:    carry penalises the side that is expected to *pay* funding. Received funding is
+app/recommender.py:1443:    if direction not in ("long", "short"):
+app/recommender.py:1457:    # bearish funding signal; the UI/risk report still exposes the signed carry.
+app/recommender.py:1465:      * positive  -> this side is expected to PAY funding over the label horizon;
+app/recommender.py:1466:      * negative  -> this side is expected to RECEIVE funding.
+app/recommender.py:1469:    directional asymmetry: positive funding could suppress many long ideas, while an
+app/recommender.py:1470:    equally expensive short under negative funding was still allowed through. The gate
+app/recommender.py:1471:    must be keyed off *who pays*, not off the semantic label long/short.
+app/recommender.py:1473:    if direction not in ("long", "short"):
+app/recommender.py:1484:    side = "long" if direction == "long" else "short"
+app/recommender.py:1487:        "msg": f"expected_funding_bps={expected_bps:.2f} over horizon — {side} pays too much funding carry",
+app/recommender.py:1529:        "liq_tier_num": float(liq_map.get(str(liq_tier).lower(), 0.67)),
+app/recommender.py:1592:    lower = _finite_or_none(params.get("price_range_lower"))
+app/recommender.py:1593:    if lower is not None and lower <= 0:
+app/recommender.py:1594:        lower = None
+app/recommender.py:1595:    upper = _finite_or_none(params.get("price_range_upper"))
+app/recommender.py:1596:    if upper is not None and upper <= 0:
+app/recommender.py:1597:        upper = None
+app/recommender.py:1599:    lower_ks = (lower - ks_pad) if (lower is not None and ks_pad is not None) else None
+app/recommender.py:1600:    upper_ks = (upper + ks_pad) if (upper is not None and ks_pad is not None) else None
+app/recommender.py:1637:                "lower": _round_price(float(lower), decimals=10) if lower is not None else None,
+app/recommender.py:1638:                "upper": _round_price(float(upper), decimals=10) if upper is not None else None,
+app/recommender.py:1641:                "lower": _round_price(lower_ks, decimals=10),
+app/recommender.py:1642:                "upper": _round_price(upper_ks, decimals=10),
+app/recommender.py:1665:    leverage = max(1, int(_safe_int_or_none(params.get("leverage")) or 1))
+app/recommender.py:1666:    if venue == "linear" and leverage > 1:
+app/recommender.py:1671:            f" Для futures_grid с leverage={leverage} и span≈{span_str}% проверьте, что liquidation price лежит за пределами kill_switch "
+app/recommender.py:1672:            f"[{ks.get('lower')}, {ks.get('upper')}]."
+app/recommender.py:1714:    raw_direction = str((agg or {}).get("direction") or "neutral").lower()
+app/recommender.py:1715:    if bot_type == "futures_grid" and raw_direction in ("long", "short", "neutral"):
+app/recommender.py:1815:        if direction == "long":
+app/recommender.py:1818:        elif direction == "short":
+app/recommender.py:1832:        if direction in ("long", "short") and direction_strength > 0.0:
+app/recommender.py:1834:        if direction == "long" and effective_sent > 0.0:
+app/recommender.py:1835:            add_pos("effective_sentiment", effective_sent, 0.12 * effective_sent, "сентимент поддерживает long bias")
+app/recommender.py:1836:        elif direction == "long" and effective_sent < 0.0:
+app/recommender.py:1837:            add_neg("effective_sentiment", abs(effective_sent), 0.12 * effective_sent, "сентимент против long bias")
+app/recommender.py:1838:        elif direction == "short" and effective_sent < 0.0:
+app/recommender.py:1839:            add_pos("effective_sentiment", abs(effective_sent), 0.12 * abs(effective_sent), "сентимент поддерживает short bias")
+app/recommender.py:1840:        elif direction == "short" and effective_sent > 0.0:
+app/recommender.py:1841:            add_neg("effective_sentiment", effective_sent, -0.12 * effective_sent, "сентимент против short bias")
+app/recommender.py:1936:    """Return a conservative leverage inside the operator-approved interval.
+app/recommender.py:1938:    The operator interval is not a permission to always use the top leverage.
+app/recommender.py:1941:    Execution/preflight liquidation and risk caps still run downstream.
+app/recommender.py:1951:    # Quality is intentionally conservative: high leverage needs a setup that is
+app/recommender.py:1954:    # operator interval; it never bypasses lower/higher runtime guards.
+app/recommender.py:1978:            "leverage": int(lev),
+app/recommender.py:2017:    """Choose the recommendation leverage used by the grid payload.
+app/recommender.py:2020:    allowing the operator minimum leverage. With the default linear taker fee
+app/recommender.py:2021:    (6 bps per side), the round-trip fee floor is already 12 bps and the cost
+app/recommender.py:2029:    actionable leverage and promotion toward the maximum is adaptive: higher
+app/recommender.py:2030:    leverage requires stronger setup quality, thicker net edge and lower ATR.
+app/recommender.py:2045:    dir_norm = str(direction or "neutral").strip().lower()
+app/recommender.py:2055:    directional_setup_quality = dir_strength if dir_norm in {"long", "short"} else 0.0
+app/recommender.py:2112:    directional_quality = dir_norm in {"long", "short"} and dir_strength >= 0.45
+app/recommender.py:2121:    # forever between the thesis gate and the leverage-profile gate.
+app/recommender.py:2137:    """Highest leverage in the operator interval passing approximate liq buffer.
+app/recommender.py:2139:    This is only a pre-selector clamp. The normal economics/risk/preflight checks
+app/recommender.py:2151:    dir_norm = str(direction or "neutral").strip().lower()
+app/recommender.py:2153:    def _side_buffer(side: str, lev: int) -> float | None:
+app/recommender.py:2154:        liq = estimate_linear_liq_price(side, price, lev)
+app/recommender.py:2157:        adverse = adverse_long_price if side == "long" else adverse_short_price
+app/recommender.py:2164:        return liquidation_buffer_pct(side, adverse_f, liq)
+app/recommender.py:2169:            buffers = [_side_buffer("long", lev), _side_buffer("short", lev)]
+app/recommender.py:2173:        elif dir_norm in {"long", "short"}:
+app/recommender.py:2179:            buffers = [_side_buffer("long", lev), _side_buffer("short", lev)]
+app/recommender.py:2255:            "leverage": 1,
+app/recommender.py:2357:    if direction == "long":
+app/recommender.py:2360:    elif direction == "short":
+app/recommender.py:2364:    lower = price * max(0.01, 1.0 - half_span * down_mult)
+app/recommender.py:2365:    upper = price * (1.0 + half_span * up_mult)
+app/recommender.py:2366:    if upper <= lower:
+app/recommender.py:2367:        lower = price * (1.0 - half_span)
+app/recommender.py:2368:        upper = price * (1.0 + half_span)
+app/recommender.py:2370:    # Bybit arithmetic Futures Grid uses lower/upper plus Number of Grids, so the
+app/recommender.py:2375:    actual_grid_step_abs = max(0.0, (upper - lower) / max(1, int(grid_levels)))
+app/recommender.py:2383:        lower = price * max(0.01, 1.0 - half_span * down_mult)
+app/recommender.py:2384:        upper = price * (1.0 + half_span * up_mult)
+app/recommender.py:2385:        range_span_pct_total = (upper - lower) / price if price > 0 else target_span
+app/recommender.py:2386:        actual_grid_step_abs = max(0.0, (upper - lower) / max(1, int(grid_levels)))
+app/recommender.py:2396:    lower_kill_switch = lower - kill_switch_pad if lower > 0 else lower
+app/recommender.py:2397:    upper_kill_switch = upper + kill_switch_pad if upper > 0 else upper
+app/recommender.py:2398:    adverse_long_ref = lower_kill_switch if lower_kill_switch > 0 else lower
+app/recommender.py:2399:    adverse_short_ref = upper_kill_switch if upper_kill_switch > 0 else upper
+app/recommender.py:2411:        "price_range_lower": _round_price(lower, decimals=10),
+app/recommender.py:2412:        "price_range_upper": _round_price(upper, decimals=10),
+app/recommender.py:2435:            # Recommendation leverage must be tied to the exact runtime/operator risk
+app/recommender.py:2438:            # a 1x payload while /risk/status already requires the 3x..5x operator interval.
+app/recommender.py:2456:        leverage, leverage_policy_note, leverage_policy_diag = _select_operator_grid_leverage(
+app/recommender.py:2469:        params["leverage"] = int(leverage)
+app/recommender.py:2474:            "selected_leverage": int(leverage),
+app/recommender.py:2481:        params["leverage"] = 1
+app/recommender.py:2490:    # Runtime risk caps must account for fixed-qty grid orders at the highest
+app/recommender.py:2491:    # executable price, not only qty * reference_price.  Otherwise an upper grid
+app/recommender.py:2492:    # boundary can understate notional/margin for long and neutral/short grids.
+app/recommender.py:2493:    worst_case_order_notional = float(order_qty) * max(float(price), float(lower), float(upper))
+app/recommender.py:2495:    leverage_used = max(1, int(params.get("leverage") or 1))
+app/recommender.py:2508:    def _liq_metrics(side: str) -> dict[str, Any]:
+app/recommender.py:2509:        liq = estimate_linear_liq_price(side, price, leverage_used) if venue == "linear" else None
+app/recommender.py:2510:        ref_buf = liquidation_buffer_pct(side, price, liq) if liq is not None else None
+app/recommender.py:2511:        adverse_ref = adverse_long_ref if side == "long" else adverse_short_ref
+app/recommender.py:2512:        adverse_buf = liquidation_buffer_pct(side, adverse_ref, liq) if liq is not None and adverse_ref > 0 else None
+app/recommender.py:2524:        long_metrics = _liq_metrics("long")
+app/recommender.py:2525:        short_metrics = _liq_metrics("short")
+app/recommender.py:2553:            "liquidation_model": "approx_linear_isolated; buffer is worst of reference and kill-switch boundary; exact Bybit liq depends on risk tier, mark price and wallet margin",
+app/recommender.py:2557:        liq_side = direction if direction in ("long", "short") else "long"
+app/recommender.py:2577:            "liquidation_model": "approx_linear_isolated; buffer is worst of reference and kill-switch boundary; exact Bybit liq depends on risk tier, mark price and wallet margin",
+app/recommender.py:2601:# could accidentally confirm a freshly flipped short using a previous long signal.
+app/recommender.py:2653:    for other_dir in ("long", "short", "neutral"):
+app/recommender.py:2662:    for other_dir in ("long", "short", "neutral"):
+app/recommender.py:2796:        and raw_direction in ("long", "short")
+app/recommender.py:2803:    if raw_direction in ("long", "short") and not directional_range_ok and (abs(score_all) < enter_thr or trendiness < trend_enter_thr):
+app/recommender.py:2816:    if prev_direction in ("long", "short"):
+app/recommender.py:2819:        weak_opposite_flip = current_direction in ("long", "short") and current_direction != prev_direction and (
+app/recommender.py:2830:    if final_direction == "neutral" and raw_bias in ("long", "short") and abs(score_all) >= exit_thr:
+app/recommender.py:2832:    elif final_direction in ("long", "short"):
+app/recommender.py:3027:    status_norm = str(status_value or "").strip().lower()
+app/recommender.py:3035:    target = str(llm_review.get("publish_target_status") or "").strip().lower()
+app/recommender.py:3312:            # spread/cost assumptions and can silently misprice execution risk.
+app/recommender.py:3409:    # Cache risk status once per cycle — avoids 450+ extra DB queries/cycle with 30 symbols.
+app/recommender.py:3470:                if price_dir == "long":
+app/recommender.py:3471:                    oi_sig["signal"] = "bullish"   # price up + OI up → healthy long
+app/recommender.py:3472:                elif price_dir == "short":
+app/recommender.py:3520:            # A high-confidence trend with weak range score is not just lower-scoring; it is a domain veto.
+app/recommender.py:3548:            # Gate must be keyed off the *payer* side, not only off semantic longs.
+app/recommender.py:3726:                selected_leverage = _finite_or_none(params.get("leverage"))
+app/recommender.py:3731:                        f"идея не проходит текущий 3-5x leverage profile без ослабления risk policy; "
+app/recommender.py:3734:                        else f"идея не проходит текущий 3-5x leverage profile без ослабления risk policy; reason={policy_note}"
+app/recommender.py:3754:                "leverage": params.get("leverage"),
+app/recommender.py:3789:                leverage_used = _finite_or_none(params.get("leverage"))
+app/recommender.py:3791:                    blocks.append({"code": "MIN_LEVERAGE_PER_BOT", "msg": f"leverage={leverage_used:.0f}x < operator minimum={min_leverage:.0f}x"})
+app/recommender.py:3793:                    blocks.append({"code": "MAX_LEVERAGE_PER_BOT", "msg": f"leverage={leverage_used:.0f}x > runtime cap={max_leverage:.0f}x"})
+app/recommender.py:3843:                "max_adverse_scenario": "цена выходит за range/kill-switch, сетка накапливает направленную позицию против движения; funding/fees продолжают ухудшать equity",
+app/regime.py:33:    # vol_state: prefer 1h ATR (matches scorer) over 1m ATR (regime display was 59× lower).
+app/risk.py:194:    if tz_name.upper() in {"UTC", "Z", "ETC/UTC", "ETC/GMT", "GMT"}:
+app/risk.py:206:    """Возвращает канонический runtime-набор risk limits.
+app/risk.py:242:        """SELECT ts, (pnl - fee) AS net_pnl
+app/risk.py:274:            """SELECT ts FROM trades WHERE (pnl - fee) < 0 ORDER BY ts DESC LIMIT 1"""
+app/risk.py:308:    # Accept pre-computed risk status to avoid re-querying DB per (symbol, bot_type)
+app/sentiment.py:111:    t = (text or "").lower()
+app/sentiment.py:158:    симулировать сильный risk-off.
+app/sentiment.py:169:    kw_tokens = re.findall(r"[a-z0-9']+", (keyword or "").lower())
+app/sentiment.py:174:    normalized = " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
+app/sentiment.py:240:                full  = (title + " " + desc).lower()
+app/sentiment_features.py:17:    симулировать экстремальный risk-on/risk-off. Для sentiment safer default —
+app/settings.py:43:    # валидный JSON. Для risk-конфига это опасно: не-finite значения могут
+app/settings.py:119:        symbol = chunk.strip().upper()
+app/settings.py:128:    base = str(symbol or "").strip().upper()[:-4] if str(symbol or "").strip().upper().endswith("USDT") else ""
+app/settings.py:129:    normalized = str(symbol or "").strip().upper()
+app/settings.py:212:        venue = str(raw_venue or "").strip().lower()
+app/settings.py:241:    require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1", "true", "yes", "y")
+app/settings.py:243:    llm_reviewer_enabled = _env("LLM_REVIEWER_ENABLED", "0").strip().lower() in ("1", "true", "yes", "y")
+app/settings.py:244:    llm_reviewer_mode = _env("LLM_REVIEWER_MODE", "advisory").strip().lower()
+app/settings.py:247:    llm_reviewer_provider = _env("LLM_REVIEWER_PROVIDER", "ollama").strip().lower() or "ollama"
+app/settings.py:261:    backfill_full_sweep_on_warmup = _env("BACKFILL_FULL_SWEEP_ON_WARMUP", "1").strip().lower() in ("1", "true", "yes", "y")
+app/settings.py:263:    futures_meta_during_warmup = _env("FUTURES_META_DURING_WARMUP", "0").strip().lower() in ("1", "true", "yes", "y")
+app/settings.py:273:    db_engine_raw = _env("DB_ENGINE", SQLITE).strip().lower()
+app/shock_guard.py:84:        "red_down": "Не открывать новые grid-боты. Действующие long/neutral пересмотреть вручную; держать только reduce-only логику на стороне биржи.",
+app/shock_guard.py:86:        "red_up": "Не открывать новые grid-боты. Действующие short/neutral пересмотреть вручную; держать только reduce-only логику на стороне биржи.",
+app/shock_guard.py:116:            note = "Guarded mode is released with a short cooldown to avoid oscillation around the threshold."
+app/shock_guard.py:123:        out["entry_mode"] = action.lower()
+app/shock_guard.py:277:            sym2 = str(sym or "").upper()
+app/shock_guard.py:519:        "entry_mode": action.lower(),
+app/shock_guard.py:578:    if direction == "long" and (r1m <= -0.006 and r3m <= -0.010 and r5m <= -0.018 and volume_z >= 0.75):
+app/shock_guard.py:582:            "msg": f"{symbol}: 1m={r1m*100:.2f}%, 3m={r3m*100:.2f}%, 5m={r5m*100:.2f}% при volume_z={volume_z:.2f} — long запрещён",
+app/shock_guard.py:584:    elif direction == "short" and (r1m >= 0.006 and r3m >= 0.010 and r5m >= 0.018 and volume_z >= 0.75):
+app/shock_guard.py:588:            "msg": f"{symbol}: 1m=+{r1m*100:.2f}%, 3m=+{r3m*100:.2f}%, 5m=+{r5m*100:.2f}% при volume_z={volume_z:.2f} — short запрещён",
+app/shock_guard.py:633:    if state == "amber_down" and direction == "long":
+app/shock_guard.py:639:    if state == "amber_up" and direction == "short":
+app/trading_semantics.py:4:place that renders or validates long/short exits must share one small source of
+app/trading_semantics.py:5:truth so a UI label cannot drift away from the backend risk model.
+app/trading_semantics.py:14:SUPPORTED_EXECUTION_DIRECTIONS = {"long", "short", "neutral"}
+app/trading_semantics.py:15:DIRECTIONAL_EXECUTION_DIRECTIONS = {"long", "short"}
+app/trading_semantics.py:19:    direction = str(value or "").strip().lower()
+app/trading_semantics.py:50:    """Map outer kill-switch bounds to directional operator exit levels.
+app/trading_semantics.py:52:    Long positions profit upward and lose downward, so TP is the upper boundary
+app/trading_semantics.py:53:    and SL is the lower boundary.  Shorts are the exact opposite.  Neutral grids
+app/trading_semantics.py:54:    do not have a single directional TP; both outer bounds are kill-switch exits.
+app/trading_semantics.py:57:    lower = _finite_float(kill_switch_lower)
+app/trading_semantics.py:58:    upper = _finite_float(kill_switch_upper)
+app/trading_semantics.py:59:    if direction_norm == "short":
+app/trading_semantics.py:61:            direction="short",
+app/trading_semantics.py:62:            take_profit=lower,
+app/trading_semantics.py:63:            stop_loss=upper,
+app/trading_semantics.py:64:            kill_switch_lower=lower,
+app/trading_semantics.py:65:            kill_switch_upper=upper,
+app/trading_semantics.py:68:            geometry="short: TP ниже entry/range, SL выше entry/range",
+app/trading_semantics.py:71:    if direction_norm == "long":
+app/trading_semantics.py:73:            direction="long",
+app/trading_semantics.py:74:            take_profit=upper,
+app/trading_semantics.py:75:            stop_loss=lower,
+app/trading_semantics.py:76:            kill_switch_lower=lower,
+app/trading_semantics.py:77:            kill_switch_upper=upper,
+app/trading_semantics.py:80:            geometry="long: TP выше entry/range, SL ниже entry/range",
+app/trading_semantics.py:87:        kill_switch_lower=lower,
+app/trading_semantics.py:88:        kill_switch_upper=upper,
+app/trading_semantics.py:90:        stop_loss_label="Kill-switch lower / upper",
+app/trading_semantics.py:91:        geometry="neutral: направленного TP нет; оба внешних уровня являются kill-switch exits",
+app/trading_semantics.py:100:    tp = _finite_float(take_profit)
+app/trading_semantics.py:101:    sl = _finite_float(stop_loss)
+app/trading_semantics.py:108:    if tp is None or tp <= 0:
+app/trading_semantics.py:110:    if sl is None or sl <= 0:
+app/trading_semantics.py:112:    if tp is None or tp <= 0 or sl is None or sl <= 0:
+app/trading_semantics.py:115:    if direction_norm == "long":
+app/trading_semantics.py:116:        if tp <= entry:
+app/trading_semantics.py:117:            errors.append({"code": "LONG_TP_NOT_ABOVE_ENTRY", "msg": f"long Take Profit={tp} must be above entry/reference={entry}."})
+app/trading_semantics.py:118:        if sl >= entry:
+app/trading_semantics.py:119:            errors.append({"code": "LONG_SL_NOT_BELOW_ENTRY", "msg": f"long Stop Loss={sl} must be below entry/reference={entry}."})
+app/trading_semantics.py:120:    elif direction_norm == "short":
+app/trading_semantics.py:121:        if tp >= entry:
+app/trading_semantics.py:122:            errors.append({"code": "SHORT_TP_NOT_BELOW_ENTRY", "msg": f"short Take Profit={tp} must be below entry/reference={entry}."})
+app/trading_semantics.py:123:        if sl <= entry:
+app/trading_semantics.py:124:            errors.append({"code": "SHORT_SL_NOT_ABOVE_ENTRY", "msg": f"short Stop Loss={sl} must be above entry/reference={entry}."})
+app/trading_semantics.py:130:    """Executable long/short price semantics for one-way linear USDT positions.
+app/trading_semantics.py:134:    below instead of silently producing a negative risk/reward value.
+app/trading_semantics.py:161:    """Return canonical PnL/risk/reward semantics for a directional trade.
+app/trading_semantics.py:172:    tp = _finite_float(take_profit)
+app/trading_semantics.py:173:    sl = _finite_float(stop_loss)
+app/trading_semantics.py:175:    if entry is None or tp is None or sl is None or quantity is None:
+app/trading_semantics.py:177:    if entry <= 0 or tp <= 0 or sl <= 0 or quantity <= 0:
+app/trading_semantics.py:179:    if validate_directional_exit_geometry(direction_norm, entry, tp, sl):
+app/trading_semantics.py:182:    if direction_norm == "long":
+app/trading_semantics.py:183:        profit_per_unit = tp - entry
+app/trading_semantics.py:184:        loss_per_unit = entry - sl
+app/trading_semantics.py:186:        profit_per_unit = entry - tp
+app/trading_semantics.py:187:        loss_per_unit = sl - entry
+app/trading_semantics.py:202:        take_profit=float(tp),
+app/trading_semantics.py:203:        stop_loss=float(sl),
+app/trading_semantics.py:216:    """Canonical one-way Bybit V5 side/reduceOnly mapping for directional orders.
+app/trading_semantics.py:223:    action_norm = str(action or "").strip().lower()
+app/trading_semantics.py:230:        side = "Buy" if direction_norm == "long" else "Sell"
+app/trading_semantics.py:233:        side = "Sell" if direction_norm == "long" else "Buy"
+app/trading_semantics.py:242:        "side": side,
+app/trading_semantics.py:243:        "reduceOnly": reduce_only,
+app/trading_semantics.py:249:    exit_norm = str(exit_kind or "").strip().lower().replace(" ", "_").replace("-", "_")
+app/trading_semantics.py:251:        "tp": "take_profit",
+app/trading_semantics.py:254:        "sl": "stop_loss",
+app/trading_semantics.py:267:    # Long TP and short SL trigger on rises; short TP and long SL trigger on falls.
+app/trading_semantics.py:268:    return 1 if (direction == "long") == (purpose == "take_profit") else 2
+app/trading_semantics.py:275:    must therefore use the same side as a close order, set reduceOnly and
+app/trading_semantics.py:285:        # triggerDirection/triggerBy, while reduceOnly+closeOnTrigger prevents a
+app/trading_semantics.py:291:        "reduceOnly": True,
+app/trading_semantics.py:305:    This is stricter than generic order-side mapping: it catches the dangerous
+app/trading_semantics.py:306:    class of bugs where short TP/SL prices or triggerDirection are visually or
+app/trading_semantics.py:307:    programmatically inverted while the reduce-only side still looks plausible.
+app/trading_semantics.py:316:        errors.append({"code": "PROTECTIVE_DIRECTION_INVALID", "msg": "protective TP/SL requires long or short direction."})
+app/trading_semantics.py:325:    if direction_norm == "long" and purpose == "take_profit" and trigger <= ref:
+app/trading_semantics.py:326:        errors.append({"code": "LONG_TP_TRIGGER_NOT_ABOVE_REFERENCE", "msg": f"long TP trigger={trigger} must be above reference={ref}."})
+app/trading_semantics.py:327:    elif direction_norm == "long" and purpose == "stop_loss" and trigger >= ref:
+app/trading_semantics.py:328:        errors.append({"code": "LONG_SL_TRIGGER_NOT_BELOW_REFERENCE", "msg": f"long SL trigger={trigger} must be below reference={ref}."})
+app/trading_semantics.py:329:    elif direction_norm == "short" and purpose == "take_profit" and trigger >= ref:
+app/trading_semantics.py:330:        errors.append({"code": "SHORT_TP_TRIGGER_NOT_BELOW_REFERENCE", "msg": f"short TP trigger={trigger} must be below reference={ref}."})
+app/trading_semantics.py:331:    elif direction_norm == "short" and purpose == "stop_loss" and trigger <= ref:
+app/trading_semantics.py:332:        errors.append({"code": "SHORT_SL_TRIGGER_NOT_ABOVE_REFERENCE", "msg": f"short SL trigger={trigger} must be above reference={ref}."})
+app/trading_semantics.py:353:    one-way close side, triggerDirection and triggerPrice that correspond to the
+app/trading_semantics.py:363:            "msg": "protective TP/SL requires a positive finite reference price to prove the trigger is on the correct side of entry.",
+app/ui/static/app.js:167:  if (normalized === "long") return "Лонг";
+app/ui/static/app.js:168:  if (normalized === "short") return "Шорт";
+app/ui/static/app.js:572:  if (dir === "short") {
+app/ui/static/app.js:578:      exitGeometry: "short: TP ниже диапазона, SL выше диапазона",
+app/ui/static/app.js:581:  if (dir === "long") {
+app/ui/static/app.js:587:      exitGeometry: "long: TP выше диапазона, SL ниже диапазона",
+app/ui/static/app.js:595:    exitGeometry: "neutral: нет направленного TP; контроль выхода по нижнему/верхнему kill-switch",
+app/ui/static/app.js:601:  const tp = toFiniteNumber(takeProfit);
+app/ui/static/app.js:602:  const sl = toFiniteNumber(stopLoss);
+app/ui/static/app.js:604:  if (dir !== "long" && dir !== "short") return true;
+app/ui/static/app.js:605:  if (tp === null || sl === null || ref === null || tp <= 0 || sl <= 0 || ref <= 0) return false;
+app/ui/static/app.js:606:  if (dir === "long") return tp > ref && sl < ref;
+app/ui/static/app.js:607:  return tp < ref && sl > ref;
+app/ui/static/app.js:613:  const lower = formatBybitPrice(exitLevels.kill_switch_lower, meta, "down");
+app/ui/static/app.js:614:  const upper = formatBybitPrice(exitLevels.kill_switch_upper, meta, "up");
+app/ui/static/app.js:615:  const hasDirectionalTp = exitLevels.has_directional_take_profit === true && (dir === "long" || dir === "short");
+app/ui/static/app.js:620:      stopLossValue: `${lower} / ${upper}`,
+app/ui/static/app.js:623:      exitGeometry: `backend directional TP/SL invalid; rendering kill-switch only · ${fallback.exitGeometry || ""}`.trim(),
+app/ui/static/app.js:627:    ? formatBybitPrice(exitLevels.take_profit, meta, dir === "short" ? "down" : "up")
+app/ui/static/app.js:630:    ? formatBybitPrice(exitLevels.stop_loss, meta, dir === "short" ? "up" : "down")
+app/ui/static/app.js:631:    : `${lower} / ${upper}`;
+app/ui/static/app.js:651:  const rangeLowerRaw = firstFiniteValue([range, params, operatorSheet], ["lower", "price_range_lower", "range_lower"]);
+app/ui/static/app.js:652:  const rangeUpperRaw = firstFiniteValue([range, params, operatorSheet], ["upper", "price_range_upper", "range_upper"]);
+app/ui/static/app.js:654:  const leverageRaw = firstFiniteValue([params, operatorSheet], ["leverage"]);
+app/ui/static/app.js:659:  const killLower = formatBybitPrice(ks.lower, meta, "down");
+app/ui/static/app.js:660:  const killUpper = formatBybitPrice(ks.upper, meta, "up");
+app/ui/static/app.js:665:  const leverage = it.venue === "linear" ? String(leverageRaw ?? 1) : "—";
+app/ui/static/app.js:679:    leverage,
+app/ui/static/app.js:846:      help: "Оценочный процентный запас до ликвидации с учётом стороны и плеча. Точная цена ликвидации зависит от Bybit risk tier, mark price и маржи аккаунта.",
+app/ui/static/app.js:867:      help: "Ожидаемый неблагоприятный funding за горизонт удержания. Funding — периодические платежи между long и short на perpetual futures.",
+app/ui/static/app.js:924:  const leverageRaw = firstFiniteValue([params, plan, operatorSheet], ["leverage"]);
+app/ui/static/app.js:925:  const leverage = Math.max(1, Number(leverageRaw || 1));
+app/ui/static/app.js:948:    : (marginRequired !== null && Number.isFinite(leverage) ? marginRequired * leverage : null);
+app/ui/static/app.js:951:  const rangeLowerForQty = firstFiniteValue([range, params, operatorSheet], ["lower", "price_range_lower", "range_lower"]);
+app/ui/static/app.js:952:  const rangeUpperForQty = firstFiniteValue([range, params, operatorSheet], ["upper", "price_range_upper", "range_upper"]);
+app/ui/static/app.js:984:    { label: "Плечо", value: ov.leverage, help: "Кредитное плечо linear USDT futures. Увеличивает и прибыль, и риск ликвидации." },
+app/ui/static/app.js:986:    { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help: "Stop Loss / kill-switch — защитный уровень остановки убытка. Для лонга ниже входа, для шорта выше входа." },
+app/ui/static/app.js:987:    { label: "TP/SL дистанция", value: distanceValue, mono: true, help: "Направленные расстояния от расчётного входа до TP и SL. Для short TP считается вниз, SL — вверх; знак не инвертируется форматированием." },
+app/ui/static/app.js:1105:  // Therefore only the persisted operator status may render the score/risk no_trade copy.
+app/ui/static/app.js:1108:  const decisionClass = launchable ? "go" : explicitHardBlocked ? "stop" : "wait";
+app/ui/static/app.js:1203:      <div class="operator-card risk-economics-card">
+app/ui/static/app.js:1431:  const cls = value === "long" ? "dir-long" : value === "short" ? "dir-short" : "dir-neu";
+app/ui/static/app.js:1642:        body: `Истинный neutral и neutralized-short ведут себя по-разному: ${(tn.winRate * 100).toFixed(1)}% vs ${(sn.winRate * 100).toFixed(1)}% WR при n=${tn.total}/${sn.total}. Их нельзя держать в одной строке.`,
+app/ui/static/app.js:1970:  if (dir === "long")  return `<span class="dir-badge dir-long">▲ long</span>`;
+app/ui/static/app.js:1971:  if (dir === "short") return `<span class="dir-badge dir-short">▼ short</span>`;
+app/ui/static/app.js:2026:// ── decisions / risk ──────────────────────────────────────────────────────────
+app/ui/static/app.js:2285:  const res = await fetch("/api/v1/risk/status");
+app/ui/static/styles.css:356:.dir-long  { color: var(--good); border-color: rgba(51,209,122,0.30); background: rgba(51,209,122,0.08); }
+app/ui/static/styles.css:357:.dir-short { color: var(--bad);  border-color: rgba(255,90,122,0.30); background: rgba(255,90,122,0.08); }
+app/ui/static/styles.css:1197:.risk-economics-card {
+app/ui/static/styles.css:1317:.operator-decision-card.stop {
+app/ui/static/app.js:167:  if (normalized === "long") return "Лонг";
+app/ui/static/app.js:168:  if (normalized === "short") return "Шорт";
+app/ui/static/app.js:572:  if (dir === "short") {
+app/ui/static/app.js:578:      exitGeometry: "short: TP ниже диапазона, SL выше диапазона",
+app/ui/static/app.js:581:  if (dir === "long") {
+app/ui/static/app.js:587:      exitGeometry: "long: TP выше диапазона, SL ниже диапазона",
+app/ui/static/app.js:595:    exitGeometry: "neutral: нет направленного TP; контроль выхода по нижнему/верхнему kill-switch",
+app/ui/static/app.js:601:  const tp = toFiniteNumber(takeProfit);
+app/ui/static/app.js:602:  const sl = toFiniteNumber(stopLoss);
+app/ui/static/app.js:604:  if (dir !== "long" && dir !== "short") return true;
+app/ui/static/app.js:605:  if (tp === null || sl === null || ref === null || tp <= 0 || sl <= 0 || ref <= 0) return false;
+app/ui/static/app.js:606:  if (dir === "long") return tp > ref && sl < ref;
+app/ui/static/app.js:607:  return tp < ref && sl > ref;
+app/ui/static/app.js:613:  const lower = formatBybitPrice(exitLevels.kill_switch_lower, meta, "down");
+app/ui/static/app.js:614:  const upper = formatBybitPrice(exitLevels.kill_switch_upper, meta, "up");
+app/ui/static/app.js:615:  const hasDirectionalTp = exitLevels.has_directional_take_profit === true && (dir === "long" || dir === "short");
+app/ui/static/app.js:620:      stopLossValue: `${lower} / ${upper}`,
+app/ui/static/app.js:623:      exitGeometry: `backend directional TP/SL invalid; rendering kill-switch only · ${fallback.exitGeometry || ""}`.trim(),
+app/ui/static/app.js:627:    ? formatBybitPrice(exitLevels.take_profit, meta, dir === "short" ? "down" : "up")
+app/ui/static/app.js:630:    ? formatBybitPrice(exitLevels.stop_loss, meta, dir === "short" ? "up" : "down")
+app/ui/static/app.js:631:    : `${lower} / ${upper}`;
+app/ui/static/app.js:651:  const rangeLowerRaw = firstFiniteValue([range, params, operatorSheet], ["lower", "price_range_lower", "range_lower"]);
+app/ui/static/app.js:652:  const rangeUpperRaw = firstFiniteValue([range, params, operatorSheet], ["upper", "price_range_upper", "range_upper"]);
+app/ui/static/app.js:654:  const leverageRaw = firstFiniteValue([params, operatorSheet], ["leverage"]);
+app/ui/static/app.js:659:  const killLower = formatBybitPrice(ks.lower, meta, "down");
+app/ui/static/app.js:660:  const killUpper = formatBybitPrice(ks.upper, meta, "up");
+app/ui/static/app.js:665:  const leverage = it.venue === "linear" ? String(leverageRaw ?? 1) : "—";
+app/ui/static/app.js:679:    leverage,
+app/ui/static/app.js:846:      help: "Оценочный процентный запас до ликвидации с учётом стороны и плеча. Точная цена ликвидации зависит от Bybit risk tier, mark price и маржи аккаунта.",
+app/ui/static/app.js:867:      help: "Ожидаемый неблагоприятный funding за горизонт удержания. Funding — периодические платежи между long и short на perpetual futures.",
+app/ui/static/app.js:924:  const leverageRaw = firstFiniteValue([params, plan, operatorSheet], ["leverage"]);
+app/ui/static/app.js:925:  const leverage = Math.max(1, Number(leverageRaw || 1));
+app/ui/static/app.js:948:    : (marginRequired !== null && Number.isFinite(leverage) ? marginRequired * leverage : null);
+app/ui/static/app.js:951:  const rangeLowerForQty = firstFiniteValue([range, params, operatorSheet], ["lower", "price_range_lower", "range_lower"]);
+app/ui/static/app.js:952:  const rangeUpperForQty = firstFiniteValue([range, params, operatorSheet], ["upper", "price_range_upper", "range_upper"]);
+app/ui/static/app.js:984:    { label: "Плечо", value: ov.leverage, help: "Кредитное плечо linear USDT futures. Увеличивает и прибыль, и риск ликвидации." },
+app/ui/static/app.js:986:    { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help: "Stop Loss / kill-switch — защитный уровень остановки убытка. Для лонга ниже входа, для шорта выше входа." },
+app/ui/static/app.js:987:    { label: "TP/SL дистанция", value: distanceValue, mono: true, help: "Направленные расстояния от расчётного входа до TP и SL. Для short TP считается вниз, SL — вверх; знак не инвертируется форматированием." },
+app/ui/static/app.js:1105:  // Therefore only the persisted operator status may render the score/risk no_trade copy.
+app/ui/static/app.js:1108:  const decisionClass = launchable ? "go" : explicitHardBlocked ? "stop" : "wait";
+app/ui/static/app.js:1203:      <div class="operator-card risk-economics-card">
+app/ui/static/app.js:1431:  const cls = value === "long" ? "dir-long" : value === "short" ? "dir-short" : "dir-neu";
+app/ui/static/app.js:1642:        body: `Истинный neutral и neutralized-short ведут себя по-разному: ${(tn.winRate * 100).toFixed(1)}% vs ${(sn.winRate * 100).toFixed(1)}% WR при n=${tn.total}/${sn.total}. Их нельзя держать в одной строке.`,
+app/ui/static/app.js:1970:  if (dir === "long")  return `<span class="dir-badge dir-long">▲ long</span>`;
+app/ui/static/app.js:1971:  if (dir === "short") return `<span class="dir-badge dir-short">▼ short</span>`;
+app/ui/static/app.js:2026:// ── decisions / risk ──────────────────────────────────────────────────────────
+app/ui/static/app.js:2285:  const res = await fetch("/api/v1/risk/status");
+app/ui/static/styles.css:356:.dir-long  { color: var(--good); border-color: rgba(51,209,122,0.30); background: rgba(51,209,122,0.08); }
+app/ui/static/styles.css:357:.dir-short { color: var(--bad);  border-color: rgba(255,90,122,0.30); background: rgba(255,90,122,0.08); }
+app/ui/static/styles.css:1197:.risk-economics-card {
+app/ui/static/styles.css:1317:.operator-decision-card.stop {
+tests/conftest.py:12:def safe_linear_grid_params(params: dict | None = None, *, reference: float = 100.5, lower: float = 95.0, upper: float = 105.0) -> dict:
+tests/conftest.py:24:    payload.setdefault("leverage", 1)
+tests/conftest.py:26:    payload.setdefault("price_range_lower", lower)
+tests/conftest.py:27:    payload.setdefault("price_range_upper", upper)
+tests/conftest.py:28:    step_abs = max(0.1, round((float(upper) - float(lower)) / max(1, grid_count + 2), 1))
+tests/conftest.py:37:                "range": {"lower": float(lower), "upper": float(upper)},
+tests/conftest.py:38:                "kill_switch": {"lower": float(lower) - step_abs, "upper": float(upper) + step_abs},
+tests/test_api.py:25:    monkeypatch.setattr(app_main, '_fetch_bybit_instrument_meta', lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
+tests/test_api.py:33:        payload.setdefault('leverage', 1)
+tests/test_api.py:35:        lower = float(payload.get('price_range_lower') or 95.0)
+tests/test_api.py:36:        upper = float(payload.get('price_range_upper') or 105.0)
+tests/test_api.py:41:        payload.setdefault('price_range_lower', lower)
+tests/test_api.py:42:        payload.setdefault('price_range_upper', upper)
+tests/test_api.py:49:                    'range': {'lower': lower, 'upper': upper},
+tests/test_api.py:50:                    'kill_switch': {'lower': lower - 1.0, 'upper': upper + 1.0},
+tests/test_api.py:194:                'direction': 'long',
+tests/test_api.py:237:        'pnl': 12.5,
+tests/test_api.py:289:                'direction': 'long',
+tests/test_api.py:354:                "direction": "long",
+tests/test_api.py:418:                "direction": "long",
+tests/test_api.py:439:                "direction": "long",
+tests/test_api.py:591:                "direction": "long",
+tests/test_api.py:612:                "direction": "long",
+tests/test_api.py:633:                "direction": "long",
+tests/test_api.py:673:                'direction': 'long',
+tests/test_api.py:702:        'pnl': 8.0,
+tests/test_api.py:756:                'direction': 'long',
+tests/test_api.py:785:        'pnl': 5.0,
+tests/test_api.py:829:                'direction': 'long',
+tests/test_api.py:868:        'risk-live-block',
+tests/test_api.py:879:            'bot_id': 'B-risk-existing',
+tests/test_api.py:885:            'mode': {'account_mode': 'one_way', 'margin_mode': 'isolated', 'direction': 'long'},
+tests/test_api.py:889:            'origin_rec_id': 'R-risk-existing',
+tests/test_api.py:896:                'rec_id': 'R-api-risk-blocked-exec',
+tests/test_api.py:901:                'direction': 'long',
+tests/test_api.py:920:        '/api/v1/recommendations/R-api-risk-blocked-exec/action',
+tests/test_api.py:925:    assert 'execution blocked by current risk limits' in resp.json()['detail']
+tests/test_api.py:928:    assert db.get_bot_by_origin_rec(conn, 'R-api-risk-blocked-exec') is None
+tests/test_api.py:929:    rec = db.get_recommendation_by_id(conn, 'R-api-risk-blocked-exec')
+tests/test_api.py:936:        if row['action'] == 'EXECUTION_BLOCKED' and row['rec_id'] == 'R-api-risk-blocked-exec'
+tests/test_api.py:955:                "direction": "long",
+tests/test_api.py:976:                "direction": "long",
+tests/test_api.py:1016:                'direction': 'long',
+tests/test_api.py:1037:                'direction': 'long',
+tests/test_api.py:1088:                'direction': 'long',
+tests/test_api.py:1199:                "direction": "long",
+tests/test_api.py:1241:                'rec_id': 'R-api-stop-retry',
+tests/test_api.py:1246:                'direction': 'long',
+tests/test_api.py:1265:        '/api/v1/recommendations/R-api-stop-retry/action',
+tests/test_api.py:1273:        'trade_id': 'T-api-stop-retry',
+tests/test_api.py:1275:        'pnl': 5.0,
+tests/test_api.py:1318:                'direction': 'long',
+tests/test_api.py:1345:        json={'trade_id': 'T-bad', 'ts': ts_now + 60, 'pnl': 'inf', 'fee': 0.1},
+tests/test_api.py:1365:                'direction': 'long',
+tests/test_api.py:1490:                'direction': 'long',
+tests/test_api.py:1632:                'direction': 'long',
+tests/test_api.py:1655:                'direction': 'long',
+tests/test_api.py:1719:                'direction': 'long',
+tests/test_api.py:1742:                'direction': 'short',
+tests/test_api.py:1779:    assert bots[0]['mode']['direction'] == 'long'
+tests/test_api.py:1799:                'direction': 'long',
+tests/test_api.py:1817:                'rec_id': 'R-chain-active-after-stop',
+tests/test_api.py:1822:                'direction': 'long',
+tests/test_api.py:1854:        f'/api/v1/bots/{first_bot_id}/stop',
+tests/test_api.py:1862:        '/api/v1/recommendations/R-chain-active-after-stop/action',
+tests/test_api.py:1872:    assert second_body['bot']['origin_rec_id'] == 'R-chain-active-after-stop'
+tests/test_api.py:1880:    assert running[0]['origin_rec_id'] == 'R-chain-active-after-stop'
+tests/test_api.py:1883:    active_rec = db.get_recommendation_by_id(conn, 'R-chain-active-after-stop')
+tests/test_api.py:1896:                'rec_id': 'R-stop-idempotent',
+tests/test_api.py:1901:                'direction': 'long',
+tests/test_api.py:1920:        '/api/v1/recommendations/R-stop-idempotent/action',
+tests/test_api.py:1928:        f'/api/v1/bots/{bot_id}/stop',
+tests/test_api.py:1936:        f'/api/v1/bots/{bot_id}/stop',
+tests/test_api.py:1952:        '/api/v1/risk/limits',
+tests/test_api.py:1977:                'direction': 'long',
+tests/test_api.py:2004:        content='{"trade_id":"T-api-meta-nan","ts":%d,"pnl":1.0,"fee":0.1,"meta":{"fills":{"maker":NaN}}}' % (ts_now + 10),
+tests/test_api.py:2035:    resp = client.get('/api/v1/risk/status')
+tests/test_api.py:2050:                'rec_id': 'R-stop-ts-sync',
+tests/test_api.py:2055:                'direction': 'long',
+tests/test_api.py:2074:        '/api/v1/recommendations/R-stop-ts-sync/action',
+tests/test_api.py:2084:        f'/api/v1/bots/{bot_id}/stop',
+tests/test_api.py:2085:        json={'operator': 'tester', 'reason': 'manual stop'},
+tests/test_api.py:2105:                'rec_id': 'R-trade-stop-ts-sync',
+tests/test_api.py:2110:                'direction': 'long',
+tests/test_api.py:2129:        '/api/v1/recommendations/R-trade-stop-ts-sync/action',
+tests/test_api.py:2141:            'trade_id': 'T-trade-stop-ts-sync',
+tests/test_api.py:2143:            'pnl': 3.5,
+tests/test_api.py:2174:                "direction": "long",
+tests/test_api.py:2197:                "direction": "long",
+tests/test_api.py:2251:                'direction': 'long',
+tests/test_api.py:2283:                'direction': 'short',
+tests/test_api.py:2306:                'direction': 'long',
+tests/test_grid_linear_economics.py:17:    assert linear_pnl_usdt("long", "0.5", "10000", "10100") == pytest.approx(50)
+tests/test_grid_linear_economics.py:18:    assert linear_pnl_usdt("short", "0.5", "10000", "9900") == pytest.approx(50)
+tests/test_grid_linear_economics.py:19:    assert linear_pnl_usdt("short", "0.5", "10000", "10100") == pytest.approx(-50)
+tests/test_grid_linear_economics.py:91:    assert float(funding_cashflow_usdt("long", "1000", "0.0001", 2)) == pytest.approx(0.2)
+tests/test_grid_linear_economics.py:92:    assert float(funding_cashflow_usdt("short", "1000", "0.0001", 2)) == pytest.approx(-0.2)
+tests/test_grid_linear_economics.py:97:    liq = estimate_linear_liq_price("long", "100", "5")
+tests/test_grid_linear_economics.py:99:    assert float(liquidation_buffer_pct("long", "100", liq)) == pytest.approx(19.4)
+tests/test_grid_linear_economics.py:129:        direction="long",
+tests/test_grid_linear_economics.py:131:        direction_bias="long",
+tests/test_grid_linear_economics.py:138:    assert params["leverage"] == 3
+tests/test_grid_linear_economics.py:201:    # (upper - lower) / grid_count, while the economic minimum remains a floor.
+tests/test_grid_linear_economics.py:203:    lower = params["price_range_lower"]
+tests/test_grid_linear_economics.py:204:    upper = params["price_range_upper"]
+tests/test_grid_linear_economics.py:206:    actual_step_pct = ((upper - lower) / params["grid_count"]) / ref * 100.0
+tests/test_iteration101_resilience_hardening.py:28:    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
+tests/test_iteration101_resilience_hardening.py:94:        "long",
+tests/test_iteration101_resilience_hardening.py:121:                "direction": "long",
+tests/test_iteration101_resilience_hardening.py:159:            "pnl": 10.0,
+tests/test_iteration101_resilience_hardening.py:166:        pnl=10.0,
+tests/test_iteration102_shutdown_and_llm_rank_hardening.py:42:            execution_direction="long",
+tests/test_iteration102_shutdown_and_llm_rank_hardening.py:43:            thesis_direction="long",
+tests/test_iteration102_shutdown_and_llm_rank_hardening.py:105:            "direction": "long",
+tests/test_iteration102_shutdown_and_llm_rank_hardening.py:171:            "direction": "long",
+tests/test_iteration102_shutdown_and_llm_rank_hardening.py:186:            "direction": "long",
+tests/test_iteration104_security_and_transport_hardening.py:89:    assert "loopback" in resp.json()["detail"].lower()
+tests/test_iteration104_security_and_transport_hardening.py:159:    assert "loopback" in env_example.lower()
+tests/test_iteration104_security_and_transport_hardening.py:160:    assert "loopback" in readme.lower()
+tests/test_iteration105_execution_preflight_and_bybit_validation.py:46:                "direction": "long",
+tests/test_iteration105_execution_preflight_and_bybit_validation.py:55:                    "leverage": 2,
+tests/test_iteration105_execution_preflight_and_bybit_validation.py:59:                            "range": {"lower": 99.12, "upper": 101.12},
+tests/test_iteration105_execution_preflight_and_bybit_validation.py:60:                            "kill_switch": {"lower": 98.52, "upper": 101.72},
+tests/test_iteration105_execution_preflight_and_bybit_validation.py:81:    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
+tests/test_iteration105_execution_preflight_and_bybit_validation.py:143:    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
+tests/test_iteration106_grid_tp_success_semantics.py:29:    conn = db.connect(str(tmp_path / "grid-long-tp.db"))
+tests/test_iteration106_grid_tp_success_semantics.py:48:                    "range": {"lower": 95.0, "upper": 105.0},
+tests/test_iteration106_grid_tp_success_semantics.py:49:                    "kill_switch": {"lower": 94.5, "upper": 105.5},
+tests/test_iteration106_grid_tp_success_semantics.py:63:            "long",
+tests/test_iteration106_grid_tp_success_semantics.py:74:    conn = db.connect(str(tmp_path / "grid-short-tp.db"))
+tests/test_iteration106_grid_tp_success_semantics.py:91:                    "range": {"lower": 95.0, "upper": 105.0},
+tests/test_iteration106_grid_tp_success_semantics.py:92:                    "kill_switch": {"lower": 94.5, "upper": 105.5},
+tests/test_iteration106_grid_tp_success_semantics.py:106:            "short",
+tests/test_iteration106_grid_tp_success_semantics.py:117:    conn = db.connect(str(tmp_path / "grid-neutral-one-sided-tp.db"))
+tests/test_iteration106_grid_tp_success_semantics.py:134:                    "range": {"lower": 95.0, "upper": 105.0},
+tests/test_iteration106_grid_tp_success_semantics.py:135:                    "kill_switch": {"lower": 94.5, "upper": 105.5},
+tests/test_iteration107_execution_and_validation_hardening.py:27:    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
+tests/test_iteration107_execution_and_validation_hardening.py:58:                "direction": "long",
+tests/test_iteration107_execution_and_validation_hardening.py:67:                    "leverage": 2,
+tests/test_iteration107_execution_and_validation_hardening.py:71:                            "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration107_execution_and_validation_hardening.py:72:                            "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration107_execution_and_validation_hardening.py:106:            "mode": {"account_mode": "unified", "margin_mode": "isolated", "direction": "long"},
+tests/test_iteration107_execution_and_validation_hardening.py:146:            "mode": {"account_mode": "unified", "margin_mode": "isolated", "direction": "long"},
+tests/test_iteration107_execution_and_validation_hardening.py:180:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration107_execution_and_validation_hardening.py:181:                    "kill_switch": {"lower": 99.2, "upper": 100.8},
+tests/test_iteration107_execution_and_validation_hardening.py:213:                    "range": {"lower": 99.96, "upper": 100.04},
+tests/test_iteration107_execution_and_validation_hardening.py:214:                    "kill_switch": {"lower": 99.80, "upper": 100.20},
+tests/test_iteration107_execution_and_validation_hardening.py:277:                "direction": "long",
+tests/test_iteration107_execution_and_validation_hardening.py:291:# recommendation: неподдерживаемый margin_mode и leverage вне шага/границ Bybit не должны
+tests/test_iteration107_execution_and_validation_hardening.py:299:        "direction": "long",
+tests/test_iteration107_execution_and_validation_hardening.py:303:            "leverage": 2.15,
+tests/test_iteration107_execution_and_validation_hardening.py:307:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration107_execution_and_validation_hardening.py:308:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration107_execution_and_validation_hardening.py:332:    assert validation["snapped_levels"]["leverage"] == "2.2"
+tests/test_iteration107_execution_and_validation_hardening.py:423:        "direction": "long",
+tests/test_iteration107_execution_and_validation_hardening.py:426:            "leverage": 2,
+tests/test_iteration107_execution_and_validation_hardening.py:430:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration107_execution_and_validation_hardening.py:431:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration107_execution_and_validation_hardening.py:456:# Такой mismatch должен блокировать execution preflight, иначе ограничения tick/leverage будут недостоверны.
+tests/test_iteration107_execution_and_validation_hardening.py:464:        "direction": "long",
+tests/test_iteration107_execution_and_validation_hardening.py:468:            "leverage": 2,
+tests/test_iteration107_execution_and_validation_hardening.py:472:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration107_execution_and_validation_hardening.py:473:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration107_execution_and_validation_hardening.py:550:        "direction": "long",
+tests/test_iteration107_execution_and_validation_hardening.py:554:            "leverage": 2,
+tests/test_iteration107_execution_and_validation_hardening.py:558:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration107_execution_and_validation_hardening.py:559:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration107_execution_and_validation_hardening.py:604:        "direction": "long",
+tests/test_iteration107_execution_and_validation_hardening.py:607:        "params": {"grid_levels": 8, "leverage": 2, "margin_mode": "isolated"},
+tests/test_iteration108_outcome_queue_and_docs_audit.py:125:        assert 'docs/audit_' not in payload.lower()
+tests/test_iteration110_postgres_lock_and_publication_root_safety.py:31:        normalized = " ".join(str(sql).split()).lower()
+tests/test_iteration110_postgres_lock_and_publication_root_safety.py:76:                "R-root", 1_800_000_000, "linear", "BTCUSDT", "futures_grid", "long", "unified", "isolated",
+tests/test_iteration110_postgres_lock_and_publication_root_safety.py:88:                "R-child", 1_800_000_060, "linear", "BTCUSDT", "futures_grid", "long", "unified", "isolated",
+tests/test_iteration110_postgres_lock_and_publication_root_safety.py:102:            "mode": {"account_mode": "unified", "margin_mode": "isolated", "direction": "long"},
+tests/test_iteration110_postgres_lock_and_publication_root_safety.py:116:            "mode": {"account_mode": "unified", "margin_mode": "isolated", "direction": "long"},
+tests/test_iteration111_postgres_row_locking_and_release_artifacts.py:25:        normalized = " ".join(str(sql).split()).lower()
+tests/test_iteration111_postgres_row_locking_and_release_artifacts.py:34:                    "direction": "long",
+tests/test_iteration112_redteam_integrity_and_bybit_meta.py:60:        normalized = " ".join(str(sql).split()).lower()
+tests/test_iteration112_redteam_integrity_and_bybit_meta.py:92:            "pnl": 12.5,
+tests/test_iteration112_redteam_integrity_and_bybit_meta.py:98:        normalized = " ".join(str(sql).split()).lower()
+tests/test_iteration112_redteam_integrity_and_bybit_meta.py:109:        if normalized.startswith("select bot_id, ts, symbol, pnl, fee, meta_json from trades where trade_id="):
+tests/test_iteration112_redteam_integrity_and_bybit_meta.py:195:            "mode": {"account_mode": "unified", "margin_mode": "isolated", "direction": "long"},
+tests/test_iteration112_redteam_integrity_and_bybit_meta.py:219:            "pnl": 12.5,
+tests/test_iteration113_startup_backfill_scaling.py:15:        "direction": "long",
+tests/test_iteration114_live_price_and_status_guards.py:53:def _insert_reco(conn, *, rec_id: str, ts_now: int, lower: float = 99.0, upper: float = 101.0) -> None:
+tests/test_iteration114_live_price_and_status_guards.py:63:                "direction": "long",
+tests/test_iteration114_live_price_and_status_guards.py:72:                    "leverage": 2,
+tests/test_iteration114_live_price_and_status_guards.py:76:                            "range": {"lower": lower, "upper": upper},
+tests/test_iteration114_live_price_and_status_guards.py:77:                            "kill_switch": {"lower": lower - 0.5, "upper": upper + 0.5},
+tests/test_iteration114_live_price_and_status_guards.py:103:        "direction": "long",
+tests/test_iteration114_live_price_and_status_guards.py:108:            "leverage": 2,
+tests/test_iteration114_live_price_and_status_guards.py:112:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration114_live_price_and_status_guards.py:113:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration115_order_sizing_validation.py:48:        "direction": "long",
+tests/test_iteration115_order_sizing_validation.py:53:            "leverage": 2,
+tests/test_iteration115_order_sizing_validation.py:58:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration115_order_sizing_validation.py:59:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration115_order_sizing_validation.py:107:# reference price can still be rejected for lower grid levels, so preflight must
+tests/test_iteration115_order_sizing_validation.py:108:# use the lower executable range price for the conservative check.
+tests/test_iteration116_linear_usdt_fail_closed.py:30:        "direction": "long",
+tests/test_iteration116_linear_usdt_fail_closed.py:35:            "leverage": 1,
+tests/test_iteration116_linear_usdt_fail_closed.py:40:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration116_linear_usdt_fail_closed.py:41:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration117_grid_only_strict_preflight.py:54:            "leverage": 1,
+tests/test_iteration117_grid_only_strict_preflight.py:59:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration117_grid_only_strict_preflight.py:60:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration117_grid_only_strict_preflight.py:96:    rec["params"]["trade_plan"]["levels"]["range"]["lower"] = 99.03
+tests/test_iteration117_grid_only_strict_preflight.py:97:    rec["params"]["trade_plan"]["levels"]["range"]["upper"] = 101.03
+tests/test_iteration117_grid_only_strict_preflight.py:178:    rec["params"].pop("leverage", None)
+tests/test_iteration117_grid_only_strict_preflight.py:200:        "leverage": 1,
+tests/test_iteration117_grid_only_strict_preflight.py:211:    rec["params"] = {"grid_count": 8, "grid_type": "arithmetic", "leverage": 1, "margin_mode": "isolated"}
+tests/test_iteration117_grid_only_strict_preflight.py:222:    levels["range"].pop("lower")
+tests/test_iteration117_grid_only_strict_preflight.py:223:    levels["kill_switch"].pop("upper")
+tests/test_iteration118_grid_bot_risk_caps.py:1:from app.risk import (
+tests/test_iteration121_operator_guard_fail_closed.py:30:        "direction": "long",
+tests/test_iteration121_operator_guard_fail_closed.py:46:            "leverage": 2,
+tests/test_iteration121_operator_guard_fail_closed.py:56:                    "range": {"lower": 98.0, "upper": 102.0},
+tests/test_iteration121_operator_guard_fail_closed.py:57:                    "kill_switch": {"lower": 96.0, "upper": 104.0},
+tests/test_iteration123_ui_effective_status_sync.py:71:        "symbol": str(symbol or "BTCUSDT").upper(),
+tests/test_iteration123_ui_effective_status_sync.py:103:                "direction": "long",
+tests/test_iteration123_ui_effective_status_sync.py:110:                "params": {"grid_levels": 8, "grid_count": 8, "leverage": 3},
+tests/test_iteration125_execution_funding_and_scope_hardening.py:49:def _base_rec(*, symbol: str = "BTCUSDT", direction: str = "long", net_profit_bps: float = 5.0) -> dict:
+tests/test_iteration125_execution_funding_and_scope_hardening.py:61:            "leverage": 1,
+tests/test_iteration125_execution_funding_and_scope_hardening.py:68:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration125_execution_funding_and_scope_hardening.py:69:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration126_funding_interval_and_grid_spacing.py:102:        direction="long",
+tests/test_iteration126_funding_interval_and_grid_spacing.py:104:        direction_bias="long",
+tests/test_iteration126_funding_interval_and_grid_spacing.py:127:        direction="short",
+tests/test_iteration126_funding_interval_and_grid_spacing.py:129:        direction_bias="short",
+tests/test_iteration127_tick_safe_grid_snapping.py:56:            "leverage": 1,
+tests/test_iteration127_tick_safe_grid_snapping.py:80:                "kill_switch": {"lower": 99.94, "upper": 100.56},
+tests/test_iteration127_tick_safe_grid_snapping.py:89:                    "range": {"lower": 99.96, "upper": 100.46},
+tests/test_iteration127_tick_safe_grid_snapping.py:90:                    "kill_switch": {"lower": 99.94, "upper": 100.56},
+tests/test_iteration127_tick_safe_grid_snapping.py:107:    assert levels["range"]["lower"] == pytest.approx(99.9)
+tests/test_iteration127_tick_safe_grid_snapping.py:108:    assert levels["range"]["upper"] == pytest.approx(100.5)
+tests/test_iteration127_tick_safe_grid_snapping.py:109:    assert levels["kill_switch"]["lower"] == pytest.approx(99.9)
+tests/test_iteration127_tick_safe_grid_snapping.py:110:    assert levels["kill_switch"]["upper"] == pytest.approx(100.6)
+tests/test_iteration127_tick_safe_grid_snapping.py:114:    assert params["operator_sheet"]["kill_switch"]["lower"] == pytest.approx(99.9)
+tests/test_iteration127_tick_safe_grid_snapping.py:115:    assert params["operator_sheet"]["kill_switch"]["upper"] == pytest.approx(100.6)
+tests/test_iteration127_tick_safe_grid_snapping.py:158:            "leverage": 1,
+tests/test_iteration127_tick_safe_grid_snapping.py:174:                "kill_switch": {"lower": 98.9, "upper": 100.3},
+tests/test_iteration127_tick_safe_grid_snapping.py:184:                    "range": {"lower": 99.0, "upper": 100.2},
+tests/test_iteration127_tick_safe_grid_snapping.py:185:                    "kill_switch": {"lower": 98.9, "upper": 100.3},
+tests/test_iteration127_tick_safe_grid_snapping.py:198:    assert levels["range"]["lower"] == pytest.approx(99.0)
+tests/test_iteration127_tick_safe_grid_snapping.py:199:    assert levels["range"]["upper"] == pytest.approx(100.212)
+tests/test_iteration127_tick_safe_grid_snapping.py:203:    assert levels["kill_switch"]["upper"] > levels["range"]["upper"]
+tests/test_iteration130_non_actionable_launch_links.py:29:    assert 'it.direction === "short" ? "Стоп-лосс' not in app_js
+tests/test_iteration130_non_actionable_launch_links.py:30:    assert 'it.direction === "short" ? "Тейк-профит' not in app_js
+tests/test_iteration134_operator_position_size_details.py:16:    assert "marginRequired * leverage" in app_js
+tests/test_iteration137_grid_outcome_and_preflight_hardening.py:72:        "direction": "long",
+tests/test_iteration137_grid_outcome_and_preflight_hardening.py:81:            "leverage": 1,
+tests/test_iteration137_grid_outcome_and_preflight_hardening.py:87:                    "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration137_grid_outcome_and_preflight_hardening.py:88:                    "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration137_grid_outcome_and_preflight_hardening.py:102:    conn = db.connect(str(tmp_path / "grid-thin-tp.db"))
+tests/test_iteration137_grid_outcome_and_preflight_hardening.py:119:                    "range": {"lower": 95.0, "upper": 105.0},
+tests/test_iteration137_grid_outcome_and_preflight_hardening.py:120:                    "kill_switch": {"lower": 94.5, "upper": 105.5},
+tests/test_iteration137_grid_outcome_and_preflight_hardening.py:134:            "long",
+tests/test_iteration141_llm_pending_timeout.py:50:        "direction": "long",
+tests/test_iteration143_llm_verdict_required.py:21:        "direction": "long",
+tests/test_iteration143_llm_verdict_required.py:54:            "symbol": str(symbol or "BTCUSDT").upper(),
+tests/test_iteration144_prompt_audit_fail_closed.py:71:            "leverage": 2,
+tests/test_iteration144_prompt_audit_fail_closed.py:78:                    "range": {"lower": 98.0, "upper": 102.0},
+tests/test_iteration144_prompt_audit_fail_closed.py:79:                    "kill_switch": {"lower": 96.0, "upper": 104.0},
+tests/test_iteration145_execution_economics_fail_closed.py:74:            "leverage": 2,
+tests/test_iteration145_execution_economics_fail_closed.py:84:                    "range": {"lower": 98.0, "upper": 102.0},
+tests/test_iteration145_execution_economics_fail_closed.py:85:                    "kill_switch": {"lower": 96.0, "upper": 104.0},
+tests/test_iteration147_short_tp_sl_ui_hardening.py:17:    assert 'if (dir === "short")' in app_js
+tests/test_iteration147_short_tp_sl_ui_hardening.py:20:    assert "short: TP ниже диапазона, SL выше диапазона" in app_js
+tests/test_iteration147_short_tp_sl_ui_hardening.py:21:    assert 'if (dir === "long")' in app_js
+tests/test_iteration147_short_tp_sl_ui_hardening.py:24:    assert "long: TP выше диапазона, SL ниже диапазона" in app_js
+tests/test_iteration147_short_tp_sl_ui_hardening.py:65:    long_params = _params(direction="long", direction_bias="long", **common)
+tests/test_iteration147_short_tp_sl_ui_hardening.py:66:    short_params = _params(direction="short", direction_bias="short", **common)
+tests/test_iteration148_directional_semantics_hardening.py:17:    long_exits = directional_exit_levels("long", 95, 105)
+tests/test_iteration148_directional_semantics_hardening.py:18:    short_exits = directional_exit_levels("short", 95, 105)
+tests/test_iteration148_directional_semantics_hardening.py:23:    assert "long" in long_exits.geometry
+tests/test_iteration148_directional_semantics_hardening.py:27:    assert "short" in short_exits.geometry
+tests/test_iteration148_directional_semantics_hardening.py:37:    ("direction", "entry", "tp", "sl"),
+tests/test_iteration148_directional_semantics_hardening.py:39:        ("long", 100, 105, 95),
+tests/test_iteration148_directional_semantics_hardening.py:40:        ("short", 100, 95, 105),
+tests/test_iteration148_directional_semantics_hardening.py:43:def test_directional_exit_geometry_accepts_only_correct_profit_and_loss_sides(direction: str, entry: float, tp: float, sl: float) -> None:
+tests/test_iteration148_directional_semantics_hardening.py:44:    assert validate_directional_exit_geometry(direction, entry, tp, sl) == []
+tests/test_iteration148_directional_semantics_hardening.py:48:    errors = validate_directional_exit_geometry("short", 100, 105, 95)
+tests/test_iteration148_directional_semantics_hardening.py:56:    assert bybit_linear_order_semantics("long", "open") == {
+tests/test_iteration148_directional_semantics_hardening.py:60:        "direction": "long",
+tests/test_iteration148_directional_semantics_hardening.py:62:        "side": "Buy",
+tests/test_iteration148_directional_semantics_hardening.py:63:        "reduceOnly": False,
+tests/test_iteration148_directional_semantics_hardening.py:66:    assert bybit_linear_order_semantics("long", "close")["side"] == "Sell"
+tests/test_iteration148_directional_semantics_hardening.py:67:    assert bybit_linear_order_semantics("long", "close")["reduceOnly"] is True
+tests/test_iteration148_directional_semantics_hardening.py:68:    assert bybit_linear_order_semantics("short", "open")["side"] == "Sell"
+tests/test_iteration148_directional_semantics_hardening.py:69:    assert bybit_linear_order_semantics("short", "close")["side"] == "Buy"
+tests/test_iteration148_directional_semantics_hardening.py:70:    assert bybit_linear_order_semantics("short", "close")["closeOnTrigger"] is True
+tests/test_iteration148_directional_semantics_hardening.py:112:def _rec(direction: str = "short") -> dict:
+tests/test_iteration148_directional_semantics_hardening.py:126:            "leverage": 1,
+tests/test_iteration148_directional_semantics_hardening.py:154:                    "range": {"lower": 90.0, "upper": 110.0},
+tests/test_iteration148_directional_semantics_hardening.py:155:                    "kill_switch": {"lower": 88.0, "upper": 112.0},
+tests/test_iteration148_directional_semantics_hardening.py:167:    out = app_main._augment_reco_for_ui(_rec("short"))
+tests/test_iteration148_directional_semantics_hardening.py:170:    assert exits["direction"] == "short"
+tests/test_iteration148_directional_semantics_hardening.py:177:    rec = _rec("short")
+tests/test_iteration148_directional_semantics_hardening.py:178:    rec["params"]["trade_plan"]["levels"]["kill_switch"] = {"lower": 101.0, "upper": 112.0}
+tests/test_iteration149_operator_decision_panel.py:35:        "direction": "long",
+tests/test_iteration149_operator_decision_panel.py:42:            "leverage": 3,
+tests/test_iteration149_operator_decision_panel.py:60:                    "range": {"lower": 95.0, "upper": 105.0},
+tests/test_iteration149_operator_decision_panel.py:61:                    "kill_switch": {"lower": 93.0, "upper": 107.0},
+tests/test_iteration149_operator_decision_panel.py:127:    assert "Funding — периодические платежи между long и short" in app_js
+tests/test_iteration149_operator_decision_panel.py:129:    assert "Stop Loss / kill-switch — защитный уровень остановки убытка" in app_js
+tests/test_iteration150_timeseries_ui_audit.py:65:    assert 'const rangeLowerRaw = firstFiniteValue([range, params, operatorSheet], ["lower", "price_range_lower", "range_lower"]);' in app_js
+tests/test_iteration150_timeseries_ui_audit.py:66:    assert 'const rangeUpperRaw = firstFiniteValue([range, params, operatorSheet], ["upper", "price_range_upper", "range_upper"]);' in app_js
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:35:        "direction": "short",
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:42:            "leverage": 3,
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:51:                    "range": {"lower": 50.0, "upper": 150.0},
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:52:                    "kill_switch": {"lower": 40.0, "upper": 160.0},
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:85:    assert app_main._distance_from_current_to_bound_pct(100.0, 105.0, side="lower") == pytest.approx(-5.0)
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:86:    assert app_main._distance_from_current_to_bound_pct(100.0, 95.0, side="upper") == pytest.approx(-5.0)
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:87:    assert app_main._distance_from_current_to_bound_pct(0.0, 95.0, side="upper") is None
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:94:    assert 'if (normalized === "short") return "Шорт";' in app_js
+tests/test_iteration151_operator_distance_and_ui_failclosed.py:95:    assert 'exitLevels.has_directional_take_profit === true && (dir === "long" || dir === "short")' in app_js
+tests/test_iteration152_deep_trading_reaudit.py:8:from app.risk import compute_risk_status, normalize_risk_limits
+tests/test_iteration152_deep_trading_reaudit.py:25:        "direction": "long",
+tests/test_iteration152_deep_trading_reaudit.py:35:            "leverage": 5,
+tests/test_iteration152_deep_trading_reaudit.py:39:                    "range": {"lower": 95.0, "upper": 105.0},
+tests/test_iteration152_deep_trading_reaudit.py:40:                    "kill_switch": {"lower": 94.0, "upper": 106.0},
+tests/test_iteration152_deep_trading_reaudit.py:66:            "pnl": -5.0,
+tests/test_iteration152_deep_trading_reaudit.py:194:            "mode": {"account_mode": "UNIFIED", "margin_mode": "isolated", "direction": "long"},
+tests/test_iteration153_prompt_directional_risk_reaudit.py:16:    ("direction", "entry", "tp", "sl", "qty", "profit", "loss", "rr"),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:18:        ("long", 100.0, 110.0, 95.0, 0.5, 5.0, 2.5, 2.0),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:19:        ("short", 100.0, 90.0, 105.0, 0.5, 5.0, 2.5, 2.0),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:25:    tp: float,
+tests/test_iteration153_prompt_directional_risk_reaudit.py:26:    sl: float,
+tests/test_iteration153_prompt_directional_risk_reaudit.py:32:    trade = directional_trade_math(direction, entry, tp, sl, qty)
+tests/test_iteration153_prompt_directional_risk_reaudit.py:44:    ("direction", "entry", "tp", "sl", "qty"),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:46:        ("long", 100.0, 95.0, 110.0, 1.0),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:47:        ("short", 100.0, 110.0, 95.0, 1.0),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:49:        ("short", 0.0, 90.0, 105.0, 1.0),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:50:        ("short", 100.0, 90.0, 105.0, 0.0),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:56:    tp: float,
+tests/test_iteration153_prompt_directional_risk_reaudit.py:57:    sl: float,
+tests/test_iteration153_prompt_directional_risk_reaudit.py:60:    assert directional_trade_math(direction, entry, tp, sl, qty) is None
+tests/test_iteration153_prompt_directional_risk_reaudit.py:66:        ("long", "Sell"),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:67:        ("short", "Buy"),
+tests/test_iteration153_prompt_directional_risk_reaudit.py:71:    tp = bybit_linear_protective_order_semantics(direction, "take_profit")
+tests/test_iteration153_prompt_directional_risk_reaudit.py:72:    sl = bybit_linear_protective_order_semantics(direction, "stop_loss")
+tests/test_iteration153_prompt_directional_risk_reaudit.py:74:    for order in (tp, sl):
+tests/test_iteration153_prompt_directional_risk_reaudit.py:78:        assert order["side"] == expected_side
+tests/test_iteration153_prompt_directional_risk_reaudit.py:79:        assert order["reduceOnly"] is True
+tests/test_iteration153_prompt_directional_risk_reaudit.py:85:    assert tp["triggerPurpose"] == "takeProfit"
+tests/test_iteration153_prompt_directional_risk_reaudit.py:86:    assert sl["triggerPurpose"] == "stopLoss"
+tests/test_iteration153_prompt_directional_risk_reaudit.py:116:    assert "short: TP ниже диапазона, SL выше диапазона" in app_js
+tests/test_iteration154_execution_runtime_risk_caps.py:28:        "direction": "long",
+tests/test_iteration154_execution_runtime_risk_caps.py:30:            "leverage": 8,
+tests/test_iteration154_execution_runtime_risk_caps.py:63:    rec["params"]["leverage"] = 5
+tests/test_iteration154_execution_runtime_risk_caps.py:87:    rec["params"]["leverage"] = 4
+tests/test_iteration155_deep_directional_risk_patch.py:46:def _rec(direction: str = "short") -> dict:
+tests/test_iteration155_deep_directional_risk_patch.py:60:            "leverage": 1,
+tests/test_iteration155_deep_directional_risk_patch.py:90:                    "range": {"lower": 90.0, "upper": 110.0},
+tests/test_iteration155_deep_directional_risk_patch.py:91:                    "kill_switch": {"lower": 88.0, "upper": 112.0},
+tests/test_iteration155_deep_directional_risk_patch.py:103:        ("long", "take_profit", "Sell", 1),
+tests/test_iteration155_deep_directional_risk_patch.py:104:        ("long", "stop_loss", "Sell", 2),
+tests/test_iteration155_deep_directional_risk_patch.py:105:        ("short", "take_profit", "Buy", 2),
+tests/test_iteration155_deep_directional_risk_patch.py:106:        ("short", "stop_loss", "Buy", 1),
+tests/test_iteration155_deep_directional_risk_patch.py:120:    assert order["side"] == expected_side
+tests/test_iteration155_deep_directional_risk_patch.py:121:    assert order["reduceOnly"] is True
+tests/test_iteration155_deep_directional_risk_patch.py:130:    payload = app_main._directional_exit_payload_for_reco(_rec("short"))
+tests/test_iteration155_deep_directional_risk_patch.py:132:    assert payload["direction"] == "short"
+tests/test_iteration155_deep_directional_risk_patch.py:141:    rec = _rec("short")
+tests/test_iteration155_deep_directional_risk_patch.py:142:    rec["params"]["trade_plan"]["levels"]["kill_switch"] = {"lower": 101.0, "upper": 112.0}
+tests/test_iteration155_deep_directional_risk_patch.py:152:    rec = _rec("long")
+tests/test_iteration155_deep_directional_risk_patch.py:153:    rec["params"].pop("leverage")
+tests/test_iteration155_deep_directional_risk_patch.py:171:        "params": {"leverage": 3, "sizing": {"qty_per_order": 0.01}},
+tests/test_iteration155_deep_directional_risk_patch.py:186:    rec = _rec("long")
+tests/test_iteration155_deep_directional_risk_patch.py:208:    assert "backend directional TP/SL invalid; rendering kill-switch only" in app_js
+tests/test_iteration156_bybit_linear_ui_semantics.py:13:        ("long", "take_profit", "Sell", 1),
+tests/test_iteration156_bybit_linear_ui_semantics.py:14:        ("long", "stop_loss", "Sell", 2),
+tests/test_iteration156_bybit_linear_ui_semantics.py:15:        ("short", "take_profit", "Buy", 2),
+tests/test_iteration156_bybit_linear_ui_semantics.py:16:        ("short", "stop_loss", "Buy", 1),
+tests/test_iteration156_bybit_linear_ui_semantics.py:29:    assert order["side"] == expected_side
+tests/test_iteration156_bybit_linear_ui_semantics.py:30:    assert order["reduceOnly"] is True
+tests/test_iteration156_bybit_linear_ui_semantics.py:43:    assert 'if (dir === "long") return tp > ref && sl < ref;' in app_js
+tests/test_iteration156_bybit_linear_ui_semantics.py:44:    assert 'return tp < ref && sl > ref;' in app_js
+tests/test_iteration157_ui_invalid_exit_failclosed.py:12:    assert "backend directional TP/SL invalid; rendering kill-switch only" in app_js
+tests/test_iteration157_ui_invalid_exit_failclosed.py:15:    assert "stopLossValue: `${lower} / ${upper}`" in app_js
+tests/test_iteration157_ui_invalid_exit_failclosed.py:16:    assert "backend directional TP/SL invalid; using local kill-switch mapping" not in app_js
+tests/test_iteration158_deep_bybit_directional_audit.py:28:def _rec(direction: str = "short") -> dict:
+tests/test_iteration158_deep_bybit_directional_audit.py:43:                    "range": {"lower": 90.0, "upper": 110.0},
+tests/test_iteration158_deep_bybit_directional_audit.py:44:                    "kill_switch": {"lower": 80.0, "upper": 120.0},
+tests/test_iteration158_deep_bybit_directional_audit.py:52:    payload = app_main._directional_exit_payload_for_reco(_rec("short"))
+tests/test_iteration158_deep_bybit_directional_audit.py:54:    assert payload["direction"] == "short"
+tests/test_iteration158_deep_bybit_directional_audit.py:70:    assert tp_order["side"] == "Buy"
+tests/test_iteration158_deep_bybit_directional_audit.py:73:    assert tp_order["reduceOnly"] is True
+tests/test_iteration158_deep_bybit_directional_audit.py:76:    assert sl_order["side"] == "Buy"
+tests/test_iteration158_deep_bybit_directional_audit.py:79:    assert sl_order["reduceOnly"] is True
+tests/test_iteration158_deep_bybit_directional_audit.py:85:    rec = _rec("short")
+tests/test_iteration158_deep_bybit_directional_audit.py:86:    rec["params"]["trade_plan"]["levels"]["kill_switch"] = {"lower": 105.0, "upper": 120.0}
+tests/test_iteration158_deep_bybit_directional_audit.py:100:        ("long", "take_profit", 100.0, 110.0, 1),
+tests/test_iteration158_deep_bybit_directional_audit.py:101:        ("long", "stop_loss", 100.0, 90.0, 2),
+tests/test_iteration158_deep_bybit_directional_audit.py:102:        ("short", "take_profit", 100.0, 90.0, 2),
+tests/test_iteration158_deep_bybit_directional_audit.py:103:        ("short", "stop_loss", 100.0, 110.0, 1),
+tests/test_iteration158_deep_bybit_directional_audit.py:120:    assert plan["reduceOnly"] is True
+tests/test_iteration158_deep_bybit_directional_audit.py:125:    errors = validate_protective_trigger_geometry("short", "take_profit", 100.0, 105.0)
+tests/test_iteration158_deep_bybit_directional_audit.py:138:    assert "Для short TP считается вниз, SL — вверх" in app_js
+tests/test_iteration159_no_trade_regression.py:9:def _strong_range_features(direction: str = "long") -> dict:
+tests/test_iteration159_no_trade_regression.py:35:    features = _strong_range_features("long")
+tests/test_iteration159_no_trade_regression.py:41:        direction="long",
+tests/test_iteration159_no_trade_regression.py:54:        direction="long",
+tests/test_iteration159_no_trade_regression.py:56:        direction_bias="long",
+tests/test_iteration159_no_trade_regression.py:62:    assert params["leverage"] == 5
+tests/test_iteration159_no_trade_regression.py:69:    leverage, note, diag = _select_operator_grid_leverage(
+tests/test_iteration159_no_trade_regression.py:70:        direction="long",
+tests/test_iteration159_no_trade_regression.py:82:    assert leverage == 5
+tests/test_iteration159_no_trade_regression.py:120:    assert params["leverage"] == 5
+tests/test_iteration160_frontend_tick_directional_rounding.py:30:    """UI rounding must not shrink risk bounds before displaying Bybit prices.
+tests/test_iteration160_frontend_tick_directional_rounding.py:33:    applying ceil/floor. For upper SL/kill-switch values that could round down,
+tests/test_iteration160_frontend_tick_directional_rounding.py:34:    and for lower TP/kill-switch values that could round up, visually shrinking
+tests/test_iteration161_invalid_price_fail_closed.py:19:            "direction": "short",
+tests/test_iteration161_invalid_price_fail_closed.py:55:        direction="short",
+tests/test_iteration161_invalid_price_fail_closed.py:57:        direction_bias="short",
+tests/test_iteration161_invalid_price_fail_closed.py:80:        direction="short",
+tests/test_iteration161_invalid_price_fail_closed.py:82:        direction_bias="short",
+tests/test_iteration161_invalid_price_fail_closed.py:87:    plan = _build_trade_plan("futures_grid", "linear", f, "short", params, cost_model=_cost_model())
+tests/test_iteration161_invalid_price_fail_closed.py:90:    assert plan["levels"]["range"] == {"lower": None, "upper": None}
+tests/test_iteration161_invalid_price_fail_closed.py:91:    assert plan["levels"]["kill_switch"]["lower"] is None
+tests/test_iteration161_invalid_price_fail_closed.py:92:    assert plan["levels"]["kill_switch"]["upper"] is None
+tests/test_iteration161_invalid_price_fail_closed.py:106:        direction="long",
+tests/test_iteration161_invalid_price_fail_closed.py:108:        direction_bias="long",
+tests/test_iteration161_invalid_price_fail_closed.py:129:        direction="long",
+tests/test_iteration161_invalid_price_fail_closed.py:131:        direction_bias="long",
+tests/test_iteration161_protective_reference_and_qty.py:26:    plan = bybit_linear_protective_order_plan("short", "take_profit", 90.0, None)
+tests/test_iteration161_protective_reference_and_qty.py:31:    assert plan["side"] == "Buy"
+tests/test_iteration161_protective_reference_and_qty.py:32:    assert plan["reduceOnly"] is True
+tests/test_iteration161_protective_reference_and_qty.py:41:        "direction": "short",
+tests/test_iteration161_protective_reference_and_qty.py:47:                    "range": {"lower": 90.0, "upper": 110.0},
+tests/test_iteration161_protective_reference_and_qty.py:48:                    "kill_switch": {"lower": 80.0, "upper": 120.0},
+tests/test_iteration162_docs_and_infographic_sync.py:42:    assert "3-5x is the baseline actionable leverage interval" in source
+tests/test_iteration163_payload_guard_status.py:53:        "direction": "short",
+tests/test_iteration164_runtime_leverage_profile_guard.py:40:        "symbol": str(symbol or "WLDUSDT").upper(),
+tests/test_iteration164_runtime_leverage_profile_guard.py:69:def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 10, ttl: int = 3600) -> dict:
+tests/test_iteration164_runtime_leverage_profile_guard.py:71:    lower = 0.4681
+tests/test_iteration164_runtime_leverage_profile_guard.py:72:    upper = 0.5725
+tests/test_iteration164_runtime_leverage_profile_guard.py:75:    margin = total_notional / max(1, leverage)
+tests/test_iteration164_runtime_leverage_profile_guard.py:76:    step = (upper - lower) / grid_count
+tests/test_iteration164_runtime_leverage_profile_guard.py:85:        "direction": "long",
+tests/test_iteration164_runtime_leverage_profile_guard.py:95:            "direction": "long",
+tests/test_iteration164_runtime_leverage_profile_guard.py:97:            "price_range_lower": lower,
+tests/test_iteration164_runtime_leverage_profile_guard.py:98:            "price_range_upper": upper,
+tests/test_iteration164_runtime_leverage_profile_guard.py:102:            "leverage": leverage,
+tests/test_iteration164_runtime_leverage_profile_guard.py:107:                "selected_leverage": leverage,
+tests/test_iteration164_runtime_leverage_profile_guard.py:115:                "leverage": leverage,
+tests/test_iteration164_runtime_leverage_profile_guard.py:118:                    "range": {"lower": lower, "upper": upper},
+tests/test_iteration164_runtime_leverage_profile_guard.py:119:                    "kill_switch": {"lower": 0.4613, "upper": 0.5789},
+tests/test_iteration164_runtime_leverage_profile_guard.py:137:                "leverage": leverage,
+tests/test_iteration164_runtime_leverage_profile_guard.py:178:    rec = _reco(int(time.time()), leverage=1)
+tests/test_iteration164_runtime_leverage_profile_guard.py:190:    db.insert_recommendations(conn, [_reco(now, leverage=1, policy_min=5, policy_max=10)])
+tests/test_iteration164_runtime_leverage_profile_guard.py:218:    db.insert_recommendations(conn, [_reco(old_ts, leverage=3, policy_min=3, policy_max=3, ttl=3600)])
+tests/test_iteration165_operator_payload_consistency.py:59:                "range": {"lower": 99.0, "upper": 101.0},
+tests/test_iteration165_operator_payload_consistency.py:60:                "kill_switch": {"lower": 98.5, "upper": 101.5},
+tests/test_iteration165_operator_payload_consistency.py:72:        "direction": "long",
+tests/test_iteration165_operator_payload_consistency.py:80:    rec = _operator_sheet_rec(operator_sheet={"sizing": {"order_qty": 0.0045}, "leverage": 2})
+tests/test_iteration165_operator_payload_consistency.py:97:            "leverage": 2,
+tests/test_iteration165_operator_payload_consistency.py:109:        params_extra={"leverage": None},
+tests/test_iteration165_operator_payload_consistency.py:111:    rec["params"].pop("leverage", None)
+tests/test_iteration165_operator_payload_consistency.py:136:    assert 'const leverageRaw = firstFiniteValue([params, plan, operatorSheet], ["leverage"]);' in app_js
+tests/test_iteration167_full_trading_system_audit.py:5:- Long/short TP/SL directional math
+tests/test_iteration167_full_trading_system_audit.py:7:- Bybit V5 order semantics (side, reduceOnly, closeOnTrigger, triggerDirection)
+tests/test_iteration167_full_trading_system_audit.py:9:- Kill-switch upper/lower directional mapping
+tests/test_iteration167_full_trading_system_audit.py:65:    """Long: profit upward ⟹ TP = upper boundary, SL = lower boundary."""
+tests/test_iteration167_full_trading_system_audit.py:68:    levels = directional_exit_levels("long", 95.0, 110.0)
+tests/test_iteration167_full_trading_system_audit.py:69:    assert levels.take_profit == 110.0, f"long TP must be upper bound: {levels.take_profit}"
+tests/test_iteration167_full_trading_system_audit.py:70:    assert levels.stop_loss == 95.0, f"long SL must be lower bound: {levels.stop_loss}"
+tests/test_iteration167_full_trading_system_audit.py:72:    assert levels.direction == "long"
+tests/test_iteration167_full_trading_system_audit.py:76:    """Short: profit downward ⟹ TP = lower boundary, SL = upper boundary."""
+tests/test_iteration167_full_trading_system_audit.py:79:    levels = directional_exit_levels("short", 90.0, 105.0)
+tests/test_iteration167_full_trading_system_audit.py:80:    assert levels.take_profit == 90.0, f"short TP must be lower bound: {levels.take_profit}"
+tests/test_iteration167_full_trading_system_audit.py:81:    assert levels.stop_loss == 105.0, f"short SL must be upper bound: {levels.stop_loss}"
+tests/test_iteration167_full_trading_system_audit.py:83:    assert levels.direction == "short"
+tests/test_iteration167_full_trading_system_audit.py:104:    errors = validate_directional_exit_geometry("long", 100.0, 110.0, 95.0)
+tests/test_iteration167_full_trading_system_audit.py:105:    assert len(errors) == 0, f"valid long geometry: {errors}"
+tests/test_iteration167_full_trading_system_audit.py:107:    errors_bad = validate_directional_exit_geometry("long", 100.0, 90.0, 95.0)
+tests/test_iteration167_full_trading_system_audit.py:109:        f"long TP below entry must be rejected: {errors_bad}"
+tests/test_iteration167_full_trading_system_audit.py:116:    errors = validate_directional_exit_geometry("short", 100.0, 90.0, 110.0)
+tests/test_iteration167_full_trading_system_audit.py:117:    assert len(errors) == 0, f"valid short geometry: {errors}"
+tests/test_iteration167_full_trading_system_audit.py:119:    errors_bad = validate_directional_exit_geometry("short", 100.0, 110.0, 90.0)
+tests/test_iteration167_full_trading_system_audit.py:121:        f"short TP above entry must be rejected: {errors_bad}"
+tests/test_iteration167_full_trading_system_audit.py:128:    errors_bad = validate_directional_exit_geometry("long", 100.0, 110.0, 105.0)
+tests/test_iteration167_full_trading_system_audit.py:130:        f"long SL above entry must be rejected: {errors_bad}"
+tests/test_iteration167_full_trading_system_audit.py:137:    errors_bad = validate_directional_exit_geometry("short", 100.0, 90.0, 95.0)
+tests/test_iteration167_full_trading_system_audit.py:139:        f"short SL below entry must be rejected: {errors_bad}"
+tests/test_iteration167_full_trading_system_audit.py:146:    errors = validate_directional_exit_geometry("long", 100.0, 100.0, 90.0)
+tests/test_iteration167_full_trading_system_audit.py:147:    assert len(errors) > 0, "TP == entry for long should be rejected (not strictly above)"
+tests/test_iteration167_full_trading_system_audit.py:149:    errors_s = validate_directional_exit_geometry("short", 100.0, 100.0, 110.0)
+tests/test_iteration167_full_trading_system_audit.py:150:    assert len(errors_s) > 0, "TP == entry for short should be rejected (not strictly below)"
+tests/test_iteration167_full_trading_system_audit.py:168:    pnl = linear_pnl_usdt("long", qty=1.0, entry_price=100.0, exit_price=120.0)
+tests/test_iteration167_full_trading_system_audit.py:169:    assert pnl == Decimal("20.0"), f"long profit on price rise: {pnl}"
+tests/test_iteration167_full_trading_system_audit.py:176:    pnl = linear_pnl_usdt("long", qty=1.0, entry_price=100.0, exit_price=80.0)
+tests/test_iteration167_full_trading_system_audit.py:177:    assert pnl == Decimal("-20.0"), f"long loss on price fall: {pnl}"
+tests/test_iteration167_full_trading_system_audit.py:184:    pnl = linear_pnl_usdt("short", qty=1.0, entry_price=100.0, exit_price=80.0)
+tests/test_iteration167_full_trading_system_audit.py:185:    assert pnl == Decimal("20.0"), f"short profit on price fall: {pnl}"
+tests/test_iteration167_full_trading_system_audit.py:192:    pnl = linear_pnl_usdt("short", qty=1.0, entry_price=100.0, exit_price=120.0)
+tests/test_iteration167_full_trading_system_audit.py:193:    assert pnl == Decimal("-20.0"), f"short loss on price rise: {pnl}"
+tests/test_iteration167_full_trading_system_audit.py:200:        pnl_long = linear_pnl_usdt("long", qty=1.0, entry_price=100.0, exit_price=move)
+tests/test_iteration167_full_trading_system_audit.py:201:        pnl_short = linear_pnl_usdt("short", qty=1.0, entry_price=100.0, exit_price=move)
+tests/test_iteration167_full_trading_system_audit.py:203:            f"long and short PnL must be symmetric for exit={move}: "
+tests/test_iteration167_full_trading_system_audit.py:204:            f"long={pnl_long}, short={pnl_short}"
+tests/test_iteration167_full_trading_system_audit.py:221:    assert linear_pnl_usdt("long", qty=0.0, entry_price=100.0, exit_price=120.0) == Decimal("0")
+tests/test_iteration167_full_trading_system_audit.py:222:    assert linear_pnl_usdt("long", qty=1.0, entry_price=0.0, exit_price=120.0) == Decimal("0")
+tests/test_iteration167_full_trading_system_audit.py:223:    assert linear_pnl_usdt("long", qty=-1.0, entry_price=100.0, exit_price=120.0) == Decimal("0")
+tests/test_iteration167_full_trading_system_audit.py:233:    m = directional_trade_math("long", 100.0, 115.0, 90.0, qty=2.0)
+tests/test_iteration167_full_trading_system_audit.py:235:    assert m.gross_profit_usdt == 30.0, f"long profit: {m.gross_profit_usdt}"
+tests/test_iteration167_full_trading_system_audit.py:236:    assert m.gross_loss_usdt == 20.0, f"long loss: {m.gross_loss_usdt}"
+tests/test_iteration167_full_trading_system_audit.py:237:    assert abs(m.risk_reward - 1.5) < 1e-9, f"long RR: {m.risk_reward}"
+tests/test_iteration167_full_trading_system_audit.py:245:    m = directional_trade_math("short", 100.0, 85.0, 110.0, qty=2.0)
+tests/test_iteration167_full_trading_system_audit.py:247:    assert m.gross_profit_usdt == 30.0, f"short profit: {m.gross_profit_usdt}"
+tests/test_iteration167_full_trading_system_audit.py:248:    assert m.gross_loss_usdt == 20.0, f"short loss: {m.gross_loss_usdt}"
+tests/test_iteration167_full_trading_system_audit.py:249:    assert abs(m.risk_reward - 1.5) < 1e-9, f"short RR: {m.risk_reward}"
+tests/test_iteration167_full_trading_system_audit.py:256:    assert directional_trade_math("long", 100.0, 90.0, 95.0) is None
+tests/test_iteration167_full_trading_system_audit.py:258:    assert directional_trade_math("short", 100.0, 110.0, 90.0) is None
+tests/test_iteration167_full_trading_system_audit.py:260:    assert directional_trade_math("long", 100.0, 110.0, 105.0) is None
+tests/test_iteration167_full_trading_system_audit.py:262:    assert directional_trade_math("short", 100.0, 90.0, 85.0) is None
+tests/test_iteration167_full_trading_system_audit.py:272:    s = bybit_linear_order_semantics("long", "open")
+tests/test_iteration167_full_trading_system_audit.py:273:    assert s["side"] == "Buy"
+tests/test_iteration167_full_trading_system_audit.py:274:    assert s["reduceOnly"] is False
+tests/test_iteration167_full_trading_system_audit.py:282:    s = bybit_linear_order_semantics("long", "close")
+tests/test_iteration167_full_trading_system_audit.py:283:    assert s["side"] == "Sell"
+tests/test_iteration167_full_trading_system_audit.py:284:    assert s["reduceOnly"] is True
+tests/test_iteration167_full_trading_system_audit.py:291:    s = bybit_linear_order_semantics("short", "open")
+tests/test_iteration167_full_trading_system_audit.py:292:    assert s["side"] == "Sell"
+tests/test_iteration167_full_trading_system_audit.py:293:    assert s["reduceOnly"] is False
+tests/test_iteration167_full_trading_system_audit.py:299:    s = bybit_linear_order_semantics("short", "close")
+tests/test_iteration167_full_trading_system_audit.py:300:    assert s["side"] == "Buy"
+tests/test_iteration167_full_trading_system_audit.py:301:    assert s["reduceOnly"] is True
+tests/test_iteration167_full_trading_system_audit.py:322:    s = bybit_linear_protective_order_semantics("long", "take_profit")
+tests/test_iteration167_full_trading_system_audit.py:324:    assert s["triggerDirection"] == 1, f"long TP triggerDirection: {s['triggerDirection']}"
+tests/test_iteration167_full_trading_system_audit.py:325:    assert s["side"] == "Sell"
+tests/test_iteration167_full_trading_system_audit.py:331:    s = bybit_linear_protective_order_semantics("long", "stop_loss")
+tests/test_iteration167_full_trading_system_audit.py:333:    assert s["triggerDirection"] == 2, f"long SL triggerDirection: {s['triggerDirection']}"
+tests/test_iteration167_full_trading_system_audit.py:334:    assert s["side"] == "Sell"
+tests/test_iteration167_full_trading_system_audit.py:340:    s = bybit_linear_protective_order_semantics("short", "take_profit")
+tests/test_iteration167_full_trading_system_audit.py:342:    assert s["triggerDirection"] == 2, f"short TP triggerDirection: {s['triggerDirection']}"
+tests/test_iteration167_full_trading_system_audit.py:343:    assert s["side"] == "Buy"
+tests/test_iteration167_full_trading_system_audit.py:349:    s = bybit_linear_protective_order_semantics("short", "stop_loss")
+tests/test_iteration167_full_trading_system_audit.py:351:    assert s["triggerDirection"] == 1, f"short SL triggerDirection: {s['triggerDirection']}"
+tests/test_iteration167_full_trading_system_audit.py:352:    assert s["side"] == "Buy"
+tests/test_iteration167_full_trading_system_audit.py:358:    for direction in ("long", "short"):
+tests/test_iteration167_full_trading_system_audit.py:361:            assert s["reduceOnly"] is True, (
+tests/test_iteration167_full_trading_system_audit.py:362:                f"{direction} {exit_kind} must be reduceOnly=True"
+tests/test_iteration167_full_trading_system_audit.py:377:        ("long", "take_profit", 100.0, 110.0),   # TP above entry
+tests/test_iteration167_full_trading_system_audit.py:378:        ("long", "stop_loss", 100.0, 90.0),       # SL below entry
+tests/test_iteration167_full_trading_system_audit.py:379:        ("short", "take_profit", 100.0, 90.0),    # TP below entry
+tests/test_iteration167_full_trading_system_audit.py:380:        ("short", "stop_loss", 100.0, 110.0),     # SL above entry
+tests/test_iteration167_full_trading_system_audit.py:393:        ("long", "take_profit", 100.0, 90.0),    # TP below entry for long
+tests/test_iteration167_full_trading_system_audit.py:394:        ("long", "stop_loss", 100.0, 110.0),      # SL above entry for long
+tests/test_iteration167_full_trading_system_audit.py:395:        ("short", "take_profit", 100.0, 110.0),   # TP above entry for short
+tests/test_iteration167_full_trading_system_audit.py:396:        ("short", "stop_loss", 100.0, 90.0),      # SL below entry for short
+tests/test_iteration167_full_trading_system_audit.py:408:    plan_ok = bybit_linear_protective_order_plan("short", "take_profit", 90.0, 100.0)
+tests/test_iteration167_full_trading_system_audit.py:409:    assert plan_ok["geometry_valid"] is True, f"valid short TP plan: {plan_ok}"
+tests/test_iteration167_full_trading_system_audit.py:411:    plan_bad = bybit_linear_protective_order_plan("short", "take_profit", 110.0, 100.0)
+tests/test_iteration167_full_trading_system_audit.py:412:    assert plan_bad["geometry_valid"] is False, f"inverted short TP should fail: {plan_bad}"
+tests/test_iteration167_full_trading_system_audit.py:418:    plan = bybit_linear_protective_order_plan("long", "take_profit", 110.0, None)
+tests/test_iteration167_full_trading_system_audit.py:421:    assert any("REFERENCE" in c.upper() for c in codes), (
+tests/test_iteration167_full_trading_system_audit.py:484:    liq = estimate_linear_liq_price("long", entry_price=100.0, leverage=5)
+tests/test_iteration167_full_trading_system_audit.py:485:    assert liq is not None, "long liquidation price must be defined"
+tests/test_iteration167_full_trading_system_audit.py:486:    assert float(liq) < 100.0, f"long liq must be below entry: {liq}"
+tests/test_iteration167_full_trading_system_audit.py:492:    liq = estimate_linear_liq_price("short", entry_price=100.0, leverage=5)
+tests/test_iteration167_full_trading_system_audit.py:493:    assert liq is not None, "short liquidation price must be defined"
+tests/test_iteration167_full_trading_system_audit.py:494:    assert float(liq) > 100.0, f"short liq must be above entry: {liq}"
+tests/test_iteration167_full_trading_system_audit.py:508:    liq_long = estimate_linear_liq_price("long", 100.0, 5)
+tests/test_iteration167_full_trading_system_audit.py:509:    buf_long = liquidation_buffer_pct("long", 100.0, liq_long)
+tests/test_iteration167_full_trading_system_audit.py:512:    liq_short = estimate_linear_liq_price("short", 100.0, 5)
+tests/test_iteration167_full_trading_system_audit.py:513:    buf_short = liquidation_buffer_pct("short", 100.0, liq_short)
+tests/test_iteration167_full_trading_system_audit.py:525:    flow = funding_cashflow_usdt("long", position_notional=1000.0, funding_rate=0.0001)
+tests/test_iteration167_full_trading_system_audit.py:526:    assert float(flow) > 0, f"long pays positive funding: {flow}"
+tests/test_iteration167_full_trading_system_audit.py:532:    flow = funding_cashflow_usdt("short", position_notional=1000.0, funding_rate=0.0001)
+tests/test_iteration167_full_trading_system_audit.py:533:    assert float(flow) < 0, f"short receives when positive rate: {flow}"
+tests/test_iteration167_full_trading_system_audit.py:548:    from app.risk import normalize_risk_limits
+tests/test_iteration167_full_trading_system_audit.py:557:    from app.risk import normalize_risk_limits
+tests/test_iteration167_full_trading_system_audit.py:564:    from app.risk import normalize_risk_limits
+tests/test_iteration167_full_trading_system_audit.py:571:    from app.risk import normalize_risk_limits
+tests/test_iteration167_full_trading_system_audit.py:634:const r = operatorExitLevels('short', 95, 105);
+tests/test_iteration167_full_trading_system_audit.py:635:console.log(JSON.stringify({tp: r.takeProfitValue, sl: r.stopLossValue}));
+tests/test_iteration167_full_trading_system_audit.py:638:    assert out["tp"] == 95, f"short TP must be lower bound: {out}"
+tests/test_iteration167_full_trading_system_audit.py:639:    assert out["sl"] == 105, f"short SL must be upper bound: {out}"
+tests/test_iteration167_full_trading_system_audit.py:645:const r = operatorExitLevels('long', 95, 105);
+tests/test_iteration167_full_trading_system_audit.py:646:console.log(JSON.stringify({tp: r.takeProfitValue, sl: r.stopLossValue}));
+tests/test_iteration167_full_trading_system_audit.py:649:    assert out["tp"] == 105, f"long TP must be upper bound: {out}"
+tests/test_iteration167_full_trading_system_audit.py:650:    assert out["sl"] == 95, f"long SL must be lower bound: {out}"
+tests/test_iteration167_full_trading_system_audit.py:660:    assert "unavailable" in out["label"].lower() or "neutral" in out["label"].lower(), (
+tests/test_iteration167_full_trading_system_audit.py:669:    longOk: directionalExitGeometryOk('long', 110, 90, 100),
+tests/test_iteration167_full_trading_system_audit.py:670:    longBad: directionalExitGeometryOk('long', 90, 110, 100)
+tests/test_iteration167_full_trading_system_audit.py:682:    shortOk: directionalExitGeometryOk('short', 90, 110, 100),
+tests/test_iteration167_full_trading_system_audit.py:683:    shortBad: directionalExitGeometryOk('short', 110, 90, 100)
+tests/test_iteration167_full_trading_system_audit.py:695:    direction: 'short',
+tests/test_iteration167_full_trading_system_audit.py:705:console.log(JSON.stringify({tp: Number(r.takeProfitValue), sl: Number(r.stopLossValue)}));
+tests/test_iteration167_full_trading_system_audit.py:708:    assert out["tp"] == 95, f"backend short TP must be 95: {out}"
+tests/test_iteration167_full_trading_system_audit.py:709:    assert out["sl"] == 105, f"backend short SL must be 105: {out}"
+tests/test_iteration167_full_trading_system_audit.py:716:    direction: 'short',
+tests/test_iteration167_full_trading_system_audit.py:724:console.log(JSON.stringify({tp: r.takeProfitValue}));
+tests/test_iteration167_full_trading_system_audit.py:727:    assert out["tp"] == "—", f"inverted backend geometry must fall back: {out}"
+tests/test_iteration167_full_trading_system_audit.py:747:    assert out["up"] == "100.01", f"round up must not shrink upper bound: {out}"
+tests/test_iteration167_full_trading_system_audit.py:748:    assert out["down"] == "99.99", f"round down must not shrink lower bound: {out}"
+tests/test_iteration167_full_trading_system_audit.py:783:    """Ensure operatorExitLevels in app.js handles short direction correctly."""
+tests/test_iteration167_full_trading_system_audit.py:786:    # Check that short branch assigns TP to kill_switch_lower
+tests/test_iteration167_full_trading_system_audit.py:788:    assert "killLower" in fn and "killUpper" in fn, "function must use both kill switch bounds"
+tests/test_iteration167_full_trading_system_audit.py:790:    short_idx = fn.find('"short"')
+tests/test_iteration167_full_trading_system_audit.py:791:    assert short_idx >= 0, "short case must exist"
+tests/test_iteration167_full_trading_system_audit.py:792:    # The short block must have takeProfitValue: killLower
+tests/test_iteration167_full_trading_system_audit.py:794:    assert "killLower" in short_block, "short TP must reference killLower"
+tests/test_iteration168_execution_direction_conflict_guard.py:64:    assert db.insert_bot_instance(conn, _running_bot(bot_id="B-long", direction="long")) == "inserted"
+tests/test_iteration168_execution_direction_conflict_guard.py:66:    blocks = _execution_symbol_direction_conflict_blocks(conn, _candidate("short"))
+tests/test_iteration168_execution_direction_conflict_guard.py:69:    assert blocks[0]["existing_direction"] == "long"
+tests/test_iteration168_execution_direction_conflict_guard.py:70:    assert blocks[0]["candidate_direction"] == "short"
+tests/test_iteration168_execution_direction_conflict_guard.py:71:    assert blocks[0]["bot_id"] == "B-long"
+tests/test_iteration168_execution_direction_conflict_guard.py:75:    assert db.insert_bot_instance(conn, _running_bot(bot_id="B-long", direction="long")) == "inserted"
+tests/test_iteration168_execution_direction_conflict_guard.py:77:    assert _execution_symbol_direction_conflict_blocks(conn, _candidate("long")) == []
+tests/test_iteration168_execution_direction_conflict_guard.py:83:    blocks = _execution_symbol_direction_conflict_blocks(conn, _candidate("long"))
+tests/test_iteration168_execution_direction_conflict_guard.py:87:    assert blocks[0]["candidate_direction"] == "long"
+tests/test_iteration168_execution_direction_conflict_guard.py:96:                direction="long",
+tests/test_iteration168_execution_direction_conflict_guard.py:104:    assert _execution_symbol_direction_conflict_blocks(conn, _candidate("long", rec_id="R-new", root="ROOT-1")) == []
+tests/test_iteration168_execution_direction_conflict_guard.py:112:                bot_id="B-chain-long",
+tests/test_iteration168_execution_direction_conflict_guard.py:113:                direction="long",
+tests/test_iteration168_execution_direction_conflict_guard.py:121:    blocks = _execution_symbol_direction_conflict_blocks(conn, _candidate("short", rec_id="R-new", root="ROOT-FLIP"))
+tests/test_iteration168_execution_direction_conflict_guard.py:124:    assert blocks[0]["existing_direction"] == "long"
+tests/test_iteration168_execution_direction_conflict_guard.py:125:    assert blocks[0]["candidate_direction"] == "short"
+tests/test_iteration168_execution_direction_conflict_guard.py:132:    blocks = _execution_symbol_direction_conflict_blocks(conn, _candidate("long"))
+tests/test_iteration168_execution_direction_conflict_guard.py:136:    assert blocks[0]["candidate_direction"] == "long"
+tests/test_iteration168_execution_direction_conflict_guard.py:140:    assert db.insert_bot_instance(conn, _running_bot(bot_id="B-eth", direction="short", symbol="ETHUSDT")) == "inserted"
+tests/test_iteration168_execution_direction_conflict_guard.py:141:    assert db.insert_bot_instance(conn, _running_bot(bot_id="B-spot", direction="short", venue="spot", origin_rec_id="R-spot")) == "inserted"
+tests/test_iteration168_execution_direction_conflict_guard.py:143:    assert _execution_symbol_direction_conflict_blocks(conn, _candidate("long", symbol="BTCUSDT")) == []
+tests/test_iteration169_grid_worst_case_notional.py:41:        "direction": "long",
+tests/test_iteration169_grid_worst_case_notional.py:43:            "leverage": 10,
+tests/test_iteration169_grid_worst_case_notional.py:60:                    "range": {"lower": 90.0, "upper": 150.0},
+tests/test_iteration169_grid_worst_case_notional.py:61:                    "kill_switch": {"lower": 85.0, "upper": 155.0},
+tests/test_iteration169_grid_worst_case_notional.py:107:            "leverage": 5,
+tests/test_iteration169_grid_worst_case_notional.py:124:                    "range": {"lower": 90.0, "upper": 150.0},
+tests/test_iteration169_grid_worst_case_notional.py:125:                    "kill_switch": {"lower": 85.0, "upper": 155.0},
+tests/test_iteration170_directional_qty_worst_case.py:24:    """Worst-case notional is priced at the upper grid boundary, not at entry.
+tests/test_iteration170_directional_qty_worst_case.py:27:    Dividing the upper-bound worst-case notional by reference_price overstates size.
+tests/test_iteration170_directional_qty_worst_case.py:33:        "direction": "short",
+tests/test_iteration170_directional_qty_worst_case.py:39:                    "range": {"lower": 80.0, "upper": 150.0},
+tests/test_iteration170_directional_qty_worst_case.py:40:                    "kill_switch": {"lower": 70.0, "upper": 160.0},
+tests/test_iteration170_directional_qty_worst_case.py:64:        "direction": "long",
+tests/test_iteration170_directional_qty_worst_case.py:70:                    "range": {"lower": 80.0, "upper": 150.0},
+tests/test_iteration170_directional_qty_worst_case.py:71:                    "kill_switch": {"lower": 70.0, "upper": 160.0},
+tests/test_iteration171_nested_grid_count.py:28:        "direction": "short",
+tests/test_iteration171_nested_grid_count.py:33:                    "range": {"lower": 80.0, "upper": 150.0},
+tests/test_iteration171_nested_grid_count.py:34:                    "kill_switch": {"lower": 70.0, "upper": 160.0},
+tests/test_iteration171_nested_grid_count.py:58:        "direction": "long",
+tests/test_iteration171_nested_grid_count.py:63:                    "range": {"lower": 80.0, "upper": 120.0},
+tests/test_iteration171_nested_grid_count.py:64:                    "kill_switch": {"lower": 70.0, "upper": 140.0},
+tests/test_iteration173_env_and_ui_qty_consistency.py:19:    had to infer base qty for display. A grid with reference=100, upper=150 and
+tests/test_iteration173_operator_leverage_no_trade_policy.py:13:    leverage, note, diagnostics = recommender_module._select_operator_grid_leverage(
+tests/test_iteration173_operator_leverage_no_trade_policy.py:14:        direction="long",
+tests/test_iteration173_operator_leverage_no_trade_policy.py:26:    assert leverage == 3
+tests/test_iteration173_operator_leverage_no_trade_policy.py:44:        direction="long",
+tests/test_iteration173_operator_leverage_no_trade_policy.py:46:        direction_bias="long",
+tests/test_iteration173_operator_leverage_no_trade_policy.py:62:    assert params["leverage"] == 3
+tests/test_iteration174_operator_next_actions.py:36:        "direction": "long",
+tests/test_iteration174_operator_next_actions.py:38:            "leverage": 5,
+tests/test_iteration174_operator_next_actions.py:50:                    "range": {"lower": 88.0, "upper": 112.0},
+tests/test_iteration174_operator_next_actions.py:51:                    "kill_switch": {"lower": 85.3, "upper": 115.0},
+tests/test_iteration174_operator_next_actions.py:63:                "msg": "Оценочный worst-side liquidation buffer=5.53% слишком мал для запуска futures grid с leverage=5.",
+tests/test_iteration174_operator_next_actions.py:110:        "direction": "short",
+tests/test_iteration174_operator_next_actions.py:112:            "leverage": 3,
+tests/test_iteration174_operator_next_actions.py:117:                    "идея не проходит текущий 3-5x leverage profile без ослабления risk policy; evaluated_leverage=3x, reason=signal_quality_too_low_for_operator_minimum"
+tests/test_iteration175_operator_diagnostics_visibility.py:35:        "direction": "long",
+tests/test_iteration175_operator_diagnostics_visibility.py:37:            "leverage": 5,
+tests/test_iteration175_operator_diagnostics_visibility.py:63:        "params": {"leverage": 5, "price_ref": 2000.0},
+tests/test_iteration176_notional_min_price.py:46:def _notional_only_rec(order_notional: float, *, lower: float = 80.0) -> dict:
+tests/test_iteration176_notional_min_price.py:51:        "direction": "long",
+tests/test_iteration176_notional_min_price.py:58:            "leverage": 2,
+tests/test_iteration176_notional_min_price.py:75:                    "range": {"lower": lower, "upper": 120.0},
+tests/test_iteration176_notional_min_price.py:76:                    "kill_switch": {"lower": lower - 1.0, "upper": 121.0},
+tests/test_iteration176_notional_min_price.py:77:                    "grid_step": {"step_abs": (120.0 - lower) / 5.0, "step_pct": 8.0},
+tests/test_iteration176_notional_min_price.py:86:    rec = _notional_only_rec(5.1, lower=80.0)
+tests/test_iteration176_notional_min_price.py:102:    rec = _notional_only_rec(6.25, lower=80.0)
+tests/test_iteration177_adaptive_leverage_interval.py:7:    leverage, note, diagnostics = recommender_module._select_operator_grid_leverage(
+tests/test_iteration177_adaptive_leverage_interval.py:8:        direction="long",
+tests/test_iteration177_adaptive_leverage_interval.py:20:    assert leverage == 4
+tests/test_iteration177_adaptive_leverage_interval.py:25:    assert diagnostics["accepted_leverage_promotions"][-1]["leverage"] == 4
+tests/test_iteration177_adaptive_leverage_interval.py:29:    leverage, note, diagnostics = recommender_module._select_operator_grid_leverage(
+tests/test_iteration177_adaptive_leverage_interval.py:30:        direction="long",
+tests/test_iteration177_adaptive_leverage_interval.py:42:    assert leverage == 5
+tests/test_iteration177_adaptive_leverage_interval.py:46:    assert [x["leverage"] for x in diagnostics["accepted_leverage_promotions"]] == [4, 5]
+tests/test_iteration177_adaptive_leverage_interval.py:50:    leverage, note, diagnostics = recommender_module._select_operator_grid_leverage(
+tests/test_iteration177_adaptive_leverage_interval.py:51:        direction="long",
+tests/test_iteration177_adaptive_leverage_interval.py:64:    assert leverage == 4
+tests/test_iteration177_adaptive_leverage_interval.py:83:                "direction": "long",
+tests/test_iteration177_adaptive_leverage_interval.py:84:                "bias": "long",
+tests/test_iteration177_adaptive_leverage_interval.py:93:        direction="long",
+tests/test_iteration177_adaptive_leverage_interval.py:95:        direction_bias="long",
+tests/test_iteration177_adaptive_leverage_interval.py:111:    assert params["leverage"] == 5
+tests/test_iteration178_worst_case_qty_key_parity.py:37:    With reference=100 and upper grid price=150, a 1500 USDT worst-case/max grid
+tests/test_iteration178_worst_case_qty_key_parity.py:45:        "direction": "long",
+tests/test_iteration178_worst_case_qty_key_parity.py:51:                    "range": {"lower": 80.0, "upper": 150.0},
+tests/test_iteration178_worst_case_qty_key_parity.py:52:                    "kill_switch": {"lower": 70.0, "upper": 160.0},
+tests/test_iteration179_estimated_max_qty_ui_parity.py:35:        "direction": "short",
+tests/test_iteration179_estimated_max_qty_ui_parity.py:40:                    "range": {"lower": 90.0, "upper": 110.0},
+tests/test_iteration179_estimated_max_qty_ui_parity.py:41:                    "kill_switch": {"lower": 80.0, "upper": 120.0},
+tests/test_iteration68.py:29:    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
+tests/test_iteration68.py:240:            'direction': 'long',
+tests/test_iteration68.py:293:            'direction': 'long',
+tests/test_iteration68.py:341:            'rec_id': 'R-trade-stop-false',
+tests/test_iteration68.py:346:            'direction': 'long',
+tests/test_iteration68.py:363:        '/api/v1/recommendations/R-trade-stop-false/action',
+tests/test_iteration68.py:382:            'trade_id': 'T-trade-stop-false',
+tests/test_iteration68.py:384:            'pnl': 4.0,
+tests/test_iteration68.py:395:    assert db.get_trade_by_id(conn, 'T-trade-stop-false') is None
+tests/test_iteration68.py:416:            'direction': 'long',
+tests/test_iteration68.py:455:                'pnl': 5.0,
+tests/test_iteration70.py:79:            execution_direction="long",
+tests/test_iteration70.py:80:            thesis_direction="long",
+tests/test_iteration70.py:97:            "direction": "long",
+tests/test_iteration70.py:146:        "linear|BTCUSDT|futures_grid|neutral->long": {
+tests/test_iteration70.py:151:            "thesis_direction": "long",
+tests/test_iteration70.py:152:            "execution_direction": "long",
+tests/test_iteration70.py:167:        "direction": "long",
+tests/test_iteration73.py:118:            "direction": "long",
+tests/test_iteration73.py:148:            "direction": "long",
+tests/test_iteration73.py:191:                "direction": "long",
+tests/test_iteration73.py:205:            "direction": "long",
+tests/test_iteration73.py:250:            "direction": "long",
+tests/test_iteration73.py:296:            "direction": "long",
+tests/test_iteration73.py:338:                "direction": "long",
+tests/test_iteration73.py:368:            "direction": "long",
+tests/test_iteration73.py:424:                    "direction": "long",
+tests/test_iteration73.py:453:                    "direction": "long",
+tests/test_iteration73.py:466:                            "execution_direction": "long",
+tests/test_iteration73.py:467:                            "thesis_direction": "long",
+tests/test_iteration77.py:68:        _insert_recent_reco(conn, "R-prev-short", ts_now - 120, direction="short")
+tests/test_iteration77.py:70:            "rec_id": "R-new-long",
+tests/test_iteration77.py:75:            "direction": "long",
+tests/test_iteration84_alerts_and_security.py:62:        "⚠️ <b>Reco</b>\nНет рекомендаций в текущем цикле\nРынок в risk-off режиме или все символы заблокированы.",
+tests/test_iteration86_atomicity_and_backfill.py:110:        "/api/v1/risk/limits",
+tests/test_iteration89_env_and_docs_integrity.py:10:from app.risk import get_risk_limits
+tests/test_iteration89_env_and_docs_integrity.py:45:    conn = db.connect(str(tmp_path / "risk-fallback.db"))
+tests/test_iteration90_audit_hardening.py:37:        "⚠️ <b>Reco</b>\nНет рекомендаций в текущем цикле\nРынок в risk-off режиме или все символы заблокированы.",
+tests/test_iteration92_json_shape_hardening.py:25:    monkeypatch.setattr(app_main, '_fetch_bybit_instrument_meta', lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
+tests/test_iteration92_json_shape_hardening.py:84:                'direction': 'long',
+tests/test_iteration92_json_shape_hardening.py:91:                'params': safe_linear_grid_params({'grid_levels': 5}, reference=60050.0, lower=59400.0, upper=60600.0),
+tests/test_iteration92_json_shape_hardening.py:146:            'mode': {'direction': 'long'},
+tests/test_iteration92_json_shape_hardening.py:159:        "INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json) VALUES(?,?,?,?,?,?,?)",
+tests/test_iteration92_json_shape_hardening.py:238:        '/api/v1/risk/limits',
+tests/test_iteration92_json_shape_hardening.py:254:                'direction': 'long',
+tests/test_iteration92_json_shape_hardening.py:261:                'params': safe_linear_grid_params({'grid_levels': 5}, reference=60050.0, lower=59400.0, upper=60600.0),
+tests/test_iteration92_json_shape_hardening.py:281:        json={'trade_id': '   ', 'pnl': 1.0, 'fee': 0.1},
+tests/test_iteration93_outcomes_and_feature_hardening.py:74:                    "range": {"lower": 98.0, "upper": 102.0},
+tests/test_iteration93_outcomes_and_feature_hardening.py:75:                    "kill_switch": {"lower": 97.5, "upper": 102.5},
+tests/test_iteration94_risk_limits_and_outcome_bounds.py:38:    """Bootstrap не должен писать в БД raw risk JSON, который runtime потом молча clamp'ит."""
+tests/test_iteration94_risk_limits_and_outcome_bounds.py:39:    db_path = tmp_path / "bootstrap-risk.db"
+tests/test_iteration94_risk_limits_and_outcome_bounds.py:84:        "/api/v1/risk/limits",
+tests/test_iteration94_risk_limits_and_outcome_bounds.py:116:    """NaN/Infinity в верхнеуровневых границах не должны отключать валидные range/kill-switch из trade_plan."""
+tests/test_iteration94_risk_limits_and_outcome_bounds.py:145:                    "range": {"lower": 95.0, "upper": 105.0},
+tests/test_iteration94_risk_limits_and_outcome_bounds.py:146:                    "kill_switch": {"lower": 94.5, "upper": 105.5},
+tests/test_iteration96_runtime_and_payload_hardening.py:27:    monkeypatch.setattr(app_main, "_fetch_bybit_instrument_meta", lambda venue, symbol: {"category":"linear","symbol":str(symbol or "BTCUSDT").upper(),"status":"Trading","contract_type":"LinearPerpetual","quote_coin":"USDT","settle_coin":"USDT","tick_size":"0.1","qty_step":"0.001","min_order_qty":"0.001","max_order_qty":"1000","min_notional":"5","min_leverage":"1","max_leverage":"100","leverage_step":"0.01"})
+tests/test_iteration96_runtime_and_payload_hardening.py:83:                "direction": "long",
+tests/test_iteration96_runtime_and_payload_hardening.py:156:        "long",
+tests/test_iteration96_runtime_and_payload_hardening.py:187:        "long",
+tests/test_iteration96_runtime_and_payload_hardening.py:192:            "leverage": "2",
+tests/test_iteration96_runtime_and_payload_hardening.py:199:    assert plan["levels"]["range"] == {"lower": None, "upper": None}
+tests/test_iteration96_runtime_and_payload_hardening.py:200:    assert plan["levels"]["kill_switch"]["lower"] is None
+tests/test_iteration96_runtime_and_payload_hardening.py:201:    assert plan["levels"]["kill_switch"]["upper"] is None
+tests/test_iteration96_runtime_and_payload_hardening.py:209:    assert "nan" not in plan["notes"].lower()
+tests/test_iteration96_runtime_and_payload_hardening.py:210:    assert "inf" not in plan["notes"].lower()
+tests/test_iteration97_json_loader_and_transport_hardening.py:76:                "long",
+tests/test_iteration99_config_and_llm_guardrails.py:34:            "direction": "long",
+tests/test_iteration99_config_and_llm_guardrails.py:44:        direction_agg={"direction": "long", "raw_direction": "long", "scores": {"all": 0.5}},
+tests/test_logic.py:36:from app.risk import compute_risk_status, gate_candidate, get_risk_limits
+tests/test_logic.py:84:    {"thesis_direction":"short","execution_direction":"short","confidence":0.81,"regime_view":"bearish_range","risk_flags":["carry_risk"],"summary":"bearish range with directional futures grid"}
+tests/test_logic.py:89:    assert parsed["thesis_direction"] == "short"
+tests/test_logic.py:90:    assert parsed["execution_direction"] == "short"
+tests/test_logic.py:100:        '{"thesis_direction":"long","execution_direction":"long","confidence":"NaN","summary":"bad conf"}',
+tests/test_logic.py:102:        engine_direction="long",
+tests/test_logic.py:165:                '{"thesis_direction":"long","execution_direction":"long","confidence":0.67,"regime_view":"bullish_range","risk_flags":[],"summary":"fallback ok"}',
+tests/test_logic.py:166:                {"endpoint": "/api/generate", "done": True, "done_reason": "stop", "eval_count": 42},
+tests/test_logic.py:170:    payload = {"candidate": {"bot_type": "futures_grid", "engine_execution_direction": "long"}}
+tests/test_logic.py:174:    assert result.execution_direction == "long"
+tests/test_logic.py:189:            raise ValueError("ollama /api/generate returned no response (done=True, done_reason=stop, eval_count=0)")
+tests/test_logic.py:211:                execution_direction="short",
+tests/test_logic.py:212:                thesis_direction="short",
+tests/test_logic.py:230:        "direction": "long",
+tests/test_logic.py:239:            "direction_agg": {"direction": "long", "raw_direction": "long", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
+tests/test_logic.py:240:            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "futures_neutral": False},
+tests/test_logic.py:250:        symbol_feature_map={("linear", "BTCUSDT"): {"_direction_agg": {"direction": "long"}}},
+tests/test_logic.py:274:                execution_direction="long",
+tests/test_logic.py:275:                thesis_direction="long",
+tests/test_logic.py:292:        "direction": "long",
+tests/test_logic.py:301:            "direction_agg": {"direction": "long", "raw_direction": "long", "regime": "range", "coherence": 0.7, "trendiness": 0.2},
+tests/test_logic.py:302:            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "futures_neutral": False},
+tests/test_logic.py:312:        symbol_feature_map={("linear", "BTCUSDT"): {"_direction_agg": {"direction": "long"}}},
+tests/test_logic.py:339:                execution_direction="short",
+tests/test_logic.py:340:                thesis_direction="short",
+tests/test_logic.py:361:            "direction": "short",
+tests/test_logic.py:370:                "direction_agg": {"direction": "short", "raw_direction": "short", "regime": "range", "coherence": 0.72, "trendiness": 0.18},
+tests/test_logic.py:371:                "execution_constraints": {"raw_direction": "short", "executable_direction": "short", "futures_neutral": False},
+tests/test_logic.py:390:                "direction_agg": {"direction": "neutral", "raw_direction": "short", "regime": "range", "coherence": 0.72, "trendiness": 0.18},
+tests/test_logic.py:391:                "execution_constraints": {"raw_direction": "short", "executable_direction": "neutral", "futures_neutral": True},
+tests/test_logic.py:413:    assert recs[1]["reasons"]["llm_review"]["execution_direction"] == "short"
+tests/test_logic.py:425:                execution_direction="short",
+tests/test_logic.py:426:                thesis_direction="short",
+tests/test_logic.py:442:            "direction": "long",
+tests/test_logic.py:485:        "linear|LINKUSDT|futures_grid|short": {
+tests/test_logic.py:490:            "thesis_direction": "short",
+tests/test_logic.py:507:        "direction": "short",
+tests/test_logic.py:516:            "direction_agg": {"direction": "short", "raw_direction": "short"},
+tests/test_logic.py:517:            "execution_constraints": {"raw_direction": "short", "executable_direction": "short", "futures_neutral": False},
+tests/test_logic.py:542:    assert review["thesis_direction"] == "short"
+tests/test_logic.py:549:        "linear|BTCUSDT|futures_grid|long": {
+tests/test_logic.py:554:            "thesis_direction": "long",
+tests/test_logic.py:555:            "execution_direction": "long",
+tests/test_logic.py:571:        "direction": "long",
+tests/test_logic.py:580:            "direction_agg": {"direction": "long", "raw_direction": "long"},
+tests/test_logic.py:581:            "execution_constraints": {"raw_direction": "long", "executable_direction": "long", "futures_neutral": False},
+tests/test_logic.py:623:                execution_direction="long",
+tests/test_logic.py:624:                thesis_direction="long",
+tests/test_logic.py:640:            "direction": "long",
+tests/test_logic.py:697:                execution_direction="long",
+tests/test_logic.py:698:                thesis_direction="long",
+tests/test_logic.py:707:        "linear|AAAUSDT|futures_grid|neutral->long": {
+tests/test_logic.py:712:            "thesis_direction": "long",
+tests/test_logic.py:713:            "execution_direction": "long",
+tests/test_logic.py:720:        "linear|BBBUSDT|futures_grid|neutral->long": {
+tests/test_logic.py:725:            "thesis_direction": "long",
+tests/test_logic.py:726:            "execution_direction": "long",
+tests/test_logic.py:744:            "direction": "long",
+tests/test_logic.py:819:            "direction": "long",
+tests/test_logic.py:857:    first = _advance_persistence_gate("linear", "BTCUSDT", "futures_grid", "long", now_ts=1_700_000_000, fresh_gap=fresh_gap)
+tests/test_logic.py:858:    second = _advance_persistence_gate("linear", "BTCUSDT", "futures_grid", "long", now_ts=1_700_000_120, fresh_gap=fresh_gap)
+tests/test_logic.py:918:        "mode": {"direction": "long"},
+tests/test_logic.py:995:    first["params"] = {"grid": {"upper": 105.0, "lower": 95.0}, "levels": [3, 2, 1]}
+tests/test_logic.py:1003:    same_semantics["params"] = {"levels": [3, 2, 1], "grid": {"lower": 95.0, "upper": 105.0}}
+tests/test_logic.py:1017:        "pnl": 12.5,
+tests/test_logic.py:1034:    db.insert_trade(conn, {"trade_id": "T1", "bot_id": "B1", "ts": now - 120, "symbol": "BTCUSDT", "pnl": 300.0, "fee": 0.0, "meta": {}})
+tests/test_logic.py:1035:    db.insert_trade(conn, {"trade_id": "T2", "bot_id": "B1", "ts": now - 30, "symbol": "BTCUSDT", "pnl": -250.0, "fee": 0.0, "meta": {}})
+tests/test_logic.py:1057:        "direction": "long",
+tests/test_logic.py:1071:    short = _estimate_cost_model(next_funding_ts=now + 3600, direction="short", **{k: v for k, v in base_args.items() if k != "direction"})
+tests/test_logic.py:1072:    assert short["expected_funding_bps"] == pytest.approx(-10.0)
+tests/test_logic.py:1109:        "direction": "short",
+tests/test_logic.py:1123:    assert _funding_score_adjustment("short", {"signal": "bearish", "value": 0.0005}, receipt) == 0.0
+tests/test_logic.py:1183:    prev = {"ts": 1_700_000_000, "direction": "long", "bias": "long", "score_all": 0.19, "trendiness": 0.44, "coherence": 0.66}
+tests/test_logic.py:1185:        "direction": "short",
+tests/test_logic.py:1186:        "bias": "short",
+tests/test_logic.py:1197:    assert stable["raw_direction"] == "short"
+tests/test_logic.py:1198:    assert stable["direction"] == "long"
+tests/test_logic.py:1201:    assert state["direction"] == "long"
+tests/test_logic.py:1216:    assert agg["bias"] == "long"
+tests/test_logic.py:1217:    assert agg["direction"] == "long"
+tests/test_logic.py:1233:    assert agg["bias"] == "short"
+tests/test_logic.py:1234:    assert agg["direction"] == "short"
+tests/test_logic.py:1240:        "direction": "short",
+tests/test_logic.py:1241:        "bias": "short",
+tests/test_logic.py:1253:    assert stable["raw_direction"] == "short"
+tests/test_logic.py:1254:    assert stable["direction"] == "short"
+tests/test_logic.py:1256:    assert state["direction"] == "short"
+tests/test_logic.py:1428:    assert apply_market_shock_gate(moderate_guard, "linear", "futures_grid", "short")[0]["code"] == "MARKET_GUARDED_UP"
+tests/test_logic.py:1640:    assert linear_row["direction"] == "long"
+tests/test_logic.py:1641:    assert linear_reasons["direction_agg"]["direction"] == "long"
+tests/test_logic.py:1647:    assert fut_row["direction"] == "long"
+tests/test_logic.py:1648:    assert fut_reasons["direction_agg"]["direction"] == "long"
+tests/test_logic.py:1668:    long_block = _extreme_funding_block("long", fr_sig, long_cost)
+tests/test_logic.py:1672:    short_receiving_block = _extreme_funding_block("short", fr_sig, short_receiving_cost)
+tests/test_logic.py:1675:    short_paying_block = _extreme_funding_block("short", fr_sig, short_paying_cost)
+tests/test_logic.py:1716:                    "raw_direction": "short",
+tests/test_logic.py:1727:                    "thesis_direction": "short",
+tests/test_logic.py:1731:                    "summary": "linear short neutralized",
+tests/test_logic.py:1765:            rec_id="R-futures-long",
+tests/test_logic.py:1770:            direction="long",
+tests/test_logic.py:1773:                    "raw_direction": "long",
+tests/test_logic.py:1774:                    "executable_direction": "long",
+tests/test_logic.py:1784:                    "thesis_direction": "short",
+tests/test_logic.py:1785:                    "execution_direction": "short",
+tests/test_logic.py:1821:        "rec_id": "R-futures-long",
+tests/test_logic.py:1826:        "direction": "long",
+tests/test_logic.py:1850:    assert pair_map[("short", "neutral", "futures_neutral")]["total"] == 1
+tests/test_logic.py:1852:    assert pair_map[("long", "long", "")]["total"] == 1
+tests/test_logic.py:1858:    assert by_bot_map[("futures_grid", "short", "neutral")]["total"] == 1
+tests/test_logic.py:1860:    assert by_bot_map[("futures_grid", "long", "long")]["wins"] == 1
+tests/test_logic.py:1867:    assert llm_map[("ok", "short", "disagree", "veto")]["total"] == 1
+tests/test_logic.py:1875:    assert llm_engine_map[("long", "ok", "disagree", "veto")]["total"] == 1
+tests/test_logic.py:1890:    assert llm_matrix_map[("long", "short", "disagree", "veto", "ok", "")]["total"] == 1
+tests/test_logic.py:1897:    assert neutral_breakdown_map[("futures_neutral", "short", "neutral")]["losses"] == 1
+tests/test_logic.py:1898:    assert neutral_breakdown_map[("directional", "long", "long")]["total"] == 1
+tests/test_logic.py:1901:    assert recent_map["R-neutralized"]["raw_direction"] == "short"
+tests/test_logic.py:1906:    assert recent_map["R-futures-long"]["llm_review"]["gate_decision"] == "veto"
+tests/test_logic.py:1917:        "direction": "short",
+tests/test_logic.py:1928:    assert stats["direction_pairs"][0]["raw_direction"] == "short"
+tests/test_logic.py:1929:    assert stats["direction_pairs"][0]["execution_direction"] == "short"
+tests/test_logic.py:1930:    assert stats["recent"][0]["raw_direction"] == "short"
+tests/test_logic.py:1931:    assert stats["recent"][0]["execution_direction"] == "short"
+tests/test_logic.py:2022:            "direction": "long",
+tests/test_logic.py:2043:            "direction": "long",
+tests/test_logic.py:2089:            "direction": "long",
+tests/test_logic.py:2138:            "direction": "long",
+tests/test_logic.py:2147:                "direction_agg": {"raw_direction": "long"},
+tests/test_logic.py:2148:                "execution_constraints": {"raw_direction": "long", "executable_direction": "long"},
+tests/test_logic.py:2164:            "thesis_direction": "long",
+tests/test_logic.py:2165:            "execution_direction": "long",
+tests/test_logic.py:2209:                thesis_direction="long",
+tests/test_logic.py:2210:                execution_direction="long",
+tests/test_logic.py:2226:        "direction": "long",
+tests/test_logic.py:2279:            "direction": "long",
+tests/test_logic.py:2329:                execution_direction="long",
+tests/test_logic.py:2330:                thesis_direction="long",
+tests/test_logic.py:2344:        "direction": "long",
+tests/test_logic.py:2417:            "direction": "long",
+tests/test_logic.py:2857:    conn = db.connect(str(tmp_path / "risk.db"))
+tests/test_logic.py:3092:    cache_key = 'linear|BTCUSDT|futures_grid|long'
+tests/test_logic.py:3103:                'thesis_direction': 'long',
+tests/test_logic.py:3104:                'execution_direction': 'long',
+tests/test_logic.py:3133:        'direction': 'long',
+tests/test_logic.py:3149:    cache_key = 'linear|BTCUSDT|futures_grid|long'
+tests/test_logic.py:3159:                'thesis_direction': 'long',
+tests/test_logic.py:3160:                'execution_direction': 'long',
+tests/test_logic.py:3187:        'direction': 'long',
+tests/test_logic.py:3195:            'direction_agg': {'raw_direction': 'long'},
+tests/test_logic.py:3196:            'execution_constraints': {'raw_direction': 'long'},
+tests/test_logic.py:3209:        """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json) VALUES(?,?,?,?,?,?,?)""",
+tests/test_logic.py:3213:        """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json) VALUES(?,?,?,?,?,?,?)""",
+tests/test_logic.py:3235:                'pnl': float('inf'),
+tests/test_logic.py:3487:                {"endpoint": "/api/chat", "done": True, "done_reason": "stop", "eval_count": 1},
+tests/test_logic.py:3495:            "direction": "long",
+tests/test_logic.py:3505:        direction_agg={"direction": "long", "raw_direction": "long", "scores": {"all": float("inf")}},
+tests/test_iteration180_operator_minimum_floor.py:10:    with low directional strength could never intersect the operator leverage
+tests/test_iteration180_operator_minimum_floor.py:13:    leverage, note, diagnostics = recommender_module._select_operator_grid_leverage(
+tests/test_iteration180_operator_minimum_floor.py:14:        direction="long",
+tests/test_iteration180_operator_minimum_floor.py:26:    assert leverage == 3
+tests/test_iteration180_operator_minimum_floor.py:36:    leverage, note, diagnostics = recommender_module._select_operator_grid_leverage(
+tests/test_iteration180_operator_minimum_floor.py:37:        direction="long",
+tests/test_iteration180_operator_minimum_floor.py:49:    assert leverage == 3

@@ -2113,11 +2113,15 @@ def _select_operator_grid_leverage(
     neutral_range_quality = dir_norm == "neutral" and range_score >= 0.70 and trendiness <= 0.35
     diagnostics["directional_quality"] = bool(directional_quality)
     diagnostics["neutral_range_quality"] = bool(neutral_range_quality)
-    if directional_quality or neutral_range_quality:
-        if min_lev == max_lev or selected_leverage == min_lev:
-            return _approve("operator_minimum_selected")
-        return _approve("adaptive_interval_selected")
-    return _decline("signal_quality_too_low_for_operator_minimum")
+
+    # The operator minimum is the base actionable floor after hard safety and
+    # economics checks above.  Directional/range quality is still recorded and
+    # remains required by `_adaptive_grid_leverage_from_quality()` for promotion
+    # above the floor; otherwise score/conf-favoured grid ideas can be trapped
+    # forever between the thesis gate and the leverage-profile gate.
+    if min_lev == max_lev or selected_leverage == min_lev:
+        return _approve("operator_minimum_selected")
+    return _approve("adaptive_interval_selected")
 
 
 def _max_liquidation_safe_grid_leverage(
