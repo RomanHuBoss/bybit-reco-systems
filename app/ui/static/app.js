@@ -665,7 +665,20 @@ function buildOperatorValues(it) {
   const leverage = it.venue === "linear" ? String(leverageRaw ?? 1) : "—";
   const marginMode = it.venue === "linear" ? marginModeRu(marginModeRaw) : "—";
   const exits = operatorExitLevels((it || {}).direction, killLower, killUpper);
-  const canonicalExits = operatorExitLevelsFromBackend((it || {}).directional_exit_levels, exits, meta);
+  const rawBackendExits = (it || {}).directional_exit_levels;
+  const dirNorm = String((it || {}).direction || "").trim().toLowerCase();
+  const venueNorm = String((it || {}).venue || "").trim().toLowerCase();
+  const requiresBackendExitPayload = venueNorm === "linear" && (dirNorm === "long" || dirNorm === "short");
+  const backendExitPayloadAvailable = rawBackendExits && typeof rawBackendExits === "object";
+  const canonicalExits = requiresBackendExitPayload && !backendExitPayloadAvailable
+    ? {
+        takeProfitValue: "—",
+        stopLossValue: `${killLower} / ${killUpper}`,
+        takeProfitLabel: "Directional TP blocked",
+        stopLossLabel: "Stop Loss / Kill-switch",
+        exitGeometry: `backend directional TP/SL payload missing; rendering kill-switch only · ${exits.exitGeometry || ""}`.trim(),
+      }
+    : operatorExitLevelsFromBackend(rawBackendExits, exits, meta);
   return {
     rangeLower,
     rangeUpper,

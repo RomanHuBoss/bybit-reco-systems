@@ -189,5 +189,6 @@ def test_operator_ui_uses_backend_directional_exit_payload_when_available() -> N
 
     assert "function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {})" in app_js
     assert "directional_exit_levels" in app_js
-    assert "const canonicalExits = operatorExitLevelsFromBackend((it || {}).directional_exit_levels, exits, meta);" in app_js
+    assert "const rawBackendExits = (it || {}).directional_exit_levels;" in app_js
+    assert "operatorExitLevelsFromBackend(rawBackendExits, exits, meta)" in app_js
     assert "...canonicalExits" in app_js

@@ -1,0 +1,25 @@
+Static scan — 2026-06-15 — UI backend exit payload fail-closed
+
+Scope: bounded scan of changed/new UI TP/SL code and tests after the offline re-audit.
+
+Commands / material reviewed:
+- diff against uploaded archive for app/ui/static/app.js
+- rg over changed TP/SL keywords: directional_exit_levels, operatorExitLevels, takeProfitValue, stopLossValue, Directional TP blocked, backend directional TP/SL
+
+Reviewed hits:
+
+1. app/ui/static/app.js:667-681 — SAFE / INTENDED
+   - buildOperatorValues still computes the legacy local fallback, but linear directional rows now require a backend directional_exit_levels payload before displaying directional TP/SL.
+   - Missing backend payload renders kill-switch-only values with Directional TP blocked.
+   - Existing invalid-backend-geometry guard remains unchanged and still renders kill-switch-only.
+
+2. tests/test_iteration148_directional_semantics_hardening.py:187-193 — SAFE / UPDATED ASSERTION
+   - The static assertion was updated from the old one-line direct fallback call to the new rawBackendExits flow.
+   - It still verifies that operator UI consumes backend directional_exit_levels and spreads canonicalExits into operator fields.
+
+3. tests/test_iteration183_ui_requires_backend_exit_payload.py:53-116 — SAFE / NEW RED→GREEN REGRESSION
+   - First test fails against the uploaded original archive: missing backend directional_exit_levels for a linear short rendered TP=95.0.
+   - After the patch it renders TP=—, SL=killLower/killUpper, label=Directional TP blocked.
+   - Second test confirms valid backend payload still renders short TP=95.0 and SL=105.0.
+
+No changed hits weaken Bybit side mapping, reduceOnly/closeOnTrigger semantics, triggerDirection, backend geometry validation, execution preflight, runtime risk caps, funding guards, or recommendation scoring thresholds.
