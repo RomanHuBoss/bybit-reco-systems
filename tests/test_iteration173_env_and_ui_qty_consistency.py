@@ -32,5 +32,5 @@ def test_operator_ui_derives_worst_case_position_qty_from_worst_grid_price() -> 
 def test_static_asset_cache_key_bumped_after_worst_case_qty_ui_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v39" in index
-    assert "app.js?v=manual-ui-v39" in index
+    assert "styles.css?v=manual-ui-v40" in index
+    assert "app.js?v=manual-ui-v40" in index

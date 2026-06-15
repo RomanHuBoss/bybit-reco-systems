@@ -952,7 +952,7 @@ function buildOperatorFieldSpecs(it, ov) {
   const rangeUpperForQty = firstFiniteValue([range, params, operatorSheet], ["upper", "price_range_upper", "range_upper"]);
   const explicitPositionQty = firstFiniteValue(
     [sizing, economics, operatorSizing, operatorEconomics, params, operatorSheet],
-    ["estimated_position_qty", "position_qty", "total_qty", "estimated_total_qty", "max_position_qty"]
+    ["estimated_position_qty", "position_qty", "total_qty", "estimated_total_qty", "max_position_qty", "estimated_max_position_qty"]
   );
   const qtyPrice = positionNotionalPick && worstCasePositionNotionalKeys.has(positionNotionalPick.key)
     ? (gridMaxNotionalPrice(referencePrice, rangeLowerForQty, rangeUpperForQty) ?? referencePrice)
