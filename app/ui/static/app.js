@@ -1779,6 +1779,45 @@ async function loadStatus() {
 
 // ── recommendations ───────────────────────────────────────────────────────────
 
+const RECO_FILTER_STORAGE_KEY = "operator.recommendationStatusFilters.v1";
+const RECO_FILTER_IDS = ["showRecommended", "showPending", "showBlocked", "showNoTrade", "showSuppressed"];
+
+function getRecommendationFilterState() {
+  const state = {};
+  RECO_FILTER_IDS.forEach((id) => {
+    const el = $(id);
+    if (el) state[id] = !!el.checked;
+  });
+  return state;
+}
+
+function applyRecommendationFilterState(state) {
+  if (!state || typeof state !== "object") return;
+  RECO_FILTER_IDS.forEach((id) => {
+    const value = state[id];
+    const el = $(id);
+    if (el && typeof value === "boolean") el.checked = value;
+  });
+}
+
+function restoreRecommendationFilterState() {
+  try {
+    const raw = window.localStorage.getItem(RECO_FILTER_STORAGE_KEY);
+    if (!raw) return;
+    applyRecommendationFilterState(JSON.parse(raw));
+  } catch (e) {
+    // Keep the safe HTML defaults when localStorage is unavailable or corrupted.
+  }
+}
+
+function persistRecommendationFilterState() {
+  try {
+    window.localStorage.setItem(RECO_FILTER_STORAGE_KEY, JSON.stringify(getRecommendationFilterState()));
+  } catch (e) {
+    // Non-critical UI preference; recommendations are still fetched from current controls.
+  }
+}
+
 function shouldAutoExpandDiagnostics(data, items, filters) {
   const counts = (data && data.status_counts) || {};
   const onlyActionableFilter = filters.showRecommended === true
@@ -2393,9 +2432,12 @@ $("collectErrJournal").addEventListener("click", (e) => { e.preventDefault(); lo
   });
 });
 
-["showRecommended", "showPending", "showBlocked", "showNoTrade", "showSuppressed"].forEach(id => {
+RECO_FILTER_IDS.forEach(id => {
   const el = $(id);
-  if (el) el.addEventListener("change", refreshAll);
+  if (el) el.addEventListener("change", () => {
+    persistRecommendationFilterState();
+    refreshAll();
+  });
 });
 
 // Keyboard: R = refresh
@@ -2407,6 +2449,7 @@ document.addEventListener("keydown", (e) => {
 
 // ── boot ──────────────────────────────────────────────────────────────────────
 
+restoreRecommendationFilterState();
 refreshAll();
 setInterval(refreshAll, 10000);
 
