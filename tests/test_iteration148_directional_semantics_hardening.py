@@ -187,8 +187,8 @@ def test_execution_preflight_rejects_swapped_short_exit_geometry(app_main) -> No
 def test_operator_ui_uses_backend_directional_exit_payload_when_available() -> None:
     app_js = (Path(__file__).resolve().parent.parent / "app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {})" in app_js
+    assert "function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}, expectedDirection = null)" in app_js
     assert "directional_exit_levels" in app_js
     assert "const rawBackendExits = (it || {}).directional_exit_levels;" in app_js
-    assert "operatorExitLevelsFromBackend(rawBackendExits, exits, meta)" in app_js
+    assert "operatorExitLevelsFromBackend(rawBackendExits, exits, meta, dirNorm)" in app_js
     assert "...canonicalExits" in app_js

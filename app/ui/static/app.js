@@ -607,12 +607,22 @@ function directionalExitGeometryOk(direction, takeProfit, stopLoss, referencePri
   return tp < ref && sl > ref;
 }
 
-function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}) {
+function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}, expectedDirection = null) {
   if (!exitLevels || typeof exitLevels !== "object") return fallback;
   const dir = String(exitLevels.direction || "").trim().toLowerCase();
+  const expectedDir = String(expectedDirection || "").trim().toLowerCase();
   const lower = formatBybitPrice(exitLevels.kill_switch_lower, meta, "down");
   const upper = formatBybitPrice(exitLevels.kill_switch_upper, meta, "up");
   const hasDirectionalTp = exitLevels.has_directional_take_profit === true && (dir === "long" || dir === "short");
+  if ((expectedDir === "long" || expectedDir === "short") && dir !== expectedDir) {
+    return {
+      takeProfitValue: "—",
+      stopLossValue: `${lower} / ${upper}`,
+      takeProfitLabel: "Directional TP blocked",
+      stopLossLabel: "Stop Loss / Kill-switch",
+      exitGeometry: `backend directional TP/SL direction mismatch; item=${expectedDir || "unknown"}, payload=${dir || "missing"}; rendering kill-switch only · ${fallback.exitGeometry || ""}`.trim(),
+    };
+  }
   const backendGeometryOk = exitLevels.geometry_valid !== false && directionalExitGeometryOk(dir, exitLevels.take_profit, exitLevels.stop_loss, exitLevels.reference_price);
   if (hasDirectionalTp && !backendGeometryOk) {
     return {
@@ -678,7 +688,7 @@ function buildOperatorValues(it) {
         stopLossLabel: "Stop Loss / Kill-switch",
         exitGeometry: `backend directional TP/SL payload missing; rendering kill-switch only · ${exits.exitGeometry || ""}`.trim(),
       }
-    : operatorExitLevelsFromBackend(rawBackendExits, exits, meta);
+    : operatorExitLevelsFromBackend(rawBackendExits, exits, meta, dirNorm);
   return {
     rangeLower,
     rangeUpper,
