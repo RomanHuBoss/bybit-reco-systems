@@ -876,14 +876,15 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
         worst_notional_price = _grid_max_notional_price(ref, range_lower, range_upper)
         worst_total_notional_keys = (
             "estimated_worst_case_total_order_notional_usdt",
+            "worst_case_total_order_notional_usdt",
             "estimated_max_position_notional_usdt",
+            "max_position_notional_usdt",
         )
         key, notional = find_first(sizing_maps, worst_total_notional_keys)
         if notional is not None and worst_notional_price is not None and worst_notional_price > 0:
             return {"qty": float(notional) / float(worst_notional_price), "qty_source": f"{key}/max_grid_price"}
 
         total_notional_keys = (
-            "max_position_notional_usdt",
             "estimated_total_order_notional_usdt",
             "total_order_notional_usdt",
             "position_notional_usdt",
