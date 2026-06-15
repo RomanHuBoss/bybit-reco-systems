@@ -2021,7 +2021,7 @@ def _select_operator_grid_leverage(
     (6 bps per side), the round-trip fee floor is already 12 bps and the cost
     model adds at least minimal slippage, so the condition was practically
     unreachable. That made every otherwise viable setup fall back to 1x and then
-    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 5x.
+    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 3x within the 3x..5x interval.
 
     Leverage selection must be based on *net grid edge after costs*, not on a
     hard-coded cost ceiling that can be below the configured fee floor. When the
@@ -2431,10 +2431,10 @@ def _params(
             # Recommendation leverage must be tied to the exact runtime/operator risk
             # profile used for publication blocks.  Using only settings.risk_limits
             # here makes DB/runtime overrides invisible inside params and can publish
-            # a 1x payload while /risk/status already requires a fixed 3x/5x profile.
+            # a 1x payload while /risk/status already requires the 3x..5x operator interval.
             effective_limits = normalize_risk_limits(risk_limits, getattr(settings, "risk_limits", {}) or {})
         except Exception:
-            effective_limits = {"min_leverage": 5, "max_leverage": 5}
+            effective_limits = {"min_leverage": 3, "max_leverage": 5}
         min_operator_leverage = int(effective_limits.get("min_leverage") or 1)
         max_operator_leverage = int(effective_limits.get("max_leverage") or max(1, min_operator_leverage))
 
@@ -3724,10 +3724,10 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 no_trade_reasons.append({
                     "code": "OPERATOR_LEVERAGE_PROFILE_NOT_ACTIONABLE",
                     "msg": (
-                        f"идея не проходит текущий fixed leverage profile без ослабления risk policy; "
+                        f"идея не проходит текущий 3-5x leverage profile без ослабления risk policy; "
                         f"evaluated_leverage={selected_leverage:.0f}x, reason={policy_note}"
                         if selected_leverage is not None
-                        else f"идея не проходит текущий fixed leverage profile без ослабления risk policy; reason={policy_note}"
+                        else f"идея не проходит текущий 3-5x leverage profile без ослабления risk policy; reason={policy_note}"
                     ),
                 })
             if params.get("price_input_valid") is False:

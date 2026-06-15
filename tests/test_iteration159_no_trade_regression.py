@@ -30,7 +30,7 @@ def test_operator_min_leverage_is_not_unreachable_below_default_fee_floor(monkey
     monkeypatch.setattr(
         recommender_module,
         "settings",
-        SimpleNamespace(risk_limits={"min_leverage": 5, "max_leverage": 5}),
+        SimpleNamespace(risk_limits={"min_leverage": 3, "max_leverage": 5}),
     )
     features = _strong_range_features("long")
     cost_model = _estimate_cost_model(
@@ -60,7 +60,7 @@ def test_operator_min_leverage_is_not_unreachable_below_default_fee_floor(monkey
     )
 
     assert params["leverage"] == 5
-    assert params["leverage_policy"]["note"] == "operator_minimum_selected"
+    assert params["leverage_policy"]["note"] == "adaptive_interval_selected"
     assert params["leverage_policy"]["diagnostics"]["projected_net_profit_bps_est"] >= 2.0
     assert params["economics"]["net_profit_bps"] >= 2.0
 
@@ -90,7 +90,7 @@ def test_neutral_high_quality_range_can_use_operator_minimum_with_liq_checks_dow
     monkeypatch.setattr(
         recommender_module,
         "settings",
-        SimpleNamespace(risk_limits={"min_leverage": 5, "max_leverage": 5}),
+        SimpleNamespace(risk_limits={"min_leverage": 3, "max_leverage": 5}),
     )
     features = _strong_range_features("neutral")
     cost_model = _estimate_cost_model(

@@ -14,7 +14,7 @@ README.md:63:- комиссии, spread, slippage и funding могут полн
 README.md:67:- risk limits начинают полноценно отражать реальность только если в `trades` действительно пишутся realized fills / PnL / fee;
 README.md:68:- локальный LLM-reviewer — это **консервативный reviewer поверх движка**, а не замена scoring/risk/calibration;
 README.md:76:- поддерживается только `futures_grid` для Bybit Linear USDT Perpetual, `account_mode=unified`, `margin_mode=isolated`, `grid_type=arithmetic`;
-README.md:77:- shipped risk profile: 1 running bot на счёт и `min_leverage=5`, `max_leverage=5`; low-leverage 1-3x больше не считается базовым actionable-режимом этой ревизии;
+README.md:77:- shipped risk profile: 1 running bot на счёт и `min_leverage=3`, `max_leverage=5`; 3-5x является базовым actionable-диапазоном этой ревизии;
 README.md:78:- если оператор задаёт `max_leverage < 5`, это трактуется как более строгий risk cap, а не как обещание, что каждая идея станет исполнимой на низком плече;
 README.md:79:- любой `critical`/`blocking` preflight, `INVALID_MARKET_REFERENCE_PRICE`, устаревшая publication-chain, цена вне range/kill-switch, неподтверждённый funding/minNotional/qtyStep или отсутствие OK LLM-gate при включённом reviewer означает `NO TRADE`.
 README.md:84:- `confidence` — степень уверенности системы; не читать изолированно от score, RR и risk context.
@@ -28,7 +28,7 @@ README.md:102:- `docs/KNOWN_RISKS.md` — оставшиеся риски и о�
 README.md:132:- регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows / malformed sentiment adapter payloads / poisoned Reddit posts / safe fail-open of `collect_sentiment_once()` / malformed legacy JSON-shapes in recommendation-bot-trade-sentiment APIs / malformed app_config payloads in status and metrics / rejection of blank audit keys for `risk limits version` and explicit `trade_id` / persistence of normalized effective risk limits in bootstrap and mutating API / fail-open fallback from poisoned top-level grid range bounds to valid `trade_plan.levels.range` and `trade_plan.levels.kill_switch` / rejection of `NUL` in sentiment tags and GET-filters / explicit transaction cleanup on idempotent execution paths / sanitization of non-finite `trade_plan` and `cost_model` payloads / correct decomposition of legacy `net_cost_bps` into execution-cost plus funding-carry for outcome-labeling / execution-time preflight по свежести market-data / live-price drift относительно диапазона и kill-switch / market shock / fast-veto / базовой Bybit-валидации сетки / adaptive publication-chain collapse under large duplicate bursts / retry of transient Bybit decode- and protocol-level failures / strict grid-only execution preflight for unsupported bot_type, non-linear venue and off-tick prices/steps/TP / exact-symbol funding ticker / execution-time funding carry preflight / malformed symbol and pre-listing metadata hardening / worst-boundary liquidation buffer / tick-safe operator snapping for range, kill-switch, grid step and TP / запрет funding receipt повышать score, expected RR и outcome labels / запрет net-negative TP-touch повышать outcome success / strict generated-grid geometry mismatch preflight.
 README.md:137:- `RUNTIME_LOCK_DB_PATH` — путь к отдельной sidecar-БД runtime lock для SQLite; по умолчанию это `*.runtime_locks.sqlite` рядом с основной БД. Значение обязано отличаться от `DB_PATH`, иначе bootstrap завершится ошибкой конфигурации;
 README.md:142:- `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
-README.md:143:- `RISK_LIMITS_JSON` — runtime risk caps; `max_concurrent_bots` и `max_symbol_bots` дополнительно clamp-ятся к product cap 50 Futures Grid Bots, даже если оператор передал большее значение; `min_leverage` задаёт минимальное операторское плечо для actionable futures-grid идей, `max_leverage`, `max_position_notional_usdt` и `max_margin_per_bot_usdt` блокируют публикацию/запуск grid-рекомендаций, если расчётный leverage/notional/margin превышает операторский лимит; shipped-профиль использует `min_leverage=5` и `max_leverage=5`, а значения ниже 5x должны быть осознанным safety-cap, при котором низкоплечевые идеи не становятся actionable автоматически;
+README.md:143:- `RISK_LIMITS_JSON` — runtime risk caps; `max_concurrent_bots` и `max_symbol_bots` дополнительно clamp-ятся к product cap 50 Futures Grid Bots, даже если оператор передал большее значение; `min_leverage` задаёт минимальное операторское плечо для actionable futures-grid идей, `max_leverage`, `max_position_notional_usdt` и `max_margin_per_bot_usdt` блокируют публикацию/запуск grid-рекомендаций, если расчётный leverage/notional/margin превышает операторский лимит; shipped-профиль использует `min_leverage=3` и `max_leverage=5`, а значения ниже 3x должны быть осознанным safety-cap, при котором низкоплечевые идеи не становятся actionable автоматически;
 README.md:149:- `COLLECTOR_MAX_WORKERS`, `FUTURES_COLLECT_MAX_WORKERS` — bounded parallelism for collector REST fetches;
 README.md:150:- `RISK_DAY_TZ` — часовой пояс дневной отсечки для daily PnL / drawdown limits (по умолчанию `UTC`);
 README.md:158:- `LLM_REVIEWER_URL=http://127.0.0.1:11434`
@@ -60,9 +60,9 @@ README.md:260:- корректно ли отрабатывают risk limits п�
 .env.example:53:BACKFILL_PER_TF_BUDGET=0
 .env.example:55:FUTURES_META_DURING_WARMUP=0
 .env.example:57:# Risk limits (JSON string). max_concurrent_bots/max_symbol_bots are fail-closed clamped to Bybit Futures Grid Bot product cap: 50.
-.env.example:58:# Small-account/operator default: exactly one grid bot, 5x only when all risk gates pass.
+.env.example:58:# Small-account/operator default: exactly one grid bot, adaptive 3-5x leverage only when all risk gates pass.
 .env.example:59:# Set max_leverage below 5 only as an explicit stricter safety cap; the engine will then lower the effective minimum to that cap.
-.env.example:60:RISK_LIMITS_JSON={"max_concurrent_bots":1,"max_daily_dd_usdt":30.0,"cooldown_after_loss_min":90,"max_symbol_bots":1,"min_leverage":5,"max_leverage":5,"max_position_notional_usdt":5000.0,"max_margin_per_bot_usdt":1000.0}
+.env.example:60:RISK_LIMITS_JSON={"max_concurrent_bots":1,"max_daily_dd_usdt":30.0,"cooldown_after_loss_min":90,"max_symbol_bots":1,"min_leverage":3,"max_leverage":5,"max_position_notional_usdt":5000.0,"max_margin_per_bot_usdt":1000.0}
 .env.example:67:TAKER_FEE_BPS_LINEAR=6
 .env.example:82:# Timezone for daily PnL / drawdown boundary (IANA name).
 .env.example:83:RISK_DAY_TZ=UTC
@@ -70,7 +70,7 @@ README.md:260:- корректно ли отрабатывают risk limits п�
 .env.example:113:# Maximum operator-visible pending hold. If no OK LLM verdict arrives by this SLA,
 .env.example:118:# the background sweep cadence is shorter than the trade idea lifetime).
 CHANGELOG.md:3:- Updated `how_to_trade.png` to match the current shipped futures-grid policy: recommendation/audit service only, Bybit Linear USDT Perpetual, `futures_grid`, `unified` + `isolated`, arithmetic grid, fail-closed preflight, strict long/short TP/SL semantics and invalid-price/no-funding/min-notional blockers.
-CHANGELOG.md:4:- Replaced the outdated 1-3x infographic default with the current runtime policy: `min_leverage=5`, `max_leverage=5`; lower leverage is only an explicit operator safety cap and may leave ideas non-actionable.
+CHANGELOG.md:4:- Updated the operator leverage documentation to the current 3-5x runtime policy: `min_leverage=3`, `max_leverage=5`; lower leverage is only an explicit operator safety cap and may leave ideas non-actionable.
 CHANGELOG.md:5:- Added `docs/HOW_TO_TRADE_INFOGRAPHIC.md` as a text source-of-truth for the image and synchronized README, trading logic, known risks, DOCX/PDF operator instruction and `.env.example` wording.
 CHANGELOG.md:6:- Corrected `.env.example` risk profile drift: `max_leverage` now matches the shipped default in `settings.py` (`5`, not `10`).
 CHANGELOG.md:9:## 2026-06-11 — runtime risk caps re-audit
@@ -129,7 +129,7 @@ CHANGELOG.md:200:- Risk report `decision` is now synchronized whenever recommend
 CHANGELOG.md:202:- Added regression tests for insufficient MTF history and risk-report decision synchronization.
 CHANGELOG.md:212:- Shortened only the compact details/modal bot-type badge to `Linear USDT Grid` while keeping the full `Bybit Linear USDT Futures Grid` table label and title tooltip.
 CHANGELOG.md:213:- Changed the detail subtitle row to wrap inside the panel instead of overflowing into metric cards on medium-width layouts.
-CHANGELOG.md:218:- Historical note: this 2026-05-09 infographic defaulted to 1 bot, 1–3x leverage, 10–15% margin allocation and 75–85% reserve; it is superseded by the 2026-06-14 operator documentation update with `min_leverage=5`, `max_leverage=5`.
+CHANGELOG.md:218:- Historical note: this 2026-05-09 infographic defaulted to 1 bot, 1–3x leverage, 10–15% margin allocation and 75–85% reserve; it is superseded by the 2026-06-14 operator documentation update with `min_leverage=3`, `max_leverage=5`.
 CHANGELOG.md:219:- Added small-account sizing guidance and reminders that Bybit `minNotional`, `qtyStep` and `minQty` failures are valid rejection outcomes, especially near 100 USDT balances.
 CHANGELOG.md:220:- Reconciled the infographic text with the current grid-only scope: Bybit Linear USDT Perpetual `futures_grid`, exact symbols, isolated margin, arithmetic grid, net profit after costs, funding known, liquidation buffer and kill-switch guards.
 CHANGELOG.md:225:- Added normalized runtime caps for `max_leverage`, `max_position_notional_usdt` and `max_margin_per_bot_usdt`; recommender blocks candidates that exceed these per-bot risk limits.
@@ -706,7 +706,7 @@ docs/TRADING_LOGIC.md:8:- Funding в risk/recommendation payload теперь х
 docs/TRADING_LOGIC.md:16:- `futures_grid` только для Bybit `category=linear`, USDT perpetual. Расчёты PnL/margin/funding ведутся в USDT по linear-модели.
 docs/TRADING_LOGIC.md:19:- `futures_grid`: `neutral`, `long`, `short`
 docs/TRADING_LOGIC.md:22:- `futures_grid`: `venue=linear`, `account_mode=unified`, `margin_mode=isolated`
-docs/TRADING_LOGIC.md:29:- `min_leverage=5`, `max_leverage=5` как базовый операторский профиль этой ревизии;
+docs/TRADING_LOGIC.md:29:- `min_leverage=3`, `max_leverage=5` как базовый операторский профиль этой ревизии;
 docs/TRADING_LOGIC.md:30:- 1-3x больше не является базовым actionable-режимом: слабая/дорогая/волатильная идея остаётся non-actionable и блокируется `MIN_LEVERAGE_PER_BOT`, а не публикуется как безопасная low-leverage сделка;
 docs/TRADING_LOGIC.md:31:- если оператор задаёт `max_leverage` ниже 5, это более строгий safety-cap; effective minimum снижается до cap только чтобы не нарушать верхний лимит;
 docs/TRADING_LOGIC.md:32:- 10x и выше не являются default-политикой для малого счёта; это отдельный осознанный профиль, который должен быть подтверждён в `RISK_LIMITS_JSON` и worst-boundary liquidation buffer.
@@ -1436,7 +1436,7 @@ app/settings.py:201:    futures_collect_max_workers: int = 8
 app/settings.py:212:        venue = str(raw_venue or "").strip().lower()
 app/settings.py:222:    risk_limits = _env_json_dict(
 app/settings.py:223:        "RISK_LIMITS_JSON",
-app/settings.py:224:        '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1,"min_leverage":5,"max_leverage":5,"max_position_notional_usdt":5000.0,"max_margin_per_bot_usdt":1000.0}',
+app/settings.py:224:        '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1,"min_leverage":3,"max_leverage":5,"max_position_notional_usdt":5000.0,"max_margin_per_bot_usdt":1000.0}',
 app/settings.py:241:    require_conf_gate = _env("REQUIRE_CONF_GATE", "1").strip().lower() in ("1", "true", "yes", "y")
 app/settings.py:243:    llm_reviewer_enabled = _env("LLM_REVIEWER_ENABLED", "0").strip().lower() in ("1", "true", "yes", "y")
 app/settings.py:244:    llm_reviewer_mode = _env("LLM_REVIEWER_MODE", "advisory").strip().lower()
@@ -1808,7 +1808,7 @@ docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:523:app/recomme
 docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:541:app/recommender.py:720:        peers.sort(key=_llm_pending_sort_key, reverse=True)
 docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:543:app/recommender.py:723:    ordered_groups.sort(key=lambda item: (item[0], -_llm_pending_sort_key(item[1][0])[0], -_llm_pending_sort_key(item[1][0])[1], -_llm_pending_sort_key(item[1][0])[2]))
 docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:582:app/recommender.py:1468:    The previous implementation hard-blocked only expensive longs, which created a
-docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:583:app/recommender.py:1947:    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 5x.
+docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:583:app/recommender.py:1947:    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 3x within the 3-5x interval.
 docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:584:app/recommender.py:2097:                "estimated_active_orders": 0,
 docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:585:app/recommender.py:2107:                "risk_profile": "blocked",
 docs/STATIC_SCAN_2026-06-14_OPERATOR_BLOCKED_NOTRADE_CLARITY.txt:586:app/recommender.py:2115:                "estimated_active_orders": 0,
@@ -1875,12 +1875,12 @@ tests/test_iteration162_docs_and_infographic_sync.py:16:    assert match, ".env.
 tests/test_iteration162_docs_and_infographic_sync.py:21:    limits = _env_risk_limits_json()
 tests/test_iteration162_docs_and_infographic_sync.py:25:    assert limits["min_leverage"] == 5
 tests/test_iteration162_docs_and_infographic_sync.py:26:    assert limits["max_leverage"] == 5
-tests/test_iteration162_docs_and_infographic_sync.py:29:def test_runtime_default_risk_profile_remains_five_x_when_env_absent(monkeypatch) -> None:
+tests/test_iteration162_docs_and_infographic_sync.py:29:def test_runtime_default_risk_profile_remains_3x_5x_when_env_absent(monkeypatch) -> None:
 tests/test_iteration162_docs_and_infographic_sync.py:30:    monkeypatch.delenv("RISK_LIMITS_JSON", raising=False)
 tests/test_iteration162_docs_and_infographic_sync.py:33:    assert settings.risk_limits["min_leverage"] == 5
 tests/test_iteration162_docs_and_infographic_sync.py:34:    assert settings.risk_limits["max_leverage"] == 5
-tests/test_iteration162_docs_and_infographic_sync.py:41:    assert "`min_leverage=5`, `max_leverage=5`" in source
-tests/test_iteration162_docs_and_infographic_sync.py:42:    assert "1-3x is no longer the baseline actionable profile" in source
+tests/test_iteration162_docs_and_infographic_sync.py:41:    assert "`min_leverage=3`, `max_leverage=5`" in source
+tests/test_iteration162_docs_and_infographic_sync.py:42:    assert "3-5x is the baseline actionable leverage interval" in source
 tests/test_iteration162_docs_and_infographic_sync.py:44:    assert "Short: TP below entry/reference, SL above entry/reference" in source
 app/trading_semantics.py:1:"""Canonical trading-direction semantics for Bybit linear futures guidance.
 app/trading_semantics.py:4:place that renders or validates long/short exits must share one small source of
@@ -2235,7 +2235,7 @@ app/recommender.py:1940:    """Choose the recommendation leverage used by the gr
 app/recommender.py:1943:    allowing the operator minimum leverage. With the default linear taker fee
 app/recommender.py:1944:    (6 bps per side), the round-trip fee floor is already 12 bps and the cost
 app/recommender.py:1945:    model adds at least minimal slippage, so the condition was practically
-app/recommender.py:1947:    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 5x.
+app/recommender.py:1947:    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 3x within the 3-5x interval.
 app/recommender.py:1949:    Leverage selection must be based on *net grid edge after costs*, not on a
 app/recommender.py:1952:    min_lev = max(1, int(min_operator_leverage or 1))
 app/recommender.py:1953:    max_lev = max(1, int(max_operator_leverage or min_lev))
@@ -2296,9 +2296,9 @@ app/recommender.py:2224:        "price_range_upper": _round_price(upper, decimal
 app/recommender.py:2247:            # Recommendation leverage must be tied to the exact runtime/operator risk
 app/recommender.py:2248:            # profile used for publication blocks.  Using only settings.risk_limits
 app/recommender.py:2249:            # here makes DB/runtime overrides invisible inside params and can publish
-app/recommender.py:2250:            # a 1x payload while /risk/status already requires a fixed 3x/5x profile.
+app/recommender.py:2250:            # a 1x payload while /risk/status already requires a 3x/5x interval.
 app/recommender.py:2251:            effective_limits = normalize_risk_limits(risk_limits, getattr(settings, "risk_limits", {}) or {})
-app/recommender.py:2253:            effective_limits = {"min_leverage": 5, "max_leverage": 5}
+app/recommender.py:2253:            effective_limits = {"min_leverage": 3, "max_leverage": 5}
 app/recommender.py:2254:        min_operator_leverage = int(effective_limits.get("min_leverage") or 1)
 app/recommender.py:2255:        max_operator_leverage = int(effective_limits.get("max_leverage") or max(1, min_operator_leverage))
 app/recommender.py:2259:        leverage, leverage_policy_note, leverage_policy_diag = _select_operator_grid_leverage(
@@ -2817,7 +2817,7 @@ docs/KNOWN_RISKS.md:48:Даже после усиления row-level locking в
 docs/KNOWN_RISKS.md:57:Execute-path теперь блокирует подтверждение, если текущий ticker вышел за рекомендованный диапазон или `kill_switch`.
 docs/KNOWN_RISKS.md:62:Auto-generated operator payloads are now snapped conservatively against Bybit metadata: lower boundaries expand downward, upper boundaries expand upward, and step/TP hints round upward. This avoids a UI-only range shrink or thinner per-grid edge after tick alignment. Manual/legacy payloads remain strict: off-tick values are warnings in UI validation and blocking errors on execution preflight.
 docs/KNOWN_RISKS.md:65:`how_to_trade.png` и `docs/HOW_TO_TRADE_INFOGRAPHIC.md` описывают quick-reference для оператора. Исполнимость всегда определяется runtime guards: risk status, Bybit metadata, live ticker, funding snapshot, publication-chain TTL, minNotional/qtyStep/minQty и LLM gate, если он включён.
-docs/KNOWN_RISKS.md:67:Текущий shipped-профиль использует `min_leverage=5` и `max_leverage=5`. Это повышает чувствительность к ликвидации по сравнению с 1-3x и допустимо только при fail-closed liquidation-buffer проверках, малой марже на bot и явном резерве капитала вне позиции. Если оператор хочет lower-risk профиль, он должен явно снизить `max_leverage` в `RISK_LIMITS_JSON` и принять, что часть идей останется `no_trade`/`blocked`, а не станет автоматически исполнимой.
+docs/KNOWN_RISKS.md:67:Текущий shipped-профиль использует `min_leverage=3` и `max_leverage=5`. Это повышает чувствительность к ликвидации по сравнению с 1-3x и допустимо только при fail-closed liquidation-buffer проверках, малой марже на bot и явном резерве капитала вне позиции. Если оператор хочет lower-risk профиль, он должен явно снизить `max_leverage` в `RISK_LIMITS_JSON` и принять, что часть идей останется `no_trade`/`blocked`, а не станет автоматически исполнимой.
 tests/test_iteration134_operator_position_size_details.py:1:from __future__ import annotations
 tests/test_iteration134_operator_position_size_details.py:15:    assert "estimated_total_order_notional_usdt" in app_js
 tests/test_iteration134_operator_position_size_details.py:16:    assert "marginRequired * leverage" in app_js
@@ -3720,8 +3720,8 @@ docs/HOW_TO_TRADE_INFOGRAPHIC.md:30:- `bot_type=futures_grid`; `venue/category=l
 docs/HOW_TO_TRADE_INFOGRAPHIC.md:36:- Live price is inside grid range and outside kill-switch.
 docs/HOW_TO_TRADE_INFOGRAPHIC.md:44:Current shipped risk profile:
 docs/HOW_TO_TRADE_INFOGRAPHIC.md:46:| Balance | Margin/bot guide | Daily stop guide | Runtime leverage |
-docs/HOW_TO_TRADE_INFOGRAPHIC.md:54:- Default runtime limits: `min_leverage=5`, `max_leverage=5`.
-docs/HOW_TO_TRADE_INFOGRAPHIC.md:55:- 1-3x is no longer the baseline actionable profile of this revision.
+docs/HOW_TO_TRADE_INFOGRAPHIC.md:54:- Default runtime limits: `min_leverage=3`, `max_leverage=5`.
+docs/HOW_TO_TRADE_INFOGRAPHIC.md:55:- 3-5x is the baseline actionable leverage interval of this revision.
 docs/HOW_TO_TRADE_INFOGRAPHIC.md:56:- If `max_leverage < 5`, it is a stricter safety cap; expect more `no_trade` / `blocked` outcomes.
 docs/HOW_TO_TRADE_INFOGRAPHIC.md:64:- Net profit per grid is above fees + spread + slippage + adverse funding.
 docs/HOW_TO_TRADE_INFOGRAPHIC.md:67:- Liquidity and spread fit small order size.
@@ -3963,7 +3963,7 @@ tests/test_iteration152_deep_trading_reaudit.py:39:                    "range": 
 tests/test_iteration152_deep_trading_reaudit.py:40:                    "kill_switch": {"lower": 94.0, "upper": 106.0},
 tests/test_iteration152_deep_trading_reaudit.py:66:            "pnl": -5.0,
 tests/test_iteration152_deep_trading_reaudit.py:72:    status = compute_risk_status(conn, {"cooldown_after_loss_min": 30, "max_daily_dd_usdt": 1000})
-tests/test_iteration152_deep_trading_reaudit.py:78:def test_risk_limits_default_to_operator_minimum_five_x_and_fail_closed_bounds() -> None:
+tests/test_iteration152_deep_trading_reaudit.py:78:def test_risk_limits_default_to_operator_minimum_3x_5x_and_fail_closed_bounds() -> None:
 tests/test_iteration152_deep_trading_reaudit.py:79:    limits = normalize_risk_limits({}, {})
 tests/test_iteration152_deep_trading_reaudit.py:81:    assert limits["min_leverage"] == 5
 tests/test_iteration152_deep_trading_reaudit.py:82:    assert limits["max_leverage"] >= limits["min_leverage"]
@@ -3976,7 +3976,7 @@ tests/test_iteration159_no_trade_regression.py:1:from __future__ import annotati
 tests/test_iteration159_no_trade_regression.py:6:from app.recommender import _estimate_cost_model, _params, _select_operator_grid_leverage
 tests/test_iteration159_no_trade_regression.py:9:def _strong_range_features(direction: str = "long") -> dict:
 tests/test_iteration159_no_trade_regression.py:29:def test_operator_min_leverage_is_not_unreachable_below_default_fee_floor(monkeypatch) -> None:
-tests/test_iteration159_no_trade_regression.py:33:        SimpleNamespace(risk_limits={"min_leverage": 5, "max_leverage": 5}),
+tests/test_iteration159_no_trade_regression.py:33:        SimpleNamespace(risk_limits={"min_leverage": 3, "max_leverage": 5}),
 tests/test_iteration159_no_trade_regression.py:35:    features = _strong_range_features("long")
 tests/test_iteration159_no_trade_regression.py:37:        "futures_grid",
 tests/test_iteration159_no_trade_regression.py:40:        taker_fee_bps=6.0,
@@ -3994,7 +3994,7 @@ tests/test_iteration159_no_trade_regression.py:70:        direction="long",
 tests/test_iteration159_no_trade_regression.py:78:        min_operator_leverage=5,
 tests/test_iteration159_no_trade_regression.py:79:        max_operator_leverage=5,
 tests/test_iteration159_no_trade_regression.py:82:    assert leverage == 1
-tests/test_iteration159_no_trade_regression.py:91:        SimpleNamespace(risk_limits={"min_leverage": 5, "max_leverage": 5}),
+tests/test_iteration159_no_trade_regression.py:91:        SimpleNamespace(risk_limits={"min_leverage": 3, "max_leverage": 5}),
 tests/test_iteration159_no_trade_regression.py:95:        "futures_grid",
 tests/test_iteration159_no_trade_regression.py:98:        taker_fee_bps=6.0,
 tests/test_iteration159_no_trade_regression.py:106:        "futures_grid",
@@ -4908,13 +4908,13 @@ tests/test_iteration92_json_shape_hardening.py:281:        json={'trade_id': '  
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:5:This pass updated operator-facing project documentation and the root infographic `how_to_trade.png` so that the shipped docs no longer contradict the current risk/leverage and fail-closed semantics of the Bybit Linear USDT futures-grid build.
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:13:- `docs/KNOWN_RISKS.md`;
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:22:| Severity | Area | Problem | Risk | Fix |
-docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:24:| high | `how_to_trade.png`, historical docs | The old infographic still presented 1-3x as the small-account baseline, while the current shipped policy uses `min_leverage=5` and `max_leverage=5`. | Operator could interpret a low-leverage 1-3x idea as current actionable guidance even though the engine now treats sub-minimum leverage ideas as non-actionable or blocked. | Rebuilt `how_to_trade.png` around the current 5x-gated operator profile and added a supersession note to the old 2026-05-09 infographic report. |
-docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:25:| high | `.env.example` | Example risk profile still had `max_leverage=10` while `app/settings.py` defaults to `max_leverage=5`. | Fresh deployments copied from `.env.example` could silently permit a materially more aggressive profile than the shipped runtime default and current documentation. | Changed `.env.example` to `min_leverage=5`, `max_leverage=5` and added comments about stricter caps below 5x. |
+docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:24:| high | `how_to_trade.png`, historical docs | The old infographic still presented 1-3x as the small-account baseline, while the current shipped policy uses `min_leverage=3` and `max_leverage=5`. | Operator could interpret a low-leverage 1-3x idea as current actionable guidance even though the engine now treats sub-minimum leverage ideas as non-actionable or blocked. | Rebuilt `how_to_trade.png` around the current 3-5x-gated operator profile and added a supersession note to the old 2026-05-09 infographic report. |
+docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:25:| high | `.env.example` | Example risk profile still had `max_leverage=10` while `app/settings.py` defaults to `max_leverage=5`. | Fresh deployments copied from `.env.example` could silently permit a materially more aggressive profile than the shipped runtime default and current documentation. | Changed `.env.example` to `min_leverage=3`, `max_leverage=5` and added comments about stricter caps below 3x. |
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:26:| medium | Operator documentation | README and trading logic did not explicitly describe the current relationship between `min_leverage`, stricter `max_leverage < 5` caps and `MIN_LEVERAGE_PER_BOT`. | Ambiguous operator interpretation of low-leverage safety caps. | Added an operator profile section to README and a dedicated leverage/small-account section to `docs/TRADING_LOGIC.md`. |
-docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:27:| medium | Operator instruction DOCX/PDF | The short operator instruction was broadly conservative but did not reflect the current 5x-gated profile, invalid-price fail-closed rule, publication-chain TTL and LLM gate wording. | Manual operator checklist could lag backend semantics. | Rebuilt DOCX and regenerated PDF from the same updated content. |
+docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:27:| medium | Operator instruction DOCX/PDF | The short operator instruction was broadly conservative but did not reflect the current 3-5x-gated profile, invalid-price fail-closed rule, publication-chain TTL and LLM gate wording. | Manual operator checklist could lag backend semantics. | Rebuilt DOCX and regenerated PDF from the same updated content. |
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:28:| low | Infographic maintainability | `how_to_trade.png` had no text source-of-truth, making future sync hard to test or review. | Future visual edits could drift from docs. | Added `docs/HOW_TO_TRADE_INFOGRAPHIC.md` as the editable source text for the PNG. |
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:33:- Supported product: Bybit Linear USDT Perpetual, `bot_type=futures_grid`, `account_mode=unified`, `margin_mode=isolated`, `grid_type=arithmetic`.
-docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:34:- Current shipped risk profile: one running bot, `min_leverage=5`, `max_leverage=5`.
+docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:34:- Current shipped risk profile: one running bot, `min_leverage=3`, `max_leverage=5`.
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:35:- `max_leverage < 5` is a stricter safety cap and may leave more ideas `no_trade`/`blocked`; it is not a guarantee that low-leverage ideas become actionable.
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:36:- Any blocking/critical preflight, invalid reference price, stale publication-chain, live price outside range/kill-switch, unconfirmed material funding, minNotional/qtyStep/minQty failure, or missing LLM OK verdict when enabled means NO TRADE.
 docs/AUDIT_REPORT_2026-06-14_OPERATOR_DOCS_AND_HOW_TO_TRADE_SYNC.md:37:- Long TP/SL and short TP/SL are documented in the same canonical geometry used by the backend and UI.
@@ -5027,7 +5027,7 @@ docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:22:  - The code selected the op
 docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:23:  - Default `TAKER_FEE_BPS_LINEAR=6` means round-trip fee floor is already `12 bps`.
 docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:24:  - `_estimate_cost_model(...)` also adds at least minimal slippage, so even a zero-spread symbol has `execution_cost_bps≈13 bps`.
 docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:25:  - Therefore the leverage selector fell back to `1x` for otherwise viable setups.
-docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:26:  - Later publication risk logic compared `leverage=1` against `min_leverage=5` and appended `MIN_LEVERAGE_PER_BOT`, blocking the proposal.
+docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:26:  - Later publication risk logic compared `leverage=1` against `min_leverage=3` and appended `MIN_LEVERAGE_PER_BOT`, blocking the proposal.
 docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:27:- Trading/operational risk:
 docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:28:  - The system can stop publishing actionable ideas even in valid range markets.
 docs/AUDIT_REPORT_2026-06-14_NO_TRADE_REAUDIT.md:29:  - Operator sees long periods of no actionable proposals and may misinterpret this as market selectivity rather than a logic regression.
@@ -6232,7 +6232,7 @@ docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:1:# Deep trading-sys
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:4:Область: trading semantics, long/short TP/SL, risk-management, recommendation freshness, Bybit linear USDT validation, UI consistency, regression tests.
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:10:Отдельно реализована операторская политика по плечу: runtime risk-limits теперь содержат `min_leverage`, по умолчанию `5x`, и `max_leverage`, по умолчанию `5x`. Recommender выбирает операторский минимум только для достаточно сильных directional-сигналов; слабые/дорогие/волатильные идеи остаются с `1x` и блокируются `MIN_LEVERAGE_PER_BOT`, а не публикуются как низкоплечевые actionable-рекомендации.
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:12:Существующая directional-модель TP/SL (`app/trading_semantics.py`, `app/main.py`, `app/ui/static/app.js`) уже была в основном корректной: long TP выше entry / SL ниже entry; short TP ниже entry / SL выше entry; neutral/grid не получает directional TP/SL. Добавлены новые regression-тесты, чтобы это не расходилось с UI/исполнением.
-docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:20:| high | Политика плеча не соответствовала операторскому требованию: recommender выбирал 1–3x, что делало большинство идей экономически непригодными для указанного стиля торговли. | `app/risk.py`, `app/settings.py`, `.env.example`, `app/recommender.py` | Рекомендации формально валидны, но практически не соответствуют целевому профилю доходности; оператор мог запускать низкоплечевые сетки вопреки собственному правилу. | Добавлен `min_leverage` в risk-limits. Defaults: `min_leverage=5`, `max_leverage=5`. Recommender выбирает 5x только для сильных directional-условий; остальные идеи fail-closed блокируются `MIN_LEVERAGE_PER_BOT`. Явный `max_leverage` ниже 5 сохраняется как операторский cap и снижает effective `min_leverage` до cap, чтобы не нарушать верхний риск-лимит. | `tests/test_iteration152_deep_trading_reaudit.py::test_risk_limits_default_to_operator_minimum_five_x_and_fail_closed_bounds`, обновлены existing risk-limit tests |
+docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:20:| high | Политика плеча не соответствовала операторскому требованию: recommender выбирал 1–3x, что делало большинство идей экономически непригодными для указанного стиля торговли. | `app/risk.py`, `app/settings.py`, `.env.example`, `app/recommender.py` | Рекомендации формально валидны, но практически не соответствуют целевому профилю доходности; оператор мог запускать низкоплечевые сетки вопреки собственному правилу. | Добавлен `min_leverage` в risk-limits. Defaults: `min_leverage=3`, `max_leverage=5`. Recommender выбирает 5x только для сильных directional-условий; остальные идеи fail-closed блокируются `MIN_LEVERAGE_PER_BOT`. Явный `max_leverage` ниже 5 сохраняется как операторский cap и снижает effective `min_leverage` до cap, чтобы не нарушать верхний риск-лимит. | `tests/test_iteration152_deep_trading_reaudit.py::test_risk_limits_default_to_operator_minimum_3x_5x_and_fail_closed_bounds`, обновлены existing risk-limit tests |
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:21:| high | Cooldown после реализованного убытка нуждался в regression-защите: эта зона критична для stop-trading после потерь. | `app/risk.py` | При ошибке запроса или отсутствии проверки реализованного loss cooldown может не включиться, и система продолжит открывать сделки после убытка. | Зафиксирован regression-тест, что `compute_risk_status()` корректно читает последний отрицательный trade и включает cooldown. | `tests/test_iteration152_deep_trading_reaudit.py::test_loss_cooldown_query_is_valid_and_blocks_after_realised_loss` |
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:22:| medium | Тесты отражали устаревший default leverage=3x и не фиксировали новое операторское правило. | `tests/test_grid_linear_economics.py`, `tests/test_iteration118_grid_bot_risk_caps.py`, `tests/test_iteration89_env_and_docs_integrity.py`, `tests/test_iteration94_risk_limits_and_outcome_bounds.py`, `tests/test_logic.py` | Regression-suite могла вернуть проект к низкоплечевой политике, противоречащей требованию оператора. | Обновлены expected values и добавлена проверка `min_leverage`. | Полный `pytest` |
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:26:### Directional semantics / TP-SL
@@ -6248,7 +6248,7 @@ docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:48:- `tick_size`, `q
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:51:Системных новых ошибок short TP/SL mapping в уже существующей canonical-модели не обнаружено. Изменения сконцентрированы на stale-chain/risk-leverage, чтобы закрыть фактический источник ложной актуальности и несоответствие операторскому профилю.
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:57:- rolling/feature extraction в `app/features.py`;
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:60:- cost model: fees/spread/slippage/funding, net profit per grid;
-docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:72:  - `test_risk_limits_default_to_operator_minimum_five_x_and_fail_closed_bounds`
+docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:72:  - `test_risk_limits_default_to_operator_minimum_3x_5x_and_fail_closed_bounds`
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:80:- `tests/test_iteration118_grid_bot_risk_caps.py`
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:82:- `tests/test_iteration94_risk_limits_and_outcome_bounds.py`
 docs/AUDIT_REPORT_2026-06-11_DEEP_TRADING_SYSTEM_REAUDIT.md:98:1134 matches across app/tests for tp/sl/stop/take/upper/lower/short/long/side/Buy/Sell/reduceOnly/kill/leverage/pnl/roi/risk reviewed at high level
@@ -6810,7 +6810,7 @@ docs/AUDIT_REPORT_2026-05-09_GRID_LINEAR_FINAL.md:157:6. **Liquidation model** �
 docs/AUDIT_REPORT_2026-05-09_GRID_LINEAR_FINAL.md:158:7. **Paper trading/staging** — перед production нужен staged/paper режим с live instrument metadata, account-specific fees и реальным ingestion fills.
 docs/AUDIT_REPORT_2026-05-09_GRID_LINEAR_FINAL.md:188:API/UI по умолчанию: `http://127.0.0.1:8000`.
 docs/AUDIT_REPORT_2026-05-09_GRID_LINEAR_FINAL.md:199:Для production также нужен внешний контур execution/reconciliation, который перед запуском grid-бота повторно проверяет live Bybit instrument metadata, account-specific fees, available balance, position mode, margin mode, risk tier, current mark price и фактические order/fill states.
-docs/AUDIT_REPORT_2026-05-09_OPERATOR_INFOGRAPHIC_100_500.md:3:> Superseded note (2026-06-14): the shipped risk profile now uses `min_leverage=5`, `max_leverage=5` and the current root `how_to_trade.png` no longer presents 1-3x as the baseline actionable profile. Keep this file as historical context only; use `docs/HOW_TO_TRADE_INFOGRAPHIC.md` for the current operator infographic source.
+docs/AUDIT_REPORT_2026-05-09_OPERATOR_INFOGRAPHIC_100_500.md:3:> Superseded note (2026-06-14): the shipped risk profile now uses `min_leverage=3`, `max_leverage=5` and the current root `how_to_trade.png` presents 3-5x as the baseline actionable leverage interval. Keep this file as historical context only; use `docs/HOW_TO_TRADE_INFOGRAPHIC.md` for the current operator infographic source.
 docs/AUDIT_REPORT_2026-05-09_OPERATOR_INFOGRAPHIC_100_500.md:10:- only `futures_grid` recommendations;
 docs/AUDIT_REPORT_2026-05-09_OPERATOR_INFOGRAPHIC_100_500.md:15:- net economics after fees, spread, slippage and funding;
 docs/AUDIT_REPORT_2026-05-09_OPERATOR_INFOGRAPHIC_100_500.md:16:- liquidation buffer and kill-switch discipline.

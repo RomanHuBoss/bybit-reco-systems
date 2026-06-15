@@ -26,9 +26,9 @@
 Текущая shipped-политика риска синхронизирована с `settings.py`, `.env.example`, `README.md`, операторской DOCX/PDF-инструкцией и `how_to_trade.png`:
 
 - один `running` grid-bot на счёт и один bot на symbol/publication-chain;
-- `min_leverage=5`, `max_leverage=5` как базовый операторский профиль этой ревизии;
-- 1-3x больше не является базовым actionable-режимом: слабая/дорогая/волатильная идея остаётся non-actionable и блокируется `MIN_LEVERAGE_PER_BOT`, а не публикуется как безопасная low-leverage сделка;
-- если оператор задаёт `max_leverage` ниже 5, это более строгий safety-cap; effective minimum снижается до cap только чтобы не нарушать верхний лимит;
+- интервал `min_leverage=3`, `max_leverage=5` как базовый операторский профиль этой ревизии;
+- 3-5x является базовым actionable-диапазоном: слабая/дорогая/волатильная идея остаётся non-actionable и блокируется `MIN_LEVERAGE_PER_BOT`, а не публикуется как безопасная low-leverage сделка;
+- если оператор задаёт `max_leverage` ниже 5 или `min_leverage` ниже 3, это более строгий safety-cap; effective minimum не должен обходить верхний лимит;
 - 10x и выше не являются default-политикой для малого счёта; это отдельный осознанный профиль, который должен быть подтверждён в `RISK_LIMITS_JSON` и worst-boundary liquidation buffer.
 
 `account_mode=one_way` допускается только как legacy-алиас старых payload'ов и помечается warning'ом;
@@ -146,12 +146,12 @@ Canonical long/short/neutral exit mapping lives in `app.trading_semantics` and i
 
 Runtime `min_leverage/max_leverage` is an operator profile, not a reason to publish a synthetic lower-leverage trade idea. For Bybit Linear USDT `futures_grid`, the recommender evaluates the active profile and records the target `selected_leverage` in `params.leverage_policy`.
 
-If the grid economics, volatility or signal quality cannot justify the active operator minimum (for example a fixed `5x/5x` profile), the row must become `no_trade` / `not_actionable` with `OPERATOR_LEVERAGE_PROFILE_NOT_ACTIONABLE`. It must not publish a new `1x` payload that later becomes `blocked` only because `1x < min_leverage`. Legacy/manual rows that already contain `1x` remain fail-closed at execution time through runtime leverage guards.
+If the grid economics, volatility or signal quality cannot justify the active operator minimum (for example the shipped `3x/5x` leverage interval), the row must become `no_trade` / `not_actionable` with `OPERATOR_LEVERAGE_PROFILE_NOT_ACTIONABLE`. It must not publish a new `1x` payload that later becomes `blocked` only because `1x < min_leverage`. Legacy/manual rows that already contain `1x` remain fail-closed at execution time through runtime leverage guards.
 
 Risk and UI semantics are separated:
 
 - `blocks` / `risk_report.rejection_reasons` are hard fail-closed blockers;
-- `risk_report.no_trade_reasons` explains soft non-actionability such as insufficient edge for the fixed leverage profile;
+- `risk_report.no_trade_reasons` explains soft non-actionability such as insufficient edge for the active 3-5x leverage profile;
 - no_trade rows cannot be executed by the API and are rendered as "do not launch now", not as a Bybit/preflight hard block.
 
 Recommendation-time margin checks and `risk_report.capital_required_usdt` must prefer `estimated_worst_case_margin_required_usdt` over reference-price margin when worst-case grid-envelope fields are present.

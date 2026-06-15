@@ -23,7 +23,7 @@ The patch keeps the fail-closed risk model, but changes the leverage selector fr
   - Default `TAKER_FEE_BPS_LINEAR=6` means round-trip fee floor is already `12 bps`.
   - `_estimate_cost_model(...)` also adds at least minimal slippage, so even a zero-spread symbol has `execution_cost_bps≈13 bps`.
   - Therefore the leverage selector fell back to `1x` for otherwise viable setups.
-  - Later publication risk logic compared `leverage=1` against `min_leverage=5` and appended `MIN_LEVERAGE_PER_BOT`, blocking the proposal.
+  - Later publication risk logic compared `leverage=1` against `min_leverage=3` and appended `MIN_LEVERAGE_PER_BOT`, blocking the proposal.
 - Trading/operational risk:
   - The system can stop publishing actionable ideas even in valid range markets.
   - Operator sees long periods of no actionable proposals and may misinterpret this as market selectivity rather than a logic regression.

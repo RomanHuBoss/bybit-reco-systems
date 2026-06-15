@@ -1,0 +1,33 @@
+# Static scan — 2026-06-15 deep Bybit re-audit patch
+
+Scope: `app`, `tests`, `docs`, `README.md`, `.env.example`; generated caches/data excluded.
+Purpose: bounded semantic scan for directional, TP/SL, Bybit, notional, margin and risk terms.
+
+| term | hits |
+|---|---:|
+| tp | 1017 |
+| sl | 708 |
+| stop | 332 |
+| take | 247 |
+| upper | 503 |
+| lower | 650 |
+| short | 679 |
+| long | 736 |
+| side | 378 |
+| Buy | 76 |
+| Sell | 71 |
+| reduceOnly | 88 |
+| kill | 325 |
+| leverage | 807 |
+| pnl | 275 |
+| roi | 27 |
+| risk | 1247 |
+| notional | 699 |
+| margin | 588 |
+
+Reviewed new/changed hits:
+
+- `.env.example`: `min_leverage` now matches shipped `3-5x` profile documented in README/HOW_TO_TRADE/KNOWN_RISKS and enforced by tests. Safe: keeps execution fail-closed for lower-leverage rows unless operator explicitly sets a stricter cap.
+- `app/ui/static/app.js`: new `firstFiniteField` preserves source-key identity for notional fields. Safe: no trading-path execution change; UI display only.
+- `app/ui/static/app.js`: new `gridMaxNotionalPrice` mirrors backend worst-case grid notional convention for UI base-qty derivation. Safe: prevents operator UI from overstating base qty when notional came from upper-bound/worst-case grid price.
+- `app/ui/static/index.html` and cache-key tests: static asset key bumped from `manual-ui-v37` to `manual-ui-v38`. Safe: prevents stale operator JS after the UI semantics patch.

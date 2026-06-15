@@ -135,7 +135,7 @@ def test_recommender_liquidation_buffer_uses_adverse_grid_boundary() -> None:
     )
 
     econ = params["economics"]
-    assert params["leverage"] == 5
+    assert params["leverage"] == 3
     assert econ["liquidation_buffer_pct_adverse_boundary"] < econ["liquidation_buffer_pct_reference"]
     assert econ["liquidation_buffer_pct"] == pytest.approx(econ["liquidation_buffer_pct_adverse_boundary"])
 

@@ -75,10 +75,11 @@ def test_loss_cooldown_query_is_valid_and_blocks_after_realised_loss() -> None:
     assert status.daily_dd >= 5.2
 
 
-def test_risk_limits_default_to_operator_minimum_five_x_and_fail_closed_bounds() -> None:
+def test_risk_limits_default_to_operator_3x_5x_interval_and_fail_closed_bounds() -> None:
     limits = normalize_risk_limits({}, {})
 
-    assert limits["min_leverage"] == 5
+    assert limits["min_leverage"] == 3
+    assert limits["max_leverage"] == 5
     assert limits["max_leverage"] >= limits["min_leverage"]
 
 

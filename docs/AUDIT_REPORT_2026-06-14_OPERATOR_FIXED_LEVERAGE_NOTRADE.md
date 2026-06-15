@@ -47,8 +47,8 @@ No new long/short TP/SL inversion was found. No new implementation of directiona
   - `app/recommender.py:3534-3552`
   - `app/recommender.py:3614-3625`
   - `app/recommender.py:3669-3676`
-- **Problem:** when runtime risk profile was fixed, e.g. `min_leverage=5`, `max_leverage=5`, weak/thin/volatile ideas were intentionally downgraded by `_select_operator_grid_leverage()` to `1x`. The later risk gate then produced `MIN_LEVERAGE_PER_BOT` / `MIN_LEVERAGE_PER_BOT_AT_EXECUTION`, so ordinary non-actionable trade ideas appeared as hard runtime blocks. With a strict fixed profile this could make every symbol appear `blocked` even though the true state was “not actionable at fixed 5x”.
-- **Trading risk:** operator interpretation was distorted. `blocked` should mean fail-closed technical/risk violation; insufficient signal quality for the operator’s fixed leverage profile should be `no_trade`. The old display encouraged operators to fight the risk profile instead of understanding that the setup simply did not qualify for 5x.
+- **Problem:** when runtime risk profile was fixed, e.g. `min_leverage=3`, `max_leverage=5`, weak/thin/volatile ideas were intentionally downgraded by `_select_operator_grid_leverage()` to `1x`. The later risk gate then produced `MIN_LEVERAGE_PER_BOT` / `MIN_LEVERAGE_PER_BOT_AT_EXECUTION`, so ordinary non-actionable trade ideas appeared as hard runtime blocks. With a strict fixed profile this could make every symbol appear `blocked` even though the true state was “not actionable at 3-5x”.
+- **Trading risk:** operator interpretation was distorted. `blocked` should mean fail-closed technical/risk violation; insufficient signal quality for the operator’s 3-5x leverage profile should be `no_trade`. The old display encouraged operators to fight the risk profile instead of understanding that the setup simply did not qualify for 5x.
 - **Fix:** `_select_operator_grid_leverage()` now always returns the active operator target leverage for the evaluated profile. When the idea cannot justify that profile it sets:
   - `operator_minimum_approved=false`
   - `not_actionable_reason=<reason>`
@@ -87,7 +87,7 @@ Added `tests/test_iteration173_operator_leverage_no_trade_policy.py`:
    - Green after fix: selector returns active profile target `5` and marks `operator_minimum_approved=false`.
 
 2. `test_params_fixed_operator_profile_never_publishes_one_x_payload_for_declined_idea`
-   - Red before fix: `_params()` published `params["leverage"] == 1` under fixed `5x/5x`.
+   - Red before fix: `_params()` published `params["leverage"] == 1` under `3x/5x` interval.
    - Green after fix: `_params()` keeps `params["leverage"] == 5` and records `not_actionable_reason`.
 
 3. `test_ui_no_trade_reasons_are_not_treated_as_hard_risk_rejections`

@@ -1,9 +1,9 @@
 # 2026-06-14 — Operator documentation and how_to_trade synchronization
 
 - Updated `how_to_trade.png` to match the current shipped futures-grid policy: recommendation/audit service only, Bybit Linear USDT Perpetual, `futures_grid`, `unified` + `isolated`, arithmetic grid, fail-closed preflight, strict long/short TP/SL semantics and invalid-price/no-funding/min-notional blockers.
-- Replaced the outdated 1-3x infographic default with the current runtime policy: `min_leverage=5`, `max_leverage=5`; lower leverage is only an explicit operator safety cap and may leave ideas non-actionable.
+- Updated the operator leverage policy to the adaptive 3-5x runtime interval: `min_leverage=3`, `max_leverage=5`; lower leverage is only an explicit operator safety cap and may leave ideas non-actionable.
 - Added `docs/HOW_TO_TRADE_INFOGRAPHIC.md` as a text source-of-truth for the image and synchronized README, trading logic, known risks, DOCX/PDF operator instruction and `.env.example` wording.
-- Corrected `.env.example` risk profile drift: `max_leverage` now matches the shipped default in `settings.py` (`5`, not `10`).
+- Corrected `.env.example` risk profile drift: `min_leverage=3`, `max_leverage=5` now match the shipped defaults in `settings.py`.
 
 
 ## 2026-06-11 — runtime risk caps re-audit
@@ -215,7 +215,7 @@
 
 ## 2026-05-09 — Operator infographic update for 100–500 USDT accounts
 - Updated the root `how_to_trade.png` operator infographic for small accounts instead of the older 500 USDT / 10x-focused playbook.
-- Historical note: this 2026-05-09 infographic defaulted to 1 bot, 1–3x leverage, 10–15% margin allocation and 75–85% reserve; it is superseded by the 2026-06-14 operator documentation update with `min_leverage=5`, `max_leverage=5`.
+- Historical note: this 2026-05-09 infographic defaulted to 1 bot, 1–3x leverage, 10–15% margin allocation and 75–85% reserve; it is superseded by the current operator documentation with adaptive `min_leverage=3`, `max_leverage=5`.
 - Added small-account sizing guidance and reminders that Bybit `minNotional`, `qtyStep` and `minQty` failures are valid rejection outcomes, especially near 100 USDT balances.
 - Reconciled the infographic text with the current grid-only scope: Bybit Linear USDT Perpetual `futures_grid`, exact symbols, isolated margin, arithmetic grid, net profit after costs, funding known, liquidation buffer and kill-switch guards.
 

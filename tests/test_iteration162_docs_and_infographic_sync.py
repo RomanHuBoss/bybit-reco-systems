@@ -17,29 +17,29 @@ def _env_risk_limits_json() -> dict:
     return json.loads(match.group(1))
 
 
-def test_env_example_matches_current_shipped_five_x_operator_profile() -> None:
+def test_env_example_matches_current_shipped_3x_5x_operator_profile() -> None:
     limits = _env_risk_limits_json()
 
     assert limits["max_concurrent_bots"] == 1
     assert limits["max_symbol_bots"] == 1
-    assert limits["min_leverage"] == 5
+    assert limits["min_leverage"] == 3
     assert limits["max_leverage"] == 5
 
 
-def test_runtime_default_risk_profile_remains_five_x_when_env_absent(monkeypatch) -> None:
+def test_runtime_default_risk_profile_remains_3x_5x_when_env_absent(monkeypatch) -> None:
     monkeypatch.delenv("RISK_LIMITS_JSON", raising=False)
     settings = load_settings()
 
-    assert settings.risk_limits["min_leverage"] == 5
+    assert settings.risk_limits["min_leverage"] == 3
     assert settings.risk_limits["max_leverage"] == 5
 
 
-def test_how_to_trade_source_documents_non_oms_scope_and_five_x_gate() -> None:
+def test_how_to_trade_source_documents_non_oms_scope_and_3x_5x_gate() -> None:
     source = (ROOT / "docs" / "HOW_TO_TRADE_INFOGRAPHIC.md").read_text(encoding="utf-8")
 
     assert "recommendation/audit service, not OMS/EMS" in source
-    assert "`min_leverage=5`, `max_leverage=5`" in source
-    assert "1-3x is no longer the baseline actionable profile" in source
+    assert "`min_leverage=3`, `max_leverage=5`" in source
+    assert "3-5x is the baseline actionable leverage interval" in source
     assert "INVALID_MARKET_REFERENCE_PRICE" in source
     assert "Short: TP below entry/reference, SL above entry/reference" in source
 

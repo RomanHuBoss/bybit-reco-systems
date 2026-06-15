@@ -2,7 +2,7 @@
 
 ## Scope
 
-Follow-up audit of the operator details panel for futures-grid rows that are not hard `blocked`, but are persisted/effective `no_trade` because the idea does not pass the current fixed leverage profile or launch-quality gates.
+Follow-up audit of the operator details panel for futures-grid rows that are not hard `blocked`, but are persisted/effective `no_trade` because the idea does not pass the current 3-5x leverage profile or launch-quality gates.
 
 The specific reproduced case is a `FILUSDT` short futures grid with:
 
@@ -34,7 +34,7 @@ pytest -q: 671 passed
   - For an operator, this looked similar to “no recommendations”, even though the correct semantic is: “do not launch this grid under the current fixed leverage / quality / cost regime”.
 - Trading risk:
   - The absence of explicit next actions can push the operator toward manually launching a `no_trade` idea because it is not a Bybit/preflight blocker.
-  - This is especially risky for `signal_quality_too_low_for_operator_minimum` at a 5x profile, where the idea is intentionally not actionable without weakening risk policy.
+  - This is especially risky for `signal_quality_too_low_for_operator_minimum` at a 3-5x profile, where the idea is intentionally not actionable without weakening risk policy.
 
 ## Fix
 
@@ -49,7 +49,7 @@ pytest -q: 671 passed
 
 Added safe, non-permissive actions for no-trade scenarios:
 
-- `DO_NOT_LAUNCH_PROFILE_NOT_ACTIONABLE` — keep no_trade under the current fixed leverage profile.
+- `DO_NOT_LAUNCH_PROFILE_NOT_ACTIONABLE` — keep no_trade under the current 3-5x leverage profile.
 - `WAIT_FOR_STRONGER_SIGNAL_OR_RANGE` — wait for stronger directional bias or a stable range regime.
 - `WAIT_FOR_LOWER_VOLATILITY` — do not run grid while volatility/range-break risk is too high.
 - `WAIT_FOR_WIDER_NET_EDGE` — wait for better post-cost grid edge.
@@ -84,4 +84,4 @@ pytest -q: 672 passed
 
 ## Safety note
 
-This patch preserves fail-closed behavior. It does **not** convert `no_trade` to `recommended`, does **not** lower the 12% liquidation-buffer floor, and does **not** weaken the fixed leverage profile automatically. It only explains the next safe operator actions.
+This patch preserves fail-closed behavior. It does **not** convert `no_trade` to `recommended`, does **not** lower the 12% liquidation-buffer floor, and does **not** weaken the 3-5x leverage profile automatically. It only explains the next safe operator actions.

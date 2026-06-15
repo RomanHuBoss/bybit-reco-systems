@@ -683,14 +683,26 @@ function buildOperatorValues(it) {
 }
 
 function firstFiniteValue(sources, keys) {
+  const picked = firstFiniteField(sources, keys);
+  return picked ? picked.value : null;
+}
+
+function firstFiniteField(sources, keys) {
   for (const source of sources) {
     if (!source || typeof source !== "object") continue;
     for (const key of keys) {
       const value = toFiniteNumber(source[key]);
-      if (value !== null) return value;
+      if (value !== null) return { key, value };
     }
   }
   return null;
+}
+
+function gridMaxNotionalPrice(referencePrice, rangeLower, rangeUpper) {
+  const candidates = [referencePrice, rangeLower, rangeUpper]
+    .map(toFiniteNumber)
+    .filter(value => value !== null && value > 0);
+  return candidates.length ? Math.max(...candidates) : null;
 }
 
 
@@ -890,8 +902,10 @@ function buildOperatorFieldSpecs(it, ov) {
   const params = (it || {}).params || {};
   const economics = params.economics || {};
   const sizing = params.sizing || {};
-  const rangeValue = `${ov.rangeLower} — ${ov.rangeUpper}`;
   const plan = params.trade_plan || {};
+  const levels = plan.levels || {};
+  const range = levels.range || {};
+  const rangeValue = `${ov.rangeLower} — ${ov.rangeUpper}`;
   const operatorSheet = params.operator_sheet || {};
   const operatorSizing = operatorSheet.sizing || {};
   const operatorEconomics = operatorSheet.economics || {};
@@ -909,28 +923,43 @@ function buildOperatorFieldSpecs(it, ov) {
   );
   const leverageRaw = firstFiniteValue([params, plan, operatorSheet], ["leverage"]);
   const leverage = Math.max(1, Number(leverageRaw || 1));
-  const positionNotional = firstFiniteValue(
+  const positionNotionalKeys = [
+    "estimated_worst_case_total_order_notional_usdt",
+    "worst_case_total_order_notional_usdt",
+    "estimated_max_position_notional_usdt",
+    "max_position_notional_usdt",
+    "estimated_total_order_notional_usdt",
+    "total_order_notional_usdt",
+    "position_notional_usdt",
+    "notional_usdt",
+  ];
+  const worstCasePositionNotionalKeys = new Set([
+    "estimated_worst_case_total_order_notional_usdt",
+    "worst_case_total_order_notional_usdt",
+    "estimated_max_position_notional_usdt",
+    "max_position_notional_usdt",
+  ]);
+  const positionNotionalPick = firstFiniteField(
     [sizing, economics, operatorSizing, operatorEconomics, params, operatorSheet],
-    [
-      "estimated_worst_case_total_order_notional_usdt",
-      "worst_case_total_order_notional_usdt",
-      "estimated_max_position_notional_usdt",
-      "max_position_notional_usdt",
-      "estimated_total_order_notional_usdt",
-      "total_order_notional_usdt",
-      "position_notional_usdt",
-      "notional_usdt",
-    ]
-  ) ?? (marginRequired !== null && Number.isFinite(leverage) ? marginRequired * leverage : null);
+    positionNotionalKeys
+  );
+  const positionNotional = positionNotionalPick !== null
+    ? positionNotionalPick.value
+    : (marginRequired !== null && Number.isFinite(leverage) ? marginRequired * leverage : null);
   const symbolParts = splitLinearSymbol((it || {}).symbol);
   const referencePrice = firstFiniteValue([plan, params, operatorSheet], ["reference_price", "price_ref"]);
+  const rangeLowerForQty = firstFiniteValue([range, params, operatorSheet], ["lower", "price_range_lower", "range_lower"]);
+  const rangeUpperForQty = firstFiniteValue([range, params, operatorSheet], ["upper", "price_range_upper", "range_upper"]);
   const explicitPositionQty = firstFiniteValue(
     [sizing, economics, operatorSizing, operatorEconomics, params, operatorSheet],
     ["estimated_position_qty", "position_qty", "total_qty", "estimated_total_qty", "max_position_qty"]
   );
+  const qtyPrice = positionNotionalPick && worstCasePositionNotionalKeys.has(positionNotionalPick.key)
+    ? (gridMaxNotionalPrice(referencePrice, rangeLowerForQty, rangeUpperForQty) ?? referencePrice)
+    : referencePrice;
   const positionQty = explicitPositionQty ?? (
-    positionNotional !== null && referencePrice !== null && referencePrice > 0
-      ? positionNotional / referencePrice
+    positionNotional !== null && qtyPrice !== null && qtyPrice > 0
+      ? positionNotional / qtyPrice
       : null
   );
   const capitalValue = formatUsdValue(marginRequired);
@@ -946,7 +975,7 @@ function buildOperatorFieldSpecs(it, ov) {
   const riskRewardValue = rrValue === null ? "—" : formatDotNumber(rrValue, 3, false);
   const fields = [
     { label: "Сторона", value: directionRu((it || {}).direction), mono: false, help: "Направление идеи: лонг зарабатывает на росте, шорт — на снижении. Нейтральная grid-логика не должна подменяться направленным TP/SL." },
-    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Оценочная максимальная экспозиция бота. При наличии worst-case grid-полей UI показывает верхнюю оценку по максимальной цене диапазона, а не legacy reference-price notional." },
+    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Оценочная максимальная экспозиция бота. При наличии worst-case grid-полей UI показывает верхнюю оценку по максимальной цене диапазона, а базовое qty выводит из той же worst-case цены, не из reference-price; legacy reference-price notional не используется для qty при worst-case exposure." },
     { label: "Время работы", value: botLifetimeValue, copyValue: botLifetimeValue, help: "Рекомендуемый горизонт удержания бота, а не срок действия самой рекомендации." },
     { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под бота с указанным плечом. При наличии worst-case margin UI не должен откатываться к менее консервативной legacy-марже." },
     { label: "Диапазон входа", value: rangeValue, mono: true, help: "Нижняя и верхняя границы основного диапазона сетки, которые оператор переносит в Bybit." },

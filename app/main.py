@@ -691,8 +691,8 @@ def _apply_runtime_risk_limits_guard(out: dict[str, Any], *, conn: Any | None = 
     """Revalidate persisted recommendations against the current runtime risk profile.
 
     Operator profiles can be changed after a recommendation is published.  A DB row
-    that was generated with min/max leverage 5..10 must not remain actionable when
-    /risk/status now says fixed 3x, and a 1x fallback payload must not bypass the
+    that was generated with min/max leverage 3..5 must not remain actionable when
+    /risk/status now says the 3-5x operator interval, and a 1x fallback payload must not bypass the
     current min_leverage guard merely because it is an old snapshot.
     """
     if conn is None or not _operator_payload_has_runtime_risk_context(out):
@@ -1216,7 +1216,7 @@ def _operator_next_actions_for_reco(
         add(
             "RECALCULATE_WITH_LOWER_LEVERAGE_OR_NARROWER_RANGE",
             "Пересчитать профиль риска",
-            "Снизьте fixed leverage profile в RISK_LIMITS_JSON либо сузьте adverse-сторону диапазона/kill-switch и дождитесь новой публикации. Не снижайте 12% liquidation-buffer floor ради прохождения проверки.",
+            "Снизьте 3-5x leverage profile в RISK_LIMITS_JSON либо сузьте adverse-сторону диапазона/kill-switch и дождитесь новой публикации. Не снижайте 12% liquidation-buffer floor ради прохождения проверки.",
             "warning",
         )
 
@@ -1253,10 +1253,10 @@ def _operator_next_actions_for_reco(
         )
 
     if status_norm == "no_trade" and ("operator_leverage_profile_not_actionable" in no_trade_blob or "operator_minimum" in no_trade_blob):
-        lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущем fixed leverage profile"
+        lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущем 3-5x leverage profile"
         add(
             "DO_NOT_LAUNCH_PROFILE_NOT_ACTIONABLE",
-            "Не запускать при текущем fixed leverage profile",
+            "Не запускать при текущем 3-5x leverage profile",
             f"Идея оценена на {lev_txt}, но не прошла операторский профиль без ослабления risk policy. Оставьте no_trade: ручной запуск такого grid будет обходом safety-gate.",
             "warning",
         )
@@ -1264,7 +1264,7 @@ def _operator_next_actions_for_reco(
         add(
             "WAIT_FOR_STRONGER_SIGNAL_OR_RANGE",
             "Ждать более сильного сигнала или range-режима",
-            "Для 5x-профиля текущая directional/range quality недостаточна. Нужна новая публикация с более сильным directional bias либо устойчивым боковиком; не повышайте статус вручную из-за высокого относительного ранга.",
+            "Для 3-5x-профиля текущая directional/range quality недостаточна. Нужна новая публикация с более сильным directional bias либо устойчивым боковиком; не повышайте статус вручную из-за высокого относительного ранга.",
             "warning",
         )
     if "atr_too_high_for_operator_minimum" in no_trade_blob or "unsafe_volatility_or_execution_cost" in no_trade_blob or "высокая волатильность" in warning_blob:
@@ -1278,7 +1278,7 @@ def _operator_next_actions_for_reco(
         add(
             "WAIT_FOR_WIDER_NET_EDGE",
             "Ждать более широкой сеточной прибыли",
-            "Текущий net edge недостаточен для fixed leverage profile после fees, spread, slippage и funding. Нужен новый расчёт с лучшей экономикой, а не ручной запуск.",
+            "Текущий net edge недостаточен для 3-5x leverage profile после fees, spread, slippage и funding. Нужен новый расчёт с лучшей экономикой, а не ручной запуск.",
             "warning",
         )
     if "funding" in warning_blob or "издержки" in warning_blob:

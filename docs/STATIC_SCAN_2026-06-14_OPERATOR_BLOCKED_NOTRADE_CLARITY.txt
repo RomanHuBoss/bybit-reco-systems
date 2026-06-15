@@ -580,7 +580,7 @@ app/recommender.py:1064:        stats["pending_after"] = sum(
 app/recommender.py:1070:        stats["pending_after"] = _count_recent_pending_llm_candidates(conn, settings, snapshot_ts=snapshot_ts)
 app/recommender.py:1111:        rec["status"] = "no_trade"
 app/recommender.py:1468:    The previous implementation hard-blocked only expensive longs, which created a
-app/recommender.py:1947:    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 5x.
+app/recommender.py:1947:    get blocked by ``MIN_LEVERAGE_PER_BOT`` when the operator minimum was 3x within the 3-5x interval.
 app/recommender.py:2097:                "estimated_active_orders": 0,
 app/recommender.py:2107:                "risk_profile": "blocked",
 app/recommender.py:2115:                "estimated_active_orders": 0,

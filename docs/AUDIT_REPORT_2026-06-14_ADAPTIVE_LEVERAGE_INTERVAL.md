@@ -44,7 +44,7 @@ The patch does not lower any risk threshold and does not convert any fail-closed
 File: `tests/test_iteration177_adaptive_leverage_interval.py`
 
 - `test_adaptive_operator_interval_promotes_medium_setup_to_four_x`
-- `test_adaptive_operator_interval_promotes_strong_setup_to_five_x`
+- `test_adaptive_operator_interval_promotes_strong_setup_to_3x_5x`
 - `test_adaptive_operator_interval_respects_liquidation_safe_leverage_clamp`
 - `test_params_use_adaptive_3x_5x_operator_interval_for_strong_grid_setup`
 

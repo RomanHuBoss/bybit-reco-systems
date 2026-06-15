@@ -25,7 +25,7 @@ Keyword counts after patch:
 - no_trade: 173 hits / 41 files
 
 Reviewed changed hits:
-- app/recommender.py:_select_operator_grid_leverage — SAFE. New decline path returns active operator target leverage and marks operator_minimum_approved=false, preventing synthetic 1x payloads under fixed 5x/5x profiles.
+- app/recommender.py:_select_operator_grid_leverage — SAFE. New decline path returns active operator target leverage and marks operator_minimum_approved=false, preventing synthetic 1x payloads under 3x/5x interval profiles.
 - app/recommender.py:recommendation assembly — SAFE. OPERATOR_LEVERAGE_PROFILE_NOT_ACTIONABLE is carried as no_trade_reasons, not as blocks; status becomes no_trade only when no hard block exists.
 - app/recommender.py:recommendation-time margin cap — SAFE. max_margin_per_bot_usdt now prefers estimated_worst_case_margin_required_usdt.
 - app/ui/static/app.js:buildDetailsHtml — SAFE. no_trade_reasons are rendered as non-critical no_trade explanations; hard blocker list is deduplicated by message text to avoid duplicate BLOCK/RISK rows.

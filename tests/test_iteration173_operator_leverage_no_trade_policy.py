@@ -9,7 +9,7 @@ from app import recommender as recommender_module
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_fixed_operator_profile_declines_as_no_trade_instead_of_one_x_fallback() -> None:
+def test_3x_5x_operator_profile_declines_as_no_trade_instead_of_one_x_fallback() -> None:
     leverage, note, diagnostics = recommender_module._select_operator_grid_leverage(
         direction="long",
         dir_strength=0.20,
@@ -19,17 +19,17 @@ def test_fixed_operator_profile_declines_as_no_trade_instead_of_one_x_fallback()
         execution_cost_bps=16.0,
         funding_cost_bps=0.0,
         gross_profit_bps_est=6.0,
-        min_operator_leverage=5,
+        min_operator_leverage=3,
         max_operator_leverage=5,
     )
 
-    assert leverage == 5
+    assert leverage == 3
     assert note in {"atr_too_high_for_operator_minimum", "signal_quality_too_low_for_operator_minimum"}
     assert diagnostics["operator_minimum_approved"] is False
     assert diagnostics["not_actionable_reason"] == note
 
 
-def test_params_fixed_operator_profile_never_publishes_one_x_payload_for_declined_idea() -> None:
+def test_params_3x_5x_operator_profile_never_publishes_one_x_payload_for_declined_idea() -> None:
     params = recommender_module._params(
         "futures_grid",
         "linear",
@@ -52,14 +52,14 @@ def test_params_fixed_operator_profile_never_publishes_one_x_payload_for_decline
             "max_daily_dd_usdt": 200.0,
             "cooldown_after_loss_min": 30,
             "max_symbol_bots": 1,
-            "min_leverage": 5,
+            "min_leverage": 3,
             "max_leverage": 5,
             "max_position_notional_usdt": 5000.0,
             "max_margin_per_bot_usdt": 1000.0,
         },
     )
 
-    assert params["leverage"] == 5
+    assert params["leverage"] == 3
     assert params["leverage_policy"]["operator_minimum_approved"] is False
     assert params["leverage_policy"]["not_actionable_reason"] in {
         "atr_too_high_for_operator_minimum",

@@ -45,15 +45,15 @@ Current shipped risk profile:
 
 | Balance | Margin/bot guide | Daily stop guide | Runtime leverage |
 |---:|---:|---:|---:|
-| 100-199 USDT | 10-20 USDT | 3-5 USDT | 5x only after OK |
-| 200-349 USDT | 20-35 USDT | 5-10 USDT | 5x only after OK |
-| 350-500 USDT | 35-60 USDT | 10-15 USDT | 5x only after OK |
+| 100-199 USDT | 10-20 USDT | 3-5 USDT | 3-5x after OK |
+| 200-349 USDT | 20-35 USDT | 5-10 USDT | 3-5x after OK |
+| 350-500 USDT | 35-60 USDT | 10-15 USDT | 3-5x after OK |
 
 Rules:
 
-- Default runtime limits: `min_leverage=5`, `max_leverage=5`.
-- 1-3x is no longer the baseline actionable profile of this revision.
-- If `max_leverage < 5`, it is a stricter safety cap; expect more `no_trade` / `blocked` outcomes.
+- Default runtime limits: `min_leverage=3`, `max_leverage=5`.
+- 3-5x is the baseline actionable leverage interval of this revision.
+- If `max_leverage < 5` or `min_leverage < 3`, it is a stricter safety cap; expect more `no_trade` / `blocked` outcomes.
 - 10x is not default for the small-account profile.
 
 ## 4. Качество сигнала
@@ -114,7 +114,7 @@ Recalculate before any restart.
 ## 8. Дневная дисциплина
 
 - 1 bot per account.
-- 5x is allowed only after all guards pass.
+- 3-5x leverage is allowed only after all guards pass.
 - 10-15% of deposit maximum as working margin.
 - 75%+ reserve outside the position.
 - No DCA, martingale, spot, inverse, options or unsupported bot types.
@@ -122,4 +122,4 @@ Recalculate before any restart.
 - Remote deployment requires explicit `ADMIN_API_KEY`.
 
 Bottom summary:
-1 bot • 5x gated • 10-15% margin cap • net profit > costs • NO TRADE при блоках
+1 bot • 3-3-5x gated • 10-15% margin cap • net profit > costs • NO TRADE при блоках

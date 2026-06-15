@@ -94,8 +94,8 @@ def test_frontend_renders_next_actions_after_blockers_before_rank_diagnostics() 
 def test_static_asset_cache_key_bumped_after_next_actions_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v37" in index
-    assert "app.js?v=manual-ui-v37" in index
+    assert "styles.css?v=manual-ui-v38" in index
+    assert "app.js?v=manual-ui-v38" in index
 
 
 def test_no_trade_profile_reason_exposes_next_safe_actions(app_main) -> None:
@@ -109,12 +109,12 @@ def test_no_trade_profile_reason_exposes_next_safe_actions(app_main) -> None:
         "symbol": "FILUSDT",
         "direction": "short",
         "params": {
-            "leverage": 5,
+            "leverage": 3,
             "price_ref": 2.0,
             "risk_report": {
                 "decision": "not_recommended",
                 "no_trade_reasons": [
-                    "идея не проходит текущий fixed leverage profile без ослабления risk policy; evaluated_leverage=5x, reason=signal_quality_too_low_for_operator_minimum"
+                    "идея не проходит текущий 3-5x leverage profile без ослабления risk policy; evaluated_leverage=3x, reason=signal_quality_too_low_for_operator_minimum"
                 ],
                 "warnings": [
                     "издержки исполнения и adverse funding давят на net result",

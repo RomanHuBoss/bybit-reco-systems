@@ -25,7 +25,7 @@ def test_adaptive_operator_interval_promotes_medium_setup_to_four_x() -> None:
     assert diagnostics["accepted_leverage_promotions"][-1]["leverage"] == 4
 
 
-def test_adaptive_operator_interval_promotes_strong_setup_to_five_x() -> None:
+def test_adaptive_operator_interval_promotes_strong_setup_to_3x_5x() -> None:
     leverage, note, diagnostics = recommender_module._select_operator_grid_leverage(
         direction="long",
         dir_strength=0.90,
