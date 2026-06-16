@@ -64,6 +64,8 @@ function fmtPct(x, n = 2) {
 }
 
 function toFiniteNumber(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
   const v = Number(value);
   return Number.isFinite(v) ? v : null;
 }

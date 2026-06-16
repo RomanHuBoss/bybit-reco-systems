@@ -38,5 +38,5 @@ def test_operator_ui_prefers_worst_case_total_notional_before_reference_notional
 
 def test_static_asset_cache_key_bumped_after_worst_case_margin_ui_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
-    assert "styles.css?v=manual-ui-v40" in index
-    assert "app.js?v=manual-ui-v40" in index
+    assert "styles.css?v=manual-ui-v41" in index
+    assert "app.js?v=manual-ui-v41" in index

@@ -91,5 +91,5 @@ def test_frontend_auto_expands_non_actionable_diagnostics_when_actionable_filter
 def test_static_asset_cache_key_bumped_after_diagnostics_visibility_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v40" in index
-    assert "app.js?v=manual-ui-v40" in index
+    assert "styles.css?v=manual-ui-v41" in index
+    assert "app.js?v=manual-ui-v41" in index
