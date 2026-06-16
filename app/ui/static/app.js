@@ -609,6 +609,22 @@ function directionalExitGeometryOk(direction, takeProfit, stopLoss, referencePri
   return tp < ref && sl > ref;
 }
 
+function directionalExitMathForDisplay(it) {
+  const exitLevels = (it || {}).directional_exit_levels;
+  if (!exitLevels || typeof exitLevels !== "object") return {};
+  const expectedDir = String((it || {}).direction || "").trim().toLowerCase();
+  const dir = String(exitLevels.direction || "").trim().toLowerCase();
+  if (expectedDir === "long" || expectedDir === "short") {
+    if (dir !== expectedDir) return {};
+  }
+  if (dir !== "long" && dir !== "short") return {};
+  if (exitLevels.has_directional_take_profit !== true) return {};
+  if (exitLevels.geometry_valid === false) return {};
+  if (!directionalExitGeometryOk(dir, exitLevels.take_profit, exitLevels.stop_loss, exitLevels.reference_price)) return {};
+  const mathPayload = exitLevels.trade_math;
+  return mathPayload && typeof mathPayload === "object" ? mathPayload : {};
+}
+
 function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}, expectedDirection = null) {
   if (!exitLevels || typeof exitLevels !== "object") return fallback;
   const dir = String(exitLevels.direction || "").trim().toLowerCase();
@@ -993,7 +1009,7 @@ function buildOperatorFieldSpecs(it, ov) {
   const capitalValue = formatUsdValue(marginRequired);
   const positionValue = formatPositionSizeValue(positionNotional, positionQty, symbolParts?.base || "");
   const botLifetimeValue = formatBotLifetimeValue(params);
-  const exitMath = ((it || {}).directional_exit_levels || {}).trade_math || {};
+  const exitMath = directionalExitMathForDisplay(it);
   const tpDistancePct = toFiniteNumber(exitMath.take_profit_distance_pct);
   const slDistancePct = toFiniteNumber(exitMath.stop_loss_distance_pct);
   const rrValue = toFiniteNumber(exitMath.risk_reward);

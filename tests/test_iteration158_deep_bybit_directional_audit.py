@@ -132,7 +132,9 @@ def test_protective_trigger_geometry_fails_closed_on_short_take_profit_above_ref
 def test_operator_ui_surfaces_backend_directional_risk_reward_and_distances() -> None:
     app_js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "const exitMath = ((it || {}).directional_exit_levels || {}).trade_math || {};" in app_js
+    assert "function directionalExitMathForDisplay" in app_js
+    assert "const exitMath = directionalExitMathForDisplay(it);" in app_js
+    assert "exitLevels.geometry_valid === false" in app_js
     assert "TP/SL дистанция" in app_js
     assert "Risk/Reward TP/SL" in app_js
     assert "Для short TP считается вниз, SL — вверх" in app_js
