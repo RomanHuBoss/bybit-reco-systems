@@ -85,6 +85,8 @@ _BACKFILL_ROUND_ROBIN_CURSOR: dict[tuple[str, str, int], int] = {}
 
 
 def _to_float(x: Any, *, minimum: float | None = None) -> float | None:
+    if isinstance(x, bool):
+        return None
     try:
         if x is None:
             return None
@@ -273,6 +275,8 @@ def _remote_ticker_ts(ticker: dict[str, Any], fallback_ts: int) -> int:
         ticker.get("lastPriceTime"),
     )
     for raw in candidates:
+        if isinstance(raw, bool):
+            continue
         try:
             ts = int(raw)
         except Exception:
@@ -290,7 +294,10 @@ def _extract_funding_row(symbol: str, ticker: dict[str, Any], fallback_ts: int) 
         return None
     next_funding_ts = None
     try:
-        nft = int(ticker.get("nextFundingTime") or 0)
+        raw_next_funding = ticker.get("nextFundingTime")
+        if isinstance(raw_next_funding, bool):
+            raise ValueError("boolean nextFundingTime is invalid")
+        nft = int(raw_next_funding or 0)
         if nft > 10**11:
             nft //= 1000
         next_funding_ts = nft if nft > 0 else None

@@ -28,6 +28,8 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         num = float(value)
     except Exception:

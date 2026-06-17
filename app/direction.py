@@ -6,6 +6,16 @@ from typing import Any
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
+
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(default)
+    try:
+        num = float(value)
+    except Exception:
+        return float(default)
+    return float(num) if math.isfinite(num) else float(default)
+
 def _sign(x: float, thr: float) -> int:
     if x > thr:
         return 1
@@ -113,6 +123,8 @@ def _safe_ohlc_vectors(
     h_out: list[float] = []
     l_out: list[float] = []
     for raw_c, raw_h, raw_l in zip(list(closes)[-n:], list(highs)[-n:], list(lows)[-n:]):
+        if any(isinstance(value, bool) for value in (raw_c, raw_h, raw_l)):
+            continue
         try:
             c = float(raw_c)
             h = float(raw_h)
@@ -213,7 +225,7 @@ def _aggregate_signed(tf_map: dict[int, dict[str, Any]], tf_secs: list[int]) -> 
         if not info:
             continue
         w = float(TF_WEIGHTS.get(tf, 1.0))
-        num += w * float(info.get("score", 0.0))
+        num += w * _finite_float(info.get("score"), 0.0)
         den += w
     return float(num / den) if den > 0 else 0.0
 
@@ -241,7 +253,7 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
             continue
         w = float(TF_WEIGHTS.get(tf, 1.0))
         total_possible += w
-        tf_sign = _sign(float(info.get("score", 0.0)), thr)
+        tf_sign = _sign(_finite_float(info.get("score"), 0.0), thr)
         if tf_sign != 0:
             total += w
             if struct_sign != 0 and tf_sign == struct_sign:
@@ -262,7 +274,7 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
         if not info:
             continue
         w = float(TF_WEIGHTS.get(tf, 1.0))
-        trendiness += w * float(info.get("trend_strength", 0.0))
+        trendiness += w * _finite_float(info.get("trend_strength"), 0.0)
         den += w
     trendiness = float(trendiness / den) if den > 0 else 0.0
 

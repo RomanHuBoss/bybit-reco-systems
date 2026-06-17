@@ -31,6 +31,8 @@ SYSTEM_PROMPT = (
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
+    if isinstance(x, bool):
+        return 0.0 if float(lo) <= 0.0 <= float(hi) else float(lo)
     try:
         num = float(x)
     except Exception:
@@ -92,6 +94,8 @@ def _safe_payload_number(value: Any, *, digits: int = 6) -> float | None:
     или ``NaN``) не должен ронять весь review sweep ещё до общей JSON-
     санации payload.
     """
+    if isinstance(value, bool):
+        return None
     try:
         num = float(value)
     except Exception:

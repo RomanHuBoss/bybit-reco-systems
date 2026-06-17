@@ -48,18 +48,16 @@ function escapeHtml(value) {
 }
 
 function fmtPrice(x) {
-  if (x === null || x === undefined || x === "") return "—";
-  const v = Number(x);
-  if (Number.isNaN(v)) return String(x);
+  const v = toFiniteNumber(x);
+  if (v === null) return "—";
   const av = Math.abs(v);
   const frac = av >= 1000 ? 2 : av >= 1 ? 4 : 6;
   return v.toLocaleString("ru-RU", { maximumFractionDigits: frac });
 }
 
 function fmtPct(x, n = 2) {
-  if (x === null || x === undefined || x === "") return "—";
-  const v = Number(x);
-  if (Number.isNaN(v)) return String(x);
+  const v = toFiniteNumber(x);
+  if (v === null) return "—";
   return `${v >= 0 ? "+" : ""}${v.toFixed(n)}%`;
 }
 
@@ -936,8 +934,9 @@ function formatBotLifetimeValue(params = {}) {
 function formatPositionSizeValue(notional, qty, baseAsset = "") {
   const parts = [];
   if (notional !== null && notional !== undefined) parts.push(formatUsdValue(notional));
-  if (qty !== null && qty !== undefined && Number.isFinite(Number(qty))) {
-    const qtyText = formatDotNumber(qty, 8, false);
+  const qtyNumber = toFiniteNumber(qty);
+  if (qtyNumber !== null) {
+    const qtyText = formatDotNumber(qtyNumber, 8, false);
     parts.push(baseAsset ? `${qtyText} ${baseAsset}` : qtyText);
   }
   return parts.length ? parts.join(" · ") : "—";

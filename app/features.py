@@ -30,6 +30,8 @@ def _sma(xs: list[float], n: int) -> float:
 
 
 def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         num = float(value)
     except Exception:

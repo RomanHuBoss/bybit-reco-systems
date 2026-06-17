@@ -608,6 +608,8 @@ def _json_loads_text_list_or_default(raw: Any, default: list[str] | None = None)
 
 
 def _finite_float_or_default(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(default)
     try:
         num = float(value)
     except Exception:
@@ -618,6 +620,8 @@ def _finite_float_or_default(value: Any, default: float = 0.0) -> float:
 
 
 def _require_finite_float(name: str, value: Any, *, minimum: float | None = None) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a finite number")
     try:
         num = float(value)
     except Exception as exc:
@@ -630,6 +634,8 @@ def _require_finite_float(name: str, value: Any, *, minimum: float | None = None
 
 
 def _require_non_negative_int(name: str, value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer >= 0")
     try:
         num = int(value)
     except Exception as exc:
@@ -859,7 +865,7 @@ def _is_valid_ticker_row(row: Any) -> bool:
     vol24h = row["vol24h"]
 
     def _optional_non_negative(value: Any, *, strictly_positive: bool = False) -> float | None:
-        if value in (None, ""):
+        if value in (None, "") or isinstance(value, bool):
             return None
         try:
             num = float(value)
@@ -924,6 +930,13 @@ def _sanitize_ticker_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, 
     return payload
 
 def _is_valid_ohlcv_row(row: Any) -> bool:
+    numeric_fields = ("ts", "open", "high", "low", "close", "volume")
+    try:
+        numeric_values = [row[key] for key in numeric_fields]
+    except Exception:
+        return False
+    if any(isinstance(value, bool) for value in numeric_values):
+        return False
     try:
         ts = int(row["ts"] or 0)
         open_px = float(row["open"])

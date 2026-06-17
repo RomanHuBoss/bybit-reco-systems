@@ -41,6 +41,8 @@ def _median(vals: list[float]) -> float:
 
 
 def _safe_num(x: Any, default: float = 0.0) -> float:
+    if isinstance(x, bool):
+        return float(default)
     try:
         if x is None:
             return default

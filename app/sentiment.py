@@ -131,6 +131,8 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 def _safe_float(value: Any, default: float) -> float:
+    if isinstance(value, bool):
+        return float(default)
     try:
         num = float(value)
     except Exception:
@@ -141,6 +143,8 @@ def _safe_float(value: Any, default: float) -> float:
 
 
 def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         num = float(value)
     except Exception:

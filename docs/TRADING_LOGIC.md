@@ -156,3 +156,9 @@ Risk and UI semantics are separated:
 - no_trade rows cannot be executed by the API and are rendered as "do not launch now", not as a Bybit/preflight hard block.
 
 Recommendation-time margin checks and `risk_report.capital_required_usdt` must prefer `estimated_worst_case_margin_required_usdt` over reference-price margin when worst-case grid-envelope fields are present.
+
+## 2026-06-17 numeric-boundary and directional-PnL provenance rule
+
+All JSON booleans are invalid for numeric trading fields. This applies to market prices/volume/timestamps, OHLCV, funding timestamps and event counts, signal scores/confidence, direction aggregation, risk limits, grid geometry, calibration/outcome inputs and operator UI price/percent/qty rendering. Python `bool` must not cross a `float()`/`int()` boundary as `1/0`; JavaScript booleans must not cross `Number()` as `1/0`. Invalid booleans either make the value unavailable or fall back to the documented conservative default. They must never weaken a risk guard, create executable geometry or reduce a publication confirmation requirement.
+
+`app.main::_directional_exit_payload_for_reco` may use `qty=1 base asset` only to derive dimensionless TP/SL distances and risk:reward when no position quantity exists. In that case the API must publish `qty_source=unit_qty_ratio_only`, `trade_math.qty_basis=one_base_asset_for_ratio_only` and `trade_math.gross_pnl_is_position_estimate=false`. Gross USDT fields in that payload are then per-one-base-asset arithmetic aids, not an estimate for the operator's position. When actual position/order quantity is available, `qty_basis=position_qty` and `gross_pnl_is_position_estimate=true`.

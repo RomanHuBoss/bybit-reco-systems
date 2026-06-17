@@ -178,6 +178,8 @@ N_FEATURES = len(FEATURE_NAMES)
 _LIQ_TIER_MAP = {"micro": 0.0, "low": 0.33, "medium": 0.67, "high": 1.0}
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
+    if isinstance(value, bool):
+        return default
     try:
         if value is None:
             return default

@@ -292,6 +292,8 @@ def _bounded_probability(value: float | None, *, default: float) -> float:
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(default)
     try:
         return int(value)
     except Exception:
@@ -928,8 +930,11 @@ def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
     reference_price = ctx.get("reference_price")
     levels["reference_price"] = reference_price
     qty_context = _directional_exit_qty_for_reco(rec, reference_price)
-    levels["qty"] = qty_context.get("qty")
-    levels["qty_source"] = qty_context.get("qty_source")
+    position_qty = qty_context.get("qty")
+    qty_source = qty_context.get("qty_source")
+    unit_qty_ratio_only = position_qty is None
+    levels["qty"] = position_qty
+    levels["qty_source"] = qty_source or ("unit_qty_ratio_only" if unit_qty_ratio_only else None)
     levels["trade_math"] = None
     levels["bybit_protective_orders"] = {}
     if direction in {"long", "short"}:
@@ -946,10 +951,14 @@ def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
             reference_price,
             levels.get("take_profit"),
             levels.get("stop_loss"),
-            qty_context.get("qty") or 1.0,
+            position_qty if position_qty is not None else 1.0,
         )
         if math_payload is not None:
             math_dict = math_payload.as_dict()
+            math_dict["gross_pnl_is_position_estimate"] = not unit_qty_ratio_only
+            math_dict["qty_basis"] = (
+                "position_qty" if not unit_qty_ratio_only else "one_base_asset_for_ratio_only"
+            )
             levels["trade_math"] = math_dict
             levels["take_profit_distance_pct"] = math_dict.get("take_profit_distance_pct")
             levels["stop_loss_distance_pct"] = math_dict.get("stop_loss_distance_pct")

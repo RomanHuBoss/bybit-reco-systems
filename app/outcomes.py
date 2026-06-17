@@ -145,6 +145,8 @@ def _finite_or_default(value: object, default: float) -> float:
     правок JSON: иначе и ret, и calibration diagnostics могут тихо стать
     нечисловыми и сломать downstream-агрегации.
     """
+    if isinstance(value, bool):
+        return float(default)
     try:
         num = float(value)
     except Exception:
@@ -161,6 +163,8 @@ def _finite_positive_or_none(value: object) -> float | None:
     особенно опасны: они не роняют outcome-cycle, но тихо отключают range/kill-switch
     penalties и ломают интерпретацию исторической разметки.
     """
+    if isinstance(value, bool):
+        return None
     try:
         if value is None:
             return None
@@ -180,10 +184,13 @@ def _int_from_params(value: object, default: int = 0, *, minimum: int | None = N
     rec и блокировать дальнейшую разметку; лучше безопасно деградировать к
     консервативному default и продолжить labeling.
     """
-    try:
-        num = int(float(value))
-    except Exception:
+    if isinstance(value, bool):
         num = int(default)
+    else:
+        try:
+            num = int(float(value))
+        except Exception:
+            num = int(default)
     if minimum is not None:
         num = max(int(minimum), num)
     if maximum is not None:

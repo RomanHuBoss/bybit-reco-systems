@@ -44,6 +44,8 @@ class RiskStatus:
 
 
 def _safe_default_int(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return int(default)
     try:
         num = int(value)
     except Exception:
@@ -52,6 +54,8 @@ def _safe_default_int(value: Any, default: int) -> int:
 
 
 def _safe_default_float(value: Any, default: float) -> float:
+    if isinstance(value, bool):
+        return float(default)
     try:
         num = float(value)
     except Exception:
@@ -62,10 +66,14 @@ def _safe_default_float(value: Any, default: float) -> float:
 
 
 def _limit_int(limits: dict[str, Any], key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
-    try:
-        value = int(limits.get(key, default))
-    except Exception:
+    raw = limits.get(key, default)
+    if isinstance(raw, bool):
         value = int(default)
+    else:
+        try:
+            value = int(raw)
+        except Exception:
+            value = int(default)
     if minimum is not None:
         value = max(int(minimum), value)
     if maximum is not None:
@@ -74,10 +82,14 @@ def _limit_int(limits: dict[str, Any], key: str, default: int, *, minimum: int |
 
 
 def _limit_float(limits: dict[str, Any], key: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    try:
-        value = float(limits.get(key, default))
-    except Exception:
+    raw = limits.get(key, default)
+    if isinstance(raw, bool):
         value = float(default)
+    else:
+        try:
+            value = float(raw)
+        except Exception:
+            value = float(default)
     if not math.isfinite(value):
         value = float(default)
     if minimum is not None:

@@ -55,7 +55,7 @@ def _fmt_tf(tf_sec: int) -> str:
     return f"{tf_sec}s"
 
 def _round_price(x: float | None, decimals: int = 6) -> float | None:
-    if x is None:
+    if x is None or isinstance(x, bool):
         return None
     try:
         num = float(x)
@@ -80,6 +80,8 @@ def _pct_dist(a: float | None, b: float | None) -> float | None:
 
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(default)
     try:
         num = float(value)
     except Exception:
@@ -90,6 +92,8 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
 
 
 def _finite_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         num = float(value)
     except Exception:
@@ -100,6 +104,8 @@ def _finite_or_none(value: Any) -> float | None:
 
 
 def _safe_int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
         return int(value)
     except Exception:
@@ -371,7 +377,7 @@ def _save_llm_review_cache(conn, state: dict[str, dict[str, Any]], fresh_ttl_sec
     for key, meta in (state or {}).items():
         if not isinstance(key, str) or not isinstance(meta, dict):
             continue
-        ts = int(meta.get("ts", 0) or 0)
+        ts = int(_safe_int_or_none(meta.get("ts")) or 0)
         if ts <= 0 or now - ts > ttl:
             continue
         payload[key] = {
@@ -1684,10 +1690,13 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     должен эскалироваться в bullish signal. Поэтому NaN уводим в нейтральный ноль,
     если ноль лежит внутри диапазона; иначе — в нижнюю границу.
     """
-    try:
-        num = float(x)
-    except Exception:
+    if isinstance(x, bool):
         num = float('nan')
+    else:
+        try:
+            num = float(x)
+        except Exception:
+            num = float('nan')
     if math.isnan(num):
         neutral = 0.0 if float(lo) <= 0.0 <= float(hi) else float(lo)
         return float(neutral)
@@ -1703,7 +1712,7 @@ def _sigmoid(x: float) -> float:
 def _make_factor(feature: str, value: Any, weight: float, msg: str) -> dict[str, Any]:
     return {
         "feature": feature,
-        "value": float(value) if isinstance(value, (int, float)) and value is not None else value,
+        "value": None if isinstance(value, bool) else (float(value) if isinstance(value, (int, float)) and value is not None else value),
         "weight": float(weight),
         "msg": msg,
         "text": msg,
@@ -1718,9 +1727,12 @@ def _direction(bot_type: str, agg: dict[str, Any]) -> str:
 
 
 def _stable_range_score(f: dict[str, Any], agg: dict[str, Any]) -> tuple[float, dict[str, float | str]]:
-    raw_range = _clamp(float(f.get("range_score") or 0.0), 0.0, 1.0)
-    trendiness = _clamp(float((agg or {}).get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
-    coherence = _clamp(float((agg or {}).get("coherence") or 0.5), 0.0, 1.0)
+    raw_range = _clamp(_finite_float(f.get("range_score"), 0.0), 0.0, 1.0)
+    trendiness_raw = (agg or {}).get("trendiness")
+    if trendiness_raw is None:
+        trendiness_raw = f.get("trend_strength")
+    trendiness = _clamp(_finite_float(trendiness_raw, 0.0), 0.0, 1.0)
+    coherence = _clamp(_finite_float((agg or {}).get("coherence"), 0.5), 0.0, 1.0)
     regime = str((agg or {}).get("regime") or "unknown")
 
     multi_tf_range = _clamp(1.0 - trendiness, 0.0, 1.0)
@@ -1753,12 +1765,7 @@ def _score(
     direction = _direction(bot_type, agg)
 
     def _num(value: Any, default: float = 0.0) -> float:
-        try:
-            if value is None:
-                return float(default)
-            return float(value)
-        except Exception:
-            return float(default)
+        return _finite_float(value, default)
 
     strengths = agg.get("strength") or {}
     if isinstance(strengths, dict):
@@ -2683,16 +2690,16 @@ def _recommendation_ttl_sec(settings) -> int:
 
 
 def _persistence_gate_requirements(rec: dict[str, Any], settings) -> tuple[int, str]:
-    score = float(rec.get("score") or 0.0)
-    confidence = float(rec.get("confidence") or 0.0)
-    expected_rr = float(rec.get("expected_rr") or 0.0)
+    score = _finite_float(rec.get("score"), 0.0)
+    confidence = _finite_float(rec.get("confidence"), 0.0)
+    expected_rr = _finite_float(rec.get("expected_rr"), 0.0)
     reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
     direction_agg = reasons.get("direction_agg") if isinstance(reasons.get("direction_agg"), dict) else {}
-    coherence = float(direction_agg.get("coherence") or 0.0)
-    regime_conf = float(direction_agg.get("regime_confidence") or 0.0)
+    coherence = _finite_float(direction_agg.get("coherence"), 0.0)
+    regime_conf = _finite_float(direction_agg.get("regime_confidence"), 0.0)
 
-    strong_score_thr = max(float(getattr(settings, "min_score_to_recommend", 0.08) or 0.08) + 0.04, 0.14)
-    strong_conf_thr = max(float(getattr(settings, "min_conf_to_recommend", 0.52) or 0.52) + 0.08, 0.62)
+    strong_score_thr = max(_finite_float(getattr(settings, "min_score_to_recommend", 0.08), 0.08) + 0.04, 0.14)
+    strong_conf_thr = max(_finite_float(getattr(settings, "min_conf_to_recommend", 0.52), 0.52) + 0.08, 0.62)
     strong_rr_thr = 0.14
 
     is_high_quality = (
@@ -2723,12 +2730,12 @@ def _load_direction_state(conn) -> dict[tuple[str, str], dict[str, Any]]:
             continue
         venue, sym = parts
         out[(venue, sym)] = {
-            "ts": int(state.get("ts", 0) or 0),
+            "ts": int(_safe_int_or_none(state.get("ts")) or 0),
             "direction": str(state.get("direction") or "neutral"),
             "bias": str(state.get("bias") or "neutral"),
-            "score_all": float(state.get("score_all", 0.0) or 0.0),
-            "trendiness": float(state.get("trendiness", 0.0) or 0.0),
-            "coherence": float(state.get("coherence", 0.0) or 0.0),
+            "score_all": _finite_float(state.get("score_all"), 0.0),
+            "trendiness": _finite_float(state.get("trendiness"), 0.0),
+            "coherence": _finite_float(state.get("coherence"), 0.0),
         }
     return out
 
@@ -2747,9 +2754,9 @@ def _save_direction_state(conn, state: dict[tuple[str, str], dict[str, Any]], fr
             "ts": ts,
             "direction": str(meta.get("direction") or "neutral"),
             "bias": str(meta.get("bias") or "neutral"),
-            "score_all": float(meta.get("score_all", 0.0) or 0.0),
-            "trendiness": float(meta.get("trendiness", 0.0) or 0.0),
-            "coherence": float(meta.get("coherence", 0.0) or 0.0),
+            "score_all": _finite_float(meta.get("score_all"), 0.0),
+            "trendiness": _finite_float(meta.get("trendiness"), 0.0),
+            "coherence": _finite_float(meta.get("coherence"), 0.0),
         }
     db.set_app_config_json(conn, DIRECTION_STATE_APP_KEY, payload, commit=commit)
 
@@ -2765,10 +2772,10 @@ def _stabilize_direction_agg(
     strengths = dict(stable.get("strength") or {})
     raw_direction = str(stable.get("direction") or "neutral")
     raw_bias = str(stable.get("bias") or "neutral")
-    score_all = float(scores.get("all") or 0.0)
-    strength_all = float(strengths.get("all") or 0.0)
-    trendiness = float(stable.get("trendiness") or 0.0)
-    coherence = float(stable.get("coherence") or 0.0)
+    score_all = _finite_float(scores.get("all"), 0.0)
+    strength_all = _finite_float(strengths.get("all"), 0.0)
+    trendiness = _finite_float(stable.get("trendiness"), 0.0)
+    coherence = _finite_float(stable.get("coherence"), 0.0)
     regime = str(stable.get("regime") or "unknown")
 
     enter_thr = 0.14
@@ -2783,7 +2790,7 @@ def _stabilize_direction_agg(
     stable["raw_bias"] = raw_bias
 
     prev = dict(prev_state or {})
-    prev_ts = int(prev.get("ts", 0) or 0)
+    prev_ts = int(_safe_int_or_none(prev.get("ts")) or 0)
     prev_fresh = prev_ts > 0 and now_ts - prev_ts <= max(int(fresh_gap), 60)
     prev_direction = str(prev.get("direction") or "neutral") if prev_fresh else "neutral"
 
@@ -2979,21 +2986,21 @@ def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
 
 def _recent_publication_dedupe_material_upgrade(prev: dict[str, Any] | None, rec: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     prev = prev or {}
-    prev_score = float(prev.get("score") or 0.0)
-    prev_conf = float(prev.get("confidence") or 0.0)
-    prev_rr = float(prev.get("expected_rr") or 0.0)
-    new_score = float(rec.get("score") or 0.0)
-    new_conf = float(rec.get("confidence") or 0.0)
-    new_rr = float(rec.get("expected_rr") or 0.0)
+    prev_score = _finite_float(prev.get("score"), 0.0)
+    prev_conf = _finite_float(prev.get("confidence"), 0.0)
+    prev_rr = _finite_float(prev.get("expected_rr"), 0.0)
+    new_score = _finite_float(rec.get("score"), 0.0)
+    new_conf = _finite_float(rec.get("confidence"), 0.0)
+    new_rr = _finite_float(rec.get("expected_rr"), 0.0)
 
     prev_entry = (((prev.get("params") or {}).get("trade_plan") or {}).get("entry_price"))
     new_entry = (((rec.get("params") or {}).get("trade_plan") or {}).get("entry_price"))
     try:
-        prev_entry_f = float(prev_entry) if prev_entry not in (None, "") else None
+        prev_entry_f = _finite_or_none(prev_entry) if prev_entry not in (None, "") else None
     except Exception:
         prev_entry_f = None
     try:
-        new_entry_f = float(new_entry) if new_entry not in (None, "") else None
+        new_entry_f = _finite_or_none(new_entry) if new_entry not in (None, "") else None
     except Exception:
         new_entry_f = None
     entry_shift_pct = None
@@ -3254,7 +3261,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
     # Primary sentiment for scoring: adaptive blend from compute_sentiment_agg.
     # Falls back to 6h EWMA for backward compatibility with older snapshots.
-    global_sent = float(sent_agg.get("effective_score", sent_agg.get("ewma", {}).get("6h", 0.0)))
+    global_sent = _finite_float(sent_agg.get("effective_score", sent_agg.get("ewma", {}).get("6h", 0.0)), 0.0)
     # Per-symbol sentiment map: {SYMBOL: float} blended from RSS/Reddit/CoinGecko
     symbol_sent_map: dict[str, tuple[float, int]] = compute_symbol_sentiment_map(conn)
 
@@ -3417,15 +3424,15 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 continue
 
             spread_raw = f.get("spread_bps")
-            spread = float(spread_raw) if spread_raw is not None else None
+            spread = _finite_or_none(spread_raw)
             # Risk/scoring volatility proxy: prefer 1h ATR% (from multi-TF direction pass).
-            atr_pct_1m = float(f.get("atr_pct") or 0.0)
-            atr_pct_1h = float(f.get("_atr_pct_1h") or 0.0)
+            atr_pct_1m = _finite_float(f.get("atr_pct"), 0.0)
+            atr_pct_1h = _finite_float(f.get("_atr_pct_1h"), 0.0)
             atr_pct = atr_pct_1h if atr_pct_1h > 0 else atr_pct_1m
 
             # ── Liquidity tier — use per-(venue,sym) cached ticker ──
             _trow = symbol_ticker_map.get((venue, sym))
-            turnover = float(_trow["turnover24h"]) if _trow and _trow["turnover24h"] else None
+            turnover = _finite_or_none(_trow["turnover24h"]) if _trow else None
             liq_tier = liquidity_tier(turnover)
 
             # ── Funding rate + OI (futures only) ──

@@ -73,10 +73,13 @@ def funding_cashflow_usdt(side: str, position_notional: Any, funding_rate: Any, 
     """Positive means cost paid by this side; negative means funding received."""
     notional = max(ZERO, dec(position_notional))
     rate = dec(funding_rate)
-    try:
-        n_events = max(0, int(events))
-    except Exception:
+    if isinstance(events, bool):
         n_events = 0
+    else:
+        try:
+            n_events = max(0, int(events))
+        except Exception:
+            n_events = 0
     side_norm = str(side or "").strip().lower()
     if side_norm == "long":
         sign = ONE
