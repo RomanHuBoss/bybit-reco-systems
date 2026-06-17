@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS reco_outcomes (
   bot_type TEXT NOT NULL,
   direction TEXT NOT NULL,
   horizon_sec INTEGER NOT NULL,
+  label_available_ts BIGINT,
   entry_close DOUBLE PRECISION NOT NULL,
   exit_close DOUBLE PRECISION NOT NULL,
   ret DOUBLE PRECISION NOT NULL,

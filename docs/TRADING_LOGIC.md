@@ -111,6 +111,7 @@ UI обязан показывать этот блок рядом с execution/l
 
 ### Умеет
 - учитывать grid spacing, cost floor и adverse funding-carry; funding receipt не кредитуется как durable edge для calibration;
+- сохранять точный момент доступности proxy-label (`label_available_ts = entry_ts + effective_horizon`) и использовать purged chronological OOF: train-label обязан быть полностью известен строго до первой validation-рекомендации; legacy labels без точного availability timestamp исключаются из OOF train;
 - штрафовать break-out, kill-switch breach и плохую occupancy range;
 - считать success по факту достижения per-leg TP только если TP-touch остаётся net-positive после execution-cost floor, либо по oscillation proxy.
 

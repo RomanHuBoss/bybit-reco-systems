@@ -594,6 +594,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "bot_type": bot_type,
                 "direction": direction,
                 "horizon_sec": effective_horizon,
+                "label_available_ts": int(ts_exit),
                 "entry_close": float(entry),
                 "exit_close": float(exitp),
                 "ret": float(ret_proxy),

@@ -11,6 +11,8 @@ RETRYABLE_BYBIT_RETCODES = {10000, 10006, 10016, 10018, 30034}
 
 
 def _safe_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         num = float(value)
     except Exception:
@@ -21,6 +23,8 @@ def _safe_float(value: Any) -> float | None:
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(default)
     try:
         return int(value)
     except Exception:

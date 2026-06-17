@@ -21,6 +21,10 @@ def normalize_execution_direction(value: Any) -> str | None:
 
 
 def _finite_float(value: Any) -> float | None:
+    # JSON booleans are subclasses of int in Python; treating true/false as
+    # prices 1/0 would turn malformed payloads into executable geometry.
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)
     except Exception:

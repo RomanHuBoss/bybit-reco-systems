@@ -77,6 +77,7 @@ Proxy outcome labeling для grid-рекомендаций.
 Контракт:
 - labels считаются только для outcome-root записей;
 - label horizon отдельна от operator-facing max holding horizon;
+- новая outcome-запись сохраняет точный `label_available_ts` — конец окна от первой реально доступной tradeable candle; legacy labels без этой метки не допускаются в OOF-train folds;
 - outcome-модель честно считается приближением, а не биржевой truth.
 
 ## `app/db.py`

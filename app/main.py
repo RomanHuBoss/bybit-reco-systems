@@ -299,6 +299,8 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _safe_int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
         return int(value)
     except Exception:
@@ -779,11 +781,8 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
     operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
 
     def finite(value: Any) -> float | None:
-        try:
-            num = float(value)
-        except Exception:
-            return None
-        if not math.isfinite(num) or num <= 0:
+        num = _finite_float_or_none(value)
+        if num is None or num <= 0:
             return None
         return float(num)
 
@@ -1729,6 +1728,10 @@ def _load_recommendations_for_operator_view(
 
 
 def _finite_float_or_none(value: Any) -> float | None:
+    # bool is an int subclass; reject it before float() so malformed JSON cannot
+    # become price/qty/leverage=1 or 0 on the execution path.
+    if isinstance(value, bool):
+        return None
     try:
         num = float(value)
     except Exception:

@@ -37,6 +37,8 @@ def _strict_json_dumps(value: Any) -> str:
 
 
 def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         num = float(value)
     except Exception:
@@ -47,10 +49,13 @@ def _finite_float(value: Any) -> float | None:
 
 
 def _finite_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(default)
     try:
         return int(value)
     except Exception:
         return int(default)
+
 
 
 # ── Platt scaler ──────────────────────────────────────────────────────────────
@@ -452,14 +457,60 @@ def _fit_weighted_logreg_raw(
     return coef_raw, float(intercept_raw)
 
 
+def _purged_train_indices(
+    tss: list[int],
+    label_available_tss: list[int | None],
+    *,
+    validation_start_index: int,
+) -> list[int]:
+    """Indices whose labels were observable before a validation decision.
+
+    Outcome ``ts`` is recommendation time, while ``label_available_ts`` is the
+    exact end of the future window measured from the first tradeable candle.
+    Legacy rows without that timestamp are deliberately excluded from OOF
+    training rather than assigned an optimistic synthetic maturity time.
+    """
+    split = int(validation_start_index)
+    if split <= 0 or split >= len(tss) or len(label_available_tss) != len(tss):
+        return []
+    try:
+        validation_ts = int(tss[split])
+    except Exception:
+        return []
+
+    indices: list[int] = []
+    for idx in range(split):
+        try:
+            train_ts = int(tss[idx])
+            raw_available_ts = label_available_tss[idx]
+            if isinstance(raw_available_ts, bool) or raw_available_ts is None:
+                continue
+            available_ts = int(raw_available_ts)
+        except Exception:
+            continue
+        # A same-timestamp decision is not guaranteed to observe a label that
+        # completes at that instant. Malformed availability before signal time
+        # is rejected rather than trusted.
+        if train_ts < validation_ts and train_ts <= available_ts < validation_ts:
+            indices.append(idx)
+    return indices
+
+
 def _time_series_oof_logits(
     X: list[list[float]],
     ys: list[int],
     ws: list[float],
     *,
     min_samples: int,
+    tss: list[int] | None = None,
+    label_available_tss: list[int | None] | None = None,
 ) -> tuple[list[float], list[int], list[float]]:
-    """Chronological out-of-fold logits for Platt-on-top without look-ahead."""
+    """Purged chronological out-of-fold logits for Platt-on-top.
+
+    When label timing is supplied, each fold trains only on outcomes whose full
+    horizon ended before the first validation decision. This prevents overlapping
+    future windows and duplicate timestamps from leaking into OOF calibration.
+    """
     n = len(X)
     if n < max(6, min_samples * 2):
         return [], [], []
@@ -468,15 +519,30 @@ def _time_series_oof_logits(
     logits: list[float] = []
     y_out: list[int] = []
     w_out: list[float] = []
+    timing_available = (
+        tss is not None
+        and label_available_tss is not None
+        and len(tss) == n
+        and len(label_available_tss) == n
+    )
 
     for split in range(fold, n, fold):
         end = min(n, split + fold)
         if split < min_samples or end <= split:
             continue
-        train_y = ys[:split]
+        train_indices = (
+            _purged_train_indices(tss, label_available_tss, validation_start_index=split)
+            if timing_available
+            else list(range(split))
+        )
+        if len(train_indices) < min_samples:
+            continue
+        train_X = [X[idx] for idx in train_indices]
+        train_y = [ys[idx] for idx in train_indices]
+        train_w = [ws[idx] for idx in train_indices]
         if min(sum(train_y), len(train_y) - sum(train_y)) * 2 < min_samples:
             continue
-        coef, intercept = _fit_weighted_logreg_raw(X[:split], train_y, ws[:split], iters=260)
+        coef, intercept = _fit_weighted_logreg_raw(train_X, train_y, train_w, iters=260)
         if not coef:
             continue
         for row, y, weight in zip(X[split:end], ys[split:end], ws[split:end]):
@@ -558,7 +624,7 @@ def fit_logreg(
         )
 
     # Build feature matrix
-    X, y_used, w_used, ts_used = [], [], [], []
+    X, y_used, w_used, ts_used, label_available_used = [], [], [], [], []
     for r, w in zip(sanitized_rows, ws):
         fv = extract_features(r)
         if fv is not None:
@@ -566,6 +632,12 @@ def fit_logreg(
             y_used.append(int(r["success"]))
             w_used.append(w)
             ts_used.append(int(r.get("ts") or 0))
+            raw_available_ts = r.get("label_available_ts")
+            label_available_used.append(
+                None
+                if raw_available_ts is None or isinstance(raw_available_ts, bool)
+                else _finite_int(raw_available_ts, 0)
+            )
 
     if len(X) < logreg_min_samples:
         return LogRegScaler(
@@ -574,13 +646,23 @@ def fit_logreg(
         )
 
     try:
-        ordered = sorted(zip(ts_used, X, y_used, w_used), key=lambda item: item[0])
-        X_ord = [item[1] for item in ordered]
-        y_ord = [item[2] for item in ordered]
-        w_ord = [item[3] for item in ordered]
+        ordered = sorted(
+            zip(ts_used, label_available_used, X, y_used, w_used),
+            key=lambda item: item[0],
+        )
+        ts_ord = [item[0] for item in ordered]
+        label_available_ord = [item[1] for item in ordered]
+        X_ord = [item[2] for item in ordered]
+        y_ord = [item[3] for item in ordered]
+        w_ord = [item[4] for item in ordered]
 
         oof_logits, oof_y, oof_w = _time_series_oof_logits(
-            X_ord, y_ord, w_ord, min_samples=min_samples
+            X_ord,
+            y_ord,
+            w_ord,
+            min_samples=min_samples,
+            tss=ts_ord,
+            label_available_tss=label_available_ord,
         )
         coef_raw, intercept_raw = _fit_weighted_logreg_raw(X_ord, y_ord, w_ord)
 

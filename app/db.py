@@ -145,6 +145,14 @@ def _ensure_funding_rate_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE funding_rate ADD COLUMN funding_interval_min REAL")
 
 
+def _ensure_outcome_label_availability_column(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "reco_outcomes")
+    if "label_available_ts" not in cols:
+        # Nullable by design: legacy labels do not expose their exact first
+        # tradeable candle, so fabricating a timestamp would reintroduce leakage.
+        conn.execute("ALTER TABLE reco_outcomes ADD COLUMN label_available_ts BIGINT")
+
+
 def _ensure_bot_publication_root_columns(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "bot_instances")
     if "publication_root_rec_id" not in cols:
@@ -467,6 +475,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     )""")
     _ensure_recommendation_publication_columns(conn)
     _ensure_funding_rate_columns(conn)
+    _ensure_outcome_label_availability_column(conn)
     if _recommendation_publication_backfill_needed(conn):
         # Полный historical lineage backfill может занимать заметное время на живой
         # БД. На штатном рестарте запускаем его только если реально нашли legacy-
@@ -1743,7 +1752,7 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
     """
     cur = conn.execute(
         """SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
-                  o.success, o.ret,
+                  o.horizon_sec, o.label_available_ts, o.success, o.ret,
                   r.score, r.status, r.reasons_json, r.publication_root_rec_id, r.is_outcome_label_root
            FROM reco_outcomes o
            JOIN recommendations r ON r.rec_id = o.rec_id
@@ -1766,6 +1775,10 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
             "symbol":    row["symbol"],
             "bot_type":  row["bot_type"],
             "direction": row["direction"],
+            "horizon_sec": max(0, int(row["horizon_sec"] or 0)),
+            "label_available_ts": (
+                int(row["label_available_ts"]) if row["label_available_ts"] is not None else None
+            ),
             "success":   int(row["success"]),
             "ret":       float(row["ret"]),
             "score":     float(row["score"]),
@@ -1778,12 +1791,12 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
 def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO reco_outcomes(
-            rec_id, ts, venue, symbol, bot_type, direction, horizon_sec,
+            rec_id, ts, venue, symbol, bot_type, direction, horizon_sec, label_available_ts,
             entry_close, exit_close, ret, success
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             o["rec_id"], o["ts"], o["venue"], o["symbol"], o["bot_type"], o["direction"], o["horizon_sec"],
-            o["entry_close"], o["exit_close"], o["ret"], o["success"]
+            o.get("label_available_ts"), o["entry_close"], o["exit_close"], o["ret"], o["success"]
         ),
     )
     conn.commit()
