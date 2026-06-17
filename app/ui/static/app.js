@@ -23,9 +23,8 @@ const SCORE_UI_NEAR_TIE_DELTA = 0.025;
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function fmt(x, n = 2) {
-  if (x === null || x === undefined) return "-";
-  const v = Number(x);
-  if (Number.isNaN(v)) return String(x);
+  const v = toFiniteNumber(x);
+  if (v === null) return "-";
   return v.toFixed(n);
 }
 
@@ -93,9 +92,8 @@ function inferPriceDecimals(value) {
 }
 
 function formatDotNumber(value, digits = 4, keepZeros = false) {
-  if (value === null || value === undefined || value === "") return "—";
-  const v = Number(value);
-  if (!Number.isFinite(v)) return String(value);
+  const v = toFiniteNumber(value);
+  if (v === null) return "—";
   let out = v.toFixed(digits);
   if (!keepZeros) out = out.replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "");
   return out;
@@ -118,9 +116,8 @@ function quantizeByStep(value, step, mode = "nearest") {
 }
 
 function formatBybitPrice(value, meta = {}, mode = "nearest") {
-  if (value === null || value === undefined || value === "") return "—";
-  const v = Number(value);
-  if (!Number.isFinite(v)) return String(value);
+  const v = toFiniteNumber(value);
+  if (v === null) return "—";
   const tick = toFiniteNumber((meta || {}).tick_size);
   if (tick && tick > 0) {
     const snapped = quantizeByStep(v, tick, mode);
@@ -130,24 +127,21 @@ function formatBybitPrice(value, meta = {}, mode = "nearest") {
 }
 
 function formatPercentDot(value, digits = 4, withSign = false) {
-  if (value === null || value === undefined || value === "") return "—";
-  const v = Number(value);
-  if (!Number.isFinite(v)) return String(value);
+  const v = toFiniteNumber(value);
+  if (v === null) return "—";
   return `${withSign && v >= 0 ? "+" : ""}${formatDotNumber(v, digits)}%`;
 }
 
 
 function formatBps(value, digits = 2, withSign = false) {
-  if (value === null || value === undefined || value === "") return "—";
-  const v = Number(value);
-  if (!Number.isFinite(v)) return String(value);
+  const v = toFiniteNumber(value);
+  if (v === null) return "—";
   return `${withSign && v >= 0 ? "+" : ""}${formatDotNumber(v, digits)} bps`;
 }
 
 function formatUsdValue(value) {
-  if (value === null || value === undefined || value === "") return "—";
-  const v = Number(value);
-  if (!Number.isFinite(v)) return String(value);
+  const v = toFiniteNumber(value);
+  if (v === null) return "—";
   const av = Math.abs(v);
   if (av >= 1e9) return `$${formatDotNumber(v / 1e9, 2)}B`;
   if (av >= 1e6) return `$${formatDotNumber(v / 1e6, 2)}M`;
@@ -156,9 +150,8 @@ function formatUsdValue(value) {
 }
 
 function formatProbability(value) {
-  if (value === null || value === undefined || value === "") return "—";
-  const v = Number(value);
-  if (!Number.isFinite(v)) return String(value);
+  const v = toFiniteNumber(value);
+  if (v === null) return "—";
   const pct = Math.abs(v) <= 1 ? v * 100 : v;
   return `${formatDotNumber(pct, 1)}%`;
 }
@@ -299,8 +292,8 @@ function shockBadgeHtml(shock) {
 
 function btcRelationMetric(betaInfo, symbol) {
   const safeSymbol = String(symbol || "").toUpperCase();
-  const corrRaw = safeSymbol === "BTCUSDT" ? 1.0 : Number(betaInfo?.correlation);
-  if (!Number.isFinite(corrRaw)) {
+  const corrRaw = safeSymbol === "BTCUSDT" ? 1.0 : toFiniteNumber(betaInfo?.correlation);
+  if (corrRaw === null) {
     return {
       label: "BTC-завис.",
       value: "—",
@@ -323,7 +316,7 @@ function btcRelationMetric(betaInfo, symbol) {
     label: "BTC-завис.",
     value: `r=${formatDotNumber(corr, 2, false)}`,
     iconClass,
-    title: `${titlePrefix}; окно ${(Number(betaInfo?.window || 24))}h`,
+    title: `${titlePrefix}; окно ${toFiniteNumber(betaInfo?.window) ?? 24}h`,
   };
 }
 
@@ -342,8 +335,8 @@ function scoreUiZone(percentile) {
 
 function computeUiScoreMetaMap(items) {
   const rows = (Array.isArray(items) ? items : [])
-    .map((it) => ({ id: it?.rec_id, score: Number(it?.score) }))
-    .filter((row) => row.id && Number.isFinite(row.score));
+    .map((it) => ({ id: it?.rec_id, score: toFiniteNumber(it?.score) }))
+    .filter((row) => row.id && row.score !== null);
   const out = new Map();
   if (!rows.length) return out;
 
@@ -400,7 +393,7 @@ function ensureUiScoreMeta(item, poolItems = lastItems) {
     percentile: 0,
     grade: "E",
     zoneLabel: "слабый",
-    raw: Number.isFinite(Number(item.score)) ? Number(item.score) : null,
+    raw: toFiniteNumber(item.score),
     title: `Ранг недоступен; raw launch-score=${formatDotNumber(item.score, 4)}`,
   };
 }
@@ -1053,8 +1046,8 @@ function factorItemHtml(factor, tone = "positive") {
   if (!factor) return "";
   const cls = tone === "positive" ? "factor-item positive" : "factor-item negative";
   const msg = factor.msg || factor.reason || factorNameRu(factor.name);
-  const weight = Number(factor.weight);
-  const weightText = Number.isFinite(weight) ? `${weight >= 0 ? "+" : ""}${formatDotNumber(weight, 2)}` : "—";
+  const weight = toFiniteNumber(factor.weight);
+  const weightText = weight === null ? "—" : `${weight >= 0 ? "+" : ""}${formatDotNumber(weight, 2)}`;
   return `
     <div class="${cls}">
       <div class="factor-sign">${tone === "positive" ? "+" : "−"}</div>
@@ -1285,8 +1278,8 @@ function getConfModel(item) {
 }
 
 function confCell(item) {
-  const v = Number((item || {}).confidence);
-  if (isNaN(v)) return "-";
+  const v = toFiniteNumber((item || {}).confidence);
+  if (v === null) return "-";
 
   const confModel = getConfModel(item);
   const fitted = !!confModel.fitted;
@@ -1301,13 +1294,13 @@ function confCell(item) {
   let marker = "";
   if (!fitted) {
     const src = confModel.source || "raw";
-    const cap = confModel.heuristic_cap;
-    const capText = (cap === null || cap === undefined) ? "" : `; cap≤${Number(cap).toFixed(2)}`;
+    const cap = toFiniteNumber(confModel.heuristic_cap);
+    const capText = cap === null ? "" : `; cap≤${cap.toFixed(2)}`;
     marker = ` <span class='conf-mode-tag conf-mode-raw' title='Не откалибровано: ${src}${capText}'>raw</span>`;
   } else if (logregActive) {
     marker = " <span class='conf-mode-tag conf-mode-cal' title='Откалибровано: LogReg + Platt'>cal</span>";
   } else {
-    const nSamples = Number(confModel.n_samples || 0);
+    const nSamples = toFiniteNumber(confModel.n_samples) ?? 0;
     marker = ` <span class='conf-mode-tag conf-mode-platt' title='Частично откалибровано: Platt only (n=${nSamples})'>platt</span>`;
   }
 
@@ -1437,8 +1430,8 @@ function updateCalibrationUi(items) {
 }
 
 function dirConfCell(dirConf) {
-  const v = Number(dirConf);
-  if (isNaN(v)) return "-";
+  const v = toFiniteNumber(dirConf);
+  if (v === null) return "-";
   let cls = "conf-val";
   if (v >= 0.75) cls += " conf-high";
   else if (v >= 0.55) cls += " conf-mid";

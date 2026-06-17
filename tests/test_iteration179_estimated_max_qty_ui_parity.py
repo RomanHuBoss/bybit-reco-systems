@@ -69,5 +69,5 @@ def test_operator_ui_uses_same_estimated_max_position_qty_key_as_backend() -> No
 
 def test_static_asset_cache_key_bumped_after_estimated_qty_ui_patch() -> None:
     index = INDEX_HTML.read_text(encoding="utf-8")
-    assert "styles.css?v=manual-ui-v42" in index
-    assert "app.js?v=manual-ui-v42" in index
+    assert "styles.css?v=manual-ui-v43" in index
+    assert "app.js?v=manual-ui-v43" in index

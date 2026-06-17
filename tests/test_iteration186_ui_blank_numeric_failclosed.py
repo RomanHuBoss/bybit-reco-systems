@@ -57,5 +57,5 @@ console.log(JSON.stringify(out));
 def test_static_asset_cache_key_bumped_after_blank_numeric_failclosed_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v42" in index
-    assert "app.js?v=manual-ui-v42" in index
+    assert "styles.css?v=manual-ui-v43" in index
+    assert "app.js?v=manual-ui-v43" in index

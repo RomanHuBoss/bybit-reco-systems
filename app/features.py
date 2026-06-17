@@ -165,7 +165,7 @@ LIQUIDITY_TIERS = {
 }
 
 def liquidity_tier(turnover24h_usd: float | None) -> str:
-    if turnover24h_usd is None:
+    if turnover24h_usd is None or isinstance(turnover24h_usd, bool):
         return "unknown"
     try:
         v = float(turnover24h_usd)
@@ -199,7 +199,7 @@ def funding_signal(funding_rate: float | None, funding_interval_min: int | float
         neutral  = otherwise
       carry_cost_bps_interval: abs(funding_rate) × 10000 — cost per funding interval in bps
     """
-    if funding_rate is None:
+    if funding_rate is None or isinstance(funding_rate, bool):
         return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_interval": None, "carry_cost_bps_8h": None, "funding_interval_min": None}
 
     try:
@@ -209,7 +209,11 @@ def funding_signal(funding_rate: float | None, funding_interval_min: int | float
     if not math.isfinite(fr):
         return {"value": None, "annualized_pct": None, "signal": "unknown", "carry_cost_bps_interval": None, "carry_cost_bps_8h": None, "funding_interval_min": None}
     try:
-        interval_min = float(funding_interval_min) if funding_interval_min not in (None, "") else 480.0
+        interval_min = (
+            float(funding_interval_min)
+            if funding_interval_min not in (None, "") and not isinstance(funding_interval_min, bool)
+            else 480.0
+        )
     except Exception:
         interval_min = 480.0
     if not math.isfinite(interval_min) or interval_min <= 0:
@@ -265,14 +269,18 @@ def oi_trend(oi_series: list[dict[str, Any]]) -> dict[str, Any]:
     for row in oi_series:
         if not isinstance(row, dict):
             continue
+        raw_oi = row.get("oi")
+        raw_ts = row.get("ts")
+        if isinstance(raw_oi, bool) or isinstance(raw_ts, bool):
+            continue
         try:
-            oi = float(row.get("oi"))
+            oi = float(raw_oi)
         except Exception:
             continue
         if not math.isfinite(oi) or oi < 0:
             continue
         try:
-            ts = int(row.get("ts"))
+            ts = int(raw_ts)
         except Exception:
             ts = None
         # Preserve duplicate-timestamp replacement semantics. Rows without a real

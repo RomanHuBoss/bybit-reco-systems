@@ -586,7 +586,10 @@ def fit_logreg(
         try:
             score = _safe_float(row.get("score"), None)
             success_raw = row.get("success")
-            ts = int(row.get("ts") or 0)
+            ts_raw = row.get("ts")
+            if isinstance(success_raw, bool) or isinstance(ts_raw, bool):
+                continue
+            ts = int(ts_raw or 0)
         except Exception:
             continue
         if score is None:
