@@ -1491,6 +1491,78 @@ def get_recommendations(
             break
     return rows
 
+
+def get_recommendation_history(
+    conn: sqlite3.Connection,
+    *,
+    venue: str,
+    symbol: str,
+    bot_type: str | None = None,
+    limit: int = 500,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return recent publication rows for one market pair in chronological order.
+
+    The operator UI needs the raw publication sequence rather than a collapsed
+    snapshot so recommendation changes can be inspected.  The query reads only
+    persisted decision fields; it does not pretend that historical Bybit runtime
+    guards can be reconstructed from today's market metadata.
+    """
+    venue_norm = str(venue or "").strip().lower()
+    symbol_norm = str(symbol or "").strip().upper()
+    bot_type_norm = str(bot_type or "").strip()
+    max_rows = max(1, min(int(limit or 500), 2000))
+
+    where = ["venue=?", "symbol=?"]
+    params: list[Any] = [venue_norm, symbol_norm]
+    if bot_type_norm:
+        where.append("bot_type=?")
+        params.append(bot_type_norm)
+    where_sql = " AND ".join(where)
+
+    count_row = conn.execute(
+        f"SELECT COUNT(*) AS c FROM recommendations WHERE {where_sql}",
+        params,
+    ).fetchone()
+    total = int(count_row["c"] or 0) if count_row else 0
+
+    # Read newest rows under the cap, then reverse for a left-to-right timeline.
+    cur = conn.execute(
+        f"""SELECT rec_id, ts, venue, symbol, bot_type, direction, score,
+                   confidence, expected_rr, risk_score, reasons_json, status,
+                   ttl_sec, model_version, features_ref_ts,
+                   publication_root_rec_id, is_outcome_label_root
+              FROM recommendations
+             WHERE {where_sql}
+             ORDER BY ts DESC, rec_id DESC
+             LIMIT ?""",
+        [*params, max_rows],
+    )
+    newest_first = cur.fetchall()
+    rows: list[dict[str, Any]] = []
+    for r in reversed(newest_first):
+        reasons = _json_loads_mapping_or_default(r["reasons_json"], {})
+        llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
+        rows.append({
+            "rec_id": r["rec_id"],
+            "ts": r["ts"],
+            "venue": r["venue"],
+            "symbol": r["symbol"],
+            "bot_type": r["bot_type"],
+            "direction": r["direction"],
+            "score": r["score"],
+            "confidence": r["confidence"],
+            "expected_rr": r["expected_rr"],
+            "risk_score": r["risk_score"],
+            "status": r["status"],
+            "llm_status": str(llm_review.get("status") or "none").strip().lower() or "none",
+            "ttl_sec": r["ttl_sec"],
+            "model_version": r["model_version"],
+            "features_ref_ts": r["features_ref_ts"],
+            "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+            "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
+        })
+    return rows, total
+
 def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
     sql = "SELECT * FROM recommendations WHERE rec_id=?"
     if for_update and getattr(conn, "db_engine", SQLITE) == POSTGRES:

@@ -65,6 +65,7 @@ EXECUTION_FUNDING_WORSE_DELTA_BLOCK_BPS = 3.0
 EXECUTION_FUNDING_EXTREME_BPS = 6.0
 EXECUTION_MIN_NET_PROFIT_BPS = 2.0
 OPERATOR_MIN_LIQUIDATION_BUFFER_PCT = 12.0
+RECOMMENDATION_MAX_FUTURE_SKEW_SEC = 300
 EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER = 1.10
 BACKGROUND_THREAD_STATE_APP_KEY_PREFIX = "runtime_thread_state:"
 BACKGROUND_THREAD_RESTART_DELAY_SEC = 5.0
@@ -1012,6 +1013,40 @@ def _distance_from_current_to_bound_pct(current_price: float | None, bound: floa
     return None
 
 
+def _recommendation_timestamp_state(value: Any, *, now_ts: int) -> dict[str, Any]:
+    """Validate recommendation timestamps before deriving age/TTL.
+
+    A timestamp far in the future must never be converted to age=0 because that
+    makes a poisoned or clock-skewed recommendation look perpetually fresh.
+    Small positive skew is tolerated to accommodate normal host/exchange drift.
+    """
+    ts_value = _safe_int_or_none(value)
+    if ts_value is None or ts_value <= 0:
+        return {
+            "ts": ts_value,
+            "valid": False,
+            "invalid_reason": "missing_or_nonpositive",
+            "age_sec": None,
+            "future_skew_sec": None,
+        }
+    future_skew_sec = max(0, int(ts_value) - int(now_ts))
+    if future_skew_sec > RECOMMENDATION_MAX_FUTURE_SKEW_SEC:
+        return {
+            "ts": int(ts_value),
+            "valid": False,
+            "invalid_reason": "future_clock_skew",
+            "age_sec": None,
+            "future_skew_sec": future_skew_sec,
+        }
+    return {
+        "ts": int(ts_value),
+        "valid": True,
+        "invalid_reason": None,
+        "age_sec": max(0, int(now_ts) - int(ts_value)),
+        "future_skew_sec": future_skew_sec,
+    }
+
+
 def _publication_chain_context_for_reco(
     conn: Any | None,
     rec: dict[str, Any],
@@ -1024,11 +1059,12 @@ def _publication_chain_context_for_reco(
     publication_root_rec_id. Row age alone then understates how long the original
     idea has been alive. Execution/UI must expose both values.
     """
-    now = int(now_ts or time.time())
+    now = int(time.time() if now_ts is None else now_ts)
     rec_id = str(rec.get("rec_id") or "").strip()
     root_id = str(rec.get("publication_root_rec_id") or rec_id).strip() or rec_id or None
-    row_ts = _safe_int_or_none(rec.get("ts"))
-    row_age_sec = None if row_ts is None else max(0, now - int(row_ts))
+    row_state = _recommendation_timestamp_state(rec.get("ts"), now_ts=now)
+    row_ts = row_state.get("ts")
+    row_age_sec = row_state.get("age_sec")
 
     first_ts = row_ts
     last_ts = row_ts
@@ -1051,13 +1087,19 @@ def _publication_chain_context_for_reco(
             last_ts = row_ts
             update_count = 1 if rec_id or row_ts is not None else 0
 
-    chain_age_sec = None if first_ts is None else max(0, now - int(first_ts))
+    chain_state = _recommendation_timestamp_state(first_ts, now_ts=now)
     return {
         "publication_root_rec_id": root_id,
+        "recommendation_timestamp_valid": bool(row_state.get("valid")),
+        "recommendation_timestamp_invalid_reason": row_state.get("invalid_reason"),
+        "recommendation_timestamp_future_skew_sec": row_state.get("future_skew_sec"),
         "recommendation_row_age_sec": row_age_sec,
         "publication_chain_started_ts": first_ts,
         "publication_chain_updated_ts": last_ts,
-        "publication_chain_age_sec": chain_age_sec,
+        "publication_chain_timestamp_valid": bool(chain_state.get("valid")),
+        "publication_chain_timestamp_invalid_reason": chain_state.get("invalid_reason"),
+        "publication_chain_timestamp_future_skew_sec": chain_state.get("future_skew_sec"),
+        "publication_chain_age_sec": chain_state.get("age_sec"),
         "publication_chain_update_count": int(update_count or 0),
     }
 
@@ -1069,12 +1111,28 @@ def _execution_recommendation_freshness_blocks(
     now_ts: int | None = None,
 ) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
-    now = int(now_ts or time.time())
+    now = int(time.time() if now_ts is None else now_ts)
+    chain = _publication_chain_context_for_reco(conn, rec, now_ts=now)
+    if chain.get("recommendation_timestamp_valid") is not True:
+        blocks.append({
+            "code": "RECOMMENDATION_TIMESTAMP_INVALID",
+            "msg": "recommendation timestamp is missing, non-positive, or too far in the future",
+            "reason": chain.get("recommendation_timestamp_invalid_reason"),
+            "future_skew_sec": chain.get("recommendation_timestamp_future_skew_sec"),
+        })
+    if chain.get("publication_chain_timestamp_valid") is not True:
+        blocks.append({
+            "code": "PUBLICATION_CHAIN_TIMESTAMP_INVALID",
+            "msg": "publication-chain root timestamp is missing, non-positive, or too far in the future",
+            "reason": chain.get("publication_chain_timestamp_invalid_reason"),
+            "future_skew_sec": chain.get("publication_chain_timestamp_future_skew_sec"),
+            "publication_root_rec_id": chain.get("publication_root_rec_id"),
+        })
+
     ttl_sec = _safe_int_or_none(rec.get("ttl_sec"))
     if ttl_sec is None or ttl_sec <= 0:
         return blocks
 
-    chain = _publication_chain_context_for_reco(conn, rec, now_ts=now)
     row_age = _safe_int_or_none(chain.get("recommendation_row_age_sec"))
     chain_age = _safe_int_or_none(chain.get("publication_chain_age_sec"))
     if row_age is not None and row_age > ttl_sec:
@@ -1090,6 +1148,48 @@ def _execution_recommendation_freshness_blocks(
             "publication_chain_update_count": chain.get("publication_chain_update_count"),
         })
     return blocks
+
+
+def _append_recommendation_timestamp_errors_to_operator_guard(
+    guard: dict[str, Any],
+    conn: Any | None,
+    rec: dict[str, Any],
+) -> dict[str, Any]:
+    """Make invalid recommendation clocks visible in list/detail effective status.
+
+    Full freshness/TTL remains part of execution preflight.  Here we only merge
+    timestamp-integrity failures so a future/poisoned row cannot look actionable
+    in the operator UI while execution would reject it later.
+    """
+    if not isinstance(guard, dict):
+        guard = {}
+    # Pure helper/unit payloads may intentionally omit DB identity/timestamps.
+    # Only persisted recommendations can be operator-actionable and therefore
+    # require the timestamp-integrity guard here.
+    if not str(rec.get("rec_id") or "").strip():
+        return guard
+    invalid_codes = {
+        "RECOMMENDATION_TIMESTAMP_INVALID",
+        "PUBLICATION_CHAIN_TIMESTAMP_INVALID",
+    }
+    timestamp_errors = [
+        dict(item)
+        for item in _execution_recommendation_freshness_blocks(conn, rec)
+        if isinstance(item, dict) and str(item.get("code") or "") in invalid_codes
+    ]
+    if not timestamp_errors:
+        return guard
+    errors = [dict(item) for item in (guard.get("errors") or []) if isinstance(item, dict)]
+    seen = {str(item.get("code") or "") for item in errors}
+    for item in timestamp_errors:
+        code = str(item.get("code") or "")
+        if code and code not in seen:
+            errors.append(item)
+            seen.add(code)
+    guard["errors"] = errors
+    guard["ok"] = False
+    guard["critical"] = True
+    return guard
 
 
 def _guard_item_code_set(items: Any) -> set[str]:
@@ -1386,11 +1486,11 @@ def _operator_decision_context_for_reco(
     chain_ctx = _publication_chain_context_for_reco(conn, rec, now_ts=now)
     age_sec = chain_ctx.get("recommendation_row_age_sec")
     expires_in_sec = None
-    if rec_ts is not None and ttl_sec is not None and ttl_sec > 0:
+    if chain_ctx.get("recommendation_timestamp_valid") is True and rec_ts is not None and ttl_sec is not None and ttl_sec > 0:
         expires_in_sec = int(rec_ts) + int(ttl_sec) - now
     chain_expires_in_sec = None
     chain_started_ts = _safe_int_or_none(chain_ctx.get("publication_chain_started_ts"))
-    if chain_started_ts is not None and ttl_sec is not None and ttl_sec > 0:
+    if chain_ctx.get("publication_chain_timestamp_valid") is True and chain_started_ts is not None and ttl_sec is not None and ttl_sec > 0:
         chain_expires_in_sec = int(chain_started_ts) + int(ttl_sec) - now
 
     ticker: dict[str, Any] | None = None
@@ -1463,11 +1563,17 @@ def _operator_decision_context_for_reco(
 
     context = {
         "recommendation_ts": rec_ts,
+        "recommendation_timestamp_valid": chain_ctx.get("recommendation_timestamp_valid"),
+        "recommendation_timestamp_invalid_reason": chain_ctx.get("recommendation_timestamp_invalid_reason"),
+        "recommendation_timestamp_future_skew_sec": chain_ctx.get("recommendation_timestamp_future_skew_sec"),
         "recommendation_age_sec": age_sec,
         "recommendation_row_age_sec": age_sec,
         "publication_root_rec_id": chain_ctx.get("publication_root_rec_id"),
         "publication_chain_started_ts": chain_ctx.get("publication_chain_started_ts"),
         "publication_chain_updated_ts": chain_ctx.get("publication_chain_updated_ts"),
+        "publication_chain_timestamp_valid": chain_ctx.get("publication_chain_timestamp_valid"),
+        "publication_chain_timestamp_invalid_reason": chain_ctx.get("publication_chain_timestamp_invalid_reason"),
+        "publication_chain_timestamp_future_skew_sec": chain_ctx.get("publication_chain_timestamp_future_skew_sec"),
         "publication_chain_age_sec": chain_ctx.get("publication_chain_age_sec"),
         "publication_chain_update_count": chain_ctx.get("publication_chain_update_count"),
         "publication_chain_expires_in_sec": chain_expires_in_sec,
@@ -1522,6 +1628,7 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
         out["bybit_meta"] = bybit_meta
         out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
         guard = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True, require_execution_plan=True)
+        guard = _append_recommendation_timestamp_errors_to_operator_guard(guard, conn, out)
         guard_errors = guard.get("errors") if isinstance(guard.get("errors"), list) else []
         payload_error = {
             "code": "PAYLOAD_UNAVAILABLE_FOR_OPERATOR_GUARD",
@@ -1552,6 +1659,9 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
     out["bybit_meta"] = bybit_meta
     out["bybit_plan_validation"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta)
     out["bybit_operator_guard"] = _validate_trade_plan_against_bybit_meta(out, bybit_meta, require_meta=True, require_execution_plan=True)
+    out["bybit_operator_guard"] = _append_recommendation_timestamp_errors_to_operator_guard(
+        out["bybit_operator_guard"], conn, out
+    )
     _merge_bybit_operator_guard_into_ui_payload(out, out["bybit_operator_guard"])
     _apply_runtime_risk_limits_guard(out, conn=conn)
     out["operator_decision_context"] = _operator_decision_context_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
@@ -4117,8 +4227,14 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             codes = {str(block.get("code") or "") for block in freshness_blocks if isinstance(block, dict)}
             if codes & {"RECOMMENDATION_ROW_EXPIRED", "PUBLICATION_CHAIN_TOO_OLD"}:
                 db.update_recommendation_status(conn, rec_id, "expired", operator)
-            db.log_decision(conn, "EXECUTION_STALE_RECOMMENDATION_BLOCKED", rec_id, operator, {"blocks": freshness_blocks})
-            raise HTTPException(status_code=409, detail="recommendation publication chain already expired")
+            timestamp_invalid = bool(codes & {
+                "RECOMMENDATION_TIMESTAMP_INVALID",
+                "PUBLICATION_CHAIN_TIMESTAMP_INVALID",
+            })
+            action = "EXECUTION_INVALID_RECOMMENDATION_TIMESTAMP_BLOCKED" if timestamp_invalid else "EXECUTION_STALE_RECOMMENDATION_BLOCKED"
+            db.log_decision(conn, action, rec_id, operator, {"blocks": freshness_blocks})
+            detail = "recommendation timestamp is invalid" if timestamp_invalid else "recommendation publication chain already expired"
+            raise HTTPException(status_code=409, detail=detail)
 
     publication_root_rec_id = str(rec.get("publication_root_rec_id") or rec_id).strip() or rec_id
     if publication_root_rec_id:
@@ -4307,6 +4423,11 @@ def _resolve_recommendation_snapshot_ts(
     recent = db.list_recent_reco_snapshot_ts(conn, venue=venue, limit=50)
     if not recent:
         return None
+    if mode == "latest_operator":
+        # Always show the actual latest publication cycle. Filters are applied
+        # inside that cycle; they must never make the UI search backwards and
+        # silently resurrect an older recommendation as if it were current.
+        return recent[0]
 
     requested_statuses = list(dict.fromkeys(requested_statuses or []))
     actionable_statuses = ["recommended", "active"]
@@ -4354,8 +4475,6 @@ def _resolve_recommendation_snapshot_ts(
     if mode == "latest_visible":
         return latest_visible_ts if latest_visible_ts is not None else recent[0]
     if mode == "latest_llm_ready":
-        return latest_llm_ready_ts if latest_llm_ready_ts is not None else (latest_visible_ts if latest_visible_ts is not None else recent[0])
-    if mode == "latest_operator":
         return latest_llm_ready_ts if latest_llm_ready_ts is not None else (latest_visible_ts if latest_visible_ts is not None else recent[0])
     raise HTTPException(status_code=400, detail="unsupported snapshot mode")
 
@@ -4414,10 +4533,18 @@ def api_recommendations(
         snapshot_stale_after_sec = max(180, int(settings.reco_interval_sec) * 3)
         snapshot_is_stale = bool(snapshot_age_sec is not None and snapshot_age_sec > snapshot_stale_after_sec)
         augmented_items = [_augment_reco_for_ui(item, conn=conn) for item in raw_items]
+        effective_status_counts: dict[str, int] = {}
+        for item in augmented_items:
+            effective = str(item.get("effective_status") or item.get("status") or "unknown").strip().lower() or "unknown"
+            effective_status_counts[effective] = effective_status_counts.get(effective, 0) + 1
         if snapshot_is_stale:
             for item in augmented_items:
                 _apply_snapshot_stale_guard(item, snapshot_age_sec=snapshot_age_sec, stale_after_sec=snapshot_stale_after_sec)
                 _ensure_effective_status(item)
+            effective_status_counts = {}
+            for item in augmented_items:
+                effective = str(item.get("effective_status") or item.get("status") or "unknown").strip().lower() or "unknown"
+                effective_status_counts[effective] = effective_status_counts.get(effective, 0) + 1
         items = _filter_operator_items_by_effective_status(augmented_items, statuses, top_n)
 
         status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
@@ -4461,7 +4588,111 @@ def api_recommendations(
             },
             "min_conf": float(effective_min_conf),
             "status_counts": status_counts,
+            "effective_status_counts": effective_status_counts,
             "llm_status_counts": llm_status_counts,
+        }
+
+
+@app.get("/api/v1/recommendations/history")
+def api_recommendation_history(
+    venue: str = "linear",
+    symbol: str = "",
+    bot_type: str | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Return a chronological publication timeline for one symbol.
+
+    Historical rows expose persisted status and LLM state. Only the latest row is
+    augmented with current runtime guards, because reconstructing historical Bybit
+    metadata from today's snapshot would be misleading.
+    """
+    venue_norm = _normalized_filter_text(venue, default="linear", field_name="venue").lower()
+    symbol_norm = _normalized_filter_text(symbol, default="", field_name="symbol").upper()
+    if not symbol_norm:
+        raise HTTPException(status_code=422, detail="symbol must be a non-empty string")
+    bot_type_norm = str(bot_type or "").strip() or None
+    bounded_limit = _bounded_limit(limit, default=500, max_value=2000)
+    now = int(time.time())
+
+    with closing(_get_conn()) as conn:
+        rows, total = db.get_recommendation_history(
+            conn,
+            venue=venue_norm,
+            symbol=symbol_norm,
+            bot_type=bot_type_norm,
+            limit=bounded_limit,
+        )
+
+        previous_direction: str | None = None
+        previous_status: str | None = None
+        previous_root: str | None = None
+        items: list[dict[str, Any]] = []
+        root_ids: set[str] = set()
+        direction_changes = 0
+        status_changes = 0
+        for index, row in enumerate(rows):
+            ts_value = _safe_int_or_none(row.get("ts"))
+            direction = str(row.get("direction") or "neutral").strip().lower() or "neutral"
+            stored_status = str(row.get("status") or "unknown").strip().lower() or "unknown"
+            root_id = str(row.get("publication_root_rec_id") or row.get("rec_id") or "").strip()
+            is_root = bool(row.get("is_outcome_label_root")) or root_id == str(row.get("rec_id") or "")
+            direction_changed = previous_direction is not None and direction != previous_direction
+            status_changed = previous_status is not None and stored_status != previous_status
+            root_changed = previous_root is not None and root_id != previous_root
+            direction_changes += int(direction_changed)
+            status_changes += int(status_changed)
+            if root_id:
+                root_ids.add(root_id)
+
+            timestamp_state = _recommendation_timestamp_state(ts_value, now_ts=now)
+            item = dict(row)
+            item.update({
+                "timestamp_valid": bool(timestamp_state.get("valid")),
+                "timestamp_invalid_reason": timestamp_state.get("invalid_reason"),
+                "timestamp_future_skew_sec": timestamp_state.get("future_skew_sec"),
+                "age_sec": timestamp_state.get("age_sec"),
+                "stored_status": stored_status,
+                "publication_kind": "root" if is_root else "update",
+                "sequence": index + 1,
+                "direction_changed": bool(direction_changed),
+                "status_changed": bool(status_changed),
+                "publication_root_changed": bool(root_changed),
+            })
+            items.append(item)
+            previous_direction = direction
+            previous_status = stored_status
+            previous_root = root_id
+
+        latest = items[-1] if items else None
+        latest_effective_status = None
+        latest_augmented: dict[str, Any] | None = None
+        if latest is not None:
+            latest_rec = db.get_recommendation_by_id(conn, str(latest.get("rec_id") or ""))
+            if latest_rec:
+                latest_augmented = _augment_reco_for_ui(latest_rec, conn=conn)
+                latest_effective_status = str(
+                    latest_augmented.get("effective_status") or latest_augmented.get("status") or "unknown"
+                ).strip().lower()
+
+        first_ts = _safe_int_or_none(items[0].get("ts")) if items else None
+        latest_ts = _safe_int_or_none(latest.get("ts")) if latest else None
+        return {
+            "ts": now,
+            "venue": venue_norm,
+            "symbol": symbol_norm,
+            "bot_type": bot_type_norm,
+            "items": items,
+            "items_total": int(total),
+            "returned": len(items),
+            "truncated": int(total) > len(items),
+            "first_ts": first_ts,
+            "latest_ts": latest_ts,
+            "latest_rec_id": latest.get("rec_id") if latest else None,
+            "latest_effective_status": latest_effective_status,
+            "latest_operator_context": (latest_augmented or {}).get("operator_decision_context", {}),
+            "publication_root_count": len(root_ids),
+            "direction_change_count": int(direction_changes),
+            "status_change_count": int(status_changes),
         }
 
 

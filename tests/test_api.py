@@ -995,8 +995,8 @@ def test_api_recommendations_supports_latest_operator_snapshot_mode(client_and_c
     assert resp.status_code == 200
     body = resp.json()
     assert body['snapshot_mode'] == 'latest_operator'
-    assert body['snapshot_ts'] == ts_now - 120
-    assert body['items'][0]['rec_id'] == 'R-older-reviewed'
+    assert body['snapshot_ts'] == ts_now
+    assert [item['rec_id'] for item in body['items']] == ['R-latest-pending']
 
 
 def test_api_recommendations_latest_operator_respects_non_actionable_filters(client_and_conn):

@@ -8,6 +8,7 @@ let countdownVal = 10;
 let currentRecId = null;   // rec_id currently shown in Details panel
 let detailsRequestSeq = 0;
 let currentMeta  = null;   // {venue, symbol, bot_type} — used to find fresh rec_id on refresh
+let refreshInFlight = null;
 
 // ── sort state ────────────────────────────────────────────────────────────────
 let sortCol = "confidence";  // default: sort by confidence descending
@@ -30,7 +31,10 @@ function fmt(x, n = 2) {
 
 function timeAgo(ts) {
   if (!ts) return "—";
-  const sec = Math.floor(Date.now() / 1000) - ts;
+  const rawSec = Math.floor(Date.now() / 1000) - Number(ts);
+  if (!Number.isFinite(rawSec)) return "некорректное время";
+  if (rawSec < -300) return "некорректное время";
+  const sec = Math.max(0, rawSec);
   if (sec < 5)  return "только что";
   if (sec < 60) return `${sec}с назад`;
   if (sec < 3600) return `${Math.floor(sec/60)}м назад`;
@@ -845,16 +849,22 @@ function buildPriceFreshnessFields(it, ov) {
   const chainStartedTs = ctx.publication_chain_started_ts;
   const chainExpiresIn = ctx.publication_chain_expires_in_sec;
   const expiresIn = ctx.expires_in_sec;
-  const ttlText = ctx.is_expired === true
-    ? `истекла ${formatDurationValue(Math.abs(expiresIn ?? 0))} назад`
-    : expiresIn !== null && expiresIn !== undefined
-      ? `осталось ${formatDurationValue(expiresIn)}`
-      : "TTL не задан";
-  const chainTtlText = ctx.is_publication_chain_expired === true
-    ? `цепочка истекла ${formatDurationValue(Math.abs(chainExpiresIn ?? 0))} назад`
-    : chainExpiresIn !== null && chainExpiresIn !== undefined
-      ? `цепочка: осталось ${formatDurationValue(chainExpiresIn)}`
-      : "TTL цепочки не задан";
+  const recTimestampValid = ctx.recommendation_timestamp_valid !== false;
+  const chainTimestampValid = ctx.publication_chain_timestamp_valid !== false;
+  const ttlText = !recTimestampValid
+    ? "Некорректная метка времени — запуск заблокирован"
+    : ctx.is_expired === true
+      ? `истекла ${formatDurationValue(Math.abs(expiresIn ?? 0))} назад`
+      : expiresIn !== null && expiresIn !== undefined
+        ? `осталось ${formatDurationValue(expiresIn)}`
+        : "TTL не задан";
+  const chainTtlText = !chainTimestampValid
+    ? "Некорректная метка времени цепочки — запуск заблокирован"
+    : ctx.is_publication_chain_expired === true
+      ? `цепочка истекла ${formatDurationValue(Math.abs(chainExpiresIn ?? 0))} назад`
+      : chainExpiresIn !== null && chainExpiresIn !== undefined
+        ? `цепочка: осталось ${formatDurationValue(chainExpiresIn)}`
+        : "TTL цепочки не задан";
   return [
     {
       label: "Цена входа",
@@ -1274,7 +1284,17 @@ function buildDetailsHtml(it) {
       ${launchDecisionDiagnosticsHtml(it, scoreMeta)}
 
       <div class="operator-card price-freshness-card">
-        <h3>Цена и актуальность</h3>
+        <div class="operator-card-heading">
+          <h3>Цена и актуальность</h3>
+          <button
+            class="ghost-chip"
+            data-act="show-recommendation-history"
+            data-venue="${escapeHtml(it.venue || "linear")}"
+            data-symbol="${escapeHtml(it.symbol || "")}"
+            data-bot-type="${escapeHtml(it.bot_type || "futures_grid")}">
+            История и динамика
+          </button>
+        </div>
         <div class="operator-grid two decision-context-grid">
           ${priceFreshnessFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
         </div>
@@ -1767,6 +1787,210 @@ function buildModalTable(columns, rows, { emptyText = "Нет данных", row
   `;
 }
 
+function timelineDirectionValue(direction) {
+  if (direction === "long") return 1;
+  if (direction === "short") return -1;
+  return 0;
+}
+
+function timelineDirectionClass(direction) {
+  if (direction === "long") return "timeline-long";
+  if (direction === "short") return "timeline-short";
+  return "timeline-neutral";
+}
+
+function timelinePointClass(item) {
+  const status = String(item?.stored_status || item?.status || "unknown").toLowerCase();
+  if (status === "recommended" || status === "active") return "timeline-point-actionable";
+  if (status === "blocked" || status === "expired") return "timeline-point-blocked";
+  if (status === "pending") return "timeline-point-pending";
+  return "timeline-point-muted";
+}
+
+function buildRecommendationTimelineSvg(items) {
+  const rows = Array.isArray(items)
+    ? items.filter(row => row?.timestamp_valid !== false && toFiniteNumber(row?.ts) !== null)
+    : [];
+  if (!rows.length) return `<div class="timeline-empty">История рекомендаций для пары отсутствует.</div>`;
+
+  const width = 920;
+  const height = 300;
+  const left = 78;
+  const right = 24;
+  const top = 24;
+  const bottom = 58;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const timestamps = rows.map(row => Number(row.ts));
+  const minTs = Math.min(...timestamps);
+  const maxTs = Math.max(...timestamps);
+  const span = Math.max(1, maxTs - minTs);
+  const xFor = ts => left + ((Number(ts) - minTs) / span) * plotWidth;
+  const yFor = direction => {
+    const value = timelineDirectionValue(direction);
+    return top + ((1 - value) / 2) * plotHeight;
+  };
+
+  const horizontalLines = [
+    { direction: "long", label: "LONG" },
+    { direction: "neutral", label: "NEUTRAL" },
+    { direction: "short", label: "SHORT" },
+  ].map(row => {
+    const y = yFor(row.direction);
+    return `
+      <line class="timeline-grid-line" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"></line>
+      <text class="timeline-axis-label" x="${left - 12}" y="${y + 4}" text-anchor="end">${row.label}</text>
+    `;
+  }).join("");
+
+  const tickCount = Math.min(5, Math.max(2, rows.length));
+  const ticks = Array.from({ length: tickCount }, (_unused, index) => {
+    const ratio = tickCount === 1 ? 0 : index / (tickCount - 1);
+    const ts = Math.round(minTs + span * ratio);
+    const x = left + plotWidth * ratio;
+    const label = new Date(ts * 1000).toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return `
+      <line class="timeline-grid-line timeline-grid-line-vertical" x1="${x}" y1="${top}" x2="${x}" y2="${height - bottom}"></line>
+      <text class="timeline-time-label" x="${x}" y="${height - 25}" text-anchor="middle">${escapeHtml(label)}</text>
+    `;
+  }).join("");
+
+  let path = "";
+  rows.forEach((row, index) => {
+    const x = xFor(row.ts);
+    const y = yFor(row.direction);
+    if (index === 0) {
+      path = `M ${x.toFixed(2)} ${y.toFixed(2)}`;
+      return;
+    }
+    const prevY = yFor(rows[index - 1].direction);
+    path += ` H ${x.toFixed(2)} V ${y.toFixed(2)}`;
+    if (Math.abs(prevY - y) < 0.01) path += ` L ${x.toFixed(2)} ${y.toFixed(2)}`;
+  });
+
+  const points = rows.map((row, index) => {
+    const x = xFor(row.ts);
+    const y = yFor(row.direction);
+    const radius = row.publication_kind === "root" ? 6 : 4.5;
+    const title = [
+      formatTs(row.ts),
+      directionRu(row.direction),
+      `статус: ${row.stored_status || row.status || "unknown"}`,
+      `LLM: ${row.llm_status || "none"}`,
+      row.publication_kind === "root" ? "новая цепочка" : "обновление цепочки",
+    ].join(" · ");
+    return `
+      <g class="timeline-point ${timelinePointClass(row)} ${timelineDirectionClass(row.direction)}">
+        <circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${radius}"></circle>
+        <title>${escapeHtml(title)}</title>
+        ${row.direction_changed ? `<line class="timeline-change-marker" x1="${x.toFixed(2)}" y1="${top}" x2="${x.toFixed(2)}" y2="${height - bottom}"></line>` : ""}
+        ${index === rows.length - 1 ? `<text class="timeline-latest-label" x="${Math.max(left + 30, x - 6).toFixed(2)}" y="${Math.max(top + 12, y - 14).toFixed(2)}" text-anchor="end">последняя</text>` : ""}
+      </g>
+    `;
+  }).join("");
+
+  return `
+    <div class="recommendation-timeline" role="img" aria-label="Динамика направления рекомендаций по времени">
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+        ${horizontalLines}
+        ${ticks}
+        <path class="timeline-direction-path" d="${path}"></path>
+        ${points}
+      </svg>
+    </div>
+    <div class="timeline-legend">
+      <span><i class="timeline-legend-dot timeline-point-actionable"></i> recommended/active</span>
+      <span><i class="timeline-legend-dot timeline-point-pending"></i> pending</span>
+      <span><i class="timeline-legend-dot timeline-point-blocked"></i> blocked/expired</span>
+      <span>крупная точка = новая publication-chain; вертикальная отметка = смена направления</span>
+    </div>
+  `;
+}
+
+function buildRecommendationHistoryHtml(data) {
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const latest = items.length ? items[items.length - 1] : null;
+  const summary = [
+    { label: "Публикаций", value: `${data?.returned ?? 0}${data?.truncated ? ` из ${data?.items_total ?? "?"}` : ""}` },
+    { label: "Цепочек", value: data?.publication_root_count ?? 0 },
+    { label: "Смен направления", value: data?.direction_change_count ?? 0 },
+    { label: "Последняя рекомендация", html: latest ? `${directionBadge(latest.direction)} ${statusBadgeHtml(data?.latest_effective_status || latest.stored_status)}` : "—" },
+    { label: "Возраст последней", value: latest ? (latest.timestamp_valid === false ? "Некорректная метка времени" : formatAgeHuman(latest.age_sec)) : "—" },
+    { label: "Первая в окне", value: formatTs(data?.first_ts) },
+  ];
+
+  const table = buildModalTable([
+    { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
+    { label: "Возраст", render: row => escapeHtml(row.timestamp_valid === false ? "Некорректная метка времени" : formatAgeHuman(row.age_sec)) },
+    { label: "Направление", render: row => directionBadge(row.direction) },
+    { label: "Статус в БД", render: row => pillStatus(row.stored_status || row.status) },
+    { label: "LLM", render: row => escapeHtml(row.llm_status || "none") },
+    { label: "Тип", render: row => escapeHtml(row.publication_kind === "root" ? "новая идея" : "обновление") },
+    { label: "Уверенность", render: row => escapeHtml(formatProbability(row.confidence)) },
+    { label: "Score", render: row => escapeHtml(fmt(row.score, 3)) },
+    { label: "R/R", render: row => escapeHtml(fmt(row.expected_rr, 2)) },
+    { label: "Изменение", className: "wrap", render: row => {
+        const marks = [];
+        if (row.direction_changed) marks.push("смена направления");
+        if (row.status_changed) marks.push("смена статуса");
+        if (row.publication_root_changed) marks.push("новая цепочка");
+        return escapeHtml(marks.join(", ") || "—");
+      }
+    },
+  ], items, { emptyText: "Публикаций по этой паре пока нет.", compact: true, maxHeight: 420 });
+
+  return `
+    <p class="modal-note">График показывает каждую сохранённую публикацию для ${escapeHtml(data?.symbol || "пары")}. Исторический статус и LLM-состояние берутся из БД; текущие Bybit/preflight-гейты достоверно пересчитываются только для последней строки и не приписываются задним числом старым точкам.</p>
+    ${renderModalSummaryCards(summary)}
+    <div class="modal-section">
+      <div class="modal-section-title">Динамика направления и моменты публикаций</div>
+      ${buildRecommendationTimelineSvg(items)}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Журнал публикаций</div>
+      ${table}
+    </div>
+  `;
+}
+
+async function fetchRecommendationHistory(meta, limit = 500) {
+  const venue = String(meta?.venue || "linear");
+  const symbol = String(meta?.symbol || "").trim().toUpperCase();
+  const botType = String(meta?.bot_type || "futures_grid");
+  if (!symbol) return null;
+  const qs = new URLSearchParams({ venue, symbol, bot_type: botType, limit: String(limit) });
+  const response = await fetch(`/api/v1/recommendations/history?${qs.toString()}`);
+  if (!response.ok) return null;
+  return response.json();
+}
+
+async function loadRecommendationHistory(meta = currentMeta) {
+  try {
+    const data = await fetchRecommendationHistory(meta, 500);
+    if (!data) {
+      showModal("История рекомендации", "Не удалось загрузить историю по выбранной паре.");
+      return;
+    }
+    showModalHtml(`История ${data.symbol || meta?.symbol || "рекомендации"}`, buildRecommendationHistoryHtml(data));
+  } catch (e) {
+    showModal("История рекомендации", "Ошибка сети при загрузке истории.");
+  }
+}
+
+async function resolveLatestDetailsRecId(meta, fallbackRecId = null) {
+  try {
+    const data = await fetchRecommendationHistory(meta, 1);
+    return data?.latest_rec_id || fallbackRecId;
+  } catch (e) {
+    return fallbackRecId;
+  }
+}
+
 function showModal(title, obj) {
   const body = $("modalBody");
   $("modalTitle").textContent = title;
@@ -1899,7 +2123,13 @@ function persistRecommendationFilterState() {
 }
 
 function shouldAutoExpandDiagnostics(data, items, filters) {
-  const counts = (data && data.status_counts) || {};
+  const storedCounts = (data && data.status_counts) || {};
+  const effectiveCounts = (data && data.effective_status_counts) || {};
+  const counts = {
+    pending: Math.max(Number(storedCounts.pending || 0), Number(effectiveCounts.pending || 0)),
+    blocked: Math.max(Number(storedCounts.blocked || 0), Number(effectiveCounts.blocked || 0)),
+    no_trade: Math.max(Number(storedCounts.no_trade || 0), Number(effectiveCounts.no_trade || 0)),
+  };
   const onlyActionableFilter = filters.showRecommended === true
     && filters.showPending !== true
     && filters.showBlocked !== true
@@ -1950,7 +2180,13 @@ async function loadRecommendations() {
 
   const items = data.items || [];
   if (shouldAutoExpandDiagnostics(data, items, activeFilters)) {
-    const counts = data.status_counts || {};
+    const storedCounts = data.status_counts || {};
+    const effectiveCounts = data.effective_status_counts || {};
+    const counts = {
+      pending: Math.max(Number(storedCounts.pending || 0), Number(effectiveCounts.pending || 0)),
+      blocked: Math.max(Number(storedCounts.blocked || 0), Number(effectiveCounts.blocked || 0)),
+      no_trade: Math.max(Number(storedCounts.no_trade || 0), Number(effectiveCounts.no_trade || 0)),
+    };
     if ((Number(counts.pending || 0) > 0) && $("showPending")) $("showPending").checked = true;
     if ((Number(counts.blocked || 0) > 0) && $("showBlocked")) $("showBlocked").checked = true;
     if ((Number(counts.no_trade || 0) > 0) && $("showNoTrade")) $("showNoTrade").checked = true;
@@ -2101,6 +2337,14 @@ async function loadDetails(recId) {
   const now = new Date();
   const hms = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   $("details").innerHTML = `${buildDetailsHtml(it)}<div class="helper-text" style="margin-top:8px">обновлено ${hms}</div>`;
+}
+
+async function refreshCurrentDetails() {
+  if (!currentRecId && !currentMeta) return;
+  const latestRecId = currentMeta
+    ? await resolveLatestDetailsRecId(currentMeta, currentRecId)
+    : currentRecId;
+  if (latestRecId) await loadDetails(latestRecId);
 }
 
 // ── decisions / risk ──────────────────────────────────────────────────────────
@@ -2386,13 +2630,17 @@ function startCountdown() {
 
 // ── main refresh ──────────────────────────────────────────────────────────────
 
-async function refreshAll() {
-  await loadStatus();
-  await loadRecommendations();
-  if (currentRecId) {
-    await loadDetails(currentRecId);
-  }
-  startCountdown();
+function refreshAll() {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    await loadStatus();
+    await loadRecommendations();
+    await refreshCurrentDetails();
+    startCountdown();
+  })();
+  return refreshInFlight.finally(() => {
+    refreshInFlight = null;
+  });
 }
 
 // ── events ────────────────────────────────────────────────────────────────────
@@ -2404,6 +2652,15 @@ document.addEventListener("click", async (e) => {
   const id  = t.dataset.id;
 
   if (act === "details") await loadDetails(id);
+
+  if (act === "show-recommendation-history") {
+    await loadRecommendationHistory({
+      venue: t.dataset.venue || currentMeta?.venue || "linear",
+      symbol: t.dataset.symbol || currentMeta?.symbol || "",
+      bot_type: t.dataset.botType || currentMeta?.bot_type || "futures_grid",
+    });
+    return;
+  }
 
   if (act === "copy-field") {
     const txt = t.dataset.copy || "";
@@ -2496,8 +2753,7 @@ document.querySelector("#recoTable thead").addEventListener("click", (e) => {
 });
 
 $("refreshDetailsBtn").addEventListener("click", () => {
-  if (!currentRecId) return;
-  loadDetails(currentRecId);
+  refreshCurrentDetails();
 });
 
 $("modalClose").addEventListener("click", (e) => { e.stopPropagation(); hideModal(); });

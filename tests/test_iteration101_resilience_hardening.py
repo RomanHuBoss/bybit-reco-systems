@@ -141,11 +141,8 @@ def test_api_execute_handles_poisoned_ttl_and_timestamp_values(client_and_conn) 
         json={"action": "executed", "operator": "tester"},
         headers={"X-API-Key": "test-admin-key"},
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["ok"] is True
-    assert body["new_status"] == "executed"
-    assert body["idempotent"] is False
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "recommendation timestamp is invalid"
 
 
 # Идемпотентная проверка trade_id не должна падать на повреждённой historical row.

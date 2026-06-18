@@ -1370,3 +1370,121 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Recommendation history timeline */
+.operator-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.operator-card-heading h3 {
+  margin: 0;
+}
+.recommendation-timeline {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #0f172a;
+  padding: 8px;
+}
+.recommendation-timeline svg {
+  display: block;
+  width: 100%;
+  min-width: 720px;
+  height: auto;
+}
+.timeline-grid-line {
+  stroke: rgba(148,163,184,0.22);
+  stroke-width: 1;
+}
+.timeline-grid-line-vertical {
+  stroke-dasharray: 3 5;
+  stroke: rgba(148,163,184,0.13);
+}
+.timeline-axis-label,
+.timeline-time-label,
+.timeline-latest-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.timeline-latest-label {
+  fill: var(--text);
+  font-weight: 700;
+}
+.timeline-direction-path {
+  fill: none;
+  stroke: rgba(226,232,240,0.72);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.timeline-point circle {
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.timeline-point-actionable circle,
+.timeline-legend-dot.timeline-point-actionable {
+  fill: var(--good);
+  background: var(--good);
+  stroke: rgba(51,209,122,0.95);
+}
+.timeline-point-pending circle,
+.timeline-legend-dot.timeline-point-pending {
+  fill: var(--warn);
+  background: var(--warn);
+  stroke: rgba(255,176,32,0.95);
+}
+.timeline-point-blocked circle,
+.timeline-legend-dot.timeline-point-blocked {
+  fill: var(--bad);
+  background: var(--bad);
+  stroke: rgba(255,90,122,0.95);
+}
+.timeline-point-muted circle,
+.timeline-legend-dot.timeline-point-muted {
+  fill: #94a3b8;
+  background: #94a3b8;
+  stroke: #cbd5e1;
+}
+.timeline-long circle { filter: drop-shadow(0 0 3px rgba(51,209,122,0.45)); }
+.timeline-short circle { filter: drop-shadow(0 0 3px rgba(255,90,122,0.45)); }
+.timeline-neutral circle { filter: drop-shadow(0 0 3px rgba(148,163,184,0.4)); }
+.timeline-change-marker {
+  stroke: rgba(255,255,255,0.28);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+.timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.timeline-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.timeline-legend-dot {
+  width: 9px;
+  height: 9px;
+  display: inline-block;
+  border-radius: 999px;
+}
+.timeline-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .operator-card-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

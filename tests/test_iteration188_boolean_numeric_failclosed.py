@@ -116,5 +116,5 @@ console.log(JSON.stringify({
 
 def test_static_asset_cache_key_bumped_after_boolean_numeric_patch() -> None:
     index = INDEX_HTML.read_text(encoding="utf-8")
-    assert "styles.css?v=manual-ui-v44" in index
-    assert "app.js?v=manual-ui-v44" in index
+    assert "styles.css?v=manual-ui-v45" in index
+    assert "app.js?v=manual-ui-v45" in index
