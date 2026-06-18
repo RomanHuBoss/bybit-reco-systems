@@ -198,6 +198,14 @@ def _int_from_params(value: object, default: int = 0, *, minimum: int | None = N
 
 
 def _extract_cost_components(params: dict | None, fallback_execution_bps: float = 15.0) -> tuple[float, float]:
+    # Execution friction cannot be negative. A poisoned/manual payload with a
+    # negative explicit cost would otherwise turn costs into alpha and create
+    # optimistic outcome labels. Invalid fallbacks also revert to the canonical
+    # conservative default rather than silently becoming zero.
+    fallback_bps = _finite_or_default(fallback_execution_bps, 15.0)
+    if fallback_bps < 0.0:
+        fallback_bps = 15.0
+
     execution_bps = None
     funding_bps = None
     net_cost_bps = None
@@ -209,14 +217,16 @@ def _extract_cost_components(params: dict | None, fallback_execution_bps: float 
                 for key in ("execution_cost_bps", "total_cost_bps"):
                     if block.get(key) is not None:
                         try:
-                            execution_bps = _finite_or_default(block.get(key), float(fallback_execution_bps))
+                            candidate = _finite_or_default(block.get(key), fallback_bps)
+                            execution_bps = candidate if candidate >= 0.0 else fallback_bps
                             break
                         except Exception:
                             logger.debug("cost block parse error", exc_info=True)
 
             if net_cost_bps is None and block.get("net_cost_bps") is not None:
                 try:
-                    net_cost_bps = _finite_or_default(block.get("net_cost_bps"), float(fallback_execution_bps))
+                    candidate = _finite_or_default(block.get("net_cost_bps"), fallback_bps)
+                    net_cost_bps = candidate if candidate >= 0.0 else fallback_bps
                 except Exception:
                     logger.debug("net cost block parse error", exc_info=True)
 
@@ -236,7 +246,9 @@ def _extract_cost_components(params: dict | None, fallback_execution_bps: float 
         # станет излишне пессимистичной. Поэтому по возможности раскладываем net = exec + funding.
         execution_bps = max(0.0, float(net_cost_bps) - float(funding_bps_out))
 
-    execution_bps_out = _finite_or_default(execution_bps if execution_bps is not None else fallback_execution_bps, float(fallback_execution_bps))
+    execution_bps_out = _finite_or_default(execution_bps if execution_bps is not None else fallback_bps, fallback_bps)
+    if execution_bps_out < 0.0:
+        execution_bps_out = fallback_bps
     return float(execution_bps_out), float(funding_bps_out)
 
 

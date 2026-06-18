@@ -5,6 +5,7 @@ from statistics import median
 from typing import Any
 
 from . import db
+from .grid_math import strict_integer
 
 APP_CONFIG_KEY = "market_shock_state_v1"
 _FAST_VETO_STATE: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -15,13 +16,31 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 def _drop_open_candle(rows: list[dict[str, Any]] | list[Any], tf_sec: int, ts_now: int) -> list[dict[str, Any]] | list[Any]:
+    """Return only fully closed candles with exact integer timestamps.
+
+    Market-shock and fast-veto calculations must never consume a still-open or
+    future bar. Filtering only the first row is insufficient when a collector
+    returns multiple future rows or malformed timestamps, so every row is
+    validated independently and invalid timing fails closed.
+    """
     if not rows:
         return rows
-    newest = rows[0]
-    ts = int(newest["ts"])
-    if ts + int(tf_sec) > int(ts_now):
-        return rows[1:]
-    return rows
+    tf_value = strict_integer(tf_sec)
+    now_value = strict_integer(ts_now)
+    if tf_value is None or tf_value <= 0 or now_value is None or now_value <= 0:
+        return []
+
+    closed: list[Any] = []
+    for row in rows:
+        try:
+            candle_ts = strict_integer(row["ts"])
+        except Exception:
+            candle_ts = None
+        if candle_ts is None or candle_ts <= 0:
+            continue
+        if candle_ts + tf_value <= now_value:
+            closed.append(row)
+    return closed
 
 
 def _pct_change_from_rows(rows_desc: list[dict[str, Any]] | list[Any], lookback_bars: int) -> float | None:

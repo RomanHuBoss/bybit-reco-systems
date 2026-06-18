@@ -11,6 +11,8 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, InvalidOperation, getcontext
 from typing import Any
 
+from .trading_semantics import normalize_execution_direction
+
 getcontext().prec = 36
 
 ZERO = Decimal("0")
@@ -109,7 +111,7 @@ def linear_pnl_usdt(side: str, qty: Any, entry_price: Any, exit_price: Any) -> D
     exitp = dec(exit_price)
     if q <= ZERO or entry <= ZERO or exitp <= ZERO:
         return ZERO
-    side_norm = str(side or "").strip().lower()
+    side_norm = normalize_execution_direction(side)
     if side_norm == "long":
         return q * (exitp - entry)
     if side_norm == "short":
@@ -134,7 +136,7 @@ def funding_cashflow_usdt(side: str, position_notional: Any, funding_rate: Any, 
             n_events = max(0, int(events))
         except Exception:
             n_events = 0
-    side_norm = str(side or "").strip().lower()
+    side_norm = normalize_execution_direction(side)
     if side_norm == "long":
         sign = ONE
     elif side_norm == "short":
@@ -168,7 +170,7 @@ def estimate_linear_liq_price(side: str, entry_price: Any, leverage: Any, mmr: A
     if entry <= ZERO or lev <= ZERO:
         return None
     inv_lev = ONE / lev
-    side_norm = str(side or "").strip().lower()
+    side_norm = normalize_execution_direction(side)
     if side_norm == "short":
         factor = ONE + inv_lev - maintenance - fee_buffer
     elif side_norm == "long":
@@ -186,7 +188,7 @@ def liquidation_buffer_pct(side: str, reference_price: Any, liq_price: Any) -> D
     liq = dec(liq_price)
     if ref <= ZERO or liq <= ZERO:
         return None
-    side_norm = str(side or "").strip().lower()
+    side_norm = normalize_execution_direction(side)
     if side_norm == "short":
         return max(ZERO, (liq - ref) / ref * Decimal("100"))
     if side_norm == "long":

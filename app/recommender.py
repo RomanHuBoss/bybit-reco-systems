@@ -1373,9 +1373,16 @@ def _estimate_cost_model(
     else:
         funding_interval_sec = 8 * 3600
         funding_interval_source = "fallback_8h_missing_interval"
+    valid_next_funding_ts = _safe_int_or_none(next_funding_ts)
+    if valid_next_funding_ts is not None and valid_next_funding_ts <= 0:
+        valid_next_funding_ts = None
+    valid_now_ts = _safe_int_or_none(ts_now)
+    if valid_now_ts is not None and valid_now_ts <= 0:
+        valid_now_ts = None
+
     if venue == "linear" and fr is not None and horizon_sec > 0:
-        now = int(ts_now or 0)
-        nfts = int(next_funding_ts or 0)
+        now = int(valid_now_ts or 0)
+        nfts = int(valid_next_funding_ts or 0)
         # Defensive normalization for legacy/state payloads that may still carry
         # Bybit's millisecond timestamp even if the client was already fixed.
         if nfts > 10**11:
@@ -1424,7 +1431,7 @@ def _estimate_cost_model(
         # this is per funding event, not annualized/normalized to 8h.
         "directional_funding_bps_8h": float(directional_funding_bps_per_event),
         "neutral_funding_model": neutral_funding_model,
-        "next_funding_ts": int(nfts_out) if nfts_out else _safe_int_or_none(next_funding_ts),
+        "next_funding_ts": int(nfts_out) if nfts_out else None,
         "expected_funding_events": int(expected_funding_events),
         "expected_funding_bps": float(expected_funding_bps),
         "funding_interval_min": int(round(funding_interval_sec / 60.0)) if venue == "linear" else None,
@@ -1432,7 +1439,7 @@ def _estimate_cost_model(
         "funding_interval_uncertain": bool(venue == "linear" and funding_interval_source.startswith("fallback") and fr is not None),
         "funding_event_schedule_assumption": (
             "bybit_next_funding_ts"
-            if (venue == "linear" and fr is not None and int(next_funding_ts or 0) > 0)
+            if (venue == "linear" and fr is not None and valid_next_funding_ts is not None)
             else ("conservative_unknown_next_funding_ts" if venue == "linear" and fr is not None else "not_applicable")
         ),
         # Canonical cost floor for scoring / RR / labels reflects execution

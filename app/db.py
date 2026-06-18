@@ -798,30 +798,146 @@ def insert_regime(conn: sqlite3.Connection, ts: int, regime: dict[str, Any]) -> 
     )
     conn.commit()
 
-def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
-    payload = []
-    for r in rows:
-        publication_root_rec_id = str(r.get("publication_root_rec_id") or r["rec_id"]).strip() or str(r["rec_id"])
-        is_outcome_label_root = 1 if bool(r.get("is_outcome_label_root", publication_root_rec_id == str(r["rec_id"]))) else 0
-        payload.append((
-            r["rec_id"], r["ts"], r["venue"], r["symbol"], r["bot_type"], r["direction"], r["account_mode"], r["margin_mode"],
-            r["score"], r["confidence"], r["expected_rr"], r["risk_score"],
-            _json_dumps_safe(r["params"]),
-            _json_dumps_safe(r["reasons"]),
-            _json_dumps_safe(r["blocks"]),
-            r["status"], r["ttl_sec"], r["model_version"], r["features_ref_ts"],
-            publication_root_rec_id,
-            is_outcome_label_root,
-        ))
-    conn.executemany(
-        """INSERT OR REPLACE INTO recommendations(
-            rec_id,ts,venue,symbol,bot_type,direction,account_mode,margin_mode,
-            score,confidence,expected_rr,risk_score,
-            params_json,reasons_json,blocks_json,status,ttl_sec,model_version,features_ref_ts,
-            publication_root_rec_id,is_outcome_label_root
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        payload,
+_RECOMMENDATION_COLUMNS: tuple[str, ...] = (
+    "rec_id", "ts", "venue", "symbol", "bot_type", "direction", "account_mode", "margin_mode",
+    "score", "confidence", "expected_rr", "risk_score",
+    "params_json", "reasons_json", "blocks_json", "status", "ttl_sec", "model_version", "features_ref_ts",
+    "publication_root_rec_id", "is_outcome_label_root",
+)
+
+
+def _normalize_outcome_root_flag(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    parsed = strict_integer(value)
+    if parsed not in (0, 1):
+        raise ValueError("recommendation.is_outcome_label_root must be boolean or exact 0/1")
+    return int(parsed)
+
+
+def _normalize_recommendation_number(name: str, value: Any) -> Any:
+    """Reject Python booleans without breaking legacy poisoned-row tests.
+
+    Older audit fixtures deliberately persist malformed TEXT in numeric SQLite
+    columns to prove that downstream readers fail closed. Preserve that legacy
+    test surface, while normalizing valid numeric strings and refusing actual
+    bool/NaN/inf values that SQLite would silently coerce into plausible data.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must not be boolean")
+    try:
+        number = float(value)
+    except Exception:
+        return value
+    if not math.isfinite(number):
+        if isinstance(value, str):
+            return value
+        raise ValueError(f"{name} must be finite")
+    return float(number)
+
+
+def _normalize_recommendation_integer(name: str, value: Any) -> Any:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must not be boolean")
+    parsed = strict_integer(value)
+    if parsed is not None:
+        if parsed <= 0:
+            raise ValueError(f"{name} must be > 0")
+        return int(parsed)
+    if isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be an exact integer")
+    # Legacy resilience tests intentionally store malformed TEXT and assert that
+    # API/read paths sanitize it. Keep that compatibility while preventing bool
+    # coercion at the persistence boundary.
+    return value
+
+
+def _normalize_recommendation_payload(r: dict[str, Any]) -> tuple[Any, ...]:
+    rec_id = str(r["rec_id"]).strip()
+    if not rec_id:
+        raise ValueError("recommendation.rec_id must be non-empty")
+    publication_root_rec_id = str(r.get("publication_root_rec_id") or rec_id).strip()
+    if not publication_root_rec_id:
+        raise ValueError("recommendation.publication_root_rec_id must be non-empty")
+    is_outcome_label_root = _normalize_outcome_root_flag(
+        r.get("is_outcome_label_root", publication_root_rec_id == rec_id)
     )
+    return (
+        rec_id,
+        _normalize_recommendation_integer("recommendation.ts", r["ts"]),
+        str(r["venue"]),
+        str(r["symbol"]),
+        str(r["bot_type"]),
+        str(r["direction"]),
+        str(r["account_mode"]),
+        str(r["margin_mode"]),
+        _normalize_recommendation_number("recommendation.score", r["score"]),
+        _normalize_recommendation_number("recommendation.confidence", r["confidence"]),
+        _normalize_recommendation_number("recommendation.expected_rr", r["expected_rr"]),
+        _normalize_recommendation_number("recommendation.risk_score", r["risk_score"]),
+        _json_dumps_canonical(r["params"]),
+        _json_dumps_canonical(r["reasons"]),
+        _json_dumps_canonical(r["blocks"]),
+        str(r["status"]),
+        _normalize_recommendation_integer("recommendation.ttl_sec", r["ttl_sec"]),
+        str(r["model_version"]),
+        _normalize_recommendation_integer("recommendation.features_ref_ts", r["features_ref_ts"]),
+        publication_root_rec_id,
+        is_outcome_label_root,
+    )
+
+
+def _normalize_stored_recommendation_payload(row: Any) -> tuple[Any, ...]:
+    values = [row[column] for column in _RECOMMENDATION_COLUMNS]
+    values[1] = _normalize_recommendation_integer("recommendation.ts", values[1])
+    for idx, name in zip((8, 9, 10, 11), ("score", "confidence", "expected_rr", "risk_score")):
+        values[idx] = _normalize_recommendation_number(f"recommendation.{name}", values[idx])
+    for idx, default in ((12, {}), (13, {}), (14, [])):
+        values[idx] = _json_dumps_canonical(_json_loads_or_default(values[idx], default))
+    values[16] = _normalize_recommendation_integer("recommendation.ttl_sec", values[16])
+    values[18] = _normalize_recommendation_integer("recommendation.features_ref_ts", values[18])
+    values[20] = int(values[20])
+    return tuple(values)
+
+
+def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
+    """Append immutable recommendation audit rows, allowing exact retry idempotency.
+
+    A rec_id is an audit identity, not an upsert key. Replaying the exact payload is
+    harmless; attempting to reuse the same id for different direction, economics,
+    status or metadata fails closed and leaves the whole batch unchanged.
+    """
+    payload_by_id: dict[str, tuple[Any, ...]] = {}
+    for raw in rows:
+        payload = _normalize_recommendation_payload(raw)
+        rec_id = str(payload[0])
+        prior = payload_by_id.get(rec_id)
+        if prior is not None and prior != payload:
+            raise ValueError(f"rec_id={rec_id} appears multiple times with different payload")
+        payload_by_id[rec_id] = payload
+    if not payload_by_id:
+        return
+
+    placeholders = ",".join("?" for _ in _RECOMMENDATION_COLUMNS)
+    columns = ",".join(_RECOMMENDATION_COLUMNS)
+    insert_sql = (
+        f"INSERT INTO recommendations({columns}) VALUES({placeholders}) "
+        "ON CONFLICT(rec_id) DO NOTHING"
+    )
+    select_sql = f"SELECT {columns} FROM recommendations WHERE rec_id=?"
+    savepoint = _savepoint_name("insert_recommendations")
+    _begin_savepoint(conn, savepoint)
+    try:
+        for rec_id, payload in payload_by_id.items():
+            conn.execute(insert_sql, payload)
+            stored = conn.execute(select_sql, (rec_id,)).fetchone()
+            if stored is None or _normalize_stored_recommendation_payload(stored) != payload:
+                raise ValueError(f"rec_id={rec_id} already exists with different payload")
+        _release_savepoint(conn, savepoint)
+    except Exception:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        raise
     if commit:
         conn.commit()
 

@@ -174,3 +174,23 @@ The operator dialog returns at most 2000 recent publication rows and represents 
 ### RESOLVED/MEDIUM: history table order was opposite to operator workflow
 - **Files**: `app/ui/static/app.js`, `app/ui/static/index.html`, `tests/test_iteration195_recommendation_history_ui.py`.
 - **Mitigation**: the table in **«История и динамика»** is sorted by `ts DESC`, then `sequence DESC`, with invalid timestamps last. The API and SVG timeline remain chronological so graph semantics are unchanged. The helper sorts a copy rather than mutating the source array, and the frontend cache key was bumped.
+
+## 2026-06-18 persistence, shock, funding and outcome integrity audit
+
+### RESOLVED/HIGH: market-shock used at most one-row open-candle removal
+`app/shock_guard.py` now validates every candle timestamp with exact-integer semantics and keeps only fully closed rows. Multiple future/open rows, booleans and fractional timestamps can no longer leak into market-shock or fast-veto calculations.
+
+### RESOLVED/HIGH: recommendation rows were mutable through `INSERT OR REPLACE`
+`rec_id` is now an immutable audit identity. Exact canonical retries are idempotent; conflicting payloads fail closed and the batch is rolled back to a savepoint. This protects direction, score, status, params and publication lineage from retrospective overwrite.
+
+### RESOLVED/HIGH: recommendation numeric booleans crossed the persistence boundary
+Boolean `ts`, score/confidence/R:R/risk, TTL and feature timestamps are rejected before SQLite coercion; `is_outcome_label_root` accepts only boolean or exact 0/1. Legacy poisoned TEXT fixtures remain supported solely to exercise downstream fail-closed readers.
+
+### RESOLVED/HIGH: negative execution friction could create optimistic proxy outcomes
+Outcome cost extraction now replaces negative execution/total/net cost with the conservative fallback. Signed funding remains separate; execution friction cannot become alpha.
+
+### RESOLVED/HIGH: boolean funding timestamp undercounted expected events
+Malformed/boolean `next_funding_ts` is treated as unknown. Funding event count therefore follows the conservative unknown-schedule path instead of rolling timestamp `1` into a seemingly valid future event.
+
+### RESIDUAL: immutable recommendation identity changes retry semantics
+Callers may retry an identical recommendation payload safely, but may no longer reuse a `rec_id` to mutate status or economics. Lifecycle changes must use dedicated state transitions/new publication rows rather than audit-row replacement.

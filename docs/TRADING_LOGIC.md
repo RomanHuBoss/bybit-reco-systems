@@ -162,3 +162,9 @@ Recommendation-time margin checks and `risk_report.capital_required_usdt` must p
 All JSON booleans are invalid for numeric trading fields. This applies to market prices/volume/timestamps, OHLCV, funding timestamps and event counts, signal scores/confidence, direction aggregation, risk limits, grid geometry, calibration/outcome inputs and operator UI price/percent/qty rendering. Python `bool` must not cross a `float()`/`int()` boundary as `1/0`; JavaScript booleans must not cross `Number()` as `1/0`. Invalid booleans either make the value unavailable or fall back to the documented conservative default. They must never weaken a risk guard, create executable geometry or reduce a publication confirmation requirement.
 
 `app.main::_directional_exit_payload_for_reco` may use `qty=1 base asset` only to derive dimensionless TP/SL distances and risk:reward when no position quantity exists. In that case the API must publish `qty_source=unit_qty_ratio_only`, `trade_math.qty_basis=one_base_asset_for_ratio_only` and `trade_math.gross_pnl_is_position_estimate=false`. Gross USDT fields in that payload are then per-one-base-asset arithmetic aids, not an estimate for the operator's position. When actual position/order quantity is available, `qty_basis=position_qty` and `gross_pnl_is_position_estimate=true`.
+
+## Recommendation audit-row integrity (2026-06-18)
+
+`recommendations.rec_id` is an immutable audit identity. Repeating the exact canonical payload is idempotent; reusing the same id with changed direction, score, confidence, status, params or lineage fails closed. Recommendation lifecycle updates must use the existing publication/state-transition mechanisms rather than SQL replacement of the original signal.
+
+Market-shock and fast-veto calculations consume only fully closed candles. Every timestamp is exact-integer validated; future, still-open, boolean and fractional timestamps are excluded rather than truncated.
