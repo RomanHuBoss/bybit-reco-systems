@@ -33,6 +33,8 @@ def _build_operator_values_harness() -> str:
     source = APP_JS.read_text(encoding="utf-8")
     fns = [
         "toFiniteNumber",
+        "toStrictInteger",
+        "resolveGridCountForDisplay",
         "countDecimalsFromStep",
         "inferPriceDecimals",
         "formatDotNumber",

@@ -34,6 +34,60 @@ def as_float(value: Decimal) -> float:
     return float(+value)
 
 
+def strict_integer(value: Any) -> int | None:
+    """Parse an exact integer without silently truncating numeric payloads.
+
+    JSON numbers such as ``5.0`` are accepted because they represent an exact
+    integer. Fractional values, booleans, blanks and non-finite numbers are
+    rejected. This is intentionally stricter than ``int(value)``: exchange
+    counts must not change meaning through truncation.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not parsed.is_finite() or parsed != parsed.to_integral_value():
+        return None
+    return int(parsed)
+
+
+def resolve_integer_aliases(candidates: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Resolve duplicated integer fields without masking invalid primaries.
+
+    ``None`` and blank strings are treated as absent legacy fields. Any other
+    non-integer value is an explicit invalid source. Multiple valid aliases must
+    agree exactly; callers can use ``conservative_max`` for exposure estimates
+    and ``conservative_min`` for outcome caps while the strict preflight blocks
+    the conflict.
+    """
+    sources: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
+    for field, raw_value in candidates:
+        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+            continue
+        parsed = strict_integer(raw_value)
+        if parsed is None:
+            invalid.append({"field": str(field), "value": raw_value})
+            continue
+        sources.append({"field": str(field), "value": parsed})
+
+    distinct_values = sorted({int(item["value"]) for item in sources})
+    return {
+        "ok": not invalid and len(distinct_values) <= 1,
+        "value": distinct_values[0] if len(distinct_values) == 1 else None,
+        "conservative_min": min(distinct_values) if distinct_values else None,
+        "conservative_max": max(distinct_values) if distinct_values else None,
+        "values": distinct_values,
+        "sources": sources,
+        "invalid": invalid,
+        "conflict": len(distinct_values) > 1,
+    }
+
+
 def quantize_step(value: Any, step: Any, *, mode: str = "nearest") -> Decimal | None:
     v = dec(value)
     s = dec(step)

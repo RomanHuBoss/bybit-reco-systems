@@ -35,7 +35,13 @@ from .security import is_authorized
 from . import db
 from .db_backend import describe_target
 from .bot_types import sql_in_clause
-from .grid_math import estimate_linear_liq_price, liquidation_buffer_pct, quantize_step
+from .grid_math import (
+    estimate_linear_liq_price,
+    liquidation_buffer_pct,
+    quantize_step,
+    resolve_integer_aliases,
+    strict_integer,
+)
 from .trading_semantics import (
     bybit_linear_protective_order_plan,
     directional_exit_levels,
@@ -301,12 +307,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _safe_int_or_none(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        return int(value)
-    except Exception:
-        return None
+    return strict_integer(value)
 
 
 def _ensure_json_payload_has_only_finite_numbers(value: Any, *, field_name: str, path: str = "") -> None:
@@ -1837,6 +1838,9 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
     operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
     if not isinstance(params.get("operator_sheet"), dict) and operator_sheet:
         params["operator_sheet"] = operator_sheet
+    grid_count_resolution = _grid_count_resolution_for_reco(out)
+    strict_grid_count = grid_count_resolution.get("value") if grid_count_resolution.get("ok") else None
+    conservative_grid_count = grid_count_resolution.get("conservative_max")
 
     sizing_candidates = [
         params.get("sizing") if isinstance(params.get("sizing"), dict) else {},
@@ -1923,7 +1927,7 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                     operator_sheet["grid_spacing_pct"] = float(step_pct)
 
         raw_step = grid_step.get("step_abs")
-        grid_count = int(_safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(plan.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")) or 0)
+        grid_count = int(strict_grid_count or 0)
         strict_geometry_payload = (
             str(params.get("grid_geometry_model") or "").strip() == "bybit_arithmetic_range_width_div_grid_count"
             or params.get("actual_grid_step_abs") is not None
@@ -2051,7 +2055,7 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                 upper_price = _finite_float_or_none((levels.get("range") or {}).get("upper")) if isinstance(levels.get("range"), dict) else None
                 worst_notional_price = _grid_max_notional_price(reference_price, lower_price, upper_price)
                 worst_order_notional = float(snapped_qty) * float(worst_notional_price or reference_price)
-                grid_count = int(_safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")) or _safe_int_or_none(plan.get("grid_count")) or 1)
+                grid_count = int(conservative_grid_count) if conservative_grid_count is not None else 1
                 leverage_used = float(params.get("leverage") or 1.0) or 1.0
                 total_notional = order_notional * max(1, grid_count)
                 worst_total_notional = worst_order_notional * max(1, grid_count)
@@ -2450,13 +2454,10 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
             "leg_qty",
         ),
     )
-    grid_count_for_worst = (
-        _safe_int_or_none(ctx.get("grid_levels"))
-        or _safe_int_or_none(params.get("grid_count"))
-        or _safe_int_or_none(params.get("grid_levels"))
-        or _safe_int_or_none(plan.get("grid_count"))
-        or 1
-    )
+    grid_count_resolution = ctx.get("grid_count_resolution") if isinstance(ctx.get("grid_count_resolution"), dict) else {}
+    grid_count_for_worst = grid_count_resolution.get("conservative_max")
+    if grid_count_for_worst is None:
+        grid_count_for_worst = 1
     derived_worst_notional = None
     notional_understatement_block: dict[str, Any] | None = None
     if order_qty_for_worst is not None and worst_price is not None and worst_price > 0:
@@ -2604,6 +2605,34 @@ def _execution_market_data_blocks(conn, rec: dict[str, Any], *, now_ts: int | No
 
 
 
+def _grid_count_resolution_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
+    """Resolve every persisted grid-count alias with strict integer semantics."""
+    params = rec.get("params") if isinstance(rec, dict) else {}
+    if not isinstance(params, dict):
+        params = {}
+    plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
+    params_sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
+    params_economics = params.get("economics") if isinstance(params.get("economics"), dict) else {}
+    plan_sizing = plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {}
+    plan_economics = plan.get("economics") if isinstance(plan.get("economics"), dict) else {}
+    operator_sizing = operator_sheet.get("sizing") if isinstance(operator_sheet.get("sizing"), dict) else {}
+    operator_economics = operator_sheet.get("economics") if isinstance(operator_sheet.get("economics"), dict) else {}
+    return resolve_integer_aliases([
+        ("params.grid_count", params.get("grid_count")),
+        ("params.trade_plan.grid_count", plan.get("grid_count")),
+        ("params.grid_levels", params.get("grid_levels")),
+        ("params.operator_sheet.grid_count", operator_sheet.get("grid_count")),
+        ("params.operator_sheet.grid_levels", operator_sheet.get("grid_levels")),
+        ("params.sizing.grid_count", params_sizing.get("grid_count")),
+        ("params.economics.grid_count", params_economics.get("grid_count")),
+        ("params.trade_plan.sizing.grid_count", plan_sizing.get("grid_count")),
+        ("params.trade_plan.economics.grid_count", plan_economics.get("grid_count")),
+        ("params.operator_sheet.sizing.grid_count", operator_sizing.get("grid_count")),
+        ("params.operator_sheet.economics.grid_count", operator_economics.get("grid_count")),
+    ])
+
+
 def _trade_plan_price_context(rec: dict[str, Any]) -> dict[str, Any]:
     """Достаёт ценовой контекст trade_plan в едином виде для preflight/UI.
 
@@ -2628,6 +2657,12 @@ def _trade_plan_price_context(rec: dict[str, Any]) -> dict[str, Any]:
     operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
     operator_kill_switch = operator_sheet.get("kill_switch") if isinstance(operator_sheet.get("kill_switch"), dict) else {}
     operator_tp_per_leg = operator_sheet.get("tp_per_leg") if isinstance(operator_sheet.get("tp_per_leg"), dict) else {}
+    grid_count_resolution = _grid_count_resolution_for_reco(rec)
+    resolved_grid_count = (
+        grid_count_resolution.get("value")
+        if grid_count_resolution.get("ok")
+        else grid_count_resolution.get("conservative_max")
+    )
 
     return {
         "params": params,
@@ -2645,7 +2680,8 @@ def _trade_plan_price_context(rec: dict[str, Any]) -> dict[str, Any]:
         "kill_switch_upper": _first_finite_from_mappings([kill_switch, operator_kill_switch], ("upper", "kill_switch_upper"))[1],
         "grid_step_abs": _first_finite_from_mappings([grid_step, operator_sheet], ("step_abs", "grid_step_abs", "actual_grid_step_abs"))[1],
         "grid_type": str(params.get("grid_type") or plan.get("grid_type") or operator_sheet.get("grid_type") or "").strip().lower(),
-        "grid_levels": _safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(plan.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")) or _safe_int_or_none(operator_sheet.get("grid_levels")),
+        "grid_levels": resolved_grid_count,
+        "grid_count_resolution": grid_count_resolution,
         "tp_per_leg_abs": _first_finite_from_mappings([tp_per_leg, operator_tp_per_leg, operator_sheet], ("abs", "tp_per_leg_abs"))[1],
         "tp_per_leg_pct": _first_finite_from_mappings([tp_per_leg, operator_tp_per_leg, operator_sheet], ("pct", "tp_per_leg_pct"))[1],
     }
@@ -2918,6 +2954,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     step_abs = ctx["grid_step_abs"]
     grid_type = ctx["grid_type"]
     grid_levels = ctx["grid_levels"]
+    grid_count_resolution = ctx.get("grid_count_resolution") if isinstance(ctx.get("grid_count_resolution"), dict) else {}
     tp_abs = ctx["tp_per_leg_abs"]
     tp_pct = ctx["tp_per_leg_pct"]
 
@@ -3020,6 +3057,22 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     # payload could carry grid_count=401 and avoid the product-cap gate when
     # trade_plan.levels was incomplete.
     if bot_type == "futures_grid":
+        for invalid_source in grid_count_resolution.get("invalid") or []:
+            errors.append({
+                "code": "GRID_COUNT_NOT_INTEGER",
+                "msg": (
+                    f"{invalid_source.get('field')}={invalid_source.get('value')!r} не является точным целым числом; "
+                    "grid_count нельзя усекать или округлять при execution-preflight."
+                ),
+            })
+        if grid_count_resolution.get("conflict"):
+            rendered_sources = ", ".join(
+                f"{item.get('field')}={item.get('value')}" for item in (grid_count_resolution.get("sources") or [])
+            )
+            errors.append({
+                "code": "GRID_COUNT_CONFLICT",
+                "msg": f"Конфликт grid-count aliases: {rendered_sources}. Execution-preflight блокирует неоднозначную геометрию.",
+            })
         if grid_levels is None:
             target = errors if require_meta else warnings
             target.append({
@@ -3319,12 +3372,19 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                     "code": "GRID_FUNDING_COST_EXTREME",
                     "msg": f"funding_cost_bps={funding_cost_bps:.2f} за горизонт >= {EXECUTION_FUNDING_EXTREME_BPS:.2f}; carry риск слишком высок для grid.",
                 })
-            est_active_orders = _finite_float_or_none(economics.get("estimated_active_orders"))
-            if est_active_orders is not None and grid_levels is not None and int(round(est_active_orders)) != int(grid_levels):
-                errors.append({
-                    "code": "ACTIVE_ORDERS_GRID_COUNT_MISMATCH",
-                    "msg": f"estimated_active_orders={est_active_orders:.0f}, но grid_count={grid_levels}; маржа/ношинал рассчитаны для другого числа ордеров.",
-                })
+            raw_active_orders = economics.get("estimated_active_orders")
+            if raw_active_orders is not None and not (isinstance(raw_active_orders, str) and not raw_active_orders.strip()):
+                est_active_orders = strict_integer(raw_active_orders)
+                if est_active_orders is None:
+                    errors.append({
+                        "code": "ACTIVE_ORDERS_NOT_INTEGER",
+                        "msg": f"estimated_active_orders={raw_active_orders!r} не является точным целым числом; оценка маржи неоднозначна.",
+                    })
+                elif grid_levels is not None and est_active_orders != int(grid_levels):
+                    errors.append({
+                        "code": "ACTIVE_ORDERS_GRID_COUNT_MISMATCH",
+                        "msg": f"estimated_active_orders={est_active_orders}, но grid_count={grid_levels}; маржа/ношинал рассчитаны для другого числа ордеров.",
+                    })
             total_notional_est = _finite_float_or_none(economics.get("estimated_total_order_notional_usdt"))
             margin_est = _finite_float_or_none(economics.get("estimated_margin_required_usdt"))
             leverage_for_margin = leverage if leverage is not None and leverage > 0 else 1.0

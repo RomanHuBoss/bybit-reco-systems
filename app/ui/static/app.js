@@ -68,6 +68,47 @@ function toFiniteNumber(value) {
   return Number.isFinite(v) ? v : null;
 }
 
+function toStrictInteger(value) {
+  const v = toFiniteNumber(value);
+  return v !== null && Number.isInteger(v) ? v : null;
+}
+
+function resolveGridCountForDisplay(it) {
+  const item = it && typeof it === "object" ? it : {};
+  const params = item.params && typeof item.params === "object" ? item.params : {};
+  const plan = params.trade_plan && typeof params.trade_plan === "object" ? params.trade_plan : {};
+  const operatorSheet = params.operator_sheet && typeof params.operator_sheet === "object" ? params.operator_sheet : {};
+  const paramsSizing = params.sizing && typeof params.sizing === "object" ? params.sizing : {};
+  const paramsEconomics = params.economics && typeof params.economics === "object" ? params.economics : {};
+  const planSizing = plan.sizing && typeof plan.sizing === "object" ? plan.sizing : {};
+  const planEconomics = plan.economics && typeof plan.economics === "object" ? plan.economics : {};
+  const operatorSizing = operatorSheet.sizing && typeof operatorSheet.sizing === "object" ? operatorSheet.sizing : {};
+  const operatorEconomics = operatorSheet.economics && typeof operatorSheet.economics === "object" ? operatorSheet.economics : {};
+  const candidates = [
+    params.grid_count,
+    plan.grid_count,
+    params.grid_levels,
+    operatorSheet.grid_count,
+    operatorSheet.grid_levels,
+    paramsSizing.grid_count,
+    paramsEconomics.grid_count,
+    planSizing.grid_count,
+    planEconomics.grid_count,
+    operatorSizing.grid_count,
+    operatorEconomics.grid_count,
+  ];
+  const values = [];
+  for (const raw of candidates) {
+    if (raw === null || raw === undefined || (typeof raw === "string" && raw.trim() === "")) continue;
+    const parsed = toStrictInteger(raw);
+    if (parsed === null) return null;
+    values.push(parsed);
+  }
+  if (!values.length) return null;
+  const distinct = [...new Set(values)];
+  return distinct.length === 1 ? distinct[0] : null;
+}
+
 function countDecimalsFromStep(step) {
   if (step === null || step === undefined || step === "") return null;
   const raw = String(step).trim().toLowerCase();
@@ -687,6 +728,7 @@ function buildOperatorValues(it) {
   const tpLegPct = formatPercentDot(tpPerLeg.pct, 4, false);
   const leverage = it.venue === "linear" ? String(leverageRaw ?? 1) : "—";
   const marginMode = it.venue === "linear" ? marginModeRu(marginModeRaw) : "—";
+  const gridCount = resolveGridCountForDisplay(it);
   const exits = operatorExitLevels((it || {}).direction, killLower, killUpper);
   const rawBackendExits = (it || {}).directional_exit_levels;
   const dirNorm = String((it || {}).direction || "").trim().toLowerCase();
@@ -714,6 +756,7 @@ function buildOperatorValues(it) {
     tpLegPct,
     leverage,
     marginMode,
+    gridCount,
     ...canonicalExits,
   };
 }
@@ -1017,7 +1060,7 @@ function buildOperatorFieldSpecs(it, ov) {
     { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под бота с указанным плечом. При наличии worst-case margin UI не должен откатываться к менее консервативной legacy-марже." },
     { label: "Диапазон входа", value: rangeValue, mono: true, help: "Нижняя и верхняя границы основного диапазона сетки, которые оператор переносит в Bybit." },
     { label: "Цена входа", value: ov.entryRef, mono: true, help: "Расчётная цена входа из рекомендации. Используется при создании бота и остаётся обязательным полем основной панели." },
-    { label: "Кол-во сеток", value: params.grid_count ?? plan.grid_count ?? params.grid_levels ?? "—", help: "Количество ценовых интервалов сетки. Должно соответствовать ограничениям Bybit Futures Grid." },
+    { label: "Кол-во сеток", value: ov.gridCount === null ? "—" : ov.gridCount, help: "Количество ценовых интервалов сетки. Конфликтующие, дробные и boolean-алиасы не отображаются как исполнимое значение и блокируются backend preflight." },
     { label: "Плечо", value: ov.leverage, help: "Кредитное плечо linear USDT futures. Увеличивает и прибыль, и риск ликвидации." },
     { label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true, help: "Take Profit — уровень фиксации прибыли. Для лонга он выше входа, для шорта ниже входа." },
     { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help: "Stop Loss / kill-switch — защитный уровень остановки убытка. Для лонга ниже входа, для шорта выше входа." },

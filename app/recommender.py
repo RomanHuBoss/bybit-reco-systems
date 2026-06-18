@@ -16,7 +16,15 @@ from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_
 from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
 from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
-from .grid_math import grid_leg_economics, margin_required_usdt, estimate_linear_liq_price, liquidation_buffer_pct, quantize_step
+from .grid_math import (
+    grid_leg_economics,
+    margin_required_usdt,
+    estimate_linear_liq_price,
+    liquidation_buffer_pct,
+    quantize_step,
+    resolve_integer_aliases,
+    strict_integer,
+)
 from .collector import RuntimeLockLostError
 from .settings import load_settings
 from .calibration import (
@@ -104,12 +112,7 @@ def _finite_or_none(value: Any) -> float | None:
 
 
 def _safe_int_or_none(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        return int(value)
-    except Exception:
-        return None
+    return strict_integer(value)
 
 
 def _first_tradeable_1m_candle_ts(conn, venue: str, symbol: str, ts_after: int) -> int | None:
@@ -1610,6 +1613,11 @@ def _build_trade_plan(
         step_pct = None
     step_abs = (price * step_pct / 100.0) if (price is not None and step_pct is not None) else None
     tp_leg_abs = (0.7 * step_abs) if step_abs is not None else (0.25 * atr_abs_used if atr_abs_used else None)
+    grid_count_resolution = resolve_integer_aliases([
+        ("params.grid_count", params.get("grid_count")),
+        ("params.grid_levels", params.get("grid_levels")),
+    ])
+    grid_count = grid_count_resolution.get("value") if grid_count_resolution.get("ok") else None
 
     plan: dict[str, Any] = {
         "reference_price": _round_price(price, decimals=10),
@@ -1637,7 +1645,7 @@ def _build_trade_plan(
         "sizing": _sanitize_json_numbers(dict(params.get("sizing") or {})),
         "economics": _sanitize_json_numbers(dict(params.get("economics") or {})),
         "grid_type": str(params.get("grid_type") or "arithmetic"),
-        "grid_count": int(_safe_int_or_none(params.get("grid_count")) or _safe_int_or_none(params.get("grid_levels")) or 0),
+        "grid_count": int(grid_count) if grid_count is not None else 0,
         "levels": {
             "range": {
                 "lower": _round_price(float(lower), decimals=10) if lower is not None else None,

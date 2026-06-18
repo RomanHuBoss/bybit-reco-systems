@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from . import db
 from .bot_types import GRID_BOT_TYPES, SUPPORTED_BOT_TYPES
+from .grid_math import resolve_integer_aliases, strict_integer
 from .settings import load_settings
 import logging
 import math
@@ -184,13 +185,8 @@ def _int_from_params(value: object, default: int = 0, *, minimum: int | None = N
     rec и блокировать дальнейшую разметку; лучше безопасно деградировать к
     консервативному default и продолжить labeling.
     """
-    if isinstance(value, bool):
-        num = int(default)
-    else:
-        try:
-            num = int(float(value))
-        except Exception:
-            num = int(default)
+    parsed = strict_integer(value)
+    num = int(default) if parsed is None else int(parsed)
     if minimum is not None:
         num = max(int(minimum), num)
     if maximum is not None:
@@ -340,9 +336,26 @@ def _grid_outcome(
     execution_cost_bps, _ = _extract_cost_components(params)
     cost_floor = execution_cost_bps / 10_000.0
     grid_spacing_pct = _finite_or_default(params.get("grid_spacing_pct"), 0.0)
-    grid_levels = _int_from_params(params.get("grid_levels"), 0, minimum=0, maximum=1000)
 
     trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    params_sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
+    params_economics = params.get("economics") if isinstance(params.get("economics"), dict) else {}
+    plan_sizing = trade_plan.get("sizing") if isinstance(trade_plan.get("sizing"), dict) else {}
+    plan_economics = trade_plan.get("economics") if isinstance(trade_plan.get("economics"), dict) else {}
+    grid_count_resolution = resolve_integer_aliases([
+        ("params.grid_count", params.get("grid_count")),
+        ("params.trade_plan.grid_count", trade_plan.get("grid_count")),
+        ("params.grid_levels", params.get("grid_levels")),
+        ("params.sizing.grid_count", params_sizing.get("grid_count")),
+        ("params.economics.grid_count", params_economics.get("grid_count")),
+        ("params.trade_plan.sizing.grid_count", plan_sizing.get("grid_count")),
+        ("params.trade_plan.economics.grid_count", plan_economics.get("grid_count")),
+    ])
+    # Outcome labels must never use the larger side of a conflicting legacy
+    # payload because that would inflate completed oscillations. Strict launch
+    # validation blocks the conflict; historical labeling uses the lower cap.
+    grid_levels = _int_from_params(grid_count_resolution.get("conservative_min"), 0, minimum=0, maximum=1000)
+
     levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}
     range_block = levels.get("range") if isinstance(levels.get("range"), dict) else {}
     kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
