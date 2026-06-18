@@ -1284,24 +1284,31 @@ def _apply_llm_reviewer(
 
 
 def _drop_open_candle(rows: list[dict[str, Any]] | list[Any], tf_sec: int, ts_now: int) -> list[Any]:
-    """Remove the latest still-open candle from newest-first OHLCV rows.
+    """Return only fully closed candles, preserving the input order.
 
-    Collector runs more often than candle close boundaries, and Bybit kline payloads
-    can include the currently forming candle. Using it in features / direction creates
-    unstable recommendations and train-label mismatch. We therefore only score on the
-    last fully closed candle for every timeframe.
+    REST storage can contain more than one still-forming/future row after clock skew,
+    retries or malformed upstream data. Removing only the newest row is insufficient:
+    a second open candle would leak unavailable prices into features. Invalid temporal
+    metadata is therefore discarded and every row must prove ``ts + tf <= now``.
     """
     if not rows:
-        return rows
-    try:
-        newest_ts = int(rows[0]["ts"])
-    except Exception:
-        return rows
-    if newest_ts <= 0 or tf_sec <= 0:
-        return rows
-    if ts_now < newest_ts + tf_sec:
-        return rows[1:]
-    return rows
+        return []
+    tf_value = strict_integer(tf_sec)
+    now_value = strict_integer(ts_now)
+    if tf_value is None or tf_value <= 0 or now_value is None or now_value <= 0:
+        return []
+
+    closed: list[Any] = []
+    for row in rows:
+        try:
+            candle_ts = strict_integer(row["ts"])
+        except Exception:
+            candle_ts = None
+        if candle_ts is None or candle_ts <= 0:
+            continue
+        if candle_ts + tf_value <= now_value:
+            closed.append(row)
+    return closed
 
 
 def _estimate_cost_model(

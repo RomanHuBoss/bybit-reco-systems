@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 from .bot_types import is_supported_bot_type, sql_in_clause
+from .grid_math import strict_integer
 from .db_backend import connect as backend_connect, describe_target, is_postgres_target, OPERATIONAL_ERRORS, INTEGRITY_ERRORS, POSTGRES, SQLITE
 import logging
 
@@ -634,14 +635,18 @@ def _require_finite_float(name: str, value: Any, *, minimum: float | None = None
 
 
 def _require_non_negative_int(name: str, value: Any) -> int:
-    if isinstance(value, bool):
+    num = strict_integer(value)
+    if num is None:
         raise ValueError(f"{name} must be an integer >= 0")
-    try:
-        num = int(value)
-    except Exception as exc:
-        raise ValueError(f"{name} must be an integer >= 0") from exc
     if num < 0:
         raise ValueError(f"{name} must be >= 0")
+    return int(num)
+
+
+def _require_positive_int(name: str, value: Any) -> int:
+    num = strict_integer(value)
+    if num is None or num <= 0:
+        raise ValueError(f"{name} must be an integer > 0")
     return int(num)
 
 
@@ -852,10 +857,10 @@ def log_decision(
 
 def _is_valid_ticker_row(row: Any) -> bool:
     try:
-        ts = int(row["ts"] or 0)
+        ts = strict_integer(row["ts"])
     except Exception:
         return False
-    if not _is_plausible_market_ts(ts):
+    if ts is None or not _is_plausible_market_ts(ts):
         return False
 
     last = row["last"]
@@ -902,10 +907,10 @@ def _sanitize_ticker_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, 
         return None
     payload = dict(row)
     try:
-        ts = int(payload.get("ts") or 0)
+        ts = strict_integer(payload.get("ts"))
     except Exception:
         return None
-    if not _is_plausible_market_ts(ts):
+    if ts is None or not _is_plausible_market_ts(ts):
         return None
     if not _is_valid_ticker_row(payload):
         # Historical rows may contain crossed quotes or non-finite values.
@@ -930,15 +935,18 @@ def _sanitize_ticker_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, 
     return payload
 
 def _is_valid_ohlcv_row(row: Any) -> bool:
-    numeric_fields = ("ts", "open", "high", "low", "close", "volume")
+    numeric_fields = ("tf_sec", "ts", "open", "high", "low", "close", "volume")
     try:
         numeric_values = [row[key] for key in numeric_fields]
     except Exception:
         return False
     if any(isinstance(value, bool) for value in numeric_values):
         return False
+    tf_sec = strict_integer(row["tf_sec"])
+    ts = strict_integer(row["ts"])
+    if tf_sec is None or tf_sec <= 0 or ts is None:
+        return False
     try:
-        ts = int(row["ts"] or 0)
         open_px = float(row["open"])
         high_px = float(row["high"])
         low_px = float(row["low"])
@@ -1269,13 +1277,15 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any], *, commit: boo
     Raises:
       ValueError when the same trade_id already exists with different payload.
     """
+    pnl_raw = trade.get("pnl")
+    fee_raw = trade.get("fee")
     payload = (
         trade["trade_id"],
         trade["bot_id"],
-        int(trade["ts"]),
+        _require_positive_int("ts", trade["ts"]),
         trade["symbol"],
-        _require_finite_float("pnl", trade.get("pnl") or 0.0),
-        _require_finite_float("fee", trade.get("fee") or 0.0, minimum=0.0),
+        _require_finite_float("pnl", 0.0 if pnl_raw is None else pnl_raw),
+        _require_finite_float("fee", 0.0 if fee_raw is None else fee_raw, minimum=0.0),
         _json_dumps_canonical(trade.get("meta") or {}),
     )
     cur = conn.execute(
@@ -1752,7 +1762,7 @@ def insert_sentiment_point(
         (
             scope,
             key,
-            ts,
+            _require_positive_int("ts", ts),
             _require_finite_float("sentiment", sentiment),
             _require_finite_float("velocity", velocity),
             _require_non_negative_int("volume", volume),
@@ -1774,10 +1784,10 @@ def insert_sentiment_points(conn: sqlite3.Connection, rows: list[dict[str, Any]]
             (
                 row["scope"],
                 row["key"],
-                int(row["ts"]),
+                _require_positive_int("ts", row["ts"]),
                 _require_finite_float("sentiment", row["sentiment"]),
-                _require_finite_float("velocity", row.get("velocity") or 0.0),
-                _require_non_negative_int("volume", row.get("volume") or 0),
+                _require_finite_float("velocity", 0.0 if row.get("velocity") is None else row.get("velocity")),
+                _require_non_negative_int("volume", 0 if row.get("volume") is None else row.get("volume")),
                 _json_dumps_safe(row.get("sources") or {}),
                 _json_dumps_safe(row.get("tags") or []),
             )

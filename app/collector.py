@@ -688,38 +688,92 @@ def _fetch_open_interest_rows(
 
 
 def _resample_rows(source_rows: list[dict[str, Any]], target_tf_sec: int) -> list[dict[str, Any]]:
-    if not source_rows:
+    """Aggregate only complete, contiguous source-candle buckets.
+
+    A missing or duplicated source bar must not be converted into a seemingly valid
+    higher-timeframe candle: that would corrupt rolling volatility/trend features and
+    make historical data availability look better than it was at decision time.
+    """
+    if not source_rows or isinstance(target_tf_sec, bool):
         return []
-    rows_ord = sorted(source_rows, key=lambda r: int(r["ts"]))
+    try:
+        target_tf = int(target_tf_sec)
+    except Exception:
+        return []
+    if target_tf <= 0 or float(target_tf_sec) != float(target_tf):
+        return []
+
+    source_tf: int | None = None
+    venue: str | None = None
+    symbol: str | None = None
+    normalized: list[tuple[int, dict[str, Any]]] = []
+    seen_timestamps: set[int] = set()
+
+    for row in source_rows:
+        try:
+            raw_tf = row["tf_sec"]
+            raw_ts = row["ts"]
+            if isinstance(raw_tf, bool) or isinstance(raw_ts, bool):
+                return []
+            row_tf = int(raw_tf)
+            row_ts = int(raw_ts)
+            if float(raw_tf) != float(row_tf) or float(raw_ts) != float(row_ts):
+                return []
+            row_venue = str(row["venue"])
+            row_symbol = str(row["symbol"])
+            open_px = float(row["open"])
+            high_px = float(row["high"])
+            low_px = float(row["low"])
+            close_px = float(row["close"])
+            volume = float(row["volume"])
+        except Exception:
+            return []
+        if row_tf <= 0 or row_ts <= 0 or row_ts % row_tf != 0:
+            return []
+        if not all(math.isfinite(value) for value in (open_px, high_px, low_px, close_px, volume)):
+            return []
+        if open_px <= 0 or high_px <= 0 or low_px <= 0 or close_px <= 0 or volume < 0:
+            return []
+        if high_px < max(open_px, close_px, low_px) or low_px > min(open_px, close_px, high_px):
+            return []
+        if source_tf is None:
+            source_tf = row_tf
+            venue = row_venue
+            symbol = row_symbol
+        elif row_tf != source_tf or row_venue != venue or row_symbol != symbol:
+            return []
+        if row_ts in seen_timestamps:
+            return []
+        seen_timestamps.add(row_ts)
+        normalized.append((row_ts, row))
+
+    if source_tf is None or target_tf < source_tf or target_tf % source_tf != 0:
+        return []
+
+    expected_count = target_tf // source_tf
+    buckets: dict[int, dict[int, dict[str, Any]]] = {}
+    for row_ts, row in normalized:
+        bucket_ts = row_ts - (row_ts % target_tf)
+        buckets.setdefault(bucket_ts, {})[row_ts] = row
+
     out: list[dict[str, Any]] = []
-    current_bucket: int | None = None
-    current_row: dict[str, Any] | None = None
-    for row in rows_ord:
-        ts = int(row["ts"])
-        bucket_ts = ts - (ts % int(target_tf_sec))
-        if current_bucket != bucket_ts:
-            if current_row is not None:
-                out.append(current_row)
-            current_bucket = bucket_ts
-            current_row = {
-                "venue": row["venue"],
-                "symbol": row["symbol"],
-                "tf_sec": int(target_tf_sec),
-                "ts": int(bucket_ts),
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-                "volume": float(row["volume"]),
-            }
+    for bucket_ts in sorted(buckets):
+        rows_by_ts = buckets[bucket_ts]
+        expected_timestamps = [bucket_ts + index * source_tf for index in range(expected_count)]
+        if set(rows_by_ts) != set(expected_timestamps):
             continue
-        assert current_row is not None
-        current_row["high"] = max(float(current_row["high"]), float(row["high"]))
-        current_row["low"] = min(float(current_row["low"]), float(row["low"]))
-        current_row["close"] = float(row["close"])
-        current_row["volume"] = float(current_row["volume"]) + float(row["volume"])
-    if current_row is not None:
-        out.append(current_row)
+        rows_ord = [rows_by_ts[ts] for ts in expected_timestamps]
+        out.append({
+            "venue": venue,
+            "symbol": symbol,
+            "tf_sec": target_tf,
+            "ts": bucket_ts,
+            "open": float(rows_ord[0]["open"]),
+            "high": max(float(row["high"]) for row in rows_ord),
+            "low": min(float(row["low"]) for row in rows_ord),
+            "close": float(rows_ord[-1]["close"]),
+            "volume": sum(float(row["volume"]) for row in rows_ord),
+        })
     return out
 
 

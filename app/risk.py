@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import db
+from .grid_math import strict_integer
 
 BYBIT_FUTURES_GRID_MAX_CONCURRENT_BOTS = 50
 BYBIT_FUTURES_GRID_MAX_SYMBOL_BOTS = 50
@@ -44,13 +45,8 @@ class RiskStatus:
 
 
 def _safe_default_int(value: Any, default: int) -> int:
-    if isinstance(value, bool):
-        return int(default)
-    try:
-        num = int(value)
-    except Exception:
-        num = int(default)
-    return int(num)
+    parsed = strict_integer(value)
+    return int(default) if parsed is None else int(parsed)
 
 
 def _safe_default_float(value: Any, default: float) -> float:
@@ -66,14 +62,8 @@ def _safe_default_float(value: Any, default: float) -> float:
 
 
 def _limit_int(limits: dict[str, Any], key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
-    raw = limits.get(key, default)
-    if isinstance(raw, bool):
-        value = int(default)
-    else:
-        try:
-            value = int(raw)
-        except Exception:
-            value = int(default)
+    parsed = strict_integer(limits.get(key, default))
+    value = int(default) if parsed is None else int(parsed)
     if minimum is not None:
         value = max(int(minimum), value)
     if maximum is not None:
@@ -108,26 +98,24 @@ def _normalize_risk_limits(active: Any, fallback_limits: dict[str, Any]) -> dict
     # Defaults тоже нормализуем через безопасные helpers: если fallback пришёл из
     # ENV/legacy-конфига с ``NaN`` или строковым мусором, runtime не должен
     # падать и не должен возвращать наружу поломанные лимиты как есть.
-    default_max_concurrent = _safe_default_int(fallback.get("max_concurrent_bots", 4) or 4, 4)
-    default_max_daily_dd = _safe_default_float(fallback.get("max_daily_dd_usdt", 200.0) or 200.0, 200.0)
-    default_cooldown_min = _safe_default_int(fallback.get("cooldown_after_loss_min", 30) or 30, 30)
-    default_max_symbol_bots = _safe_default_int(fallback.get("max_symbol_bots", 1) or 1, 1)
+    default_max_concurrent = _safe_default_int(fallback.get("max_concurrent_bots", 4), 4)
+    default_max_daily_dd = _safe_default_float(fallback.get("max_daily_dd_usdt", 200.0), 200.0)
+    default_cooldown_min = _safe_default_int(fallback.get("cooldown_after_loss_min", 30), 30)
+    default_max_symbol_bots = _safe_default_int(fallback.get("max_symbol_bots", 1), 1)
     default_min_leverage = _safe_default_int(
-        fallback.get("min_leverage", BYBIT_FUTURES_GRID_MIN_LEVERAGE_DEFAULT) or BYBIT_FUTURES_GRID_MIN_LEVERAGE_DEFAULT,
+        fallback.get("min_leverage", BYBIT_FUTURES_GRID_MIN_LEVERAGE_DEFAULT),
         BYBIT_FUTURES_GRID_MIN_LEVERAGE_DEFAULT,
     )
     default_max_leverage = _safe_default_int(
-        fallback.get("max_leverage", BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT) or BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT,
+        fallback.get("max_leverage", BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT),
         BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT,
     )
     default_max_position_notional = _safe_default_float(
-        fallback.get("max_position_notional_usdt", BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT)
-        or BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT,
+        fallback.get("max_position_notional_usdt", BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT),
         BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT,
     )
     default_max_margin_per_bot = _safe_default_float(
-        fallback.get("max_margin_per_bot_usdt", BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT)
-        or BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT,
+        fallback.get("max_margin_per_bot_usdt", BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT),
         BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT,
     )
 

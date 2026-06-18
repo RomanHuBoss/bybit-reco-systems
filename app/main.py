@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictFloat, StrictInt
 
 from .settings import load_settings
 from .shock_guard import (
@@ -4000,10 +4000,10 @@ class UpdateRiskLimitsRequest(BaseModel):
 class SentimentPointRequest(BaseModel):
     scope: str = Field(..., pattern="^(global|symbol|topic)$")
     key: str
-    ts: int | None = None
-    sentiment: float = Field(..., ge=-1.0, le=1.0, allow_inf_nan=False)
-    velocity: float = Field(0.0, allow_inf_nan=False)
-    volume: int = Field(1, ge=0)
+    ts: StrictInt | None = Field(None, gt=0)
+    sentiment: StrictFloat = Field(..., ge=-1.0, le=1.0, allow_inf_nan=False)
+    velocity: StrictFloat = Field(0.0, allow_inf_nan=False)
+    volume: StrictInt = Field(1, ge=0)
     sources: dict[str, Any] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
 
@@ -4020,9 +4020,9 @@ class BotStopRequest(BaseModel):
 
 class BotTradeRequest(BaseModel):
     trade_id: str | None = None
-    ts: int | None = None
-    pnl: float = Field(..., allow_inf_nan=False, description="Gross realized PnL before fee; net PnL is computed as pnl - fee")
-    fee: float = Field(0.0, ge=0.0, allow_inf_nan=False, description="Exchange fees for this trade; deducted from pnl to compute net")
+    ts: StrictInt | None = Field(None, gt=0)
+    pnl: StrictFloat = Field(..., allow_inf_nan=False, description="Gross realized PnL before fee; net PnL is computed as pnl - fee")
+    fee: StrictFloat = Field(0.0, ge=0.0, allow_inf_nan=False, description="Exchange fees for this trade; deducted from pnl to compute net")
     operator: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
     stop_bot: bool = False
