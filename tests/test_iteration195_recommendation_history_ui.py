@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -203,3 +205,43 @@ def test_ui_renders_invalid_recommendation_time_explicitly():
     assert "recommendation_timestamp_valid" in js
     assert "Некорректная метка времени" in js
     assert "renderModalSummaryCards(summary)" in js
+
+
+def test_history_table_rows_are_sorted_newest_first():
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "app" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+
+    marker = "function sortRecommendationHistoryRowsNewestFirst(items)"
+    start = js.index(marker)
+    end = js.index("\nfunction buildRecommendationHistoryHtml", start)
+    helper_source = js[start:end]
+    node_script = f"""
+function toFiniteNumber(value) {{
+  if (value === null || value === undefined || typeof value === "boolean") return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}}
+{helper_source}
+const rows = [
+  {{rec_id: "old", ts: 100, sequence: 1}},
+  {{rec_id: "new", ts: 300, sequence: 4}},
+  {{rec_id: "same-second-newer", ts: 300, sequence: 5}},
+  {{rec_id: "middle", ts: 200, sequence: 3}},
+  {{rec_id: "invalid", ts: null, sequence: 6}}
+];
+console.log(JSON.stringify(sortRecommendationHistoryRowsNewestFirst(rows).map(row => row.rec_id)));
+console.log(JSON.stringify(rows.map(row => row.rec_id)));
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output_lines = completed.stdout.strip().splitlines()
+
+    assert json.loads(output_lines[0]) == ["same-second-newer", "new", "middle", "old", "invalid"]
+    assert json.loads(output_lines[1]) == ["old", "new", "same-second-newer", "middle", "invalid"]
+    assert "const tableItems = sortRecommendationHistoryRowsNewestFirst(items);" in js
+    assert "], tableItems, { emptyText:" in js

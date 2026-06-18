@@ -338,6 +338,8 @@ def _backfill_effective_horizon_sec(bot_type: str, params: dict[str, Any] | None
     params = params if isinstance(params, dict) else {}
 
     def _hours_to_sec(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
         try:
             hours = float(value)
         except Exception:

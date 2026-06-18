@@ -1917,9 +1917,15 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
     cost_model = dict(cost_model or {})
     agg = dict(f.get("_direction_agg") or {})
     range_score, _ = _stable_range_score(f, agg)
-    trend_strength = _clamp(float(agg.get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
-    coherence = _clamp(float(agg.get("coherence") or 0.5), 0.0, 1.0)
-    atr_pct = max(0.0, float(f.get("_atr_pct_1h") or f.get("atr_pct") or 0.0))
+    trendiness_raw = agg.get("trendiness")
+    if trendiness_raw is None:
+        trendiness_raw = f.get("trend_strength")
+    trend_strength = _clamp(_finite_float(trendiness_raw, 0.0), 0.0, 1.0)
+    coherence = _clamp(_finite_float(agg.get("coherence"), 0.5), 0.0, 1.0)
+    atr_raw = f.get("_atr_pct_1h")
+    if atr_raw is None:
+        atr_raw = f.get("atr_pct")
+    atr_pct = max(0.0, _finite_float(atr_raw, 0.0))
     # RR must reflect conservative approval economics: execution costs are always paid
     # and adverse funding carry can hurt the setup, but funding receipts must not raise
     # RR because they can flip before inventory is accumulated.

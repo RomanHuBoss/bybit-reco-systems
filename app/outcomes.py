@@ -4,6 +4,7 @@ from . import db
 from .bot_types import GRID_BOT_TYPES, SUPPORTED_BOT_TYPES
 from .grid_math import resolve_integer_aliases, strict_integer
 from .settings import load_settings
+from .trading_semantics import normalize_execution_direction
 import logging
 import math
 
@@ -22,6 +23,8 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
     params = params if isinstance(params, dict) else {}
 
     def _hours_to_sec(value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
         try:
             hours = float(value)
         except Exception:
@@ -258,8 +261,13 @@ def _funding_cost_bps_for_outcome_label(signed_funding_bps: float) -> float:
 def _signed_return(entry: float, exitp: float, direction: str) -> float:
     if not entry:
         return 0.0
+    direction_norm = normalize_execution_direction(direction)
     raw = (float(exitp) - float(entry)) / float(entry)
-    return -raw if direction == "short" else raw
+    if direction_norm == "short":
+        return -raw
+    if direction_norm == "long":
+        return raw
+    return 0.0
 
 
 # Outcome 'ret' is used later for diagnostics/calibration summaries.
@@ -309,16 +317,16 @@ def _resolve_grid_tp_leg_abs(entry: float, params: dict | None, fallback_step_ab
 def _grid_tp_hit(min_p: float, max_p: float, entry: float, direction: str, tp_leg_abs: float | None) -> bool:
     if not entry or tp_leg_abs is None or tp_leg_abs <= 0.0:
         return False
+    direction_norm = normalize_execution_direction(direction)
     long_tp = float(entry) + float(tp_leg_abs)
     short_tp = float(entry) - float(tp_leg_abs)
-    if direction == "short":
+    if direction_norm == "short":
         return min_p <= short_tp
-    if direction == "neutral":
-        # Neutral grid should not shortcut to success on a one-sided barrier touch.
-        # Keep neutral labeling anchored to realised oscillation / PnL mechanics
-        # so a single directional spike does not inflate win-rate.
-        return False
-    return max_p >= long_tp
+    if direction_norm == "long":
+        return max_p >= long_tp
+    # Neutral grids and invalid directions must not shortcut to success on a
+    # one-sided barrier touch.
+    return False
 
 
 def _grid_outcome(
@@ -547,10 +555,10 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             continue
         venue = r["venue"]
         symbol = r["symbol"]
-        direction = r["direction"]
+        direction = normalize_execution_direction(r["direction"])
         ts0 = int(r["ts"])
 
-        if not _is_supported_direction(bot_type, venue, direction):
+        if direction is None or not _is_supported_direction(bot_type, venue, direction):
             db.log_decision(conn, "OUTCOME_SKIP_UNSUPPORTED_DIRECTION", rec_id, None, {
                 "bot_type": bot_type,
                 "venue": venue,

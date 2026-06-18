@@ -1912,8 +1912,30 @@ function buildRecommendationTimelineSvg(items) {
   `;
 }
 
+function sortRecommendationHistoryRowsNewestFirst(items) {
+  if (!Array.isArray(items)) return [];
+  return [...items].sort((left, right) => {
+    const leftTs = toFiniteNumber(left?.ts);
+    const rightTs = toFiniteNumber(right?.ts);
+    if (leftTs === null && rightTs !== null) return 1;
+    if (rightTs === null && leftTs !== null) return -1;
+    if (leftTs !== null && rightTs !== null && leftTs !== rightTs) return rightTs - leftTs;
+
+    const leftSequence = toFiniteNumber(left?.sequence);
+    const rightSequence = toFiniteNumber(right?.sequence);
+    if (leftSequence === null && rightSequence !== null) return 1;
+    if (rightSequence === null && leftSequence !== null) return -1;
+    if (leftSequence !== null && rightSequence !== null && leftSequence !== rightSequence) {
+      return rightSequence - leftSequence;
+    }
+
+    return String(right?.rec_id || "").localeCompare(String(left?.rec_id || ""));
+  });
+}
+
 function buildRecommendationHistoryHtml(data) {
   const items = Array.isArray(data?.items) ? data.items : [];
+  const tableItems = sortRecommendationHistoryRowsNewestFirst(items);
   const latest = items.length ? items[items.length - 1] : null;
   const summary = [
     { label: "Публикаций", value: `${data?.returned ?? 0}${data?.truncated ? ` из ${data?.items_total ?? "?"}` : ""}` },
@@ -1942,7 +1964,7 @@ function buildRecommendationHistoryHtml(data) {
         return escapeHtml(marks.join(", ") || "—");
       }
     },
-  ], items, { emptyText: "Публикаций по этой паре пока нет.", compact: true, maxHeight: 420 });
+  ], tableItems, { emptyText: "Публикаций по этой паре пока нет.", compact: true, maxHeight: 420 });
 
   return `
     <p class="modal-note">График показывает каждую сохранённую публикацию для ${escapeHtml(data?.symbol || "пары")}. Исторический статус и LLM-состояние берутся из БД; текущие Bybit/preflight-гейты достоверно пересчитываются только для последней строки и не приписываются задним числом старым точкам.</p>

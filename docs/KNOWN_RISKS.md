@@ -153,3 +153,24 @@ The details card now opens a chronological recommendation timeline for the selec
 
 ### RESIDUAL: history window and historical execution truth
 The operator dialog returns at most 2000 recent publication rows and represents recommendation decisions, not exchange fills. Deep forensic export and real order/fill/PnL truth remain responsibilities of DB export and the external execution/reconciliation layer.
+
+## 2026-06-18 history ordering, outcome direction and horizon hardening
+
+### RESOLVED/HIGH: legacy direction casing could invert proxy-outcome economics
+- **Files**: `app/outcomes.py`, `tests/test_iteration197_history_horizon_rr_regression.py`.
+- **Risk**: support validation lower-cased a value such as `" SHORT "`, but the subsequent return and TP calculations compared the original string. The row therefore passed as a supported short and was then evaluated with long arithmetic, potentially inverting proxy return and contaminating calibration diagnostics.
+- **Mitigation**: the outcome worker and its directional helpers now use `app/trading_semantics.py::normalize_execution_direction`; invalid directions fail closed and cannot default to long.
+
+### RESOLVED/HIGH: JSON boolean could shorten the proxy-label horizon
+- **Files**: `app/outcomes.py`, `app/db.py`, `tests/test_iteration197_history_horizon_rr_regression.py`.
+- **Risk**: Python converted `label_horizon_hours=true` to `1.0`; the futures-grid lower bound then silently converted it to 6 hours instead of the canonical 12-hour label horizon. Runtime labeling and historical lineage repair could therefore treat a malformed row as mature too early.
+- **Mitigation**: boolean horizon values are rejected before numeric coercion in both runtime and DB-backfill horizon resolvers, which then use the canonical bot horizon.
+
+### RESOLVED/MEDIUM: zero coherence inflated recommendation expected R:R
+- **Files**: `app/recommender.py`, `tests/test_iteration197_history_horizon_rr_regression.py`.
+- **Risk**: a valid observed `coherence=0.0` was replaced by the neutral default `0.5` through a truthiness fallback. This increased the expected capture component and overstated recommendation R:R.
+- **Mitigation**: defaults are now selected only for missing/invalid values; finite zero is preserved for coherence, trendiness and ATR inputs.
+
+### RESOLVED/MEDIUM: history table order was opposite to operator workflow
+- **Files**: `app/ui/static/app.js`, `app/ui/static/index.html`, `tests/test_iteration195_recommendation_history_ui.py`.
+- **Mitigation**: the table in **«История и динамика»** is sorted by `ts DESC`, then `sequence DESC`, with invalid timestamps last. The API and SVG timeline remain chronological so graph semantics are unchanged. The helper sorts a copy rather than mutating the source array, and the frontend cache key was bumped.

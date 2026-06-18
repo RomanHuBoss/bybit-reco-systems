@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-18 - History/order-label regression audit
+
+- The «История и динамика» table now shows newest publications first while the timeline remains chronological.
+- Canonical direction normalization now reaches proxy-outcome return and TP calculations.
+- Boolean label horizons no longer mature futures-grid outcomes at six hours.
+- Valid zero coherence is preserved in expected R:R instead of being replaced by a neutral default.
+- Full regression suite: 767 passed.
+
 ## 2026-06-15 - Audit delivery consistency
 
 - Restored release artifact manifest consistency: operator guide DOCX/PDF, operator infographic source, PNG quick-reference, and changelog are shipped with the repository.
