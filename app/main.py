@@ -2816,10 +2816,26 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         else:
             warnings.append(missing_meta_item)
     raw_trade_plan = params.get("trade_plan") if isinstance(params, dict) else None
+    raw_plan = raw_trade_plan if isinstance(raw_trade_plan, dict) else {}
+    raw_levels = raw_plan.get("levels") if isinstance(raw_plan.get("levels"), dict) else {}
+    raw_range = raw_levels.get("range") if isinstance(raw_levels.get("range"), dict) else {}
+    raw_kill_switch = raw_levels.get("kill_switch") if isinstance(raw_levels.get("kill_switch"), dict) else {}
+    raw_grid_step = raw_levels.get("grid_step") if isinstance(raw_levels.get("grid_step"), dict) else {}
+    canonical_plan_values = (
+        _finite_float_or_none(raw_plan.get("reference_price")),
+        _finite_float_or_none(raw_range.get("lower")),
+        _finite_float_or_none(raw_range.get("upper")),
+        _finite_float_or_none(raw_kill_switch.get("lower")),
+        _finite_float_or_none(raw_kill_switch.get("upper")),
+        _finite_float_or_none(raw_grid_step.get("step_abs")),
+    )
+    # Legacy/operator aliases remain useful for read-only UI diagnostics, but they
+    # must not turn an arbitrary or partial object into a complete execution plan.
+    # A strict execution guard requires the canonical nested plan itself to carry
+    # every price needed to prove range, kill-switch and grid-step geometry.
     plan_effectively_missing = (
         not isinstance(raw_trade_plan, dict)
-        or not raw_trade_plan
-        or (set(raw_trade_plan.keys()) <= {"levels"} and not raw_trade_plan.get("levels"))
+        or any(value is None for value in canonical_plan_values)
     )
     if plan_effectively_missing:
         target = errors if require_execution_plan else warnings
