@@ -42,7 +42,7 @@ def send_telegram(token: str, chat_id: str, text: str) -> bool:
         if response.status_code != 200:
             return False
         payload = response.json()
-        return isinstance(payload, dict) and bool(payload.get("ok"))
+        return isinstance(payload, dict) and payload.get("ok") is True
     except Exception:
         return False
 

@@ -57,6 +57,12 @@ def _finite_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _strict_bool(value: Any) -> bool | None:
+    """Accept only a real JSON boolean at persistence trust boundaries."""
+    if isinstance(value, bool):
+        return value
+    return None
+
 
 # ── Platt scaler ──────────────────────────────────────────────────────────────
 
@@ -68,7 +74,15 @@ class PlattScaler:
     saved_ts: int = 0
 
     def predict(self, x: float) -> float:
-        z = max(-500.0, min(500.0, self.a * x + self.b))
+        x_num = _finite_float(x)
+        a_num = _finite_float(self.a)
+        b_num = _finite_float(self.b)
+        if x_num is None or a_num is None or b_num is None:
+            return 0.5
+        z = a_num * x_num + b_num
+        if not math.isfinite(z):
+            return 0.5
+        z = max(-500.0, min(500.0, z))
         return 1.0 / (1.0 + math.exp(-z))
 
 
@@ -328,15 +342,25 @@ class LogRegScaler:
 
     def predict(self, features: list[float]) -> float:
         """Return calibrated P(success) given a feature vector."""
-        if not self.fitted:
+        if not self.fitted or len(self.coef) == 0:
             return 0.5
-        if len(self.coef) == 0:
+        intercept = _finite_float(self.intercept)
+        coef = [_finite_float(value) for value in self.coef]
+        if intercept is None or any(value is None for value in coef):
+            return 0.5
+        try:
+            raw_features = list(features)
+        except Exception:
             return 0.5
         # Pad with zeros if incoming vector is shorter (schema drift / older snapshots).
-        # The previous guard returned 0.5 here, which silently collapsed confidence instead
-        # of preserving the existing coefficients on the shared prefix.
-        fv = list(features) + [0.0] * max(0, len(self.coef) - len(features))
-        z = self.intercept + sum(c * f for c, f in zip(self.coef, fv))
+        # The shared coefficient prefix remains usable, but every consumed value must be finite.
+        raw_features += [0.0] * max(0, len(coef) - len(raw_features))
+        fv = [_finite_float(value) for value in raw_features[:len(coef)]]
+        if any(value is None for value in fv):
+            return 0.5
+        z = float(intercept) + sum(float(c) * float(f) for c, f in zip(coef, fv))
+        if not math.isfinite(z):
+            return 0.5
         if self.platt.fitted:
             return self.platt.predict(z)
         z = max(-500.0, min(500.0, z))
@@ -344,9 +368,15 @@ class LogRegScaler:
 
     def predict_score_only(self, score: float) -> float:
         """Fallback: Platt calibration on the legacy scalar score."""
+        score_num = _finite_float(score)
+        if score_num is None:
+            return 0.5
         if self.platt.fitted:
-            return self.platt.predict(score)
-        return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, score * 2.5))))
+            return self.platt.predict(score_num)
+        z = score_num * 2.5
+        if not math.isfinite(z):
+            return 0.5
+        return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, z))))
 
 
 def _sigmoid(z: float) -> float:
@@ -720,7 +750,10 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         return None
     try:
         obj = json.loads(r["value_json"])
-        if not isinstance(obj, dict):
+        if not isinstance(obj, dict) or obj.get("type") != "logreg":
+            return None
+        fitted = _strict_bool(obj.get("fitted"))
+        if fitted is None:
             return None
         raw_coef = obj.get("coef") or []
         if not isinstance(raw_coef, list):
@@ -741,19 +774,20 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             return None
         platt_a = _finite_float(platt_obj.get("a", 1.0))
         platt_b = _finite_float(platt_obj.get("b", 0.0))
-        if platt_a is None or platt_b is None:
+        platt_fitted = _strict_bool(platt_obj.get("fitted", False))
+        if platt_a is None or platt_b is None or platt_fitted is None:
             return None
         platt = PlattScaler(
             a=platt_a,
             b=platt_b,
-            fitted=bool(platt_obj.get("fitted", False)),
+            fitted=platt_fitted,
             saved_ts=_finite_int(platt_obj.get("ts", 0), 0),
         )
         return LogRegScaler(
             coef=coef,
             intercept=intercept,
             platt=platt,
-            fitted=bool(obj.get("fitted", False)),
+            fitted=fitted,
             saved_ts=_finite_int(obj.get("ts", 0), 0),
             n_samples=max(0, _finite_int(obj.get("n_samples", 0), 0)),
         )
@@ -783,16 +817,17 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
         return None
     try:
         obj = json.loads(r["value_json"])
-        if not isinstance(obj, dict):
+        if not isinstance(obj, dict) or obj.get("type") != "platt":
             return None
+        fitted = _strict_bool(obj.get("fitted"))
         a = _finite_float(obj.get("a", 1.0))
         b = _finite_float(obj.get("b", 0.0))
-        if a is None or b is None:
+        if a is None or b is None or fitted is None:
             return None
         return PlattScaler(
             a=a,
             b=b,
-            fitted=bool(obj.get("fitted", False)),
+            fitted=fitted,
             saved_ts=_finite_int(obj.get("ts", 0), 0),
         )
     except Exception:

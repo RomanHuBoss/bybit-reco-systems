@@ -32,6 +32,17 @@ def is_expirable_recommendation_status(status: Any) -> bool:
     return str(status or "").strip().lower() in EXPIRABLE_RECOMMENDATION_STATUSES
 
 
+def _explicit_true(value: Any) -> bool:
+    """Parse only explicit true values; unknown/ambiguous persistence data is false."""
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
 MIGRATION_INIT_SQL = Path(__file__).resolve().parent.parent / "migrations" / "init.sql"
 
 def runtime_lock_db_path(db_path: str) -> str:
@@ -273,7 +284,7 @@ def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int
         if not isinstance(dedupe, dict):
             dedupe = {}
         previous_rec_id = str(dedupe.get("previous_rec_id") or "").strip()
-        active_reuse = bool(dedupe.get("active_reuse")) or str(dedupe.get("decision") or "").strip().lower() == "reuse_active"
+        active_reuse = _explicit_true(dedupe.get("active_reuse")) or str(dedupe.get("decision") or "").strip().lower() == "reuse_active"
 
         root_rec_id = rec_id
         is_label_root = 1

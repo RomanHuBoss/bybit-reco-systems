@@ -2278,6 +2278,23 @@ def _boolish_true(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _explicit_bool_or_none(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    return None
+
+
 def _rec_params_and_plan(rec: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     params = rec.get("params") if isinstance(rec, dict) else {}
     if not isinstance(params, dict):
@@ -2904,6 +2921,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     meta_settle_coin = str((meta or {}).get("settle_coin") or "").strip().upper()
     meta_delivery_time = _finite_float_or_none((meta or {}).get("delivery_time"))
     meta_is_pre_listing = (meta or {}).get("is_pre_listing")
+    meta_unified_margin_trade = _explicit_bool_or_none((meta or {}).get("unified_margin_trade"))
     rec_symbol = str(rec.get("symbol") or "").strip().upper()
 
     errors: list[dict[str, str]] = []
@@ -2971,10 +2989,13 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     if bot_type == "futures_grid":
         if direction not in {"neutral", "long", "short"}:
             errors.append({"code": "FUTURES_DIRECTION_INVALID", "msg": f"futures_grid не поддерживает direction={direction or 'unknown'}."})
-        if account_mode == "one_way":
+        if not account_mode:
+            target = errors if require_execution_plan else warnings
+            target.append({"code": "ACCOUNT_MODE_MISSING", "msg": "futures_grid требует явный account_mode=unified; execution-preflight не должен угадывать режим счёта."})
+        elif account_mode == "one_way":
             warnings.append({"code": "ACCOUNT_MODE_LEGACY_ALIAS", "msg": "account_mode=one_way трактуется как legacy-алиас позиции/position-mode; штатное значение этой ревизии — account_mode=unified."})
-        elif account_mode and account_mode != "unified":
-            warnings.append({"code": "ACCOUNT_MODE_UNEXPECTED", "msg": f"futures_grid обычно ожидает account_mode=unified, получено {account_mode}."})
+        elif account_mode != "unified":
+            errors.append({"code": "ACCOUNT_MODE_UNSUPPORTED", "msg": f"futures_grid поддерживает только account_mode=unified; получено {account_mode}. Неподдержанный режим блокируется fail-closed."})
         # Проектная логика, risk-gates и operator guidance собраны вокруг isolated futures-grid.
         # Поддержку cross/hedge-mode здесь лучше явно блокировать, чем молча притворяться совместимой.
         if not margin_mode:
@@ -2985,6 +3006,11 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             errors.append({"code": "USDT_PERPETUAL_SYMBOL_REQUIRED", "msg": f"futures_grid поддерживается только для точных alphanumeric USDT perpetual symbols без разделителей, получено symbol={rec_symbol}."})
 
     if bot_type == "futures_grid" and meta:
+        if account_mode == "unified" and meta_unified_margin_trade is False:
+            errors.append({
+                "code": "BYBIT_UNIFIED_MARGIN_UNSUPPORTED",
+                "msg": "Bybit metadata явно сообщает unifiedMarginTrade=false; инструмент несовместим с требуемым account_mode=unified.",
+            })
         if meta_contract_type and meta_contract_type != "LinearPerpetual":
             errors.append({
                 "code": "BYBIT_CONTRACT_TYPE_UNSUPPORTED",

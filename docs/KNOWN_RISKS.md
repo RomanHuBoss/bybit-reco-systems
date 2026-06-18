@@ -194,3 +194,41 @@ Malformed/boolean `next_funding_ts` is treated as unknown. Funding event count t
 
 ### RESIDUAL: immutable recommendation identity changes retry semantics
 Callers may retry an identical recommendation payload safely, but may no longer reuse a `rec_id` to mutate status or economics. Lifecycle changes must use dedicated state transitions/new publication rows rather than audit-row replacement.
+
+## 2026-06-18 final fail-closed calibration/account-mode re-audit
+
+### RESOLVED/HIGH: non-finite calibration data could become extreme confidence
+`PlattScaler` and `LogRegScaler` now return neutral probability `0.5` when an input,
+coefficient, intercept or derived logit is `NaN`/`Infinity`. This prevents poisoned
+feature snapshots or malformed in-memory models from becoming artificial confidence
+near `0` or `1`.
+
+### RESOLVED/HIGH: malformed persisted calibrators could be activated by truthiness
+Calibration loaders now require the exact model `type` and real JSON booleans for
+`fitted` flags, including the nested Platt layer. Strings such as `"false"` no longer
+activate a model. Invalid persisted payloads are rejected and the normal fallback/refit
+path is used.
+
+### RESOLVED/HIGH: execution preflight did not strictly prove account-mode compatibility
+Strict preflight now blocks a missing account mode, any explicit unsupported mode, and
+an instrument whose current Bybit `instruments-info` metadata explicitly reports
+`unifiedMarginTrade=false` while the recommendation requires `account_mode=unified`.
+Legacy `account_mode=one_way` remains warning-only solely for historical compatibility;
+it is not interpreted as support for hedge mode.
+
+### RESOLVED/MEDIUM: string `"false"` could corrupt publication lineage backfill
+Historical dedupe backfill now treats only explicit true values as `active_reuse`.
+An ambiguous or false string no longer links an independent recommendation to an older
+publication root.
+
+### RESIDUAL: public instrument capability is not authenticated account truth
+`unifiedMarginTrade` proves instrument capability, not the operator account's current
+UTA generation, position mode, wallet state or permissions. Because this repository has
+no OMS/EMS/private-account execution layer, the external executor must still verify the
+authenticated account mode, `positionIdx=0` one-way configuration, permissions, balance,
+open positions and reconciliation immediately before real order creation.
+
+### RESOLVED/MEDIUM: malformed Telegram `ok` value could suppress later alerts
+Telegram transport success now requires the literal JSON boolean `true`. A malformed
+HTTP 200 payload such as `{"ok":"false"}` no longer counts as delivery success and
+therefore cannot start the alert cooldown after a failed notification.
