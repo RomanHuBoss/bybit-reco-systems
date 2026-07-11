@@ -81,6 +81,7 @@ Execution preflight теперь использует этот exact-evidence к
 - sentiment pipeline остаётся **эвристическим**, а не newsroom/LLM/NER-уровня;
 - отсутствие sentiment-данных трактуется как неопределённость, а не как «истинный neutral»;
 - grid outcomes остаются приближённой path-approximation, а не биржевой truth-моделью исполнения;
+- в proxy outcome пробой любого `kill_switch` имеет приоритет над касанием directional `tp_per_leg`: остановленный grid не может стать положительной меткой для calibration из-за отдельного TP-leg; malformed/fractional `recommendations.ts` и `features_ref_ts` не усекаются, а исключаются из labeling;
 - risk limits начинают полноценно отражать реальность только если в `trades` действительно пишутся realized fills / PnL / fee;
 - локальный LLM-reviewer — это **консервативный reviewer поверх движка**, а не замена scoring/risk/calibration;
 - проект не предназначен для немедленного запуска на полный объём капитала без staging-прогона.

@@ -117,6 +117,7 @@ UI обязан показывать этот блок рядом с execution/l
 - учитывать grid spacing, cost floor и adverse funding-carry; funding receipt не кредитуется как durable edge для calibration;
 - сохранять точный момент доступности proxy-label (`label_available_ts = entry_ts + effective_horizon`) и использовать purged chronological OOF: train-label обязан быть полностью известен строго до первой validation-рекомендации; legacy labels без точного availability timestamp исключаются из OOF train;
 - штрафовать break-out, kill-switch breach и плохую occupancy range;
+- применять fail-closed precedence: любой breach нижнего или верхнего `kill_switch` делает proxy outcome неуспешным и не позволяет отдельному `tp_per_leg` touch повысить label;
 - считать success по факту достижения per-leg TP только если TP-touch остаётся net-positive после execution-cost floor, либо по oscillation proxy.
 
 ### Не умеет
@@ -200,7 +201,7 @@ Market-shock and fast-veto calculations consume only fully closed candles. Every
 
 Bybit `nextFundingTime`/open-interest/OHLCV timestamps, `fundingIntervalHour`, instruments-info `fundingInterval`, label horizons and funding event counts are exact-integer fields. Numeric values such as `5.0` remain compatible because they represent an exact integer; boolean, fractional, blank and non-finite values are invalid.
 
-Invalid upstream timestamps are discarded before they can collide with an existing integer-second persistence key. Invalid funding intervals remain unavailable rather than being rounded into a plausible schedule. Execution-time funding then stays fail-closed: a missing schedule uses the conservative unknown-schedule event count, while a missing/invalid interval blocks costed execution. Purged calibration excludes malformed recommendation or label-availability timestamps instead of manufacturing chronology through truncation.
+Invalid upstream timestamps are discarded before they can collide with an existing integer-second persistence key. Invalid funding intervals remain unavailable rather than being rounded into a plausible schedule. The recommender cost model applies the same rule: a fractional/boolean/non-positive interval is marked `fallback_8h_invalid_interval`, stays uncertain and uses conservative possible-event counting. Execution-time funding then stays fail-closed: a missing schedule uses the conservative unknown-schedule event count, while a missing/invalid interval blocks costed execution. Purged calibration and the outcome worker exclude malformed recommendation, feature-reference or label-availability timestamps instead of manufacturing chronology through truncation.
 
 
 ## Execution evidence, funding and realised PnL

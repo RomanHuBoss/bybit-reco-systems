@@ -73,4 +73,5 @@ Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-a
 - Never mix exact evidence with legacy `/trades` for the same bot.
 - Evidence export contains sensitive exchange identifiers and requires `ADMIN_API_KEY`.
 - Descriptive live-evidence statistics are not proof of positive expectancy.
+- In proxy outcome diagnostics, any lower/upper kill-switch breach overrides a directional per-leg TP touch; do not interpret a stopped grid as a successful signal.
 - Nevertheless, persistent negative exact evidence is an execution stop condition; do not bypass the `LIVE_VALIDATION_*` blocker.

@@ -1366,13 +1366,25 @@ def _estimate_cost_model(
     expected_funding_bps = 0.0
     nfts_out: int | None = None
     funding_interval_source = "not_applicable"
-    funding_interval_raw = _finite_or_none(funding_interval_min)
-    if funding_interval_raw is not None and funding_interval_raw > 0:
-        funding_interval_sec = max(60, int(round(float(funding_interval_raw) * 60.0)))
+    interval_was_provided = not (
+        funding_interval_min is None
+        or (isinstance(funding_interval_min, str) and not funding_interval_min.strip())
+    )
+    funding_interval_value = strict_integer(funding_interval_min)
+    if funding_interval_value is not None and funding_interval_value > 0:
+        funding_interval_sec = max(60, int(funding_interval_value) * 60)
         funding_interval_source = "ticker_or_instrument_info"
     else:
+        # A fractional/boolean/non-positive interval is not equivalent to a
+        # confirmed exchange schedule.  Keep the conservative 8h fallback, but
+        # distinguish malformed evidence from a genuinely missing field so the
+        # audit payload cannot claim that the rounded value came from Bybit.
         funding_interval_sec = 8 * 3600
-        funding_interval_source = "fallback_8h_missing_interval"
+        funding_interval_source = (
+            "fallback_8h_invalid_interval"
+            if interval_was_provided
+            else "fallback_8h_missing_interval"
+        )
     valid_next_funding_ts = _safe_int_or_none(next_funding_ts)
     if valid_next_funding_ts is not None and valid_next_funding_ts <= 0:
         valid_next_funding_ts = None

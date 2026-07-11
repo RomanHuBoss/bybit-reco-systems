@@ -340,3 +340,21 @@ Canonical ids and raw metadata can preserve source evidence, but summaries use S
 ### RESIDUAL: live edge remains unproven
 
 The new dataset makes validation possible but contains no user fills by itself. Positive expectancy still requires sufficient independent stopped bots, chronological walk-forward evaluation, no-trade/comparator baselines, regime cohorts, calibration reliability and a predefined stop criterion.
+
+## 2026-07-11 outcome/funding integrity correction
+
+### RESOLVED/HIGH: directional TP touch could override a kill-switch breach
+
+The proxy grid label previously allowed `tp_success` to win over a lower/upper kill-switch breach in the same evaluation horizon. A stopped directional grid could therefore be stored as `success=1`, and that false positive could enter bot-specific calibration. Kill-switch breach now has fail-closed precedence, including ambiguous same-candle TP/kill touches; the isolated TP leg no longer replaces the loss/breach proxy.
+
+### RESOLVED/HIGH: recommender rounded malformed funding intervals
+
+Collector/execution boundaries already required exact integer minutes, but `_estimate_cost_model()` still accepted a fractional interval and rounded it into a confirmed schedule. A malformed `720.5` minute value could reduce the canonical 12-hour horizon from two conservative 8-hour events to one apparent event. The cost model now distinguishes missing from invalid intervals and keeps malformed evidence uncertain.
+
+### RESOLVED/MEDIUM: outcome worker truncated recommendation chronology
+
+Legacy/direct SQLite rows with fractional `recommendations.ts` or `features_ref_ts` were converted through `int()`, creating a synthetic decision/entry chronology. Such rows are now skipped with `OUTCOME_SKIP_INVALID_TEMPORAL_FIELDS` and cannot enter `reco_outcomes` or calibration.
+
+### RESIDUAL: proxy outcomes remain non-execution evidence
+
+The correction removes known false-positive paths but does not make OHLC-based grid labels equivalent to actual fills, queue priority, partial fills, open inventory, Bybit fee tier, liquidation waterfall or realised account PnL. Exact execution evidence and chronological comparator validation remain required before any profitability claim.

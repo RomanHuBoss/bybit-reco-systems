@@ -497,14 +497,21 @@ def _grid_outcome(
     )
 
     tp_success = False
+    kill_switch_intact = kill_switch_breach_pct <= 1e-12
     if tp_hit and tp_leg_abs is not None and entry:
         tp_realized_net = (float(tp_leg_abs) / float(entry)) - cost_floor
-        # Do not turn an economically non-viable TP touch into a positive label.
-        # The previous max(0.0001, ...) floor could mark grids as successful even
-        # when the per-leg target was smaller than execution costs.
-        if tp_realized_net > max(cost_floor * 0.50, 0.0001):
+        # A per-leg TP touch is not a terminal whole-bot profit event.  It must
+        # never erase a kill-switch breach observed anywhere in the same outcome
+        # horizon; doing so labels a stopped grid as a winner and poisons later
+        # calibration.  Ambiguous intrabar TP/kill touches therefore resolve
+        # fail-closed in favour of the kill-switch.
+        if kill_switch_intact and tp_realized_net > max(cost_floor * 0.50, 0.0001):
             tp_success = True
             net_proxy = max(net_proxy, tp_realized_net)
+        elif not kill_switch_intact:
+            # Preserve the loss/breach proxy already accumulated above instead
+            # of replacing it with the isolated profitable TP leg.
+            net_proxy = min(net_proxy, 0.0)
         else:
             net_proxy = min(net_proxy, tp_realized_net)
 
@@ -563,7 +570,17 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         venue = r["venue"]
         symbol = r["symbol"]
         direction = normalize_execution_direction(r["direction"])
-        ts0 = int(r["ts"])
+        ts0 = strict_integer(r["ts"])
+        signal_ref_ts = strict_integer(r["features_ref_ts"])
+        if ts0 is None or ts0 <= 0 or signal_ref_ts is None or signal_ref_ts <= 0:
+            db.log_decision(conn, "OUTCOME_SKIP_INVALID_TEMPORAL_FIELDS", rec_id, None, {
+                "bot_type": bot_type,
+                "venue": venue,
+                "symbol": symbol,
+                "recommendation_ts": r["ts"],
+                "features_ref_ts": r["features_ref_ts"],
+            })
+            continue
 
         if direction is None or not _is_supported_direction(bot_type, venue, direction):
             db.log_decision(conn, "OUTCOME_SKIP_UNSUPPORTED_DIRECTION", rec_id, None, {
@@ -579,8 +596,6 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             params = json.loads(r["params_json"], parse_constant=lambda _token: None) if r["params_json"] else None
         except Exception:
             params = None
-        signal_ref_ts = int(r["features_ref_ts"]) if r["features_ref_ts"] is not None else ts0
-
         tradeable = _get_first_tradeable_candle_after(conn, venue, symbol, signal_ref_ts)
         if tradeable is None:
             continue
