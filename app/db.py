@@ -1897,7 +1897,9 @@ def list_live_validation_records(conn: sqlite3.Connection, limit: int = 200) -> 
             "bot_id": bot["bot_id"],
             "rec_id": rec_id,
             "publication_root_rec_id": bot.get("publication_root_rec_id") or rec.get("publication_root_rec_id") or rec_id,
+            "venue": bot.get("venue"),
             "symbol": bot.get("symbol"),
+            "bot_type": bot.get("bot_type"),
             "direction": rec.get("direction"),
             "recommendation_ts": rec.get("ts"),
             "started_ts": bot.get("started_ts"),
@@ -1906,6 +1908,7 @@ def list_live_validation_records(conn: sqlite3.Connection, limit: int = 200) -> 
             "score": rec.get("score"),
             "confidence": rec.get("confidence"),
             "expected_rr": rec.get("expected_rr"),
+            "model_version": rec.get("model_version"),
             **summary,
             "validation_eligible": str(bot.get("status") or "") == "stopped" and summary["execution_count"] > 0,
         })

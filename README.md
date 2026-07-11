@@ -17,6 +17,8 @@
 
 Точный evidence-ledger и legacy `/trades` нельзя смешивать для одного `bot_id`. Risk/drawdown/cooldown используют единый поток с приоритетом exact evidence, а endpoints чтения evidence защищены `ADMIN_API_KEY`. `/api/v1/validation/live-evidence` формирует только descriptive dataset и не доказывает live edge.
 
+Execution preflight теперь использует этот exact-evidence контур как **операционный stop gate**. Новое подтверждение `executed` блокируется для конкретного `(symbol, direction)` после пяти последовательных независимых убыточных остановленных ботов либо после восьми независимых наблюдений, если одновременно отрицательны total и median net PnL, а доля прибыльных запусков ниже 50%. Более широкие stop-условия применяются после 12 наблюдений по символу и 20 по всему `futures_grid`-контуру. Повторные публикации одного `publication_root_rec_id` не увеличивают выборку; при заданном `model_version` учитывается только evidence той же версии модели, чтобы старая стратегия не блокировала явно новую. Это консервативная защита от продолжения доказанно убыточного режима, но не статистическое доказательство alpha.
+
 ## Поддерживаемые bot_type
 - `futures_grid` — только Bybit `category=linear`, USDT perpetual, settlement/margin/PnL в USDT.
 
@@ -33,7 +35,7 @@
 - UI `Ранг в выборке` показывает не «точный рейтинг», а grouped percentile: близкие raw-score внутри material delta `0.025` объединяются в near-tie band и получают одинаковый averaged percentile/grade, чтобы 0.245/0.242/0.232 не выглядели как 100/50/0;
 - применяет risk-gate, publication-gate, market shock guard и symbol fast-veto; для `futures_grid` actionable-публикация требует двух разных последовательно закрытых evidence snapshots (`features_ref_ts`), а повторные циклы на одной и той же свече не считаются подтверждением;
 - при необходимости отправляет кандидат в локальный LLM-reviewer;
-- перед operator-confirmation повторно проверяет риск-лимиты, свежесть market-data, актуальный market shock / fast-veto, live-price относительно сохранённого диапазона сетки, текущий best bid/ask spread и net edge после live execution costs, а также базовую исполнимость trade plan относительно metadata инструмента Bybit;
+- перед operator-confirmation повторно проверяет risk limits, exact-evidence strategy-health stop gate, свежесть market-data, актуальный market shock / fast-veto, live-price относительно сохранённого диапазона сетки, текущий best bid/ask spread и net edge после live execution costs, а также базовую исполнимость trade plan относительно metadata инструмента Bybit;
 - сохраняет рекомендации, решения, outcome-labeling, calibration state, trade history и risk limits в SQLite или PostgreSQL;
 - отдаёт REST API и операторский UI.
 

@@ -3745,6 +3745,203 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     }
 
 
+LIVE_VALIDATION_DIRECTION_MIN_BOTS = 8
+LIVE_VALIDATION_SYMBOL_MIN_BOTS = 12
+LIVE_VALIDATION_PORTFOLIO_MIN_BOTS = 20
+LIVE_VALIDATION_DIRECTION_LOSS_STREAK = 5
+LIVE_VALIDATION_WINDOW_BOTS = 50
+LIVE_VALIDATION_SOURCE_SCAN_LIMIT = 1000
+
+
+def _live_validation_scope_summary(
+    records: list[dict[str, Any]],
+    *,
+    max_observations: int = LIVE_VALIDATION_WINDOW_BOTS,
+) -> dict[str, Any]:
+    """Summarise independent, stopped bots backed by exact execution evidence.
+
+    One publication root contributes at most one observation. This prevents repeated
+    publications of the same signal lineage from pretending to be independent
+    evidence. Input is newest-first, matching ``list_live_validation_records``.
+    """
+    independent: list[dict[str, Any]] = []
+    seen_roots: set[str] = set()
+    for row in records:
+        if len(independent) >= max(1, int(max_observations)):
+            break
+        if not isinstance(row, dict) or not bool(row.get("validation_eligible")):
+            continue
+        root = str(row.get("publication_root_rec_id") or row.get("rec_id") or row.get("bot_id") or "").strip()
+        if not root or root in seen_roots:
+            continue
+        raw_net = row.get("realized_pnl_net")
+        if isinstance(raw_net, bool):
+            continue
+        try:
+            net = float(raw_net)
+        except Exception:
+            continue
+        if not math.isfinite(net):
+            continue
+        seen_roots.add(root)
+        independent.append({**row, "realized_pnl_net": net})
+
+    values = [float(row["realized_pnl_net"]) for row in independent]
+    total = float(sum(values))
+    mean = (total / len(values)) if values else None
+    ordered = sorted(values)
+    median = None
+    if ordered:
+        mid = len(ordered) // 2
+        median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+    wins = sum(1 for value in values if value > 0.0)
+    losses = sum(1 for value in values if value < 0.0)
+    consecutive_losses = 0
+    for value in values:  # newest first
+        if value < 0.0:
+            consecutive_losses += 1
+        else:
+            break
+    return {
+        "eligible_stopped_bots": len(values),
+        "independent_publication_roots": len(values),
+        "total_realized_pnl_net": total,
+        "mean_realized_pnl_net": mean,
+        "median_realized_pnl_net": median,
+        "positive_bot_rate": (wins / len(values)) if values else None,
+        "negative_bot_rate": (losses / len(values)) if values else None,
+        "consecutive_losses": consecutive_losses,
+        "newest_bot_id": independent[0].get("bot_id") if independent else None,
+        "oldest_bot_id": independent[-1].get("bot_id") if independent else None,
+    }
+
+
+def _negative_expectancy_condition(summary: dict[str, Any], *, min_bots: int) -> bool:
+    rate = summary.get("positive_bot_rate")
+    median = summary.get("median_realized_pnl_net")
+    return bool(
+        int(summary.get("eligible_stopped_bots") or 0) >= int(min_bots)
+        and float(summary.get("total_realized_pnl_net") or 0.0) < 0.0
+        and median is not None
+        and float(median) < 0.0
+        and rate is not None
+        and float(rate) < 0.5
+    )
+
+
+def _compute_live_validation_strategy_health(
+    conn,
+    *,
+    venue: str,
+    symbol: str | None,
+    direction: str | None,
+    bot_type: str,
+    model_version: str | None = None,
+) -> dict[str, Any]:
+    """Return a conservative operational stop gate from exact realised evidence.
+
+    This is deliberately not an alpha/significance claim. It only prevents the
+    operator lifecycle from continuing unchanged after persistent realised losses.
+    Direction is evaluated separately so a losing long cohort cannot silently
+    contaminate or suppress an opposite-direction cohort before the broader symbol
+    stop threshold is reached.
+    """
+    venue_key = str(venue or "").strip().lower()
+    symbol_key = str(symbol or "").strip().upper()
+    direction_key = str(direction or "").strip().lower()
+    bot_type_key = str(bot_type or "").strip().lower()
+    model_version_key = str(model_version or "").strip()
+    records = db.list_live_validation_records(conn, limit=LIVE_VALIDATION_SOURCE_SCAN_LIMIT)
+    portfolio_records = [
+        row
+        for row in records
+        if str(row.get("venue") or "").strip().lower() == venue_key
+        and str(row.get("bot_type") or "").strip().lower() == bot_type_key
+        and (not model_version_key or str(row.get("model_version") or "").strip() == model_version_key)
+    ]
+    symbol_records = [
+        row
+        for row in portfolio_records
+        if symbol_key and str(row.get("symbol") or "").strip().upper() == symbol_key
+    ]
+    direction_records = [
+        row
+        for row in symbol_records
+        if direction_key and str(row.get("direction") or "").strip().lower() == direction_key
+    ]
+    portfolio = _live_validation_scope_summary(portfolio_records)
+    symbol_summary = _live_validation_scope_summary(symbol_records)
+    direction_summary = _live_validation_scope_summary(direction_records)
+    blocks: list[dict[str, Any]] = []
+
+    if direction_key and int(direction_summary["consecutive_losses"]) >= LIVE_VALIDATION_DIRECTION_LOSS_STREAK:
+        blocks.append({
+            "code": "LIVE_VALIDATION_DIRECTION_LOSS_STREAK",
+            "msg": (
+                f"{symbol_key} {direction_key}: последние {direction_summary['consecutive_losses']} независимых "
+                "остановленных ботов с exact execution evidence убыточны; новые запуски этого направления остановлены."
+            ),
+            "scope": "symbol_direction",
+            "metrics": direction_summary,
+        })
+
+    if direction_key and _negative_expectancy_condition(direction_summary, min_bots=LIVE_VALIDATION_DIRECTION_MIN_BOTS):
+        rate = float(direction_summary["positive_bot_rate"])
+        blocks.append({
+            "code": "LIVE_VALIDATION_DIRECTION_NEGATIVE_EXPECTANCY",
+            "msg": (
+                f"{symbol_key} {direction_key}: exact live/shadow evidence имеет отрицательные total, mean и median "
+                f"net PnL при доле прибыльных независимых запусков {rate:.1%}; execution lifecycle заблокирован."
+            ),
+            "scope": "symbol_direction",
+            "metrics": direction_summary,
+        })
+
+    if symbol_key and _negative_expectancy_condition(symbol_summary, min_bots=LIVE_VALIDATION_SYMBOL_MIN_BOTS):
+        rate = float(symbol_summary["positive_bot_rate"])
+        blocks.append({
+            "code": "LIVE_VALIDATION_SYMBOL_NEGATIVE_EXPECTANCY",
+            "msg": (
+                f"{symbol_key}: все направления вместе показывают отрицательные exact-evidence total/mean/median net PnL "
+                f"при доле прибыльных запусков {rate:.1%}; новые запуски символа остановлены."
+            ),
+            "scope": "symbol",
+            "metrics": symbol_summary,
+        })
+
+    if _negative_expectancy_condition(portfolio, min_bots=LIVE_VALIDATION_PORTFOLIO_MIN_BOTS):
+        blocks.append({
+            "code": "LIVE_VALIDATION_PORTFOLIO_NEGATIVE_EXPECTANCY",
+            "msg": (
+                "Весь futures_grid-контур имеет отрицательные exact-evidence total/mean/median net PnL; "
+                "операторские запуски остановлены до ревизии модели."
+            ),
+            "scope": "portfolio",
+            "metrics": portfolio,
+        })
+
+    return {
+        "blocked": bool(blocks),
+        "blocks": blocks,
+        "policy": {
+            "window_bots": LIVE_VALIDATION_WINDOW_BOTS,
+            "source_scan_limit": LIVE_VALIDATION_SOURCE_SCAN_LIMIT,
+            "direction_min_bots": LIVE_VALIDATION_DIRECTION_MIN_BOTS,
+            "symbol_min_bots": LIVE_VALIDATION_SYMBOL_MIN_BOTS,
+            "portfolio_min_bots": LIVE_VALIDATION_PORTFOLIO_MIN_BOTS,
+            "direction_loss_streak": LIVE_VALIDATION_DIRECTION_LOSS_STREAK,
+            "requires_exact_execution_evidence": True,
+            "deduplicates_publication_roots": True,
+            "statistical_claim": False,
+            "model_version_scoped": bool(model_version_key),
+        },
+        "model_version": model_version_key or None,
+        "direction": direction_summary,
+        "symbol": symbol_summary,
+        "portfolio": portfolio,
+    }
+
+
 def _execution_preflight(
     conn,
     rec: dict[str, Any],
@@ -3754,6 +3951,18 @@ def _execution_preflight(
 ) -> dict[str, Any]:
     now = int(now_ts or time.time())
     blocks: list[dict[str, Any]] = []
+
+    strategy_health = _compute_live_validation_strategy_health(
+        conn,
+        venue=str(rec.get("venue") or ""),
+        symbol=str(rec.get("symbol") or ""),
+        direction=str(rec.get("direction") or ""),
+        bot_type=str(rec.get("bot_type") or ""),
+        model_version=str(rec.get("model_version") or ""),
+    )
+    for item in strategy_health.get("blocks") or []:
+        if isinstance(item, dict):
+            blocks.append(dict(item))
 
     if bybit_meta is None:
         try:
@@ -3813,6 +4022,7 @@ def _execution_preflight(
 
     return {
         "blocks": blocks,
+        "strategy_health": strategy_health,
         "market_shock": market_shock,
         "fast_veto": fast_veto,
         "bybit_meta": bybit_meta,
@@ -4168,7 +4378,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.16", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.17", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -4520,6 +4730,7 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             operator,
             {
                 "blocks": preflight_blocks,
+                "strategy_health": preflight.get("strategy_health"),
                 "market_shock": preflight.get("market_shock"),
                 "fast_veto": preflight.get("fast_veto"),
                 "bybit_validation": preflight.get("bybit_validation"),
@@ -4558,6 +4769,7 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             "last_trade_ts": None,
             "execution_preflight": {
                 "checked_ts": int(time.time()),
+                "strategy_health": preflight.get("strategy_health"),
                 "market_shock": preflight.get("market_shock"),
                 "fast_veto": preflight.get("fast_veto"),
                 "bybit_validation": preflight.get("bybit_validation"),
@@ -5340,18 +5552,32 @@ def api_execution_evidence(
 def api_live_evidence_validation(
     request: Request,
     limit: int = 200,
+    symbol: str | None = None,
+    direction: str | None = None,
+    model_version: str | None = None,
+    venue: str = "linear",
+    bot_type: str = "futures_grid",
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> dict[str, Any]:
     _require_admin_key(x_api_key, request)
     limit = _bounded_limit(limit, default=200, max_value=1000)
     with closing(_get_conn()) as conn:
         records = db.list_live_validation_records(conn, limit=limit)
+        strategy_health = _compute_live_validation_strategy_health(
+            conn,
+            venue=venue,
+            symbol=symbol,
+            direction=direction,
+            bot_type=bot_type,
+            model_version=model_version,
+        )
     eligible = [row for row in records if bool(row.get("validation_eligible"))]
     net_values = [float(row.get("realized_pnl_net") or 0.0) for row in eligible]
     wins = sum(1 for value in net_values if value > 0.0)
     return {
         "records": records,
         "count": len(records),
+        "strategy_health": strategy_health,
         "eligible_stopped_bots": len(eligible),
         "summary": {
             "total_realized_pnl_net": sum(net_values),

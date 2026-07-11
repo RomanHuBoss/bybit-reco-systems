@@ -38,6 +38,7 @@ Treat the recommendation as NO TRADE when any of the following appears:
 - empty/corrupted payload; Complete `params.trade_plan` exists; no empty/corrupted payload. If this statement is false, do not launch;
 - missing OK LLM gate when the reviewer is configured as a gate;
 - unknown or conflicting same-symbol direction in one-way mode.
+- exact execution evidence has triggered `LIVE_VALIDATION_*`: five consecutive losses for the same symbol/direction, or negative total+median PnL with sub-50% positive rate after the predefined direction/symbol/portfolio sample threshold for the same explicit model version.
 
 ## Required operator payload
 
@@ -72,3 +73,4 @@ Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-a
 - Never mix exact evidence with legacy `/trades` for the same bot.
 - Evidence export contains sensitive exchange identifiers and requires `ADMIN_API_KEY`.
 - Descriptive live-evidence statistics are not proof of positive expectancy.
+- Nevertheless, persistent negative exact evidence is an execution stop condition; do not bypass the `LIVE_VALIDATION_*` blocker.

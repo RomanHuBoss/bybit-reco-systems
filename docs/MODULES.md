@@ -101,3 +101,4 @@ API, background lifecycle, preflight, operator actions.
 - legacy `trade` и exact execution/funding ingestion не должны смешиваться или silently портить bot state;
 - sensitive execution-evidence reads требуют admin authorization;
 - live-evidence validation остаётся descriptive-only и не публикует утверждение о прибыльности.
+- execution preflight обязан применить exact-evidence strategy-health stop gate; отрицательные direction/symbol/portfolio cohorts текущего explicit `model_version` блокируют `executed`, но отсутствие блока не трактуется как доказанный edge.

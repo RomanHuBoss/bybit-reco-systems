@@ -101,3 +101,11 @@
 1. Admin requests `/api/v1/validation/live-evidence` with valid authorization.
 2. Only bots with immutable execution evidence appear; stopped bots with at least one execution become validation-eligible.
 3. Returned aggregates are descriptive. The response explicitly does not claim live edge because no chronological comparator, no-trade baseline or sample sufficiency test is implied.
+## 18. Exact-evidence stop gate after persistent losses
+
+1. External adapter has recorded exact fills/fees/funding for independent stopped bots.
+2. Five newest independent bots for the same `(symbol, direction)` are loss-making, or the predefined minimum cohort has negative total and median net PnL with positive-bot rate below 50%.
+3. A new recommendation can still be published for audit, but operator action `executed` returns `409`, no `bot_instance` is created, and `decision_log` contains the relevant `LIVE_VALIDATION_*` code and cohort metrics.
+4. A losing long cohort does not by itself block short until the broader symbol threshold is reached. Repeated rows from one publication root count once, and an explicit new `model_version` starts a separate evidence cohort.
+5. The operator must diagnose/revise the strategy or evidence pipeline; manually downgrading the blocker is not a supported path.
+

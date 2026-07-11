@@ -18,6 +18,14 @@ Launch-score классифицирует пригодность текущег�
 
 Следствие: наличие `recommended`, высокий score/confidence или зелёный proxy-backtest не подтверждает прибыльность технологии. До статистически устойчивого положительного net expectancy в chronological walk-forward/shadow данных по фактическим fills система должна использоваться как recommendation/audit и hypothesis-generation layer. Продолжающаяся отрицательная expectancy после устранения execution/data defects является основанием остановить live использование и пересмотреть саму модель признаков/target, а не поднимать пороги постфактум.
 
+## 3C. RESOLVED/HIGH: отрицательная exact-evidence expectancy не останавливала новые запуски
+
+До v1.0.17 сервис уже сохранял immutable execution evidence и строил descriptive live-validation export, но operator execution preflight не использовал накопленный realised net PnL. Поэтому система могла продолжать materialize новые `bot_instance`, даже когда несколько независимых остановленных ботов по тому же символу и направлению подряд дали отрицательный результат. Зелёный unit-test suite этого не выявлял, потому что проверял корректность отдельных формул и persistence, а не замкнутый feedback loop «фактический результат → разрешение следующего запуска».
+
+Исправление: preflight применяет fail-closed stop gate только к stopped bots с exact execution evidence, дедуплицирует наблюдения по immutable publication root, ограничивает cohort текущим explicit `model_version` и отдельно считает direction/symbol/portfolio cohorts. Directional gate срабатывает после пяти последовательных убытков либо после восьми независимых наблюдений с отрицательными total и median net PnL и positive rate ниже 50%; symbol и portfolio gates требуют соответственно 12 и 20 наблюдений. Это заранее определённый operational stop criterion, а не статистический тест alpha.
+
+Остаточный риск: отсутствие exact evidence означает отсутствие данных для этого gate. Внешний adapter обязан передавать все fills, fee и funding; до накопления достаточной независимой выборки технология остаётся непроверенной.
+
 ## 3B. RESOLVED/HIGH: одноцикловый signal spike мог стать actionable
 
 Сильный эвристический score ранее обходил persistence gate с `required_hits=1`, а повторные циклы могли считаться подтверждением без проверки нового `features_ref_ts`. Теперь любой `futures_grid` требует двух разных последовательно закрытых evidence snapshots; повтор одной свечи, stale/out-of-order evidence и legacy state не продвигают gate.

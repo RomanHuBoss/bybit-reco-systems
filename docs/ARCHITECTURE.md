@@ -138,6 +138,7 @@
 - отсутствие обязательного `margin_mode` для supported execution paths (fail-closed для legacy/manual rows);
 - символическую согласованность Bybit metadata (`symbol/category` не должны относиться к другому инструменту);
 - leverage bounds и alignment по `leverage_step`, если биржа их предоставляет.
+- exact-evidence strategy health по direction, symbol и portfolio: persistent realised losses блокируют новые operator executions до ревизии модели.
 
 ## Ключевой архитектурный вывод
 
@@ -170,5 +171,7 @@ The architecture deliberately separates:
 - execution truth: actual fill/funding events;
 - execution-quality diagnostic: adverse benchmark-to-fill deviation;
 - validation claim: not produced automatically.
+
+The realised stream also feeds a conservative preflight stop gate. It deduplicates publication roots, scopes evidence to the explicit recommendation `model_version`, and blocks continued operator execution after predefined negative direction/symbol/portfolio evidence. The gate is a safety response to losses, not an automatic claim that non-blocked cohorts have positive expectancy.
 
 Private exchange reconciliation, raw payload archival, account inventory and unrealised PnL remain outside this repository.

@@ -148,6 +148,19 @@ UI обязан показывать этот блок рядом с execution/l
 
 Launch-score для `futures_grid` оценивает прежде всего пригодность режима для сетки: range suitability, trend/ATR penalties, multi-timeframe coherence, execution costs и adverse funding. В raw-режиме `confidence` является ограниченным нелинейным отображением того же эвристического score с дополнительными penalties за неполный контекст; это не независимая вероятность прибыли. Только bot-specific fitted calibrator добавляет статистический слой, но его target остаётся proxy-outcome, а не фактический биржевой net PnL. Поэтому ни raw, ни calibrated confidence не доказывают live edge без отдельной walk-forward/shadow проверки по реальным fills и costs.
 
+## Exact-evidence strategy-health stop gate
+
+Operator execution preflight не ограничивается проверкой текущего payload. Перед materialization `bot_instance` он читает stopped bots с immutable execution evidence и строит три newest-first cohort: `(venue, bot_type, symbol, direction)`, symbol-wide и portfolio-wide. Один `publication_root_rec_id` учитывается не более одного раза, поэтому repeated updates одной signal chain не создают ложную статистическую мощность. При explicit `model_version` используются только результаты той же версии; новая модель не наследует блок старой. Long/short/neutral не смешиваются в directional cohort.
+
+Fail-closed коды:
+
+- `LIVE_VALIDATION_DIRECTION_LOSS_STREAK`: пять последних независимых stopped bots того же symbol/direction имеют `realized_pnl_net < 0`;
+- `LIVE_VALIDATION_DIRECTION_NEGATIVE_EXPECTANCY`: минимум 8 независимых observations, total и median net PnL отрицательны, positive-bot rate < 50%;
+- `LIVE_VALIDATION_SYMBOL_NEGATIVE_EXPECTANCY`: те же условия после минимум 12 observations по символу;
+- `LIVE_VALIDATION_PORTFOLIO_NEGATIVE_EXPECTANCY`: те же условия после минимум 20 observations по всему Linear USDT `futures_grid` contour.
+
+В расчёт входят только `validation_eligible` stopped bots с хотя бы одним exact execution event. Legacy `/trades`, running bots, malformed/non-finite PnL и повторные publication roots не используются. Это safety stop criterion: он запрещает механически продолжать подтверждённо убыточный режим, но не объявляет оставшиеся режимы прибыльными и не заменяет chronological walk-forward/comparator validation.
+
 ## UI score segmentation
 
 `score` остаётся raw эвристическим числом для backend-гейтов и tie-break diagnostics, но операторский `Ранг в выборке` не должен выглядеть как точная вероятность или точное качество идеи. UI строит percentile по видимым кандидатам с near-tie группировкой: raw-score отличия `<= 0.025` считаются практически неразличимыми, группа получает общий averaged percentile/grade. Это предотвращает ложное разделение малой выборки, например `0.245 / 0.242 / 0.232`, на жёсткие `100 / 50 / 0`.
