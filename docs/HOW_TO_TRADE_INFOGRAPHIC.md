@@ -9,6 +9,13 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - One running bot per account/symbol by default.
 - Linear USDT Futures Grid only; non-linear venue, spot, options, inverse contracts, unsupported symbols, and non-USDT pairs are blocked.
 
+## Signal durability and recommendation identity
+
+- A `futures_grid` row is actionable only after two different, forward-moving closed evidence snapshots pass the gates independently.
+- Re-running the recommender on the same closed candle is not a second confirmation; the row remains `pending`.
+- Refreshing an open card keeps the exact selected immutable `rec_id`. Newer `no_trade`, blocked, pending, or direction-flip rows belong to the history timeline and must not silently replace it.
+- Raw confidence is heuristic launch quality, not a probability of profit. Even calibrated confidence targets proxy outcomes and does not prove live edge.
+
 ## Directional TP/SL model
 
 - Long: TP above entry/reference, SL below entry/reference.

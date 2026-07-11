@@ -11,6 +11,21 @@
 Даже усиленная grid-разметка не заменяет реальные fill/funding/liquidation данные.
 Использовать её как единственный источник истины для PnL/WR нельзя.
 
+
+## 3A. Live edge технологии не доказан
+
+Launch-score классифицирует пригодность текущего режима для futures grid, но не является прямой оценкой математического ожидания фактической сделки. В raw-режиме `confidence` детерминированно зависит от эвристического score и контекстных penalties; это не независимая вероятность прибыли. Даже fitted calibration обучается на proxy outcomes без queue priority, partial fills, live fee tier, latency и полной траектории inventory.
+
+Следствие: наличие `recommended`, высокий score/confidence или зелёный proxy-backtest не подтверждает прибыльность технологии. До статистически устойчивого положительного net expectancy в chronological walk-forward/shadow данных по фактическим fills система должна использоваться как recommendation/audit и hypothesis-generation layer. Продолжающаяся отрицательная expectancy после устранения execution/data defects является основанием остановить live использование и пересмотреть саму модель признаков/target, а не поднимать пороги постфактум.
+
+## 3B. RESOLVED/HIGH: одноцикловый signal spike мог стать actionable
+
+Сильный эвристический score ранее обходил persistence gate с `required_hits=1`, а повторные циклы могли считаться подтверждением без проверки нового `features_ref_ts`. Теперь любой `futures_grid` требует двух разных последовательно закрытых evidence snapshots; повтор одной свечи, stale/out-of-order evidence и legacy state не продвигают gate.
+
+## 3C. RESOLVED/HIGH: UI подменял immutable recommendation при обновлении
+
+Кнопка обновления карточки ранее искала `latest_rec_id` только по `(venue, symbol, bot_type)` и могла заменить выбранный `recommended` новым `no_trade`/другим направлением. Теперь перечитывается exact selected `rec_id`; новые публикации остаются отдельными событиями истории.
+
 ## 4. SQLite — практичный, но ограниченный backend
 Для operator-grade single-node контура это допустимо. Для multi-node/multi-writer production
 нужна более сильная persistence model.

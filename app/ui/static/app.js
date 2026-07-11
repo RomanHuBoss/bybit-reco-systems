@@ -2004,15 +2004,6 @@ async function loadRecommendationHistory(meta = currentMeta) {
   }
 }
 
-async function resolveLatestDetailsRecId(meta, fallbackRecId = null) {
-  try {
-    const data = await fetchRecommendationHistory(meta, 1);
-    return data?.latest_rec_id || fallbackRecId;
-  } catch (e) {
-    return fallbackRecId;
-  }
-}
-
 function showModal(title, obj) {
   const body = $("modalBody");
   $("modalTitle").textContent = title;
@@ -2362,11 +2353,10 @@ async function loadDetails(recId) {
 }
 
 async function refreshCurrentDetails() {
-  if (!currentRecId && !currentMeta) return;
-  const latestRecId = currentMeta
-    ? await resolveLatestDetailsRecId(currentMeta, currentRecId)
-    : currentRecId;
-  if (latestRecId) await loadDetails(latestRecId);
+  // Recommendation identity is immutable. Refresh the exact selected audit row;
+  // newer rows for the same pair belong in the history timeline and must not
+  // silently replace this card (possibly with a different direction/status).
+  if (currentRecId) await loadDetails(currentRecId);
 }
 
 // ── decisions / risk ──────────────────────────────────────────────────────────

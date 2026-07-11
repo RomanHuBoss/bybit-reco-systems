@@ -138,6 +138,16 @@ UI обязан показывать этот блок рядом с execution/l
 ## Инвариант publication-chain
 Для одной publication-chain допускается не более одного `running` bot_instance. Это не просто UI-правило: инвариант обеспечивается persistence-слоем, чтобы гонка двух операторских `execute` не создавала две параллельные позиции на один и тот же рекомендательный корень.
 
+## Signal durability и immutable UI identity
+
+Для `futures_grid` высокий score сам по себе не является независимым подтверждением. Actionable-публикация требует минимум двух разных, строго возрастающих закрытых evidence snapshots (`features_ref_ts`), каждый из которых отдельно прошёл score/risk/economics gates. Повторные recommender-cycles на одной и той же закрытой 1m-candle не увеличивают `observed_hits`; stale, out-of-order или legacy state без evidence timestamp начинает последовательность заново. До второго независимого snapshot строка остаётся `pending`.
+
+`recommendations.rec_id` является immutable audit identity и в UI. Обновление открытой карточки перечитывает тот же `rec_id`; более новая строка по тому же `(venue, symbol, bot_type)` не может молча заменить выбранную карточку. Новые `recommended`, `pending`, `blocked` или `no_trade` публикации видны только как отдельные строки/события истории.
+
+## Семантика score и confidence
+
+Launch-score для `futures_grid` оценивает прежде всего пригодность режима для сетки: range suitability, trend/ATR penalties, multi-timeframe coherence, execution costs и adverse funding. В raw-режиме `confidence` является ограниченным нелинейным отображением того же эвристического score с дополнительными penalties за неполный контекст; это не независимая вероятность прибыли. Только bot-specific fitted calibrator добавляет статистический слой, но его target остаётся proxy-outcome, а не фактический биржевой net PnL. Поэтому ни raw, ни calibrated confidence не доказывают live edge без отдельной walk-forward/shadow проверки по реальным fills и costs.
+
 ## UI score segmentation
 
 `score` остаётся raw эвристическим числом для backend-гейтов и tie-break diagnostics, но операторский `Ранг в выборке` не должен выглядеть как точная вероятность или точное качество идеи. UI строит percentile по видимым кандидатам с near-tie группировкой: raw-score отличия `<= 0.025` считаются практически неразличимыми, группа получает общий averaged percentile/grade. Это предотвращает ложное разделение малой выборки, например `0.245 / 0.242 / 0.232`, на жёсткие `100 / 50 / 0`.

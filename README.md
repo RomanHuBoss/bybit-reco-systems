@@ -4,6 +4,8 @@
 
 Проект рассчитан прежде всего на **операторский / полуавтоматический контур**: система формирует интерпретируемую рекомендацию, показывает причины, ограничения и риск-контекст, а оператор уже принимает решение о запуске бота на бирже.
 
+Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
+
 ## Поддерживаемые bot_type
 - `futures_grid` — только Bybit `category=linear`, USDT perpetual, settlement/margin/PnL в USDT.
 
@@ -18,7 +20,7 @@
 - определяет direction/regime на нескольких ТФ;
 - считает score / confidence / expected RR / risk score;
 - UI `Ранг в выборке` показывает не «точный рейтинг», а grouped percentile: близкие raw-score внутри material delta `0.025` объединяются в near-tie band и получают одинаковый averaged percentile/grade, чтобы 0.245/0.242/0.232 не выглядели как 100/50/0;
-- применяет risk-gate, publication-gate, market shock guard и symbol fast-veto;
+- применяет risk-gate, publication-gate, market shock guard и symbol fast-veto; для `futures_grid` actionable-публикация требует двух разных последовательно закрытых evidence snapshots (`features_ref_ts`), а повторные циклы на одной и той же свече не считаются подтверждением;
 - при необходимости отправляет кандидат в локальный LLM-reviewer;
 - перед operator-confirmation повторно проверяет риск-лимиты, свежесть market-data, актуальный market shock / fast-veto, live-price относительно сохранённого диапазона сетки, текущий best bid/ask spread и net edge после live execution costs, а также базовую исполнимость trade plan относительно metadata инструмента Bybit;
 - сохраняет рекомендации, решения, outcome-labeling, calibration state, trade history и risk limits в SQLite или PostgreSQL;
@@ -69,6 +71,7 @@
 - risk limits начинают полноценно отражать реальность только если в `trades` действительно пишутся realized fills / PnL / fee;
 - локальный LLM-reviewer — это **консервативный reviewer поверх движка**, а не замена scoring/risk/calibration;
 - проект не предназначен для немедленного запуска на полный объём капитала без staging-прогона.
+- текущая технология не доказывает live alpha: launch-score в основном оценивает пригодность рыночного режима для grid, а outcome/calibration используют proxy-разметку без реальной очередности fills, partial fills и live fee/slippage distribution. До положительной walk-forward/shadow статистики по фактическим исполнениям систему следует считать генератором проверяемых гипотез, а не доказанной прибыльной стратегией.
 
 ## Операторский профиль 100-500 USDT
 
@@ -83,7 +86,7 @@
 ## Как читать ключевые поля
 - `status` — итоговый допуск идеи к рассмотрению.
 - `direction` — исполнимое направление для текущего bot_type.
-- `confidence` — степень уверенности системы; не читать изолированно от score, RR и risk context.
+- `confidence` — в режиме `raw` это ограниченная эвристическая функция launch-score, а не вероятность прибыльной сделки; вероятностная интерпретация допустима только при активном bot-specific calibrator и всё равно относится к proxy-outcome, не к биржевому PnL. Не читать изолированно от score, RR, `reasons.confidence_model` и risk context.
 - `expected_rr` — консервативный экономический смысл идеи после учёта execution friction и только неблагоприятного funding carry; потенциальное получение funding не повышает RR.
 - `score` / `reasons.score_components.economic_cost_bps` — ранжирование также штрафует adverse funding carry; signed funding receipt не превращается в положительный edge и не снижает cost-feature.
 - `risk_score` — грубая оценка рыночной/исполнительной сложности.
@@ -129,7 +132,7 @@ ruff check app tests main.py
 Текущий проверочный baseline этой ревизии:
 - исходный full test suite: `833 passed`; post-check: `838 passed`;
 - `PYTHONDONTWRITEBYTECODE=1 python -m py_compile app/*.py main.py` — passed;
-- `ruff check app tests main.py` — 9 ранее известных findings; новых findings в v1.0.14 нет;
+- `ruff check app tests main.py` — в текущем build-окружении модуль Ruff недоступен; lint-result этой итерации не заявляется;
 - `pytest --cov=app --cov-report=term-missing` — запускать в release/dev-контуре при изменениях покрытия;
 - `requirements-dev.txt` входит в поставку и фиксирует quality-gate (`pytest`, `pytest-cov`, `ruff`) как часть репозитория, а не как неявную зависимость локального окружения
 - регрессионные тесты покрывают collector / hot-vs-backfill separation / Bybit client / health semantics / stale-ticker semantics / long-gap kline catch-up / open-interest pagination / runtime lock loss rollback / heartbeat fail-closed / poisoned historical rows / DB validation / metrics endpoint / bounded-parallel collector soak / sentiment feature compression / bootstrap stage commit / batch ticker fallback / future-poisoned ticker and health paths / dedicated heartbeat connection wiring / transactional rollback для execute-trade-stop API paths / atomic recommender publish rollback / duplicate-trade no-op semantics / latest-operator snapshot selection for non-actionable views / execute-idempotency across one publication-chain / idempotent stop retries without duplicate audit events / rollback on silent-false execute-status transition / rollback on failed stop_bot trade finalization / boot-grace honesty for inherited stale rows / malformed sentiment adapter payloads / poisoned Reddit posts / safe fail-open of `collect_sentiment_once()` / malformed legacy JSON-shapes in recommendation-bot-trade-sentiment APIs / malformed app_config payloads in status and metrics / rejection of blank audit keys for `risk limits version` and explicit `trade_id` / persistence of normalized effective risk limits in bootstrap and mutating API / fail-open fallback from poisoned top-level grid range bounds to valid `trade_plan.levels.range` and `trade_plan.levels.kill_switch` / rejection of `NUL` in sentiment tags and GET-filters / explicit transaction cleanup on idempotent execution paths / sanitization of non-finite `trade_plan` и `cost_model` payloads / correct decomposition of legacy `net_cost_bps` into execution-cost plus funding-carry for outcome-labeling / execution-time preflight по свежести market-data / live-price drift относительно диапазона и kill-switch / live bid/ask spread и net-edge revalidation / market shock / fast-veto / базовой Bybit-валидации сетки / adaptive publication-chain collapse under large duplicate bursts / retry of transient Bybit decode- and protocol-level failures / strict grid-only execution preflight for unsupported bot_type, non-linear venue and off-tick prices/steps/TP / exact-symbol funding ticker / execution-time funding carry preflight / malformed symbol and pre-listing metadata hardening / worst-boundary liquidation buffer / tick-safe operator snapping for range, kill-switch, grid step and TP / запрет funding receipt повышать score, expected RR и outcome labels / запрет net-negative TP-touch повышать outcome success / strict generated-grid geometry mismatch preflight.
@@ -209,7 +212,7 @@ ruff check app tests main.py
 - `POST /api/v1/sentiment`
 
 ## Жизненный цикл исполнения
-1. recommendation публикуется со статусом `recommended`, если это новый actionable выпуск;
+1. кандидат `futures_grid` сначала удерживается в `pending`, пока два разных последовательно закрытых evidence snapshots (`features_ref_ts`) независимо не пройдут score/risk/economics gates; повторный recommender-cycle на той же свече не увеличивает счётчик; после подтверждения новый actionable выпуск публикуется как `recommended`;
 2. если same-direction сигнал пришёл, пока предыдущая корневая идея по этому `(venue, symbol, bot_type, direction)` ещё находится внутри своего outcome-horizon, новый `publication_root` не создаётся даже при material-upgrade: запись принудительно сохраняется как `active` в существующей publication-chain, чтобы outcome-labeling имитировал одну открытую псевдо-сделку, а не серию повторных входов;
 3. если сигнал повторился уже после закрытия псевдо-сделки, но внутри republish-cooldown и без material upgrade, он тоже сохраняется как `active` в той же publication-chain: запись остаётся исполнимой для оператора, но её lineage указывает на прежний `publication_root_rec_id`, поэтому outcome/calibration считают только корневую публикацию; если предыдущий bot этой chain уже остановлен, новый `execute` обязан создать новый running-бот, а не вернуть старый stopped-instance;
 4. если включён `LLM_REVIEWER_ENABLED=1`, actionable grid-рекомендация получает `pending` до `llm_review.status=ok`; без OK-вердикта `recommended/active` в UI/API не показываются как запускаемые, а hold ограничен `LLM_REVIEWER_PENDING_TIMEOUT_SEC`;
@@ -222,9 +225,9 @@ ruff check app tests main.py
 11. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
 
 ### Семантика статусов recommendation
-- `recommended` — новый actionable сигнал, готовый к исполнению;
+- `recommended` — новый actionable сигнал, который прошёл подтверждение на двух разных закрытых evidence snapshots и готов к исполнению;
 - `active` — повторно актуальный signal-update внутри уже открытой publication-chain; возникает либо при обычном cooldown-reuse, либо при жёстком same-direction pseudo-position lock до завершения horizon. Исполним, но не считается новым выпуском и не создаёт отдельный outcome-root;
-- `pending` — временный gate-hold перед исполнением; не является `no_trade`, но не исполним до финального `recommended`/`active` либо fail-closed отказа;
+- `pending` — временный gate-hold перед исполнением, включая ожидание второго отличающегося закрытого evidence snapshot; не является `no_trade`, но не исполним до финального `recommended`/`active` либо fail-closed отказа;
 - `suppressed` — скрытая альтернатива, проигравшая dedupe/selector и сохранённая только для аудита.
 
 ### Инварианты исполнения publication-chain

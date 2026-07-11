@@ -854,15 +854,21 @@ def test_persistence_fresh_gap_allows_confirmation_across_brief_collection_gaps(
     settings = _settings_for_tests(reco_interval_sec=20)
     fresh_gap = _persistence_fresh_gap(settings)
 
-    first = _advance_persistence_gate("linear", "BTCUSDT", "futures_grid", "long", now_ts=1_700_000_000, fresh_gap=fresh_gap)
-    second = _advance_persistence_gate("linear", "BTCUSDT", "futures_grid", "long", now_ts=1_700_000_120, fresh_gap=fresh_gap)
+    first = _advance_persistence_gate(
+        "linear", "BTCUSDT", "futures_grid", "long",
+        now_ts=1_700_000_000, fresh_gap=fresh_gap, evidence_ts=1_699_999_980,
+    )
+    second = _advance_persistence_gate(
+        "linear", "BTCUSDT", "futures_grid", "long",
+        now_ts=1_700_000_120, fresh_gap=fresh_gap, evidence_ts=1_700_000_040,
+    )
 
     assert fresh_gap >= 180
     assert first == 1
     assert second == 2
 
 
-def test_persistence_gate_allows_immediate_publish_for_high_quality_signal():
+def test_persistence_gate_requires_distinct_evidence_even_for_high_quality_signal():
     settings = _settings_for_tests()
     rec = {
         "score": 0.19,
@@ -878,8 +884,8 @@ def test_persistence_gate_allows_immediate_publish_for_high_quality_signal():
 
     required_hits, mode = _persistence_gate_requirements(rec, settings)
 
-    assert required_hits == 1
-    assert mode == "high_quality_signal"
+    assert required_hits == 2
+    assert mode == "distinct_evidence_confirmation"
 
 
 def test_recommendation_ttl_defaults_to_reco_cadence_not_collect_cadence():

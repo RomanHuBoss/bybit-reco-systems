@@ -280,4 +280,4 @@ def test_boolean_quality_fields_cannot_bypass_two_cycle_publication_gate() -> No
         "expected_rr": True,
         "reasons": {"direction_agg": {"coherence": True, "regime_confidence": True}},
     }
-    assert recommender._persistence_gate_requirements(rec, Settings()) == (2, "two_cycle_confirmation")
+    assert recommender._persistence_gate_requirements(rec, Settings()) == (2, "distinct_evidence_confirmation")

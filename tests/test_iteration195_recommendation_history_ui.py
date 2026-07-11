@@ -141,7 +141,7 @@ def test_history_endpoint_returns_ordered_publications_and_latest_identity(histo
     assert payload["items"][2]["llm_status"] == "pending"
 
 
-def test_ui_has_modal_timeline_and_follows_latest_recommendation_for_open_pair():
+def test_ui_has_modal_timeline_and_preserves_selected_recommendation_identity():
     root = Path(__file__).resolve().parents[1]
     js = (root / "app" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
     css = (root / "app" / "ui" / "static" / "styles.css").read_text(encoding="utf-8")
@@ -151,7 +151,7 @@ def test_ui_has_modal_timeline_and_follows_latest_recommendation_for_open_pair()
     assert "loadRecommendationHistory" in js
     assert "buildRecommendationTimelineSvg" in js
     assert "/api/v1/recommendations/history?" in js
-    assert "resolveLatestDetailsRecId" in js
+    assert "resolveLatestDetailsRecId" not in js
     assert "refreshInFlight" in js
     assert "effective_status_counts" in js
     assert ".recommendation-timeline" in css

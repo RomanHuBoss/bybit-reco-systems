@@ -2634,8 +2634,8 @@ def _params(
 # Tracks consecutive recommended cycles for the SAME logical signal.
 # The original implementation keyed only by (venue, symbol, bot_type) and therefore
 # could accidentally confirm a freshly flipped short using a previous long signal.
-# We include direction in the signature and require a consecutive-cycle hit within
-# an interval-derived freshness window.
+# We include direction in the signature and require confirmation from distinct,
+# forward-moving closed-candle evidence within an interval-derived freshness window.
 _prev_recommended: dict[tuple, dict[str, int]] = {}
 PERSISTENCE_BOTS: set[str] = {"futures_grid"}
 PERSISTENCE_STATE_APP_KEY = "reco_persistence_gate_v1"
@@ -2654,10 +2654,18 @@ def _load_prev_recommended(conn) -> dict[tuple, dict[str, int]]:
         if len(parts) != 4:
             continue
         venue, sym, bot_type, direction = parts
-        try:
-            out[(venue, sym, bot_type, direction)] = {"ts": int(state.get("ts", 0) or 0), "count": int(state.get("count", 0) or 0)}
-        except Exception:
+        ts = _safe_int_or_none(state.get("ts"))
+        count = _safe_int_or_none(state.get("count"))
+        evidence_ts = _safe_int_or_none(state.get("evidence_ts"))
+        if ts is None or count is None or ts <= 0 or count <= 0:
             continue
+        out[(venue, sym, bot_type, direction)] = {
+            "ts": int(ts),
+            "count": int(count),
+            # Older persisted state did not have an evidence timestamp. Keeping
+            # zero forces one fresh closed-candle observation before it can pass.
+            "evidence_ts": int(evidence_ts or 0),
+        }
     return out
 
 
@@ -2668,28 +2676,75 @@ def _save_prev_recommended(conn, state: dict[tuple, dict[str, int]], fresh_gap: 
     for key, meta in (state or {}).items():
         if not isinstance(key, tuple) or len(key) != 4 or not isinstance(meta, dict):
             continue
-        ts = int(meta.get("ts", 0) or 0)
-        count = int(meta.get("count", 0) or 0)
-        if ts <= 0 or count <= 0 or now - ts > ttl:
+        ts = _safe_int_or_none(meta.get("ts"))
+        count = _safe_int_or_none(meta.get("count"))
+        evidence_ts = _safe_int_or_none(meta.get("evidence_ts"))
+        if (
+            ts is None
+            or count is None
+            or evidence_ts is None
+            or ts <= 0
+            or count <= 0
+            or evidence_ts <= 0
+            or now - ts > ttl
+        ):
             continue
-        payload["|".join(str(x) for x in key)] = {"ts": ts, "count": count}
+        payload["|".join(str(x) for x in key)] = {
+            "ts": int(ts),
+            "count": int(count),
+            "evidence_ts": int(evidence_ts),
+        }
     db.set_app_config_json(conn, PERSISTENCE_STATE_APP_KEY, payload, commit=commit)
 
 
-def _advance_persistence_gate(venue: str, sym: str, bot_type: str, direction: str, now_ts: int, fresh_gap: int) -> int:
+def _advance_persistence_gate(
+    venue: str,
+    sym: str,
+    bot_type: str,
+    direction: str,
+    now_ts: int,
+    fresh_gap: int,
+    *,
+    evidence_ts: int | None,
+) -> int:
+    """Count only distinct, forward-moving closed-candle evidence snapshots.
+
+    Recommender cycles can run several times while ``features_ref_ts`` still
+    points to the same closed 1m candle. Counting those retries as independent
+    confirmation creates a false persistence signal. Duplicate or out-of-order
+    evidence therefore cannot advance the publication gate.
+    """
     global _prev_recommended
     pkey = (venue, sym, bot_type, direction)
-    state = _prev_recommended.get(pkey) or {"ts": 0, "count": 0}
-    if now_ts - int(state.get("ts", 0)) <= fresh_gap:
-        state = {"ts": now_ts, "count": int(state.get("count", 0)) + 1}
+    observed_at = _safe_int_or_none(now_ts)
+    evidence = _safe_int_or_none(evidence_ts)
+    gap = _safe_int_or_none(fresh_gap)
+    if observed_at is None or evidence is None or gap is None or observed_at <= 0 or evidence <= 0 or gap <= 0:
+        _prev_recommended.pop(pkey, None)
+        return 0
+
+    state = _prev_recommended.get(pkey) or {"ts": 0, "count": 0, "evidence_ts": 0}
+    prior_ts = _safe_int_or_none(state.get("ts")) or 0
+    prior_count = _safe_int_or_none(state.get("count")) or 0
+    prior_evidence = _safe_int_or_none(state.get("evidence_ts")) or 0
+    is_fresh = prior_ts > 0 and observed_at - prior_ts <= gap
+
+    if is_fresh and evidence == prior_evidence:
+        # Same closed candle is the same evidence, not a second confirmation.
+        return int(prior_count)
+    if is_fresh and prior_evidence > 0 and evidence > prior_evidence:
+        next_state = {"ts": observed_at, "count": prior_count + 1, "evidence_ts": evidence}
     else:
-        state = {"ts": now_ts, "count": 1}
-    _prev_recommended[pkey] = state
+        # First observation, stale state, legacy state without evidence_ts, or
+        # out-of-order evidence all restart the confirmation sequence.
+        next_state = {"ts": observed_at, "count": 1, "evidence_ts": evidence}
+
+    _prev_recommended[pkey] = next_state
     for other_dir in ("long", "short", "neutral"):
         other_key = (venue, sym, bot_type, other_dir)
         if other_key != pkey:
             _prev_recommended.pop(other_key, None)
-    return int(state.get("count", 0))
+    return int(next_state["count"])
 
 
 def _reset_persistence_gate(venue: str, sym: str, bot_type: str) -> None:
@@ -2718,28 +2773,12 @@ def _recommendation_ttl_sec(settings) -> int:
 
 
 def _persistence_gate_requirements(rec: dict[str, Any], settings) -> tuple[int, str]:
-    score = _finite_float(rec.get("score"), 0.0)
-    confidence = _finite_float(rec.get("confidence"), 0.0)
-    expected_rr = _finite_float(rec.get("expected_rr"), 0.0)
-    reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
-    direction_agg = reasons.get("direction_agg") if isinstance(reasons.get("direction_agg"), dict) else {}
-    coherence = _finite_float(direction_agg.get("coherence"), 0.0)
-    regime_conf = _finite_float(direction_agg.get("regime_confidence"), 0.0)
-
-    strong_score_thr = max(_finite_float(getattr(settings, "min_score_to_recommend", 0.08), 0.08) + 0.04, 0.14)
-    strong_conf_thr = max(_finite_float(getattr(settings, "min_conf_to_recommend", 0.52), 0.52) + 0.08, 0.62)
-    strong_rr_thr = 0.14
-
-    is_high_quality = (
-        score >= strong_score_thr
-        and confidence >= strong_conf_thr
-        and expected_rr >= strong_rr_thr
-        and coherence >= 0.60
-        and regime_conf >= 0.55
-    )
-    if is_high_quality:
-        return 1, "high_quality_signal"
-    return 2, "two_cycle_confirmation"
+    # A high score is not independent evidence. Every grid recommendation must
+    # survive at least one new closed-candle snapshot before it is actionable.
+    # ``rec`` and ``settings`` remain parameters to preserve the internal contract
+    # and allow future evidence-based policies without changing call sites.
+    _ = rec, settings
+    return 2, "distinct_evidence_confirmation"
 
 
 _direction_state_cache: dict[tuple[str, str], dict[str, Any]] = {}
@@ -4060,6 +4099,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 continue
             if r.get("status") == "recommended":
                 required_hits, gate_mode = _persistence_gate_requirements(r, settings)
+                evidence_ref_ts = _safe_int_or_none(r.get("features_ref_ts"))
                 count = _advance_persistence_gate(
                     str(r.get("venue") or ""),
                     str(r.get("symbol") or ""),
@@ -4067,6 +4107,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     str(r.get("direction") or "neutral"),
                     ts_now,
                     _fresh_gap,
+                    evidence_ts=evidence_ref_ts,
                 )
                 passed = count >= required_hits
                 reasons["publication_gate"] = {
@@ -4074,7 +4115,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "required_hits": int(required_hits),
                     "observed_hits": int(count),
                     "fresh_gap_sec": int(_fresh_gap),
-                    "bypassed": bool(required_hits == 1 and gate_mode != "two_cycle_confirmation"),
+                    "evidence_ref_ts": evidence_ref_ts,
+                    "bypassed": False,
                     "passed": bool(passed),
                     "decision": "publish" if passed else "pending_confirmation",
                 }
