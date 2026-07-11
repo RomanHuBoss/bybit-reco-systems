@@ -170,7 +170,7 @@ def fit_platt(
 # Canonical feature order — must never change once models are saved to DB.
 # New features can be appended at the end (old models will use 0.0 for them).
 FEATURE_NAMES = [
-    "range_score",        # 1 − trend_strength (multi-TF)
+    "range_score",        # current independent range-edge feature (v4+)
     "trend_strength",     # |all-TF trend strength|
     "atr_pct_norm",       # atr_pct / 0.10  (normalised, clipped 0..2; 1.0 ≈ 10% 1h ATR)
     "effective_sentiment",# blended global+symbol sentiment [-1, 1]
@@ -823,13 +823,14 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
-# v3: feature vector expanded (+5 features: oi_4h, funding, liq_tier, btc_corr, regime_conf)
-#     + recency weighting in fit_logreg/fit_platt → forces refit of all saved models
+# v4: range_score semantics now require independent mean-reversion evidence.
+#     New keys deliberately prevent loading coefficients fitted on the former
+#     tautology ``range_score = 1 - trend_strength``.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v3",
+    "futures_grid": "logreg_futures_grid_v4",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v3"
+GLOBAL_LOGREG_KEY = "logreg_global_v4"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

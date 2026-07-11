@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-11 - v1.0.20 - independent mean-reversion edge gate
+
+- Closed a HIGH model defect: low trend / flat moving-average slope is no longer treated as sufficient evidence of a profitable grid range. The recommender now measures anti-persistence independently through lag-1 return autocorrelation, a four-step variance ratio and sign-reversal frequency across multiple closed timeframes.
+- Added fail-closed publication codes `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` and `MEAN_REVERSION_EDGE_UNCONFIRMED`. A driftless/random-walk-like path is blocked even when the legacy `1 - trend_strength` range proxy is high.
+- Changed model identity to `bybit-taxonomy-v3-mean-reversion` and calibration keys to v4. Calibration now accepts only outcomes from the current model with an explicit independent mean-reversion feature snapshot, preventing old coefficients/outcomes from reintroducing the former range tautology.
+- Corrected operator semantics: legacy `expected_rr` remains API-compatible but is labelled as a heuristic capture/volatility proxy, not an actual reward-to-loss ratio or profitability proof.
+- No database schema, migration, route or environment-variable change. Existing v3 calibrator rows remain stored but are no longer loaded by the v4 keys; the new calibrator remains unfitted until enough v3-model outcomes mature.
+- Baseline: 862 collected / 862 passed. Targeted RED on pristine code: collection error because `mean_reversion_diagnostics` was absent (an earlier seven-test RED run produced seven expected failures). Targeted GREEN: 8 passed. Final counts are recorded in the bundled internal release audit.
+
 ## 2026-07-11 - v1.0.19 - risk sizing integrity
 
 - Closed a HIGH configuration defect: built-in and fallback risk limits now match the shipped 100-500 USDT operator profile even when `.env` is absent (1 bot, daily DD 10 USDT, 90-minute cooldown, 500 USDT max notional, 100 USDT max margin, leverage 3-5x).

@@ -6,6 +6,22 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+
+## Независимое подтверждение диапазонного режима
+
+До версии 1.0.20 диапазонный score в нескольких местах фактически сводился к `1 - trend_strength`. Это логически недостаточно: отсутствие тренда совместимо и с возвратным диапазоном, и с driftless random walk. У второго до издержек нет доказанного положительного ожидания самофинансируемой grid-стратегии, а комиссии, spread, slippage и adverse selection делают ожидание отрицательным.
+
+Теперь actionable `futures_grid` требует независимого multi-timeframe evidence возвратности:
+
+- отрицательной lag-1 автокорреляции доходностей;
+- variance ratio на четырёх шагах ниже random-walk benchmark;
+- повышенной частоты смены знака доходности;
+- валидного evidence минимум на трёх закрытых timeframes с достаточным весовым покрытием.
+
+Если данных недостаточно, публикуется `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`. Если агрегированный `mean_reversion_score < 0.55`, публикуется `MEAN_REVERSION_EDGE_UNCONFIRMED`. Низкий trend score сам по себе больше не является grid edge. Порог является консервативным safety gate, а не доказательством прибыльности: microstructure bounce, regime shift и execution costs всё ещё должны проверяться walk-forward/shadow статистикой по фактическим fills.
+
+Модель имеет новую audit identity `bybit-taxonomy-v3-mean-reversion`. Старые calibration coefficients и outcome features с семантикой `range = 1 - trend` не смешиваются с новой выборкой. Поле `expected_rr` сохранено для API-совместимости, но в UI отображается как **прокси capture/risk**: это эвристика ранжирования, не фактическое отношение прибыли к убытку.
+
 ## Фактическое исполнение и realised PnL
 
 Проект по-прежнему не выставляет ордера. Внешний read-only execution/reconciliation adapter может передавать в защищённый endpoint `/api/v1/bots/{bot_id}/execution-evidence` два типа immutable events:

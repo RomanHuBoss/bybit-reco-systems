@@ -8,6 +8,28 @@
 До v1.0.19 provisional sizing округлялся вверх по фиктивному `0.001`, а live auto-snap повышал qty до minQty/minNotional. Для дорогого BTCUSDT target 25 USDT превращался в 100 USDT на одну grid-заявку до учета количества интервалов. Теперь provisional qty сохраняет target notional, live alignment выполняется только вниз, а недостаточный minQty/minNotional блокируется fail-closed.
 # Известные риски и ограничения
 
+## 2026-07-11 independent range-edge audit
+
+### RESOLVED/HIGH: отсутствие тренда ошибочно считалось положительным grid edge
+
+Legacy `range_score` почти полностью равнялся `1 - trend_strength`, поэтому low-drift random walk мог получить высокий range score, положительный вклад в launch-score и эвристический `expected_rr`. Это не доказывало возвратность и создавало систематический false-positive path после комиссий. Исправлено независимым anti-persistence diagnostic, multi-TF coverage gate и hard blockers `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` / `MEAN_REVERSION_EDGE_UNCONFIRMED`.
+
+### RESOLVED/HIGH: старая калибровка могла пережить изменение feature semantics
+
+Сохранённые v3 coefficients и legacy outcome snapshots были обучены на прежнем диапазонном proxy. Простая замена inference feature создала бы train/inference skew. Текущая модель получила identity `bybit-taxonomy-v3-mean-reversion`, calibrator keys v4, а fit фильтруется по model version и явному независимому evidence snapshot.
+
+### RESOLVED/MEDIUM: `expected_rr` выглядел как фактический reward:risk
+
+Поле является эвристическим capture/volatility proxy и не моделирует полную monetary loss distribution, inventory path и liquidation tail. API field сохранён, но UI и reasons теперь явно маркируют его как proxy, не доказательство прибыли.
+
+### HIGH/RESIDUAL: положительное mean-reversion evidence не доказывает net alpha
+
+Negative autocorrelation может отражать bid/ask bounce, stale marks или краткоживущий microstructure effect, который нельзя исполнить после spread, fees, slippage, funding и latency. Порог 0.55 является conservative false-positive filter, а не оценкой expected net PnL. До достаточной независимой walk-forward/shadow выборки по exact fills проект остаётся генератором гипотез.
+
+### MEDIUM/RESIDUAL: новые calibrators временно будут unfitted
+
+Legacy outcomes намеренно исключены из v4 training. Confidence будет использовать raw/fallback semantics до накопления достаточного числа matured outcomes модели v3. Это безопаснее, чем переносить коэффициенты с несовместимой feature semantics, но уменьшает статистическую информативность в переходный период.
+
 ## 1. Нет реального OMS/EMS
 Это главный системный риск. Проект не управляет live order lifecycle и не знает реальные open orders/fills.
 Следствие: нельзя считать его завершённой автоторговой системой без внешнего execution layer.

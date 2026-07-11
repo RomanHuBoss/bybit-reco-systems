@@ -145,6 +145,24 @@ UI обязан показывать этот блок рядом с execution/l
 
 `recommendations.rec_id` является immutable audit identity и в UI. Обновление открытой карточки перечитывает тот же `rec_id`; более новая строка по тому же `(venue, symbol, bot_type)` не может молча заменить выбранную карточку. Новые `recommended`, `pending`, `blocked` или `no_trade` публикации видны только как отдельные строки/события истории.
 
+## Независимый mean-reversion gate для grid
+
+`range_score = 1 - trend_strength` больше не является достаточной торговой гипотезой. Нулевая направленная компонента не отличает возвратный процесс от мартингального/random-walk процесса, у которого self-financing grid не получает положительного математического ожидания до издержек и теряет после издержек.
+
+`app.direction.mean_reversion_diagnostics()` использует только закрытые цены и отдельно оценивает:
+
+- lag-1 autocorrelation лог-доходностей;
+- variance ratio для четырёхшаговой доходности;
+- долю последовательных доходностей с противоположным знаком.
+
+Multi-timeframe aggregate считается валидным при минимум трёх TF и весовом покрытии не менее 40%. В publication gate требуется `mean_reversion_score >= 0.55`; иначе recommendation получает `MEAN_REVERSION_EDGE_UNCONFIRMED`. При недостатке истории применяется `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`. Эти блокировки fail-closed и не могут быть отменены высоким legacy range score, LLM verdict или raw confidence.
+
+Threshold был sanity-checked на детерминированной Monte-Carlo выборке: среди 200 IID paths gate пропускает не более одного, тогда как для материально anti-persistent AR(1), `phi=-0.35`, пропускается не менее 150. Это unit-level discriminative check, а не оценка live profitability. Bid/ask bounce и transient anti-persistence могут быть неисполняемыми после costs, поэтому положительный score остаётся только предварительным evidence.
+
+Feature/calibration identity изменена: текущая recommendation model — `bybit-taxonomy-v3-mean-reversion`, а logistic/Platt keys имеют v4. Для fit принимаются только outcomes текущей модели с явным `mean_reversion_evidence_valid=1` и finite `mean_reversion_score`; legacy outcomes не используются даже для score-only fallback.
+
+Поле `expected_rr` исторически вычисляется как bounded capture-to-volatility heuristic. Оно не использует точную monetary loss distribution и не является каноническим reward:risk. UI поэтому показывает «Прокси capture/risk» / «Прокси C/R».
+
 ## Семантика score и confidence
 
 Launch-score для `futures_grid` оценивает прежде всего пригодность режима для сетки: range suitability, trend/ATR penalties, multi-timeframe coherence, execution costs и adverse funding. В raw-режиме `confidence` является ограниченным нелинейным отображением того же эвристического score с дополнительными penalties за неполный контекст; это не независимая вероятность прибыли. Только bot-specific fitted calibrator добавляет статистический слой, но его target остаётся proxy-outcome, а не фактический биржевой net PnL. Поэтому ни raw, ни calibrated confidence не доказывают live edge без отдельной walk-forward/shadow проверки по реальным fills и costs.

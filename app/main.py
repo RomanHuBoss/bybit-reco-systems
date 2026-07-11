@@ -143,7 +143,7 @@ def _bootstrap_db() -> None:
             from .calibration import BOT_CALIB_KEYS, GLOBAL_LOGREG_KEY
 
             deleted_outcomes = conn.execute("DELETE FROM reco_outcomes").rowcount
-            keys_to_delete = [GLOBAL_LOGREG_KEY, *BOT_CALIB_KEYS.values(), "platt_direction_v3"]
+            keys_to_delete = [GLOBAL_LOGREG_KEY, *BOT_CALIB_KEYS.values(), "platt_direction_v4"]
             qmarks = ",".join("?" for _ in keys_to_delete)
             deleted_calibrators = 0
             if qmarks:
@@ -4382,7 +4382,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.19", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.20", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

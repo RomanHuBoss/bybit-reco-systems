@@ -94,6 +94,90 @@ def atr_pct(highs: list[float], lows: list[float], closes: list[float], period: 
     p = closes[-1] if closes[-1] else 1.0
     return float(atr / p)
 
+
+def mean_reversion_diagnostics(closes: list[float], *, max_returns: int = 160) -> dict[str, Any]:
+    """Measure anti-persistence independently from absence of trend.
+
+    A flat MA slope is not evidence that a grid has positive oscillation edge: a
+    driftless martingale has near-zero trend too.  This diagnostic therefore uses
+    three path properties that are independent of the MA/MACD trend proxy:
+    lag-1 return autocorrelation, a four-step variance ratio, and sign reversals.
+    Values near a random walk remain low; repeatable anti-persistence scores high.
+    """
+    clean: list[float] = []
+    for value in closes or []:
+        if isinstance(value, bool):
+            continue
+        try:
+            number = float(value)
+        except Exception:
+            continue
+        if math.isfinite(number) and number > 0.0:
+            clean.append(number)
+    if len(clean) < 42:
+        return {
+            "mean_reversion_score": 0.0,
+            "mean_reversion_evidence_valid": False,
+            "return_autocorr_lag1": None,
+            "variance_ratio_4": None,
+            "sign_reversal_rate": None,
+            "mean_reversion_observations": max(0, len(clean) - 1),
+        }
+
+    returns = [math.log(clean[i] / clean[i - 1]) for i in range(1, len(clean))]
+    returns = returns[-max(40, int(max_returns)):]
+    n = len(returns)
+    mean_r = sum(returns) / n
+    var1 = sum((value - mean_r) ** 2 for value in returns) / max(1, n - 1)
+    if not math.isfinite(var1) or var1 <= 1e-16:
+        return {
+            "mean_reversion_score": 0.0,
+            "mean_reversion_evidence_valid": False,
+            "return_autocorr_lag1": None,
+            "variance_ratio_4": None,
+            "sign_reversal_rate": None,
+            "mean_reversion_observations": n,
+        }
+
+    left = returns[:-1]
+    right = returns[1:]
+    mean_left = sum(left) / len(left)
+    mean_right = sum(right) / len(right)
+    cov = sum((a - mean_left) * (b - mean_right) for a, b in zip(left, right))
+    den_left = sum((a - mean_left) ** 2 for a in left)
+    den_right = sum((b - mean_right) ** 2 for b in right)
+    corr = cov / math.sqrt(max(1e-30, den_left * den_right))
+    corr = _clamp(float(corr), -1.0, 1.0)
+
+    q = 4
+    q_returns = [sum(returns[index - q + 1:index + 1]) for index in range(q - 1, n)]
+    mean_q = sum(q_returns) / len(q_returns)
+    var_q = sum((value - mean_q) ** 2 for value in q_returns) / max(1, len(q_returns) - 1)
+    variance_ratio = max(0.0, float(var_q / (q * var1)))
+
+    signs = [1 if value > 0.0 else (-1 if value < 0.0 else 0) for value in returns]
+    pairs = [(a, b) for a, b in zip(signs, signs[1:]) if a and b]
+    reversal_rate = (sum(1 for a, b in pairs if a != b) / len(pairs)) if pairs else 0.0
+
+    autocorr_component = _clamp((-corr - 0.02) / 0.45, 0.0, 1.0)
+    variance_ratio_component = _clamp((0.98 - variance_ratio) / 0.50, 0.0, 1.0)
+    reversal_component = _clamp((reversal_rate - 0.52) / 0.28, 0.0, 1.0)
+    score = _clamp(
+        0.45 * autocorr_component
+        + 0.35 * variance_ratio_component
+        + 0.20 * reversal_component,
+        0.0,
+        1.0,
+    )
+    return {
+        "mean_reversion_score": float(score),
+        "mean_reversion_evidence_valid": True,
+        "return_autocorr_lag1": float(corr),
+        "variance_ratio_4": float(variance_ratio),
+        "sign_reversal_rate": float(reversal_rate),
+        "mean_reversion_observations": int(n),
+    }
+
 # TF weights: structural TFs dominate
 TF_WEIGHTS = {
     15*60: 0.8,
@@ -154,6 +238,12 @@ def _neutral_tf_vote(reason: str = "insufficient_or_invalid_ohlc") -> dict[str, 
         "score": 0.0,
         "trend_strength": 0.0,
         "neutral_veto": 0.8,
+        "mean_reversion_score": 0.0,
+        "mean_reversion_evidence_valid": False,
+        "return_autocorr_lag1": None,
+        "variance_ratio_4": None,
+        "sign_reversal_rate": None,
+        "mean_reversion_observations": 0,
         "data_quality": reason,
     }
 
@@ -167,6 +257,7 @@ def vote_for_tf(closes: list[float], highs: list[float], lows: list[float]) -> d
     rsi = rsi14(closes)
     hist = macd_hist(closes)
     ap = atr_pct(highs, lows, closes)
+    mean_reversion = mean_reversion_diagnostics(closes)
 
     # Soft contributions (normalized)
     # Slope normalized by ATR% to make TFs more comparable
@@ -215,6 +306,7 @@ def vote_for_tf(closes: list[float], highs: list[float], lows: list[float]) -> d
         "score": float(score),
         "trend_strength": float(trend_strength),
         "neutral_veto": float(neutral_veto),
+        **mean_reversion,
     }
 
 def _aggregate_signed(tf_map: dict[int, dict[str, Any]], tf_secs: list[int]) -> float:
@@ -277,6 +369,25 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
         trendiness += w * _finite_float(info.get("trend_strength"), 0.0)
         den += w
     trendiness = float(trendiness / den) if den > 0 else 0.0
+
+    mr_num = 0.0
+    mr_den = 0.0
+    mr_tf_count = 0
+    for tf in all_tfs:
+        info = tf_map.get(tf)
+        if not info or info.get("mean_reversion_evidence_valid") is not True:
+            continue
+        score_value = _finite_float(info.get("mean_reversion_score"), -1.0)
+        if score_value < 0.0:
+            continue
+        w = float(TF_WEIGHTS.get(tf, 1.0))
+        mr_num += w * _clamp(score_value, 0.0, 1.0)
+        mr_den += w
+        mr_tf_count += 1
+    total_mr_weight = sum(float(TF_WEIGHTS.get(tf, 1.0)) for tf in all_tfs)
+    mean_reversion_score = float(mr_num / mr_den) if mr_den > 0.0 else 0.0
+    mean_reversion_coverage = float(mr_den / total_mr_weight) if total_mr_weight > 0.0 else 0.0
+    mean_reversion_evidence_valid = bool(mr_tf_count >= 3 and mean_reversion_coverage >= 0.40)
 
     if trendiness >= 0.48 and coherence >= 0.50:
         regime = "trend"
@@ -383,6 +494,10 @@ def aggregate_direction(tf_map: dict[int, dict[str, Any]]) -> dict[str, Any]:
         "coherence": coherence,
         "regime": regime,                          # trend/range/transition
         "regime_confidence": regime_confidence,
+        "mean_reversion_score": mean_reversion_score,
+        "mean_reversion_evidence_valid": mean_reversion_evidence_valid,
+        "mean_reversion_tf_count": int(mr_tf_count),
+        "mean_reversion_tf_coverage": mean_reversion_coverage,
         "structural_veto_applied": veto_applied,
         "tf_used": used,
     }

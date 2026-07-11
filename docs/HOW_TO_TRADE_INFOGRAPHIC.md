@@ -16,6 +16,14 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Refreshing an open card keeps the exact selected immutable `rec_id`. Newer `no_trade`, blocked, pending, or direction-flip rows belong to the history timeline and must not silently replace it.
 - Raw confidence is heuristic launch quality, not a probability of profit. Even calibrated confidence targets proxy outcomes and does not prove live edge.
 
+
+## Independent range-edge check
+
+- Low trend is not a trade signal. A driftless random walk can also have a flat MA slope and still lose after costs.
+- Actionable grid requires independent anti-persistence evidence on at least three closed timeframes and aggregate `mean_reversion_score >= 0.55`.
+- `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` or `MEAN_REVERSION_EDGE_UNCONFIRMED` always means NO TRADE.
+- The UI field formerly perceived as R/R is a heuristic **capture/risk proxy**, not an actual profit/loss ratio.
+
 ## Directional TP/SL model
 
 - Long: TP above entry/reference, SL below entry/reference.
@@ -28,6 +36,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 Treat the recommendation as NO TRADE when any of the following appears:
 
 - critical/blocking preflight status;
+- `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` or `MEAN_REVERSION_EDGE_UNCONFIRMED`; low trend alone is not a valid range edge;
 - INVALID_MARKET_REFERENCE_PRICE;
 - stale publication-chain or stale market data;
 - current ticker outside range or kill-switch;

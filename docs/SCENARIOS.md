@@ -109,3 +109,17 @@
 4. A losing long cohort does not by itself block short until the broader symbol threshold is reached. Repeated rows from one publication root count once, and an explicit new `model_version` starts a separate evidence cohort.
 5. The operator must diagnose/revise the strategy or evidence pipeline; manually downgrading the blocker is not a supported path.
 
+
+## 19. Низкий тренд без подтверждённой возвратности
+
+1. Multi-timeframe trendiness низкий, поэтому legacy `1 - trend_strength` выглядел бы как сильный range score.
+2. Independent lag-1 autocorrelation / variance-ratio / sign-reversal aggregate отсутствует, недостаточен либо даёт `mean_reversion_score < 0.55`.
+3. Recommendation остаётся audit-visible, но получает `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` или `MEAN_REVERSION_EDGE_UNCONFIRMED`; actionable `executed` path не создаётся.
+4. Высокий raw score, LLM verdict или старый calibrator не отменяют блок. Оператор ждёт нового подтверждённого режима либо пересматривает стратегию.
+
+## 20. Переход на новую calibration identity
+
+1. БД содержит outcomes и calibrators модели `bybit-taxonomy-v2`.
+2. v1.0.20 публикует `bybit-taxonomy-v3-mean-reversion` и использует calibrator keys v4.
+3. Старые rows остаются в audit history, но fit принимает только current-model rows с явным independent evidence snapshot.
+4. Пока matured sample недостаточен, bot-specific calibrator остаётся unfitted; это не снимает deterministic gates и не является ошибкой запуска.

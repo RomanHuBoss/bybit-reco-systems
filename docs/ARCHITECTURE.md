@@ -175,3 +175,9 @@ The architecture deliberately separates:
 The realised stream also feeds a conservative preflight stop gate. It deduplicates publication roots, scopes evidence to the explicit recommendation `model_version`, and blocks continued operator execution after predefined negative direction/symbol/portfolio evidence. The gate is a safety response to losses, not an automatic claim that non-blocked cohorts have positive expectancy.
 
 Private exchange reconciliation, raw payload archival, account inventory and unrealised PnL remain outside this repository.
+
+## Independent range-edge validation (v1.0.20)
+
+Inference layer теперь разделяет два разных понятия: отсутствие направленного тренда и подтверждённую anti-persistence. `app.direction` вычисляет mean-reversion diagnostics на каждом закрытом TF; `aggregate_direction` формирует weighted evidence; `app.recommender` применяет hard publication gate. Это separation-of-concerns не позволяет score/LLM/risk слоям трактовать low trend как достаточный alpha signal.
+
+Calibration contour версионирован отдельно: recommendation identity `bybit-taxonomy-v3-mean-reversion`, LogReg/Platt keys v4 и фильтрация training rows по model version + evidence snapshot. Старые DB rows сохраняются как audit history, но не участвуют в новой калибровке. Схема БД не меняется.

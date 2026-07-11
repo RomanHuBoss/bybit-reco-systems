@@ -38,6 +38,8 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v3-mean-reversion"
+DIRECTION_CALIBRATION_KEY = "platt_direction_v4"
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
 LLM_REVIEWER_DEFAULT_CANDLES_PER_TF = 32
@@ -1545,7 +1547,16 @@ def _build_feature_snapshot(
     if spread_bps is None:
         spread_bps = cost_model.get("execution_cost_bps") or cost_model.get("total_cost_bps")
     return {
-        "range_score": _clamp(1.0 - trendiness, 0.0, 1.0),
+        "range_score": _clamp(
+            0.35 * (1.0 - trendiness)
+            + 0.65 * _value_or_default(direction_agg.get("mean_reversion_score"), 0.0)
+            if direction_agg.get("mean_reversion_evidence_valid") is True
+            else 1.0 - trendiness,
+            0.0,
+            1.0,
+        ),
+        "mean_reversion_score": _clamp(_value_or_default(direction_agg.get("mean_reversion_score"), 0.0), 0.0, 1.0),
+        "mean_reversion_evidence_valid": 1.0 if direction_agg.get("mean_reversion_evidence_valid") is True else 0.0,
         "trend_strength": _clamp(trendiness, 0.0, 1.0),
         "atr_pct_norm": _clamp(float(atr_pct) / 0.10, 0.0, 2.0),
         "effective_sentiment": _clamp(float(effective_sent), -1.0, 1.0),
@@ -1755,7 +1766,7 @@ def _direction(bot_type: str, agg: dict[str, Any]) -> str:
     return "neutral"
 
 
-def _stable_range_score(f: dict[str, Any], agg: dict[str, Any]) -> tuple[float, dict[str, float | str]]:
+def _stable_range_score(f: dict[str, Any], agg: dict[str, Any]) -> tuple[float, dict[str, Any]]:
     raw_range = _clamp(_finite_float(f.get("range_score"), 0.0), 0.0, 1.0)
     trendiness_raw = (agg or {}).get("trendiness")
     if trendiness_raw is None:
@@ -1764,20 +1775,69 @@ def _stable_range_score(f: dict[str, Any], agg: dict[str, Any]) -> tuple[float, 
     coherence = _clamp(_finite_float((agg or {}).get("coherence"), 0.5), 0.0, 1.0)
     regime = str((agg or {}).get("regime") or "unknown")
 
-    multi_tf_range = _clamp(1.0 - trendiness, 0.0, 1.0)
+    absence_of_trend = _clamp(1.0 - trendiness, 0.0, 1.0)
     if regime == "range":
-        multi_tf_range = _clamp(multi_tf_range + 0.06 * coherence, 0.0, 1.0)
+        absence_of_trend = _clamp(absence_of_trend + 0.06 * coherence, 0.0, 1.0)
     elif regime == "trend":
-        multi_tf_range = _clamp(multi_tf_range - 0.04 * max(0.0, coherence - 0.5), 0.0, 1.0)
+        absence_of_trend = _clamp(absence_of_trend - 0.04 * max(0.0, coherence - 0.5), 0.0, 1.0)
 
-    stable = _clamp(0.20 * raw_range + 0.80 * multi_tf_range, 0.0, 1.0)
+    mean_reversion_raw = (agg or {}).get("mean_reversion_score")
+    mean_reversion_score = _clamp(_finite_float(mean_reversion_raw, 0.0), 0.0, 1.0)
+    mean_reversion_valid = bool((agg or {}).get("mean_reversion_evidence_valid") is True)
+    if mean_reversion_valid:
+        # Independent oscillation evidence must dominate the grid suitability metric.
+        # A near-zero trend alone describes both ranges and martingales and therefore
+        # cannot be treated as positive edge after transaction costs.
+        stable = _clamp(
+            0.15 * raw_range + 0.30 * absence_of_trend + 0.55 * mean_reversion_score,
+            0.0,
+            1.0,
+        )
+        range_model = "trend_absence_plus_mean_reversion"
+    else:
+        # Legacy/manual payloads retain diagnostic compatibility, while the production
+        # publication gate below blocks execution when this evidence is absent.
+        stable = _clamp(0.20 * raw_range + 0.80 * absence_of_trend, 0.0, 1.0)
+        range_model = "legacy_trend_absence_only_unconfirmed"
     return stable, {
         "raw_range_score_1m": float(raw_range),
-        "multi_tf_range_score": float(multi_tf_range),
+        "multi_tf_range_score": float(absence_of_trend),
+        "stable_range_score": float(stable),
+        "absence_of_trend_score": float(absence_of_trend),
+        "mean_reversion_score": float(mean_reversion_score),
+        "mean_reversion_evidence_valid": mean_reversion_valid,
+        "mean_reversion_tf_count": int(_safe_int_or_none((agg or {}).get("mean_reversion_tf_count")) or 0),
+        "mean_reversion_tf_coverage": _clamp(_finite_float((agg or {}).get("mean_reversion_tf_coverage"), 0.0), 0.0, 1.0),
+        "range_model": range_model,
         "trendiness": float(trendiness),
         "coherence": float(coherence),
         "regime": regime,
     }
+
+
+def _mean_reversion_grid_blocks(range_meta: dict[str, Any]) -> list[dict[str, str]]:
+    """Return fail-closed grid blocks for independent oscillation evidence."""
+    meta = dict(range_meta or {})
+    valid = bool(meta.get("mean_reversion_evidence_valid") is True)
+    score = _clamp(_finite_float(meta.get("mean_reversion_score"), 0.0), 0.0, 1.0)
+    tf_count = int(_safe_int_or_none(meta.get("mean_reversion_tf_count")) or 0)
+    if not valid or tf_count < 3:
+        return [{
+            "code": "MEAN_REVERSION_EVIDENCE_INSUFFICIENT",
+            "msg": (
+                f"mean-reversion evidence доступен только на {tf_count} timeframes; "
+                "отсутствие тренда не считается самостоятельным grid edge"
+            ),
+        }]
+    if score < 0.55:
+        return [{
+            "code": "MEAN_REVERSION_EDGE_UNCONFIRMED",
+            "msg": (
+                f"mean_reversion_score={score:.2f} < 0.55; рынок может быть driftless/random-walk, "
+                "а не повторяемым диапазоном, поэтому комиссии дают отрицательное ожидание"
+            ),
+        }]
+    return []
 
 
 def _score(
@@ -1923,6 +1983,12 @@ def _score(
             "cost_penalty": float(cost_penalty),
         },
         "effective_sentiment": effective_sent,
+        "expected_rr_semantics": {
+            "basis": "heuristic_capture_to_volatility_proxy",
+            "is_trade_reward_risk": False,
+            "is_profitability_evidence": False,
+            "note": "The legacy expected_rr field is a bounded heuristic ranking proxy, not realised or geometric trade reward/risk.",
+        },
     }
     return score, conf0, reasons
 
@@ -2939,16 +3005,43 @@ def _stabilize_direction_agg(
     return stable, state_out
 
 
+def _current_range_edge_calibration_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only outcomes produced by the current independently validated range model.
+
+    Old scores and feature snapshots encoded ``range = 1 - trend``.  Mixing them
+    with the new anti-persistence feature would create train/inference skew and
+    could resurrect the exact false edge this release blocks.
+    """
+    accepted: list[dict[str, Any]] = []
+    for row in rows or []:
+        model_version = str(row.get("model_version") or "").strip()
+        if not (model_version == RECOMMENDER_MODEL_VERSION or model_version.startswith(RECOMMENDER_MODEL_VERSION + "+")):
+            continue
+        reasons = row.get("reasons") or {}
+        if not isinstance(reasons, dict):
+            continue
+        snapshot = reasons.get("feature_snapshot") or {}
+        if not isinstance(snapshot, dict):
+            continue
+        evidence_flag = _safe_int_or_none(snapshot.get("mean_reversion_evidence_valid"))
+        score = _finite_or_none(snapshot.get("mean_reversion_score"))
+        if evidence_flag != 1 or score is None or not (0.0 <= score <= 1.0):
+            continue
+        accepted.append(row)
+    return accepted
+
+
 def _fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
-    """Fit global LogReg+Platt calibrator on all outcome rows."""
+    """Fit global LogReg+Platt only on the current range-edge feature schema."""
     rows = db.get_outcomes_with_recs(conn, limit=6000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
-    return fit_logreg(rows, min_samples=min_samples)
+    return fit_logreg(_current_range_edge_calibration_rows(rows), min_samples=min_samples)
 
 
 def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
     """Fit one LogReg+Platt per bot_type."""
     from collections import defaultdict
     rows = db.get_outcomes_with_recs(conn, limit=8000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
+    rows = _current_range_edge_calibration_rows(rows)
     data: dict[str, list] = defaultdict(list)
     for row in rows:
         data[row["bot_type"]].append(row)
@@ -3030,6 +3123,7 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     and strong shorts and makes the resulting value a true probability-like metric.
     """
     rows = db.get_outcomes_with_recs(conn, limit=5000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
+    rows = _current_range_edge_calibration_rows(rows)
     xs, ys = [], []
     for row in rows:
         if row["bot_type"] != "futures_grid":
@@ -3045,7 +3139,7 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
 def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
     """Load direction calibrator; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
     import time as _time
-    key = "platt_direction_v3"
+    key = DIRECTION_CALIBRATION_KEY
     saved = load_platt_from_db(conn, key)
     if saved and saved.fitted:
         if int(_time.time()) - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
@@ -3480,7 +3574,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     db.set_app_config_json(conn, MARKET_SHOCK_APP_KEY, market_shock, commit=False)
 
     limits = normalize_risk_limits(db.get_active_risk_limits(conn), settings.risk_limits)
-    model_version = "bybit-taxonomy-v2"
+    model_version = RECOMMENDER_MODEL_VERSION
     if bool(getattr(settings, "llm_reviewer_enabled", False)):
         model_version += "+llm-review-v1"
     # ts_now already set above for stale gate — reuse it
@@ -3609,6 +3703,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                         "code": "INSUFFICIENT_MTF_HISTORY_FOR_GRID",
                         "msg": f"использовано только {len(_tf_used_now)} timeframes для direction/regime; futures grid не публикуется без минимум 3 закрытых TF-историй",
                     })
+                feasibility_blocks.extend(_mean_reversion_grid_blocks(_range_meta_now))
                 if _range_score_now < 0.42 and _trendiness_now >= 0.58:
                     feasibility_blocks.append({
                         "code": "RANGE_EDGE_TOO_WEAK_FOR_GRID",

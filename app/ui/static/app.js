@@ -1955,7 +1955,7 @@ function buildRecommendationHistoryHtml(data) {
     { label: "Тип", render: row => escapeHtml(row.publication_kind === "root" ? "новая идея" : "обновление") },
     { label: "Уверенность", render: row => escapeHtml(formatProbability(row.confidence)) },
     { label: "Score", render: row => escapeHtml(fmt(row.score, 3)) },
-    { label: "R/R", render: row => escapeHtml(fmt(row.expected_rr, 2)) },
+    { label: "Прокси C/R", render: row => escapeHtml(fmt(row.expected_rr, 2)) },
     { label: "Изменение", className: "wrap", render: row => {
         const marks = [];
         if (row.direction_changed) marks.push("смена направления");

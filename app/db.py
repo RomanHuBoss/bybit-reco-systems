@@ -2393,7 +2393,7 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
     cur = conn.execute(
         """SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                   o.horizon_sec, o.label_available_ts, o.success, o.ret,
-                  r.score, r.status, r.reasons_json, r.publication_root_rec_id, r.is_outcome_label_root
+                  r.score, r.status, r.reasons_json, r.model_version, r.publication_root_rec_id, r.is_outcome_label_root
            FROM reco_outcomes o
            JOIN recommendations r ON r.rec_id = o.rec_id
            WHERE COALESCE(r.is_outcome_label_root, 1) = 1
@@ -2423,6 +2423,7 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
             "ret":       float(row["ret"]),
             "score":     float(row["score"]),
             "reasons":   reasons,
+            "model_version": str(row["model_version"] or ""),
             "publication_root_rec_id": str(row["publication_root_rec_id"] or row["rec_id"]),
             "is_outcome_label_root": bool(int(row["is_outcome_label_root"] or 0)),
         })

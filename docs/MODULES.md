@@ -32,7 +32,8 @@ Direction voting и aggregation по TF.
 
 Контракт:
 - direction может быть только `long|short|neutral`;
-- range-biased direction разрешён только при усиленных условиях согласованности.
+- range-biased direction разрешён только при усиленных условиях согласованности;
+- отсутствие тренда не является mean-reversion evidence; модуль отдельно публикует lag-1 return autocorrelation, variance-ratio, sign-reversal score и multi-TF coverage.
 
 ## `app/regime.py`
 Классификация market regime.
@@ -48,7 +49,9 @@ Direction voting и aggregation по TF.
 - формирует только поддерживаемые `bot_type`;
 - строит `params`, `trade_plan`, `reasons`, publication lineage;
 - не создаёт реальных биржевых ордеров;
-- уважает risk/shock/LLM/dedupe/persistence gates.
+- уважает risk/shock/LLM/dedupe/persistence gates;
+- `futures_grid` fail-closed блокируется без независимого multi-TF mean-reversion evidence;
+- current calibration принимает только outcomes текущей model identity и совместимого feature snapshot.
 
 ## `app/risk.py`
 Runtime risk limits.
