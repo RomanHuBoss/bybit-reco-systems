@@ -221,7 +221,7 @@ def load_settings() -> Settings:
 
     risk_limits = _env_json_dict(
         "RISK_LIMITS_JSON",
-        '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1,"min_leverage":3,"max_leverage":5,"max_position_notional_usdt":5000.0,"max_margin_per_bot_usdt":1000.0}',
+        '{"max_concurrent_bots":1,"max_daily_dd_usdt":10.0,"cooldown_after_loss_min":90,"max_symbol_bots":1,"min_leverage":3,"max_leverage":5,"max_position_notional_usdt":500.0,"max_margin_per_bot_usdt":100.0}',
     )
 
     master_key = os.getenv("MASTER_KEY", "") or None

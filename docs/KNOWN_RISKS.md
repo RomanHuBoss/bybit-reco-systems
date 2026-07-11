@@ -1,3 +1,11 @@
+
+### RESOLVED/HIGH: built-in risk defaults diverged from shipped small-account profile
+
+До v1.0.19 запуск без пользовательского `RISK_LIMITS_JSON` получал 4 concurrent bots, daily DD 200 USDT, notional 5000 USDT и margin 1000 USDT, хотя README/.env/operator instruction описывали 1 bot, DD 10, notional 500 и margin 100. Встроенные defaults и fallback normalization синхронизированы с shipped-профилем; явный операторский override по-прежнему поддерживается.
+
+### RESOLVED/HIGH: generated qty could be silently increased
+
+До v1.0.19 provisional sizing округлялся вверх по фиктивному `0.001`, а live auto-snap повышал qty до minQty/minNotional. Для дорогого BTCUSDT target 25 USDT превращался в 100 USDT на одну grid-заявку до учета количества интервалов. Теперь provisional qty сохраняет target notional, live alignment выполняется только вниз, а недостаточный minQty/minNotional блокируется fail-closed.
 # Известные риски и ограничения
 
 ## 1. Нет реального OMS/EMS
@@ -5,7 +13,7 @@
 Следствие: нельзя считать его завершённой автоторговой системой без внешнего execution layer.
 
 ## 2. Qty/min-notional validation зависит от фактического размера позиции
-Сервис формирует minimum viable `params.sizing` с order notional/qty/margin estimate, округляя provisional qty вверх по conservative fallback step до получения live Bybit metadata, чтобы UI показывал капитал и preflight мог проверить явные значения. Execution-preflight дополнительно проверяет minNotional на нижней цене grid range и согласованность qty/notional, но это всё равно не заменяет live preview фактических ордеров в Bybit. Это не заменяет sizing от баланса аккаунта и не гарантирует совпадение с каждым `qtyStep`: внешний исполнитель обязан повторно сверять `qty_step`, `min_order_qty`, `max_order_qty`, `min_notional`, available balance и фактическую маржу перед созданием Bybit grid bot.
+Сервис формирует provisional `params.sizing` от целевого order notional без выдуманного `qtyStep`. После получения live Bybit metadata quantity может только округляться вниз по фактическому `qty_step`; если safe qty ниже `min_order_qty`/`min_notional`, preflight блокирует recommendation и не повышает размер автоматически. Это всё равно не заменяет sizing от баланса аккаунта и live preview фактических ордеров в Bybit: внешний исполнитель обязан повторно сверять `qty_step`, `min_order_qty`, `max_order_qty`, `min_notional`, available balance и фактическую маржу перед созданием Bybit grid bot.
 
 ## 3. Outcome labeling остаётся proxy-моделью
 Даже усиленная grid-разметка не заменяет реальные fill/funding/liquidation данные.

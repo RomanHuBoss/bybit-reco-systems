@@ -52,14 +52,14 @@ def test_bootstrap_persists_effective_normalized_risk_limits(tmp_path: Path, mon
     conn = db.connect(str(db_path))
     try:
         assert db.get_active_risk_limits(conn) == {
-            "max_concurrent_bots": 4,
+            "max_concurrent_bots": 1,
             "max_daily_dd_usdt": 0.0,
-            "cooldown_after_loss_min": 30,
+            "cooldown_after_loss_min": 90,
             "max_symbol_bots": 1,
             "min_leverage": 3,
             "max_leverage": 5,
-            "max_position_notional_usdt": 5000.0,
-            "max_margin_per_bot_usdt": 1000.0,
+            "max_position_notional_usdt": 500.0,
+            "max_margin_per_bot_usdt": 100.0,
         }
     finally:
         conn.close()
@@ -91,14 +91,14 @@ def test_api_update_risk_limits_persists_and_returns_effective_limits(client_and
         "ok": True,
         "version": "iter94-normalized",
         "limits": {
-            "max_concurrent_bots": 4,
+            "max_concurrent_bots": 1,
             "max_daily_dd_usdt": 0.0,
-            "cooldown_after_loss_min": 30,
+            "cooldown_after_loss_min": 90,
             "max_symbol_bots": 1,
             "min_leverage": 3,
             "max_leverage": 5,
-            "max_position_notional_usdt": 5000.0,
-            "max_margin_per_bot_usdt": 1000.0,
+            "max_position_notional_usdt": 500.0,
+            "max_margin_per_bot_usdt": 100.0,
         },
     }
 

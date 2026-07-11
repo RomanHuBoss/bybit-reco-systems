@@ -58,7 +58,7 @@ A complete `params.trade_plan` must include:
 1. Confirm status is recommended/actionable and not blocked.
 2. Check current price, best bid/ask spread, recomputed live edge, publication-chain TTL, Bybit metadata, and funding diagnostics.
 3. Copy only a complete trade plan into Bybit Futures Grid.
-4. Re-check leverage 3-5x, margin, estimated worst-case exposure, minNotional, and liquidation buffer.
+4. Re-check leverage 3-5x, margin, estimated worst-case exposure, minNotional, and liquidation buffer. Live preflight may round qty only downward to the actual qtyStep; if minQty/minNotional is then unmet, keep the recommendation blocked instead of increasing the position.
 5. Do not override a blocking guard manually.
 
 Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-ask economics, funding snapshot, publication-chain TTL, minNotional/qtyStep/minQty, and LLM gate if enabled.

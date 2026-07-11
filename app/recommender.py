@@ -1568,29 +1568,24 @@ def _build_feature_snapshot(
 
 
 def _fallback_order_qty_for_linear_grid(price: float, target_notional_usdt: float = 25.0) -> tuple[float, float, dict[str, Any]]:
-    """Conservative default order size before live Bybit metadata is available.
+    """Return a provisional target-notional size before Bybit filters are known.
 
-    The recommender does not hold account balance or per-symbol filters while
-    ranking candidates. A fixed 25 USDT leg is below the common BTCUSDT 0.001
-    quantity step/minQty once BTC trades above 25k, so the service can publish a
-    recommendation that its own Bybit preflight later rejects. We therefore snap
-    the provisional quantity up to a conservative 0.001 base-asset fallback and
-    expose the assumption in the payload. Execution preflight still validates the
-    actual Bybit ``qtyStep``/``minOrderQty``/``minNotionalValue`` fail-closed.
+    A recommendation-time estimate must not invent a quantity step or silently
+    increase exposure to satisfy an assumed minimum. The raw quantity therefore
+    remains ``target_notional / price``. Execution preflight later aligns it
+    *down* to the live ``qtyStep`` and blocks the plan if the result is below
+    ``minOrderQty`` or ``minNotionalValue``.
     """
     px = max(0.0, float(price or 0.0))
-    if px <= 0.0:
-        return 0.0, 0.0, {"mode": "invalid_price"}
-    fallback_qty_step = 0.001
-    raw_qty = max(float(target_notional_usdt) / px, fallback_qty_step)
-    snapped_qty_dec = quantize_step(raw_qty, fallback_qty_step, mode="up")
-    snapped_qty = float(snapped_qty_dec) if snapped_qty_dec is not None else raw_qty
-    notional = snapped_qty * px
-    return snapped_qty, notional, {
-        "mode": "fallback_qty_step_until_bybit_preflight",
-        "target_notional_usdt": float(target_notional_usdt),
-        "fallback_qty_step": float(fallback_qty_step),
+    target = max(0.0, float(target_notional_usdt or 0.0))
+    if px <= 0.0 or target <= 0.0:
+        return 0.0, 0.0, {"mode": "invalid_price_or_target"}
+    provisional_qty = target / px
+    return provisional_qty, target, {
+        "mode": "provisional_target_notional_until_bybit_preflight",
+        "target_notional_usdt": float(target),
         "actual_bybit_filters_required": True,
+        "qty_rounding_policy": "down_only_at_live_preflight; block_if_below_exchange_minimum",
     }
 
 def _build_trade_plan(
@@ -2637,7 +2632,7 @@ def _params(
         "estimated_margin_required_usdt": float(margin_required),
         "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
         "exchange_filter_assumption": sizing_assumption,
-        "note": "Размер заявки — минимальный ориентир, округлённый вверх по fallback qty step до live Bybit preflight. Перед запуском preflight сверяет Bybit minNotional/qtyStep/minQty, оператор должен сверить доступную маржу.",
+        "note": "Размер заявки — provisional ориентир по target notional без повышения qty. Live preflight округляет qty только вниз по фактическому qtyStep и блокирует план ниже minQty/minNotional; оператор должен сверить доступную маржу.",
     }
 
     return params

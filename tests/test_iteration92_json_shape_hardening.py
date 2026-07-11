@@ -18,6 +18,7 @@ def client_conn_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('DB_PATH', str(db_path))
     monkeypatch.setenv('ADMIN_API_KEY', 'test-admin-key')
     monkeypatch.setenv('SYMBOLS_LINEAR', 'BTCUSDT')
+    monkeypatch.setenv('RISK_LIMITS_JSON', '{"max_concurrent_bots":4,"max_daily_dd_usdt":200.0,"cooldown_after_loss_min":30,"max_symbol_bots":1,"min_leverage":1,"max_leverage":5,"max_position_notional_usdt":5000.0,"max_margin_per_bot_usdt":1000.0}')
 
     sys.modules.pop('app.main', None)
     app_main = importlib.import_module('app.main')

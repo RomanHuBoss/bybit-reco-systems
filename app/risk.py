@@ -19,13 +19,13 @@ BYBIT_FUTURES_GRID_MAX_CONCURRENT_BOTS = 50
 BYBIT_FUTURES_GRID_MAX_SYMBOL_BOTS = 50
 BYBIT_FUTURES_GRID_MIN_LEVERAGE_DEFAULT = 3
 BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT = 5
-BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT = 5_000.0
-BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT = 1_000.0
+BYBIT_FUTURES_GRID_MAX_POSITION_NOTIONAL_USDT_DEFAULT = 500.0
+BYBIT_FUTURES_GRID_MAX_MARGIN_PER_BOT_USDT_DEFAULT = 100.0
 
 DEFAULT_RISK_LIMITS: dict[str, Any] = {
-    "max_concurrent_bots": 4,
-    "max_daily_dd_usdt": 200.0,
-    "cooldown_after_loss_min": 30,
+    "max_concurrent_bots": 1,
+    "max_daily_dd_usdt": 10.0,
+    "cooldown_after_loss_min": 90,
     "max_symbol_bots": 1,
     "min_leverage": BYBIT_FUTURES_GRID_MIN_LEVERAGE_DEFAULT,
     "max_leverage": BYBIT_FUTURES_GRID_MAX_LEVERAGE_DEFAULT,
@@ -98,9 +98,9 @@ def _normalize_risk_limits(active: Any, fallback_limits: dict[str, Any]) -> dict
     # Defaults тоже нормализуем через безопасные helpers: если fallback пришёл из
     # ENV/legacy-конфига с ``NaN`` или строковым мусором, runtime не должен
     # падать и не должен возвращать наружу поломанные лимиты как есть.
-    default_max_concurrent = _safe_default_int(fallback.get("max_concurrent_bots", 4), 4)
-    default_max_daily_dd = _safe_default_float(fallback.get("max_daily_dd_usdt", 200.0), 200.0)
-    default_cooldown_min = _safe_default_int(fallback.get("cooldown_after_loss_min", 30), 30)
+    default_max_concurrent = _safe_default_int(fallback.get("max_concurrent_bots", 1), 1)
+    default_max_daily_dd = _safe_default_float(fallback.get("max_daily_dd_usdt", 10.0), 10.0)
+    default_cooldown_min = _safe_default_int(fallback.get("cooldown_after_loss_min", 90), 90)
     default_max_symbol_bots = _safe_default_int(fallback.get("max_symbol_bots", 1), 1)
     default_min_leverage = _safe_default_int(
         fallback.get("min_leverage", BYBIT_FUTURES_GRID_MIN_LEVERAGE_DEFAULT),

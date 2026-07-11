@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-11 - v1.0.19 - risk sizing integrity
+
+- Closed a HIGH configuration defect: built-in and fallback risk limits now match the shipped 100-500 USDT operator profile even when `.env` is absent (1 bot, daily DD 10 USDT, 90-minute cooldown, 500 USDT max notional, 100 USDT max margin, leverage 3-5x).
+- Closed a HIGH sizing defect: provisional quantity no longer rounds up to an invented 0.001 step; a 25 USDT BTCUSDT target remains 25 USDT until live instrument filters are known.
+- Closed a HIGH execution-boundary defect: live qty alignment is down-only. minQty/minNotional insufficiency is blocked instead of silently increasing exposure.
+- No schema, migration, public route, environment-variable or frontend contract change. Existing explicit `RISK_LIMITS_JSON` overrides remain supported.
+- Baseline: 858 passed. Targeted RED: 4 failed. Targeted GREEN: 4 passed, repeated twice. Working-copy post-check: 862 collected and 862 passed. Clean-ZIP monolithic run timed out at 75% without a failure summary, so all exact 862 collected nodes were rerun in disjoint deterministic groups and passed. PostgreSQL dialect/locking suite: 20 passed; fresh/repeated SQLite bootstrap: 17 tables. Ruff was unavailable and `pip check` retained the unrelated environment-level MoviePy/Pillow conflict.
+
 ## 2026-07-11 - v1.0.18 - outcome/funding integrity
 
 - Closed a HIGH proxy-label defect: a directional per-leg TP touch can no longer override any lower/upper kill-switch breach in the same outcome horizon. A stopped grid therefore cannot become a positive calibration label through an isolated profitable leg.

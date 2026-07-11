@@ -1977,7 +1977,10 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
         str(candidate.get("basis") or "").strip() == "minimum_viable_operator_default"
         or (
             isinstance(candidate.get("exchange_filter_assumption"), dict)
-            and str(candidate["exchange_filter_assumption"].get("mode") or "").strip() == "fallback_qty_step_until_bybit_preflight"
+            and str(candidate["exchange_filter_assumption"].get("mode") or "").strip() in {
+                "fallback_qty_step_until_bybit_preflight",
+                "provisional_target_notional_until_bybit_preflight",
+            }
         )
         for candidate in sizing_candidates
     )
@@ -2166,11 +2169,12 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
     notional_price = _grid_min_notional_price(reference_price, lower_price, _finite_float_or_none((levels.get("range") or {}).get("upper")) if isinstance(levels.get("range"), dict) else None)
 
     if qty_step is not None and qty_step > 0:
-        min_required_qty = max(0.0, float(min_order_qty or 0.0))
-        if min_notional is not None and notional_price is not None and notional_price > 0:
-            min_required_qty = max(min_required_qty, float(min_notional) / float(notional_price))
-        raw_qty = max(float(order_qty or 0.0), min_required_qty)
-        snapped_qty = snap(raw_qty, qty_step, mode="up")
+        # Quantity alignment is a risk boundary: never increase a generated or
+        # operator-supplied size merely to satisfy minQty/minNotional. Round the
+        # requested quantity down to the live exchange step; downstream strict
+        # validation then blocks values that remain below exchange minimums.
+        raw_qty = max(0.0, float(order_qty or 0.0))
+        snapped_qty = snap(raw_qty, qty_step, mode="down")
         if snapped_qty is not None and snapped_qty > 0:
             for mapping in sizing_maps:
                 for key in ("qty_per_order", "order_qty"):
@@ -4378,7 +4382,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.18", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.19", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

@@ -1958,7 +1958,7 @@ def test_api_risk_limits_rejects_non_finite_nested_json(client_and_conn):
 
     active = db.get_active_risk_limits(conn)
     assert active is not None
-    assert active['max_daily_dd_usdt'] == pytest.approx(200.0)
+    assert active['max_daily_dd_usdt'] == pytest.approx(10.0)
 
 
 def test_api_trade_rejects_non_finite_nested_meta_payload(client_and_conn):
@@ -2036,7 +2036,7 @@ def test_api_risk_status_sanitizes_legacy_non_finite_limits_json(client_and_conn
     assert resp.status_code == 200
     body = resp.json()
     assert body['limits']['max_concurrent_bots'] == 2
-    assert body['limits']['max_daily_dd_usdt'] == pytest.approx(200.0)
+    assert body['limits']['max_daily_dd_usdt'] == pytest.approx(10.0)
 
 
 def test_api_stop_bot_keeps_row_and_state_stopped_ts_in_sync(client_and_conn, monkeypatch):

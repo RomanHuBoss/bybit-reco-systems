@@ -140,7 +140,7 @@ def test_recommender_liquidation_buffer_uses_adverse_grid_boundary() -> None:
     assert econ["liquidation_buffer_pct"] == pytest.approx(econ["liquidation_buffer_pct_adverse_boundary"])
 
 
-def test_recommender_default_sizing_snaps_up_for_expensive_linear_contracts() -> None:
+def test_recommender_default_sizing_preserves_target_notional_for_expensive_contracts() -> None:
     from app.recommender import _params
 
     params = _params(
@@ -164,8 +164,9 @@ def test_recommender_default_sizing_snaps_up_for_expensive_linear_contracts() ->
     sizing = params["sizing"]
     assert params["grid_type"] == "arithmetic"
     assert params["grid_count"] == params["grid_levels"]
-    assert sizing["qty_per_order"] == pytest.approx(0.001)
-    assert sizing["order_notional_usdt"] == pytest.approx(100.0)
+    assert sizing["qty_per_order"] == pytest.approx(0.00025)
+    assert sizing["order_notional_usdt"] == pytest.approx(25.0)
+    assert sizing["exchange_filter_assumption"]["mode"] == "provisional_target_notional_until_bybit_preflight"
     assert sizing["estimated_active_orders"] == params["grid_count"]
     assert sizing["exchange_filter_assumption"]["actual_bybit_filters_required"] is True
 
