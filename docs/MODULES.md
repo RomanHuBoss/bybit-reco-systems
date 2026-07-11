@@ -51,7 +51,9 @@ Direction voting и aggregation по TF.
 - не создаёт реальных биржевых ордеров;
 - уважает risk/shock/LLM/dedupe/persistence gates;
 - `futures_grid` fail-closed блокируется без независимого multi-TF mean-reversion evidence;
-- current calibration принимает только outcomes текущей model identity и совместимого feature snapshot.
+- current calibration принимает только outcomes текущей model identity и совместимого feature snapshot;
+- publisher маркирует безопасные research-only `no_trade` через explicit `outcome_policy`, а outcome worker повторно проверяет opt-in и отсутствие hard blocks;
+- outcome stats разделяют `shadow_no_trade` и non-shadow roots и не трактуют proxy как exchange execution.
 
 ## `app/risk.py`
 Runtime risk limits.

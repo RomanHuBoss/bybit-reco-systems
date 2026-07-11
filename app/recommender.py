@@ -1816,7 +1816,11 @@ def _stable_range_score(f: dict[str, Any], agg: dict[str, Any]) -> tuple[float, 
 
 
 def _mean_reversion_grid_blocks(range_meta: dict[str, Any]) -> list[dict[str, str]]:
-    """Return fail-closed grid blocks for independent oscillation evidence."""
+    """Classify independent oscillation evidence for the grid publication gate.
+
+    Missing evidence is a hard data-quality block. A valid but weak edge is a
+    strategy decision (``no_trade``), not a Bybit/risk/preflight failure.
+    """
     meta = dict(range_meta or {})
     valid = bool(meta.get("mean_reversion_evidence_valid") is True)
     score = _clamp(_finite_float(meta.get("mean_reversion_score"), 0.0), 0.0, 1.0)
@@ -1824,6 +1828,7 @@ def _mean_reversion_grid_blocks(range_meta: dict[str, Any]) -> list[dict[str, st
     if not valid or tf_count < 3:
         return [{
             "code": "MEAN_REVERSION_EVIDENCE_INSUFFICIENT",
+            "decision": "blocked",
             "msg": (
                 f"mean-reversion evidence доступен только на {tf_count} timeframes; "
                 "отсутствие тренда не считается самостоятельным grid edge"
@@ -1832,6 +1837,7 @@ def _mean_reversion_grid_blocks(range_meta: dict[str, Any]) -> list[dict[str, st
     if score < 0.55:
         return [{
             "code": "MEAN_REVERSION_EDGE_UNCONFIRMED",
+            "decision": "no_trade",
             "msg": (
                 f"mean_reversion_score={score:.2f} < 0.55; рынок может быть driftless/random-walk, "
                 "а не повторяемым диапазоном, поэтому комиссии дают отрицательное ожидание"
@@ -3672,6 +3678,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
 
 
             feasibility_blocks = []
+            thesis_no_trade_reasons: list[dict[str, str]] = []
 
             # ── Data completeness / liquidity gates ──
             if turnover is None:
@@ -3703,7 +3710,11 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                         "code": "INSUFFICIENT_MTF_HISTORY_FOR_GRID",
                         "msg": f"использовано только {len(_tf_used_now)} timeframes для direction/regime; futures grid не публикуется без минимум 3 закрытых TF-историй",
                     })
-                feasibility_blocks.extend(_mean_reversion_grid_blocks(_range_meta_now))
+                for _mr_decision in _mean_reversion_grid_blocks(_range_meta_now):
+                    if _mr_decision.get("decision") == "no_trade":
+                        thesis_no_trade_reasons.append(dict(_mr_decision))
+                    else:
+                        feasibility_blocks.append(dict(_mr_decision))
                 if _range_score_now < 0.42 and _trendiness_now >= 0.58:
                     feasibility_blocks.append({
                         "code": "RANGE_EDGE_TOO_WEAK_FOR_GRID",
@@ -3891,7 +3902,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 cost_model=cost_model,
                 risk_limits=limits,
             )
-            no_trade_reasons: list[dict[str, str]] = []
+            no_trade_reasons: list[dict[str, str]] = list(thesis_no_trade_reasons)
             leverage_policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
             if (
                 bot_type == "futures_grid"
@@ -4038,6 +4049,26 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "score_threshold": float(settings.min_score_to_recommend),
                 "confidence_threshold": float(settings.min_conf_to_recommend),
                 "confidence_gate_applied": bool(confidence_gate_applied),
+            }
+            _trade_plan_complete = isinstance(params.get("trade_plan"), dict) and bool(params.get("trade_plan"))
+            _shadow_no_trade_eligible = bool(
+                status == "no_trade"
+                and not blocks
+                and _trade_plan_complete
+                and params.get("price_input_valid") is not False
+            )
+            reasons2["outcome_policy"] = {
+                "eligible": bool(status in {"recommended", "active", "executed"} or _shadow_no_trade_eligible),
+                "sample_role": (
+                    "shadow_no_trade" if _shadow_no_trade_eligible else (
+                        "actionable_root" if status in {"recommended", "active", "executed"} else "excluded"
+                    )
+                ),
+                "reason": (
+                    "model_thesis_or_launch_gate" if _shadow_no_trade_eligible else (
+                        "actionable_publication" if status in {"recommended", "active", "executed"} else "hard_or_incomplete_candidate"
+                    )
+                ),
             }
             reasons2["sentiment_agg"] = sent_agg
             reasons2["market_shock"] = market_shock

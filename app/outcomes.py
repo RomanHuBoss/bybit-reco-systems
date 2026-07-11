@@ -19,6 +19,31 @@ HORIZON_SEC_DEFAULT = 30 * 60
 GRID_BOTS = set(GRID_BOT_TYPES)
 
 
+def _shadow_no_trade_outcome_eligible(status: object, reasons_json: object) -> bool:
+    """Allow counterfactual labeling only when the publisher opted in explicitly.
+
+    A ``no_trade`` row can be useful for unbiased research/calibration, but hard
+    blocked or malformed candidates must never be silently promoted into the
+    outcome sample. The JSON value must be a literal boolean ``true``.
+    """
+    if str(status or "").strip().lower() != "no_trade":
+        return False
+    try:
+        reasons = db._json_loads_mapping_or_default(reasons_json, {})
+    except Exception:
+        return False
+    policy = reasons.get("outcome_policy") if isinstance(reasons, dict) else None
+    if not isinstance(policy, dict) or policy.get("eligible") is not True:
+        return False
+    if str(policy.get("sample_role") or "") != "shadow_no_trade":
+        return False
+    risk_checks = reasons.get("risk_checks")
+    if not isinstance(risk_checks, dict) or risk_checks.get("passed") is not True:
+        return False
+    blocks = risk_checks.get("blocks")
+    return isinstance(blocks, list) and len(blocks) == 0
+
+
 def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_horizon_sec: int) -> tuple[int, bool]:
     params = params if isinstance(params, dict) else {}
 
@@ -536,7 +561,11 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.ts <= ? AND o.rec_id IS NULL
            AND COALESCE(r.is_outcome_label_root, 1) = 1
-           AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'pending')"""
+           AND r.status NOT IN ('blocked', 'suppressed', 'pending')
+           AND (
+               r.status <> 'no_trade'
+               OR LOWER(CAST(COALESCE(json_extract(r.reasons_json, '$.outcome_policy.eligible'), 'false') AS TEXT)) IN ('1', 'true')
+           )"""
     params: list[object] = [db.now_ts() - min_horizon]
 
     if require_llm_verdict:
@@ -559,6 +588,10 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         if done >= int(max_to_process):
             break
         if require_llm_verdict and not db.is_outcome_eligible_under_llm_mode(r["status"], r["reasons_json"]):
+            continue
+        if str(r["status"] or "").strip().lower() == "no_trade" and not _shadow_no_trade_outcome_eligible(
+            r["status"], r["reasons_json"]
+        ):
             continue
         rec_id = r["rec_id"]
         bot_type = r["bot_type"]

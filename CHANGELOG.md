@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-11 - v1.0.22 - no-trade semantics and shadow outcome continuity
+
+- Fixed a HIGH lifecycle/status defect: valid-but-weak `MEAN_REVERSION_EDGE_UNCONFIRMED` is now `no_trade`, not a hard technical `blocked`; missing mandatory mean-reversion evidence remains fail-closed `blocked`.
+- Fixed a HIGH learning deadlock: explicitly opted-in `no_trade` candidates with a complete trade plan and no hard risk/data blocks now mature into `shadow_no_trade` proxy outcomes. Blocked, malformed, pending and legacy no-trade rows remain excluded.
+- Added outcome-sample diagnostics (`shadow_no_trade_total`, `actionable_total`, `executed_audit_total`) and corrected the operator UI so proxy outcomes are not described as real exchange execution.
+- Clarified that an unfitted calibrator does not itself block publication; raw confidence is used until a bot-specific fit exists.
+- Added `tests/test_iteration210_no_recommendation_state.py` with three red-to-green regressions. Baseline: 874 passed. Post-check: 877 passed.
+
 ## 2026-07-11 - v1.0.21 - outcome capital normalization and daily loss budget
 
 - Fixed a HIGH proxy-label defect: a directional per-leg TP touch can no longer mark the whole grid successful when unresolved end-of-horizon inventory is losing. Whole-grid success now requires matched oscillation cycles, intact kill-switch geometry and positive net proxy economics.

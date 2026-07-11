@@ -181,3 +181,7 @@ Private exchange reconciliation, raw payload archival, account inventory and unr
 Inference layer теперь разделяет два разных понятия: отсутствие направленного тренда и подтверждённую anti-persistence. `app.direction` вычисляет mean-reversion diagnostics на каждом закрытом TF; `aggregate_direction` формирует weighted evidence; `app.recommender` применяет hard publication gate. Это separation-of-concerns не позволяет score/LLM/risk слоям трактовать low trend как достаточный alpha signal.
 
 Calibration contour версионирован отдельно: recommendation identity `bybit-taxonomy-v3-mean-reversion`, LogReg/Platt keys v4 и фильтрация training rows по model version + evidence snapshot. Старые DB rows сохраняются как audit history, но не участвуют в новой калибровке. Схема БД не меняется.
+## Shadow outcome branch
+
+`candidate -> deterministic gates -> no_trade` не должен становиться тупиком обучения. Если payload полный и hard blocks отсутствуют, recommender добавляет explicit `outcome_policy(sample_role=shadow_no_trade, eligible=true)`. Outcome worker принимает только этот literal opt-in, повторно проверяет `risk_checks.passed` и после horizon создаёт counterfactual proxy label. Hard-blocked/pending/malformed/legacy rows остаются вне sample. Calibration и UI получают sample-role diagnostics; реальное исполнение по-прежнему подтверждается только external execution evidence.
+

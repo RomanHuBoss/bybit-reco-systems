@@ -6,6 +6,14 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## No-recommendation state, status semantics and shadow outcomes (v1.0.22)
+
+Отсутствие `recommended/active` не является ошибкой само по себе. Если текущие кандидаты не подтверждают торговый тезис, сервис обязан показать `no_trade`, а не создавать рекомендацию ради заполнения таблицы. `MEAN_REVERSION_EDGE_UNCONFIRMED` теперь относится именно к `no_trade`: evidence вычислен, но его недостаточно для запуска. `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` остаётся жёстким `blocked`, потому что обязательные данные отсутствуют.
+
+Необученный bot-specific calibrator также не является самостоятельным блокером. До fit интерфейс показывает `raw` confidence; deterministic data/risk/economics gates продолжают работать независимо.
+
+Чтобы длительный период без запусков не останавливал исследовательский контур, новые `no_trade`-кандидаты без hard blocks и с полным trade plan получают явный `outcome_policy.sample_role=shadow_no_trade`. После созревания horizon они размечаются как counterfactual proxy outcomes и могут участвовать в calibration. Hard-blocked, malformed, pending и неявные legacy `no_trade` строки в эту выборку не попадают. В журнале outcomes shadow и non-shadow roots показываются раздельно; ни один proxy outcome не называется фактическим биржевым исполнением.
+
 ## Outcome и дневной risk budget (v1.0.21)
 
 Proxy-outcome теперь оценивает результат в единицах капитала всей сетки, а не одной заявки: прибыль и execution-cost завершённых grid-leg нормируются на подтверждённый `grid_count`. Отдельное касание directional `tp_per_leg` больше не считается доказательством прибыли всего grid, потому что OHLCV не показывает queue priority, фактическую закрытую позицию и остаточный inventory. Положительная метка требует завершённых двусторонних осцилляций, положительного net proxy и сохранённого kill-switch.

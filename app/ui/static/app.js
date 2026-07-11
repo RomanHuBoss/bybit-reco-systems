@@ -1443,7 +1443,7 @@ function updateCalibrationUi(items) {
       const readiness = botCalibs.length > 0
         ? `Готово: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (LogReg: ${logregBots.length})` : ""}. `
         : "";
-      $("calibProgress").textContent = `${readiness}Всего исходов: ${count}. Глобальная калибровка отображается только как диагностика; inference опирается на продуктовую модель.`;
+      $("calibProgress").textContent = `${readiness}Всего исходов: ${count}. Глобальная калибровка отображается только как диагностика; inference опирается на продуктовую модель. Калибратор сам по себе не блокирует публикацию: до fit используется raw-confidence.`;
       $("calibBarFill").style.width = `${pct}%`;
     }
     return;
@@ -1488,7 +1488,7 @@ function updateCalibrationUi(items) {
   } else {
     document.querySelector(".calib-title").innerHTML = `Калибровка по текущему набору <b>смешанная</b>`;
   }
-  $("calibProgress").textContent = messages.join(" ");
+  $("calibProgress").textContent = `${messages.join(" ")} Калибратор сам по себе не блокирует публикацию: до fit используется raw-confidence.`;
   $("calibBarFill").style.width = `${pct}%`;
 }
 
@@ -2287,7 +2287,7 @@ function renderRecoTable(items) {
     if (shock && shock.state && shock.state !== "normal") {
       banner.innerHTML = `НЕТ ЗАПУСКАЕМЫХ: <b>${escapeHtml(shock.title || "Guard")}</b>. ${escapeHtml(shock.operator_note || "Новые входы заблокированы.")}`;
     } else {
-      banner.innerHTML = 'НЕТ ЗАПУСКАЕМЫХ: нет эффективных <b>recommended</b>/<b>active</b> по текущим фильтрам. Если запускных строк нет, UI автоматически раскрывает диагностические <b>pending</b>/<b>blocked</b>/<b>no_trade</b> строки. <b>blocked</b> = жёсткий риск/Bybit/preflight-блокер; <b>no_trade</b> = запуск не прошёл launch-score/confidence/economics gates.';
+      banner.innerHTML = 'НЕТ ЗАПУСКАЕМЫХ: нет эффективных <b>recommended</b>/<b>active</b> по текущим фильтрам. Если запускных строк нет, UI автоматически раскрывает диагностические <b>pending</b>/<b>blocked</b>/<b>no_trade</b> строки. <b>blocked</b> = жёсткий риск/Bybit/preflight-блокер; <b>no_trade</b> = запуск не прошёл launch-score/confidence/economics gates; это может означать неподтверждённый торговый тезис, а не техническую ошибку. Ненастроенный калибратор сам по себе запуск не блокирует.';
     }
     banner.classList.remove("hidden");
   } else {
@@ -2485,19 +2485,21 @@ async function loadOutcomes() {
       { label: "Avg ret", value: `${Number(s.avg_ret || 0).toFixed(2)}%` },
       { label: "Avg |ret|", value: `${Number(s.avg_abs_ret || 0).toFixed(2)}%` },
       { label: "Повторов убрано", value: Number(s.deduped_duplicates || 0) },
+      { label: "Shadow no_trade", value: Number(s.shadow_no_trade_total || 0) },
+      { label: "Actionable roots", value: Number(s.actionable_total || 0) },
       { label: "Истинный neutral", value: Number(s.true_neutral_total || 0) },
       { label: "Short → neutral", value: Number(s.futures_neutral_total || 0) },
       { label: "LLM reviewed", value: llmReviewed },
       { label: "LLM disagree", value: `${llmDisagree} · ${llmDisagreeShare}` },
       { label: "LLM errors", value: `${Number(llmSummary.error_total || 0)} · ${llmErrorShare}` },
     ])}
-    <p class="modal-note">Это окно должно помогать оператору принимать решения, поэтому вверху вынесено только главное: что реально исполнялось, что было нейтральным по-настоящему, где LLM совпадал или спорил с алгоритмом, и какие подтипы статистически ведут себя по-разному. Proxy-исходы считаются только по корневым публикациям одной идеи, чтобы repeated active-подтверждения не раздували win-rate.</p>
+    <p class="modal-note">Это proxy-оценка корневых кандидатов, а не подтверждение биржевого исполнения. В выборку отдельно могут входить явно разрешённые shadow no_trade-кандидаты, чтобы модель не обучалась только на уже отобранных идеях. Повторные active-подтверждения одной идеи не раздувают win-rate.</p>
     <div class="modal-section">
       <div class="modal-section-title">На что стоит смотреть в первую очередь</div>
       ${renderOutcomeInsightCards(insights)}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">1. Что реально торговалось</div>
+      <div class="modal-section-title">1. Proxy-исходы по кандидатам</div>
       ${buildModalTable([
         { label: "Исполнимое направление", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },

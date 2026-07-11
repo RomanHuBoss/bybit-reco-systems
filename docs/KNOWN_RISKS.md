@@ -8,6 +8,24 @@
 До v1.0.19 provisional sizing округлялся вверх по фиктивному `0.001`, а live auto-snap повышал qty до minQty/minNotional. Для дорогого BTCUSDT target 25 USDT превращался в 100 USDT на одну grid-заявку до учета количества интервалов. Теперь provisional qty сохраняет target notional, live alignment выполняется только вниз, а недостаточный minQty/minNotional блокируется fail-closed.
 # Известные риски и ограничения
 
+## 2026-07-11 no-recommendation state audit (v1.0.22)
+
+### RESOLVED/HIGH: weak edge was misreported as a hard technical block
+
+`MEAN_REVERSION_EDGE_UNCONFIRMED` означает, что валидный торговый evidence не прошёл порог стратегии. Это `no_trade`, а не ошибка Bybit, malformed payload или risk/preflight failure. Отсутствующее обязательное evidence по-прежнему остаётся hard `blocked` через `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`.
+
+### RESOLVED/HIGH: no-trade regime stopped outcome accumulation
+
+Outcome worker исключал все `no_trade`, поэтому при полном отсутствии actionable рекомендаций новая calibration sample переставала расти. Добавлен explicit opt-in `outcome_policy.sample_role=shadow_no_trade` только для полных кандидатов без hard blocks. Worker повторно валидирует literal boolean, risk pass и пустой block list.
+
+### RESOLVED/MEDIUM: proxy outcome UI implied real execution
+
+Журнал использовал формулировки «что реально торговалось», хотя сервис не является OMS и outcome строится по OHLCV. UI теперь явно говорит о proxy-кандидатах и показывает shadow/non-shadow roots отдельно.
+
+### RESIDUAL/HIGH: отсутствие рекомендаций может быть экономически правильным
+
+Система не обязана постоянно выдавать сделки. Низкий win-rate, отрицательный avg return или отсутствие подтверждённого range edge должны приводить к `no_trade`. Shadow labels позволяют проверять, не стал ли gate чрезмерно строгим, но не дают права ослаблять его без walk-forward/exact-evidence анализа.
+
 ## 2026-07-11 independent range-edge audit
 
 ### RESOLVED/HIGH: отсутствие тренда ошибочно считалось положительным grid edge

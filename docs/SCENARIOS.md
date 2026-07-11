@@ -123,3 +123,13 @@
 2. v1.0.20 публикует `bybit-taxonomy-v3-mean-reversion` и использует calibrator keys v4.
 3. Старые rows остаются в audit history, но fit принимает только current-model rows с явным independent evidence snapshot.
 4. Пока matured sample недостаточен, bot-specific calibrator остаётся unfitted; это не снимает deterministic gates и не является ошибкой запуска.
+## 21. Нет запускных рекомендаций, но research sample продолжает расти
+
+1. Current candidate имеет полный trade plan, валидные market/risk inputs и пустой hard-block list.
+2. Торговый тезис не проходит mean-reversion/score/confidence/economics gate.
+3. Статус сохраняется как `no_trade`, а не `blocked`; оператор не может выполнить рекомендацию.
+4. Publisher записывает `outcome_policy.sample_role=shadow_no_trade` и literal `eligible=true`.
+5. После maturity worker строит counterfactual proxy outcome; legacy no-trade без opt-in и hard-blocked rows пропускаются.
+6. UI считает shadow roots отдельно и не называет их фактическими сделками.
+7. Необученный calibrator остаётся raw-only и сам по себе не является причиной отсутствия рекомендаций.
+

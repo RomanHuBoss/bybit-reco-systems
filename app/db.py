@@ -3284,6 +3284,9 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
 
     true_neutral_total = 0
     futures_neutral_total = 0
+    shadow_no_trade_total = 0
+    actionable_total = 0
+    executed_audit_total = 0
     llm_summary = {
         "present_total": 0,
         "ok_total": 0,
@@ -3307,6 +3310,19 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         neutral_source = dirs["neutral_source"]
         success = int(row["success"] or 0)
         ret = float(row["ret"] or 0.0)
+        reco_status = str(row["reco_status"] or "").strip().lower()
+        try:
+            reasons_mapping = _json_loads_mapping_or_default(row["reasons_json"], {})
+        except Exception:
+            reasons_mapping = {}
+        outcome_policy = reasons_mapping.get("outcome_policy") if isinstance(reasons_mapping, dict) else None
+        sample_role = str(outcome_policy.get("sample_role") or "") if isinstance(outcome_policy, dict) else ""
+        if sample_role == "shadow_no_trade" or (not sample_role and reco_status == "no_trade"):
+            shadow_no_trade_total += 1
+        else:
+            actionable_total += 1
+        if reco_status == "executed":
+            executed_audit_total += 1
         llm_review = _extract_llm_review_snapshot(row["reasons_json"])
 
         if neutral_source == "true_neutral":
@@ -3394,6 +3410,9 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         "avg_abs_ret": round((float(summary_bucket["abs_ret_sum"]) / total) * 100.0, 3) if total else 0.0,
         "true_neutral_total": int(true_neutral_total),
         "futures_neutral_total": int(futures_neutral_total),
+        "shadow_no_trade_total": int(shadow_no_trade_total),
+        "actionable_total": int(actionable_total),
+        "executed_audit_total": int(executed_audit_total),
     }
 
     by_bot = _materialize_stat_rows(

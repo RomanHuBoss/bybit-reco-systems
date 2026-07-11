@@ -21,7 +21,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 
 - Low trend is not a trade signal. A driftless random walk can also have a flat MA slope and still lose after costs.
 - Actionable grid requires independent anti-persistence evidence on at least three closed timeframes and aggregate `mean_reversion_score >= 0.55`.
-- `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` or `MEAN_REVERSION_EDGE_UNCONFIRMED` always means NO TRADE.
+- `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` is hard `blocked`; `MEAN_REVERSION_EDGE_UNCONFIRMED` is strategy `no_trade`. Both mean do not launch.
 - The UI field formerly perceived as R/R is a heuristic **capture/risk proxy**, not an actual profit/loss ratio.
 
 ## Directional TP/SL model
@@ -85,3 +85,10 @@ Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-a
 - Descriptive live-evidence statistics are not proof of positive expectancy.
 - In proxy outcome diagnostics, a directional per-leg TP touch never proves whole-grid profit; success requires matched oscillation cycles, positive capital-normalized net proxy and an intact kill-switch.
 - Nevertheless, persistent negative exact evidence is an execution stop condition; do not bypass the `LIVE_VALIDATION_*` blocker.
+## No recommendations / calibration
+
+- No `recommended/active` rows can be the correct result when current evidence is weak or historical proxy returns are negative.
+- An unfitted calibrator does not itself block publication; raw confidence is shown until fit.
+- Eligible `no_trade` candidates may be labeled later as `shadow_no_trade` for research. They are not live trades and cannot be executed.
+- The outcomes journal separates shadow roots from actionable roots and must never call OHLCV proxy labels real fills.
+

@@ -158,13 +158,26 @@ UI обязан показывать этот блок рядом с execution/l
 - variance ratio для четырёхшаговой доходности;
 - долю последовательных доходностей с противоположным знаком.
 
-Multi-timeframe aggregate считается валидным при минимум трёх TF и весовом покрытии не менее 40%. В publication gate требуется `mean_reversion_score >= 0.55`; иначе recommendation получает `MEAN_REVERSION_EDGE_UNCONFIRMED`. При недостатке истории применяется `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`. Эти блокировки fail-closed и не могут быть отменены высоким legacy range score, LLM verdict или raw confidence.
+Multi-timeframe aggregate считается валидным при минимум трёх TF и весовом покрытии не менее 40%. В publication gate требуется `mean_reversion_score >= 0.55`. Валидный, но слабый evidence получает `MEAN_REVERSION_EDGE_UNCONFIRMED` и статус `no_trade`: это отрицательное решение торгового тезиса, а не техническая ошибка Bybit/preflight. При недостатке обязательной истории применяется hard block `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`. Ни `no_trade`, ни hard block не могут быть отменены высоким legacy range score, LLM verdict или raw confidence.
 
 Threshold был sanity-checked на детерминированной Monte-Carlo выборке: среди 200 IID paths gate пропускает не более одного, тогда как для материально anti-persistent AR(1), `phi=-0.35`, пропускается не менее 150. Это unit-level discriminative check, а не оценка live profitability. Bid/ask bounce и transient anti-persistence могут быть неисполняемыми после costs, поэтому положительный score остаётся только предварительным evidence.
 
 Feature/calibration identity изменена: текущая recommendation model — `bybit-taxonomy-v3-mean-reversion`, а logistic/Platt keys имеют v4. Для fit принимаются только outcomes текущей модели с явным `mean_reversion_evidence_valid=1` и finite `mean_reversion_score`; legacy outcomes не используются даже для score-only fallback.
 
 Поле `expected_rr` исторически вычисляется как bounded capture-to-volatility heuristic. Оно не использует точную monetary loss distribution и не является каноническим reward:risk. UI поэтому показывает «Прокси capture/risk» / «Прокси C/R».
+
+
+### Shadow outcomes для no_trade
+
+Calibration не должна обучаться только на уже отобранных actionable идеях: это создаёт selection bias и при длительном отсутствии запусков останавливает накопление выборки. Поэтому publisher сохраняет явный `reasons.outcome_policy`.
+
+- `sample_role=shadow_no_trade` допускается только для `no_trade` с полным `trade_plan`, валидной reference price и пустым hard-block list;
+- worker принимает только literal JSON boolean `eligible=true`, повторно проверяет `risk_checks.passed=true` и отсутствие blocks;
+- `blocked`, `pending`, `suppressed`, malformed и legacy no-trade без явного opt-in не размечаются;
+- shadow outcome является counterfactual OHLCV proxy, а не доказательством реального запуска или fill sequence;
+- outcome statistics отдельно показывают shadow и non-shadow roots.
+
+Необученный calibrator не меняет status автоматически: до fit используется ограниченный raw-confidence, а deterministic gates остаются source of truth.
 
 ## Семантика score и confidence
 
