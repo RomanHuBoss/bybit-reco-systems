@@ -6,6 +6,15 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## Outcome и дневной risk budget (v1.0.21)
+
+Proxy-outcome теперь оценивает результат в единицах капитала всей сетки, а не одной заявки: прибыль и execution-cost завершённых grid-leg нормируются на подтверждённый `grid_count`. Отдельное касание directional `tp_per_leg` больше не считается доказательством прибыли всего grid, потому что OHLCV не показывает queue priority, фактическую закрытую позицию и остаточный inventory. Положительная метка требует завершённых двусторонних осцилляций, положительного net proxy и сохранённого kill-switch.
+
+Семантика outcome изменена несовместимо с прежней calibration sample, поэтому `OUTCOME_LABEL_VERSION` повышен до `grid_label_v3`. При первом запуске версии 1.0.21 сервис штатно удалит старые `reco_outcomes` и связанные calibrator keys, после чего накопит новые метки. Это намеренный data reset, а не потеря execution evidence или рекомендаций.
+
+Execution preflight дополнительно оценивает консервативный loss от reference price до adverse kill-switch по максимальному position notional и explicit execution costs. Запуск блокируется кодом `DAILY_LOSS_BUDGET_EXCEEDED`, если эта оценка превышает остаток `max_daily_dd_usdt - daily_dd`. Дневной лимит теперь ограничивает не только уже реализованный drawdown, но и риск нового запуска.
+
+Эти исправления устраняют подтверждённое завышение proxy-return и fail-open дневного риска, но не доказывают положительное математическое ожидание стратегии.
 
 ## Независимое подтверждение диапазонного режима
 
@@ -51,7 +60,7 @@ Execution preflight теперь использует этот exact-evidence к
 - UI `Ранг в выборке` показывает не «точный рейтинг», а grouped percentile: близкие raw-score внутри material delta `0.025` объединяются в near-tie band и получают одинаковый averaged percentile/grade, чтобы 0.245/0.242/0.232 не выглядели как 100/50/0;
 - применяет risk-gate, publication-gate, market shock guard и symbol fast-veto; для `futures_grid` actionable-публикация требует двух разных последовательно закрытых evidence snapshots (`features_ref_ts`), а повторные циклы на одной и той же свече не считаются подтверждением;
 - при необходимости отправляет кандидат в локальный LLM-reviewer;
-- перед operator-confirmation повторно проверяет risk limits, exact-evidence strategy-health stop gate, свежесть market-data, актуальный market shock / fast-veto, live-price относительно сохранённого диапазона сетки, текущий best bid/ask spread и net edge после live execution costs, а также базовую исполнимость trade plan относительно metadata инструмента Bybit;
+- перед operator-confirmation повторно проверяет risk limits, остаток дневного loss budget относительно консервативного kill-switch loss, exact-evidence strategy-health stop gate, свежесть market-data, актуальный market shock / fast-veto, live-price относительно сохранённого диапазона сетки, текущий best bid/ask spread и net edge после live execution costs, а также базовую исполнимость trade plan относительно metadata инструмента Bybit;
 - сохраняет рекомендации, решения, outcome-labeling, calibration state, trade history и risk limits в SQLite или PostgreSQL;
 - отдаёт REST API и операторский UI.
 

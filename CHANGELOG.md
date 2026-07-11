@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-11 - v1.0.21 - outcome capital normalization and daily loss budget
+
+- Fixed a HIGH proxy-label defect: a directional per-leg TP touch can no longer mark the whole grid successful when unresolved end-of-horizon inventory is losing. Whole-grid success now requires matched oscillation cycles, intact kill-switch geometry and positive net proxy economics.
+- Fixed a HIGH econometric defect: completed-leg profit and execution costs are normalized by committed grid capital (`grid_count`) instead of treating every one-order percentage as a return on the full grid.
+- Added a HIGH execution risk guard: conservative loss to the adverse kill-switch, including explicit execution friction, must fit inside the remaining `max_daily_dd_usdt - daily_dd` budget. Otherwise execution is blocked with `DAILY_LOSS_BUDGET_EXCEEDED`.
+- Bumped `OUTCOME_LABEL_VERSION` from `grid_label_v2` to `grid_label_v3`; the next startup clears legacy proxy outcomes and associated calibrators so incompatible labels are not mixed. Recommendations, bot audit rows, exact execution evidence and DB schema are unchanged.
+- Updated the two historical tests that encoded the invalid contract “one TP leg = successful whole grid”; added `tests/test_iteration209_outcome_capital_and_daily_risk.py` with four red-to-green regressions.
+- Baseline: 870 tests passed. Post-check: 874 tests passed; compileall and Node syntax passed; ruff unavailable in the environment; `pip check` reported an unrelated global Pillow/moviepy mismatch.
+
 ## 2026-07-11 - v1.0.20 - independent mean-reversion edge gate
 
 - Closed a HIGH model defect: low trend / flat moving-average slope is no longer treated as sufficient evidence of a profitable grid range. The recommender now measures anti-persistence independently through lag-1 return autocorrelation, a four-step variance ratio and sign-reversal frequency across multiple closed timeframes.

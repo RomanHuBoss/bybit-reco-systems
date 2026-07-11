@@ -407,12 +407,14 @@ def _grid_outcome(
     tp_hit = _grid_tp_hit(min_p, max_p, entry, direction, tp_leg_abs)
 
     completed_steps = 0
+    derived_interval_count = 0
     in_range_ratio = 0.0
     range_span_pct = 0.0
     if step_abs > 0.0 and lo is not None and hi is not None and hi > lo:
         lower = float(lo)
         upper = float(hi)
         n_levels = max(1, int(round((upper - lower) / max(step_abs, 1e-12))))
+        derived_interval_count = int(n_levels)
 
         def _level_idx(px: float) -> int:
             rel = (px - lower) / max(step_abs, 1e-12)
@@ -439,8 +441,16 @@ def _grid_outcome(
 
     fill_efficiency = 0.58 if direction == "neutral" else 0.62
     gross_leg_pct = step_pct * fill_efficiency
-    gross_proxy = completed_steps * gross_leg_pct
-    net_proxy = gross_proxy - (max(1, completed_steps) * cost_floor)
+
+    # Each completed leg deploys only one slice of the capital committed to the
+    # full grid.  Treating a per-order percentage as a return on the entire grid
+    # inflated proxy returns roughly in proportion to grid_count and polluted
+    # calibration.  Prefer the persisted canonical count; for legacy rows use the
+    # interval count independently derived from range/step.
+    capital_slots = max(1, int(grid_levels or derived_interval_count or 1))
+    capital_weight = 1.0 / float(capital_slots)
+    gross_proxy = completed_steps * gross_leg_pct * capital_weight
+    net_proxy = gross_proxy - (max(1, completed_steps) * cost_floor * capital_weight)
 
     # A grid is meant to harvest oscillation, not directional drift. Penalise any
     # unresolved displacement that remains at the end of the label horizon.
@@ -485,44 +495,32 @@ def _grid_outcome(
         occupancy_penalty_base = max(range_span_pct * 0.85, step_pct * 2.0)
         net_proxy -= (min_range_ratio - in_range_ratio) * occupancy_penalty_base
 
-    # A single profitable leg is too easy to obtain on noisy data and was one of the
-    # reasons why historical win-rate inflated toward ~100%. Require at least two
-    # matched oscillation legs plus a buffer above explicit trading costs, or an
-    # explicit TP touch whose *net* per-leg economics are still viable after costs.
+    # A per-leg TP touch is not evidence that the whole grid closed profitably.
+    # OHLCV does not reveal queue priority, inventory state or whether the opposite
+    # leg remained open.  Therefore only matched oscillation cycles may produce a
+    # positive whole-grid label; TP remains a diagnostic barrier, never an override.
     min_steps_required = 2
     required_profit = max(
-        cost_floor * (1.60 if direction == "neutral" else 1.35),
-        gross_leg_pct * (1.20 if direction == "neutral" else 0.95),
+        (cost_floor * capital_weight) * (1.60 if direction == "neutral" else 1.35),
+        (gross_leg_pct * capital_weight) * (1.20 if direction == "neutral" else 0.95),
         0.0005,
     )
 
-    tp_success = False
-    kill_switch_intact = kill_switch_breach_pct <= 1e-12
     if tp_hit and tp_leg_abs is not None and entry:
-        tp_realized_net = (float(tp_leg_abs) / float(entry)) - cost_floor
-        # A per-leg TP touch is not a terminal whole-bot profit event.  It must
-        # never erase a kill-switch breach observed anywhere in the same outcome
-        # horizon; doing so labels a stopped grid as a winner and poisons later
-        # calibration.  Ambiguous intrabar TP/kill touches therefore resolve
-        # fail-closed in favour of the kill-switch.
-        if kill_switch_intact and tp_realized_net > max(cost_floor * 0.50, 0.0001):
-            tp_success = True
-            net_proxy = max(net_proxy, tp_realized_net)
-        elif not kill_switch_intact:
-            # Preserve the loss/breach proxy already accumulated above instead
-            # of replacing it with the isolated profitable TP leg.
-            net_proxy = min(net_proxy, 0.0)
-        else:
-            net_proxy = min(net_proxy, tp_realized_net)
+        tp_leg_net_on_grid_capital = (
+            (float(tp_leg_abs) / float(entry)) - cost_floor
+        ) * capital_weight
+        # Do not manufacture profit from the touch.  If the independently modelled
+        # whole-grid proxy is already negative, keep that loss; if it is positive,
+        # the normal oscillation/cost rules below still decide success.
+        if tp_leg_net_on_grid_capital <= 0.0:
+            net_proxy = min(net_proxy, tp_leg_net_on_grid_capital)
 
     success = int(
-        tp_success
-        or (
-            completed_steps >= min_steps_required
-            and (in_range_ratio == 0.0 or in_range_ratio >= min_range_ratio)
-            and kill_switch_breach_pct <= 1e-12
-            and net_proxy > required_profit
-        )
+        completed_steps >= min_steps_required
+        and (in_range_ratio == 0.0 or in_range_ratio >= min_range_ratio)
+        and kill_switch_breach_pct <= 1e-12
+        and net_proxy > required_profit
     )
     return success, net_proxy
 

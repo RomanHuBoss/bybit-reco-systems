@@ -371,6 +371,28 @@ Canonical ids and raw metadata can preserve source evidence, but summaries use S
 
 The new dataset makes validation possible but contains no user fills by itself. Positive expectancy still requires sufficient independent stopped bots, chronological walk-forward evaluation, no-trade/comparator baselines, regime cohorts, calibration reliability and a predefined stop criterion.
 
+## 2026-07-11 outcome capital and daily-risk correction (v1.0.21)
+
+### RESOLVED/HIGH: one directional TP leg could label a losing whole grid as successful
+
+The previous kill-switch precedence fix still allowed `tp_success` to replace a negative whole-grid proxy whenever the price touched `tp_per_leg` and then finished with a large unresolved adverse inventory loss without crossing the outer kill-switch. OHLCV cannot prove that the remaining grid inventory was closed. A per-leg TP is now diagnostic only; `success=1` requires matched oscillation cycles, intact kill-switch geometry and a positive whole-grid net proxy.
+
+### RESOLVED/HIGH: grid proxy return used one-order percentage as full-grid return
+
+Each completed step previously added `step_pct × fill_efficiency` directly to `ret_proxy`, regardless of whether the grid committed 2 or 20 capital slices. The same path therefore produced the same percentage return for different grid sizes and overstated strategy outcomes approximately in proportion to `grid_count`. Gross leg return and per-leg execution cost are now normalized by committed grid capital.
+
+### RESOLVED/HIGH: new grid could exceed the remaining daily drawdown budget
+
+The existing gate blocked only after realised `daily_dd` reached `max_daily_dd_usdt`. It did not ask whether the next grid's conservative loss to kill-switch could fit inside the remaining budget. Execution preflight now estimates adverse kill-switch loss from the largest available/derived position notional and explicit execution friction, and blocks `DAILY_LOSS_BUDGET_EXCEEDED` when the prospective loss is larger than `max_daily_dd_usdt - daily_dd`.
+
+### DATA ACTION: proxy outcomes and calibrators reset to `grid_label_v3`
+
+The return denominator and success semantics changed. On first startup, v1.0.21 deletes legacy `reco_outcomes` and the associated calibrator keys through the existing version-reset path. This does not delete recommendations, bot instances, trades, exact execution evidence or schema data.
+
+### RESIDUAL/HIGH: kill-switch loss remains a conservative model, not live inventory truth
+
+The guard assumes the persisted/derived maximum position notional can be exposed across the adverse reference-to-kill distance. It cannot observe open orders, partial fills, average inventory price, exchange liquidation mechanics or account-level cross-effects. The external read-only executor/reconciler remains required.
+
 ## 2026-07-11 outcome/funding integrity correction
 
 ### RESOLVED/HIGH: directional TP touch could override a kill-switch breach

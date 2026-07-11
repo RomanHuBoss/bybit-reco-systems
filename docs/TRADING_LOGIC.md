@@ -118,7 +118,10 @@ UI обязан показывать этот блок рядом с execution/l
 - сохранять точный момент доступности proxy-label (`label_available_ts = entry_ts + effective_horizon`) и использовать purged chronological OOF: train-label обязан быть полностью известен строго до первой validation-рекомендации; legacy labels без точного availability timestamp исключаются из OOF train;
 - штрафовать break-out, kill-switch breach и плохую occupancy range;
 - применять fail-closed precedence: любой breach нижнего или верхнего `kill_switch` делает proxy outcome неуспешным и не позволяет отдельному `tp_per_leg` touch повысить label;
-- считать success по факту достижения per-leg TP только если TP-touch остаётся net-positive после execution-cost floor, либо по oscillation proxy.
+- отдельное касание directional `tp_per_leg` не является terminal whole-grid PnL event: без фактической последовательности fills и закрытого inventory оно остаётся диагностикой и не может самостоятельно создать `success=1`;
+- completed-leg gross return и execution cost переводятся в доходность капитала всей сетки через деление на подтверждённый canonical `grid_count`; legacy payload использует независимо выведенное число интервалов, если count отсутствует;
+- смена этой единицы измерения требует нового `OUTCOME_LABEL_VERSION`; v1.0.21 использует `grid_label_v3` и не смешивает прежние proxy labels/calibrators с новой семантикой;
+- считать `success=1` только по завершённым oscillation cycles с положительным capital-normalized net proxy; `tp_per_leg` используется лишь как диагностический уровень и не является самостоятельным success-path.
 
 ### Не умеет
 - реконструировать реальные fill sequence;
@@ -234,5 +237,7 @@ Canonical evidence rules:
 4. Spread/slippage must not be deducted again from actual fill PnL. For execution-quality analysis the adapter supplies `benchmark_price`, `benchmark_ts` and `benchmark_source`; adverse benchmark-to-fill deviation is calculated by side and reported separately. `orderPrice` is evidence, not the benchmark.
 5. Legacy `/trades` is compatibility-only. Exact evidence and legacy aggregates cannot be mixed for one bot. Defensive risk aggregation prefers exact execution events if a historical database already contains both.
 6. Risk daily PnL, realised drawdown and cooldown consume the unified de-duplicated stream. This does not include unrealised inventory risk.
+
+At operator execution time, the recommendation service nevertheless applies a conservative prospective guard: `estimated_max_position_notional_usdt` (or the larger qty × worst grid price × grid_count derivation) is multiplied by the adverse reference-to-kill-switch distance plus explicit execution cost. If this estimated loss is greater than `max_daily_dd_usdt - daily_dd`, execution is fail-closed with `DAILY_LOSS_BUDGET_EXCEEDED`. This is a budget guard, not mark-to-market reconciliation and not a substitute for the external executor.
 7. Evidence GET endpoints require admin authorization. The live-validation endpoint is descriptive and always reports that a live-edge claim is unsupported without chronological comparator evidence.
 8. External timestamps are stored as UTC seconds; adapters must convert Bybit millisecond fields exactly and reject boolean/fractional timestamps.

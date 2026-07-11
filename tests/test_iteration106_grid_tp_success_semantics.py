@@ -25,7 +25,7 @@ def _seed_1m_rows(conn, *, base_ts: int, symbol: str, venue: str, candles: list[
     db.upsert_ohlcv(conn, rows)
 
 
-def test_grid_outcome_counts_long_tp_hit_as_success_even_without_two_completed_steps(tmp_path: Path) -> None:
+def test_grid_outcome_does_not_treat_long_per_leg_tp_as_whole_grid_success(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "grid-long-tp.db"))
     try:
         db.init_db(conn)
@@ -64,13 +64,13 @@ def test_grid_outcome_counts_long_tp_hit_as_success_even_without_two_completed_s
             params,
         )
 
-        assert success == 1
-        assert ret_proxy > 0.0
+        assert success == 0
+        assert ret_proxy < 0.0
     finally:
         conn.close()
 
 
-def test_grid_outcome_counts_short_tp_hit_as_success_when_tp_defined_in_percent(tmp_path: Path) -> None:
+def test_grid_outcome_does_not_treat_short_per_leg_tp_as_whole_grid_success(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "grid-short-tp.db"))
     try:
         db.init_db(conn)
@@ -107,8 +107,8 @@ def test_grid_outcome_counts_short_tp_hit_as_success_when_tp_defined_in_percent(
             params,
         )
 
-        assert success == 1
-        assert ret_proxy > 0.0
+        assert success == 0
+        assert ret_proxy < 0.0
     finally:
         conn.close()
 

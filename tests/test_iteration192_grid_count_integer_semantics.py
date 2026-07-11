@@ -246,7 +246,7 @@ def test_outcome_label_uses_canonical_grid_count_alias_not_only_legacy_grid_leve
         )
 
         assert canonical == pytest.approx(legacy)
-        assert canonical[1] == pytest.approx(0.0096)
+        assert canonical[1] == pytest.approx(0.0048)
     finally:
         conn.close()
 

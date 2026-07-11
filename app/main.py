@@ -46,6 +46,7 @@ from .trading_semantics import (
     bybit_linear_protective_order_plan,
     directional_exit_levels,
     directional_trade_math,
+    normalize_execution_direction,
     validate_directional_exit_geometry,
 )
 import logging
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v2"
+OUTCOME_LABEL_VERSION = "grid_label_v3"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -2693,6 +2694,178 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
     return blocks
 
 
+def _execution_daily_loss_budget_guard(
+    rec: dict[str, Any],
+    limits: dict[str, Any],
+    risk_status: Any,
+) -> dict[str, Any]:
+    """Estimate kill-switch loss against the remaining realised daily-DD budget.
+
+    Existing risk gates stopped new bots only *after* realised daily drawdown had
+    reached the limit.  A single grid whose conservative loss to kill-switch was
+    larger than the remaining budget could therefore be launched legally and make
+    the configured daily cap impossible to respect.
+
+    This is deliberately a conservative preflight estimate, not an exchange fill
+    simulation.  It uses the greatest persisted/derived position notional, the
+    adverse reference-to-kill distance and explicit execution friction.
+    """
+    result: dict[str, Any] = {
+        "blocks": [],
+        "max_daily_dd_usdt": None,
+        "daily_dd_usdt": None,
+        "remaining_daily_loss_budget_usdt": None,
+        "estimated_kill_switch_loss_usdt": None,
+        "estimated_position_notional_usdt": None,
+        "adverse_distance_pct": None,
+        "execution_cost_bps": None,
+    }
+    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+        return result
+    if str(rec.get("venue") or "").strip().lower() != "linear":
+        return result
+
+    effective_limits = normalize_risk_limits(limits, limits)
+    max_daily_dd = _finite_float_or_none(effective_limits.get("max_daily_dd_usdt"))
+    daily_dd = _finite_float_or_none(getattr(risk_status, "daily_dd", None))
+    result["max_daily_dd_usdt"] = max_daily_dd
+    result["daily_dd_usdt"] = daily_dd
+    if max_daily_dd is None or max_daily_dd < 0.0 or daily_dd is None or daily_dd < 0.0:
+        result["blocks"].append({
+            "code": "DAILY_LOSS_BUDGET_UNAVAILABLE",
+            "msg": "Текущий daily drawdown или max_daily_dd_usdt невалиден; остаток дневного loss budget нельзя проверить.",
+        })
+        return result
+
+    remaining_budget = max(0.0, float(max_daily_dd) - float(daily_dd))
+    result["remaining_daily_loss_budget_usdt"] = remaining_budget
+
+    params, plan = _rec_params_and_plan(rec)
+    operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
+    sizing_maps: list[Any] = [
+        params.get("sizing"),
+        plan.get("sizing"),
+        operator_sheet.get("sizing"),
+        params.get("economics"),
+        plan.get("economics"),
+        operator_sheet.get("economics"),
+        params.get("risk_report"),
+        plan.get("risk_report"),
+        operator_sheet.get("risk_report"),
+        params,
+        plan,
+        operator_sheet,
+    ]
+    notional_key, estimated_notional = _first_finite_from_mappings(
+        sizing_maps,
+        (
+            "estimated_worst_case_total_order_notional_usdt",
+            "estimated_max_position_notional_usdt",
+            "max_position_notional_usdt",
+            "estimated_total_order_notional_usdt",
+            "total_order_notional_usdt",
+            "position_notional_usdt",
+            "notional_usdt",
+        ),
+    )
+
+    ctx = _trade_plan_price_context(rec)
+    worst_price = _grid_max_notional_price(
+        ctx.get("reference_price"),
+        ctx.get("range_lower"),
+        ctx.get("range_upper"),
+    )
+    _, order_qty = _first_finite_from_mappings(
+        sizing_maps,
+        (
+            "order_qty",
+            "qty_per_order",
+            "qty_per_leg",
+            "base_qty_per_order",
+            "order_size_qty",
+            "leg_qty",
+        ),
+    )
+    count_resolution = ctx.get("grid_count_resolution") if isinstance(ctx.get("grid_count_resolution"), dict) else {}
+    grid_count = count_resolution.get("conservative_max") or count_resolution.get("value") or 1
+    if order_qty is not None and worst_price is not None and worst_price > 0.0:
+        derived_notional = float(order_qty) * float(worst_price) * max(1, int(grid_count))
+        if estimated_notional is None or derived_notional > float(estimated_notional):
+            estimated_notional = derived_notional
+            notional_key = "order_qty*max_grid_price*grid_count"
+
+    reference = _finite_float_or_none(ctx.get("reference_price"))
+    kill_lower = _finite_float_or_none(ctx.get("kill_switch_lower"))
+    kill_upper = _finite_float_or_none(ctx.get("kill_switch_upper"))
+    direction = normalize_execution_direction(rec.get("direction"))
+
+    missing: list[str] = []
+    if estimated_notional is None or estimated_notional <= 0.0:
+        missing.append("position_notional")
+    if reference is None or reference <= 0.0:
+        missing.append("reference_price")
+    if direction in {"long", "neutral"} and (kill_lower is None or kill_lower <= 0.0):
+        missing.append("kill_switch_lower")
+    if direction in {"short", "neutral"} and (kill_upper is None or kill_upper <= 0.0):
+        missing.append("kill_switch_upper")
+    if direction not in {"long", "short", "neutral"}:
+        missing.append("direction")
+
+    if missing:
+        if _operator_payload_has_runtime_risk_context(rec):
+            result["blocks"].append({
+                "code": "KILL_SWITCH_LOSS_UNVERIFIABLE",
+                "msg": "Нельзя оценить потенциальный loss до kill-switch: отсутствуют/невалидны " + ", ".join(sorted(set(missing))) + ".",
+                "missing_fields": sorted(set(missing)),
+            })
+        return result
+
+    assert estimated_notional is not None and reference is not None
+    downside = max(0.0, (float(reference) - float(kill_lower or reference)) / float(reference))
+    upside = max(0.0, (float(kill_upper or reference) - float(reference)) / float(reference))
+    if direction == "long":
+        adverse_fraction = downside
+    elif direction == "short":
+        adverse_fraction = upside
+    else:
+        adverse_fraction = max(downside, upside)
+
+    cost_model = _cost_model_from_rec(rec)
+    economics = _economics_from_rec(rec)
+    _, execution_cost_bps = _first_finite_from_mappings(
+        [cost_model, economics],
+        ("execution_cost_bps", "total_cost_bps", "net_cost_bps", "fee_bps_round_trip"),
+    )
+    execution_cost_bps = max(0.0, float(execution_cost_bps or 0.0))
+    estimated_loss = float(estimated_notional) * (float(adverse_fraction) + execution_cost_bps / 10_000.0)
+
+    result.update({
+        "estimated_position_notional_usdt": float(estimated_notional),
+        "estimated_position_notional_source": notional_key,
+        "adverse_distance_pct": float(adverse_fraction) * 100.0,
+        "execution_cost_bps": execution_cost_bps,
+        "estimated_kill_switch_loss_usdt": estimated_loss,
+    })
+    tolerance = max(1e-9, remaining_budget * 1e-9)
+    if estimated_loss > remaining_budget + tolerance:
+        result["blocks"].append({
+            "code": "DAILY_LOSS_BUDGET_EXCEEDED",
+            "msg": (
+                f"Консервативный loss до kill-switch={estimated_loss:.2f} USDT превышает остаток "
+                f"дневного max-DD budget={remaining_budget:.2f} USDT "
+                f"(daily_dd={daily_dd:.2f}, limit={max_daily_dd:.2f}); запуск запрещён."
+            ),
+            "estimated_kill_switch_loss_usdt": estimated_loss,
+            "remaining_daily_loss_budget_usdt": remaining_budget,
+            "daily_dd_usdt": float(daily_dd),
+            "max_daily_dd_usdt": float(max_daily_dd),
+            "estimated_position_notional_usdt": float(estimated_notional),
+            "adverse_distance_pct": float(adverse_fraction) * 100.0,
+            "execution_cost_bps": execution_cost_bps,
+        })
+    return result
+
+
 def _active_symbol_disable_state(conn, venue: str, symbol: str, *, now_ts: int | None = None) -> dict[str, Any] | None:
     now = int(now_ts or time.time())
     cur = conn.execute(
@@ -3952,6 +4125,8 @@ def _execution_preflight(
     *,
     now_ts: int | None = None,
     bybit_meta: dict[str, Any] | None = None,
+    risk_limits: dict[str, Any] | None = None,
+    risk_status: Any | None = None,
 ) -> dict[str, Any]:
     now = int(now_ts or time.time())
     blocks: list[dict[str, Any]] = []
@@ -3965,6 +4140,13 @@ def _execution_preflight(
         model_version=str(rec.get("model_version") or ""),
     )
     for item in strategy_health.get("blocks") or []:
+        if isinstance(item, dict):
+            blocks.append(dict(item))
+
+    effective_risk_limits = risk_limits if isinstance(risk_limits, dict) else get_risk_limits(conn, settings.risk_limits)
+    effective_risk_status = risk_status if risk_status is not None else compute_risk_status(conn, effective_risk_limits)
+    daily_loss_budget = _execution_daily_loss_budget_guard(rec, effective_risk_limits, effective_risk_status)
+    for item in daily_loss_budget.get("blocks") or []:
         if isinstance(item, dict):
             blocks.append(dict(item))
 
@@ -4031,6 +4213,7 @@ def _execution_preflight(
         "fast_veto": fast_veto,
         "bybit_meta": bybit_meta,
         "bybit_validation": bybit_validation,
+        "daily_loss_budget": daily_loss_budget,
     }
 
 
@@ -4382,7 +4565,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.20", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.21", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -4704,7 +4887,8 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     # Recommendation-time gate — это только снимок; к моменту подтверждения
     # могли измениться число активных ботов, symbol-cap, cooldown и дневной DD.
     limits = get_risk_limits(conn, settings.risk_limits)
-    exec_blocks = gate_candidate(conn, rec["venue"], rec["symbol"], limits)
+    runtime_risk_status = compute_risk_status(conn, limits)
+    exec_blocks = gate_candidate(conn, rec["venue"], rec["symbol"], limits, cached_status=runtime_risk_status)
     if exec_blocks:
         db.log_decision(conn, "EXECUTION_BLOCKED", rec_id, operator, {"blocks": exec_blocks})
         codes = ", ".join(str(b.get("code") or "UNKNOWN") for b in exec_blocks)
@@ -4724,7 +4908,14 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
 
     rec_for_execution = _snap_reco_payload_to_bybit_meta(rec, bybit_meta)
 
-    preflight = _execution_preflight(conn, rec_for_execution, now_ts=int(time.time()), bybit_meta=bybit_meta)
+    preflight = _execution_preflight(
+        conn,
+        rec_for_execution,
+        now_ts=int(time.time()),
+        bybit_meta=bybit_meta,
+        risk_limits=limits,
+        risk_status=runtime_risk_status,
+    )
     preflight_blocks = list(preflight.get("blocks") or [])
     if preflight_blocks:
         db.log_decision(

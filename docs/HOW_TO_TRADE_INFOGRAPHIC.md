@@ -40,6 +40,7 @@ Treat the recommendation as NO TRADE when any of the following appears:
 - INVALID_MARKET_REFERENCE_PRICE;
 - stale publication-chain or stale market data;
 - current ticker outside range or kill-switch;
+- conservative loss to the adverse kill-switch exceeds the remaining daily max-DD budget (`DAILY_LOSS_BUDGET_EXCEEDED`);
 - live best bid/ask missing or invalid, spread above 14 bps, recomputed net edge below 2 bps, or gross edge not covering live execution cost by more than 1.10x;
 - missing Bybit metadata, tickSize, qtyStep, minNotional, leverageFilter, or non-Trading instrument status;
 - funding rate/interval unavailable or adverse enough to destroy net edge;
@@ -82,5 +83,5 @@ Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-a
 - Never mix exact evidence with legacy `/trades` for the same bot.
 - Evidence export contains sensitive exchange identifiers and requires `ADMIN_API_KEY`.
 - Descriptive live-evidence statistics are not proof of positive expectancy.
-- In proxy outcome diagnostics, any lower/upper kill-switch breach overrides a directional per-leg TP touch; do not interpret a stopped grid as a successful signal.
+- In proxy outcome diagnostics, a directional per-leg TP touch never proves whole-grid profit; success requires matched oscillation cycles, positive capital-normalized net proxy and an intact kill-switch.
 - Nevertheless, persistent negative exact evidence is an execution stop condition; do not bypass the `LIVE_VALIDATION_*` blocker.
