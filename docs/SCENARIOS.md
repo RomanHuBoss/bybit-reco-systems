@@ -60,9 +60,11 @@
 - operator-facing `GET /api/v1/recommendations` не должен возвращать только эту одну идею, если в том же snapshot есть другие уникальные roots;
 - API обязан расширить raw-scan и добрать `top_n` по уникальным `publication_root_rec_id`, пока это разумно по budget.
 
-## 12. Bybit отдаёт 200/OK с битым JSON или protocol-level transport error
+## 12. Bybit отдаёт 200/OK с битым JSON, malformed `retCode` или protocol-level transport error
 Ожидаемое поведение:
 - публичный клиент делает повторную попытку вместо мгновенного hard-fail первого же цикла;
+- отсутствующий, boolean, fractional или иной malformed `retCode` не подменяется нулём и не открывает доступ к `result`;
+- boolean/fractional request limits и timestamps, отрицательные или инвертированные временные окна блокируются до сетевого запроса;
 - после исчерпания retry возвращается явная transport/decode ошибка, а не partially parsed payload.
 
 

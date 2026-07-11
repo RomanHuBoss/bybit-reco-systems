@@ -5,6 +5,8 @@
 - Symbol-specific market-data/metadata calls принимают только символы `*USDT`; non-USDT symbols не попадают в ticker/kline/funding/open-interest/instrument-info path.
 - Если upstream/stub возвращает список без точного совпадения `symbol`, строка отбрасывается: collector не должен присваивать чужую цену, funding или metadata запрошенному контракту.
 - Broad ticker fetch дополнительно фильтруется по `*USDT`, потому что продуктовый scope сервиса уже API-scope Bybit `linear`: рекомендации строятся только для USDT perpetual.
+- HTTP 2xx не является достаточным доказательством успешного Bybit V5 ответа: `retCode` обязан присутствовать и быть exact integer. Только `retCode=0` допускает чтение `result`; missing/boolean/fractional/malformed control value повторяется как response-shape error и после исчерпания retry блокирует цикл.
+- Kline/open-interest request `limit`, `start/end` и `startTime/endTime` нормализуются только из exact integers. Отрицательные или инвертированные временные окна, boolean и fractional значения отклоняются до REST-запроса, чтобы collector не строил историю по усечённым границам.
 - Funding в risk/recommendation payload теперь хранит `directional_funding_bps_per_event`; legacy alias `directional_funding_bps_8h` не использовать для новой логики.
 
 ## Важная граница

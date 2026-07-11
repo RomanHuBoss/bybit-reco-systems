@@ -250,3 +250,17 @@ Recommendation and `label_available_ts` values entering chronological OOF are no
 ### RESIDUAL: legacy malformed rows are ignored, not deleted
 
 This patch is schema-free and non-destructive. Existing manually inserted fractional funding/OI rows may remain physically present in SQLite; current readers skip them. If a forensic cleanup is required, back up the database and perform it as a separate maintenance operation. Live PostgreSQL behavior was covered by shared normalization/dialect tests but not by a disposable server integration run.
+
+## 2026-07-11 Bybit response/request integer integrity
+
+### RESOLVED/HIGH: zero-like malformed `retCode` could pass as success
+
+The public client previously used `int(retCode or 0)`, so a missing value, `null`, JSON boolean `false`, an empty value, or a fractional code such as `0.5` became success code `0`. A malformed HTTP 2xx payload could therefore expose its `result` to market-data consumers. The client now requires a present exact integer; invalid shapes follow the existing retryable response-shape path and fail closed after retries.
+
+### RESOLVED/MEDIUM: request windows silently truncated malformed integers
+
+Kline and open-interest `limit`, `start/end` and `startTime/endTime` previously used direct `int()` conversion. Boolean and fractional values could become valid-looking query parameters, while negative or inverted windows were sent upstream. These fields now use exact-integer parsing, non-negative timestamp validation and ordered-window validation before any network request. Exact integral values such as `5.0` remain compatible.
+
+### RESIDUAL: public REST remains snapshot data, not execution truth
+
+Strict response and request controls prevent malformed payload coercion but do not make public REST atomic or authenticated. A future external executor must still re-check current instrument metadata, account state, wallet, positions and order constraints immediately before any real Bybit action.

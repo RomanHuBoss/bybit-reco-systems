@@ -29,6 +29,39 @@ def _safe_int(value: Any, default: int = 0) -> int:
     return int(default) if parsed is None else int(parsed)
 
 
+def _request_integer(value: Any, *, field_name: str, minimum: int | None = None) -> int:
+    parsed = strict_integer(value)
+    if parsed is None:
+        raise ValueError(f"{field_name} must be an exact integer")
+    if minimum is not None and parsed < minimum:
+        if minimum == 0:
+            raise ValueError(f"{field_name} must be a non-negative exact integer")
+        raise ValueError(f"{field_name} must be an exact integer >= {minimum}")
+    return parsed
+
+
+def _request_time_window(
+    start: Any,
+    end: Any,
+    *,
+    start_field_name: str,
+    end_field_name: str,
+) -> tuple[int | None, int | None]:
+    start_value = (
+        None
+        if start is None
+        else _request_integer(start, field_name=start_field_name, minimum=0)
+    )
+    end_value = (
+        None
+        if end is None
+        else _request_integer(end, field_name=end_field_name, minimum=0)
+    )
+    if start_value is not None and end_value is not None and start_value > end_value:
+        raise ValueError(f"{start_field_name} must not be greater than {end_field_name}")
+    return start_value, end_value
+
+
 def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
@@ -188,14 +221,13 @@ class BybitPublicClient:
                         continue
                     raise RuntimeError("Bybit response shape error: expected JSON object")
 
-                ret_code_raw = data.get("retCode", 0)
-                try:
-                    ret_code = int(ret_code_raw or 0)
-                except Exception as exc:
+                ret_code_raw = data.get("retCode") if "retCode" in data else None
+                ret_code = strict_integer(ret_code_raw)
+                if ret_code is None:
                     if attempt < self.max_retries:
                         time.sleep(self._retry_delay(attempt, retry_after))
                         continue
-                    raise RuntimeError(f"Bybit response shape error: invalid retCode={ret_code_raw!r}") from exc
+                    raise RuntimeError(f"Bybit response shape error: invalid retCode={ret_code_raw!r}")
                 if ret_code != 0:
                     ret_msg = str(data.get("retMsg") or "")
                     if attempt < self.max_retries and self._is_retryable_bybit_error(ret_code, ret_msg):
@@ -243,16 +275,23 @@ class BybitPublicClient:
         symbol_norm = _normalize_linear_usdt_symbol(symbol)
         if not symbol_norm:
             raise ValueError("symbol is required for Bybit linear USDT kline requests")
+        limit_value = _request_integer(limit, field_name="limit")
+        start_value, end_value = _request_time_window(
+            start,
+            end,
+            start_field_name="start",
+            end_field_name="end",
+        )
         params: dict[str, str] = {
             "category": category_norm,
             "symbol": symbol_norm,
             "interval": interval,
-            "limit": str(max(1, min(int(limit), 1000))),
+            "limit": str(max(1, min(limit_value, 1000))),
         }
-        if start is not None:
-            params["start"] = str(int(start))
-        if end is not None:
-            params["end"] = str(int(end))
+        if start_value is not None:
+            params["start"] = str(start_value)
+        if end_value is not None:
+            params["end"] = str(end_value)
         data = self._get("/v5/market/kline", params=params)
         result = _mapping_or_none(data.get("result")) or {}
         items = result.get("list")
@@ -328,16 +367,23 @@ class BybitPublicClient:
         symbol_norm = _normalize_linear_usdt_symbol(symbol)
         if not symbol_norm:
             raise ValueError("symbol is required for Bybit linear USDT open-interest requests")
+        limit_value = _request_integer(limit, field_name="limit")
+        start_value, end_value = _request_time_window(
+            start_ms,
+            end_ms,
+            start_field_name="start_ms",
+            end_field_name="end_ms",
+        )
         params: dict[str, str] = {
             "category": "linear",
             "symbol": symbol_norm,
             "intervalTime": interval,
-            "limit": str(max(1, min(int(limit), 200))),
+            "limit": str(max(1, min(limit_value, 200))),
         }
-        if start_ms is not None:
-            params["startTime"] = str(int(start_ms))
-        if end_ms is not None:
-            params["endTime"] = str(int(end_ms))
+        if start_value is not None:
+            params["startTime"] = str(start_value)
+        if end_value is not None:
+            params["endTime"] = str(end_value)
         if cursor:
             params["cursor"] = str(cursor)
         data = self._get(

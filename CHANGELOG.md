@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-11 - v1.0.13 - Bybit response/request integer integrity
+
+- Bybit V5 responses now require a present exact-integer `retCode`; missing, null, boolean, empty, collection and fractional zero-like values can no longer masquerade as success.
+- Malformed `retCode` follows the existing retryable response-shape path and fails closed after retry exhaustion.
+- Kline/open-interest limits and millisecond time boundaries reject boolean and fractional inputs instead of truncating them with `int()`.
+- Negative and inverted request windows are blocked before network access; exact integral numeric values remain compatible.
+- Baseline: 810 passed. Post-check: 833 passed; 23 new regression items. Ruff remains at the same 9 pre-existing findings, with no new findings.
+- No schema, migration, public route, environment variable, frontend contract or operator lifecycle change. Live PostgreSQL integration remained untested because no verified disposable DSN was supplied.
+
 ## 2026-07-11 - v1.0.12 - strict temporal/funding integer semantics
 
 - Bybit ticker, OHLCV and open-interest timestamps are no longer silently truncated from fractional values into valid integer keys.

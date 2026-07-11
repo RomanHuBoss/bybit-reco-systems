@@ -11,6 +11,8 @@
 
 ## Что делает система
 - собирает только `linear` тикеры и OHLCV по USDT perpetual символам; public Bybit client отклоняет нецелевой category/symbol до сетевого запроса, фильтрует exact-symbol responses и не пропускает delivery/pre-market ticker rows в recommendation контур;
+- принимает Bybit V5 response как успешный только при присутствующем exact-integer `retCode=0`; отсутствующий, boolean, fractional или иной malformed `retCode` считается retryable response-shape error, а не успешными market data;
+- перед REST-запросом проверяет exact-integer `limit` и неотрицательные millisecond `start/end` для kline/open-interest; boolean, fractional, negative и инвертированные временные окна отклоняются без сетевого вызова;
 - собирает `funding rate`, `fundingIntervalHour` и `open interest` для perpetual linear;
 - ведёт эвристический sentiment pipeline (`global`, `symbol`, `topic` scopes);
 - определяет direction/regime на нескольких ТФ;

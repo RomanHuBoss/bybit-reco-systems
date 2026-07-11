@@ -7,6 +7,8 @@
 Контракт:
 - возвращает уже санитизированные структуры;
 - retry для transport/retryable upstream cases, включая transient protocol/decode failures уровня CDN/WAF;
+- считает ответ успешным только при присутствующем exact-integer `retCode=0`; zero-like boolean/fractional/missing значения не проходят как success;
+- формирует kline/open-interest pagination windows только из exact-integer limits и неотрицательных, неинвертированных millisecond timestamps;
 - не должен прокидывать явно сломанные JSON-shapes как валидные данные и по возможности должен переживать кратковременный 2xx non-JSON шум повторной попыткой.
 
 ## `app/collector.py`
