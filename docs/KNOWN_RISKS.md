@@ -264,3 +264,13 @@ Kline and open-interest `limit`, `start/end` and `startTime/endTime` previously 
 ### RESIDUAL: public REST remains snapshot data, not execution truth
 
 Strict response and request controls prevent malformed payload coercion but do not make public REST atomic or authenticated. A future external executor must still re-check current instrument metadata, account state, wallet, positions and order constraints immediately before any real Bybit action.
+
+## 2026-07-11 live execution spread/economics revalidation
+
+### RESOLVED/HIGH: publication-time spread could outlive its economic validity
+
+Execution preflight refreshed price and funding but did not reprice transaction costs from the current best bid/ask. A still-fresh recommendation could therefore pass range/kill-switch checks after spread widened enough to make its per-grid edge negative. Costed Linear USDT futures-grid recommendations now require valid live bid/ask and recompute spread, slippage, fee floor and net edge immediately before operator materialization. The same absolute spread, minimum net-edge and gross/cost-coverage gates used at publication are applied fail-closed.
+
+### RESIDUAL: public top-of-book is still not fill truth
+
+Best bid/ask is a stronger execution-cost input than `lastPrice`, but it does not model queue position, depth, market impact, partial fills or latency between preflight and a real external Bybit action. The repository remains a recommendation/audit service, not OMS/EMS. An external executor must refresh the order book, authenticated fee tier, account state and exact order preview immediately before creation, and must reconcile actual fills afterwards.

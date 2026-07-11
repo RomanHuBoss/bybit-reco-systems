@@ -64,6 +64,9 @@ EXECUTION_FUNDING_MAX_STALENESS_SEC = 60 * 60
 EXECUTION_FUNDING_WORSE_DELTA_BLOCK_BPS = 3.0
 EXECUTION_FUNDING_EXTREME_BPS = 6.0
 EXECUTION_MIN_NET_PROFIT_BPS = 2.0
+EXECUTION_MAX_LIVE_SPREAD_BPS = 14.0
+EXECUTION_GRID_SLIPPAGE_SPREAD_MULTIPLIER = 0.35
+EXECUTION_MIN_LINEAR_SLIPPAGE_BPS = 1.0
 OPERATOR_MIN_LIQUIDATION_BUFFER_PCT = 12.0
 RECOMMENDATION_MAX_FUTURE_SKEW_SEC = 300
 EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER = 1.10
@@ -2837,8 +2840,148 @@ def _current_price_from_ticker(ticker: dict[str, Any] | None) -> float | None:
     return None
 
 
+def _live_spread_bps_from_ticker(ticker: dict[str, Any] | None) -> float | None:
+    """Return executable best-bid/ask spread; lastPrice is not a spread proxy."""
+    if not isinstance(ticker, dict):
+        return None
+    bid = _finite_float_or_none(ticker.get("bid"))
+    ask = _finite_float_or_none(ticker.get("ask"))
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return None
+    midpoint = (bid + ask) / 2.0
+    if midpoint <= 0:
+        return None
+    return (ask - bid) / midpoint * 10_000.0
+
+
+def _execution_live_cost_blocks(ticker: dict[str, Any] | None, rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reprice generated futures-grid execution friction from the live bid/ask.
+
+    Recommendation economics are a publication-time snapshot. Preserve their
+    gross edge and adverse funding assumption, but replace spread/slippage with
+    the executable live quote and keep the greater of stored/configured fee
+    floors. This prevents a still-fresh recommendation from being materialised
+    after transaction costs have consumed its edge.
+    """
+    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+        return []
+    if str(rec.get("venue") or "").strip().lower() != "linear":
+        return []
+
+    cost_model = _cost_model_from_rec(rec)
+    if not cost_model:
+        # Legacy/manual payloads predate publication-time cost modelling. Their
+        # existing strict plan checks remain unchanged; generated recommendations
+        # always carry cost_model and are revalidated below.
+        return []
+
+    live_spread_bps = _live_spread_bps_from_ticker(ticker)
+    if live_spread_bps is None:
+        return [{
+            "code": "LIVE_SPREAD_UNAVAILABLE",
+            "msg": "Текущий ticker не содержит валидную пару bid/ask; spread и live execution edge нельзя проверить, запуск grid запрещён.",
+        }]
+
+    blocks: list[dict[str, Any]] = []
+    if live_spread_bps > EXECUTION_MAX_LIVE_SPREAD_BPS:
+        blocks.append({
+            "code": "LIVE_SPREAD_TOO_WIDE",
+            "msg": (
+                f"spread_bps={live_spread_bps:.2f} > {EXECUTION_MAX_LIVE_SPREAD_BPS:.2f} по текущему bid/ask; "
+                "transaction costs слишком велики для запуска grid."
+            ),
+        })
+
+    economics = _economics_from_rec(rec)
+    gross_profit_bps = _finite_float_or_none(economics.get("gross_profit_bps"))
+    if gross_profit_bps is None:
+        # The strict trade-plan validator owns malformed/legacy economics. The
+        # spread cap above is still enforceable without inventing a gross edge.
+        return blocks
+
+    stored_fee_bps = _finite_float_or_none(cost_model.get("fee_bps_round_trip"))
+    configured_taker_fee_bps = _finite_float_or_none(getattr(settings, "taker_fee_bps_linear", None))
+    configured_fee_bps = None
+    if configured_taker_fee_bps is not None and configured_taker_fee_bps >= 0:
+        configured_fee_bps = configured_taker_fee_bps * 2.0
+    fee_candidates = [
+        value
+        for value in (stored_fee_bps, configured_fee_bps)
+        if value is not None and value >= 0
+    ]
+    fee_floor_bps = max(fee_candidates, default=0.0)
+
+    live_slippage_bps = max(
+        EXECUTION_MIN_LINEAR_SLIPPAGE_BPS,
+        live_spread_bps * EXECUTION_GRID_SLIPPAGE_SPREAD_MULTIPLIER,
+    )
+    live_execution_cost_bps = fee_floor_bps + live_spread_bps + live_slippage_bps
+
+    # Carry forward any conservative residual in the stored execution model
+    # instead of silently dropping a component when only spread/slippage change.
+    stored_execution_cost_bps = _finite_float_or_none(economics.get("execution_cost_bps"))
+    if stored_execution_cost_bps is None:
+        stored_execution_cost_bps = _finite_float_or_none(cost_model.get("execution_cost_bps"))
+    stored_spread_bps = _finite_float_or_none(cost_model.get("spread_bps"))
+    stored_slippage_bps = _finite_float_or_none(cost_model.get("slippage_bps"))
+    if (
+        stored_execution_cost_bps is not None
+        and stored_execution_cost_bps >= 0
+        and stored_spread_bps is not None
+        and stored_spread_bps >= 0
+        and stored_slippage_bps is not None
+        and stored_slippage_bps >= 0
+    ):
+        stored_non_spread_cost_bps = max(
+            0.0,
+            stored_execution_cost_bps - stored_spread_bps - stored_slippage_bps,
+        )
+        live_execution_cost_bps = max(
+            live_execution_cost_bps,
+            stored_non_spread_cost_bps + live_spread_bps + live_slippage_bps,
+        )
+
+    funding_cost_bps = _finite_float_or_none(economics.get("funding_cost_bps"))
+    if funding_cost_bps is None:
+        expected_funding_bps = _finite_float_or_none(cost_model.get("expected_funding_bps"))
+        funding_cost_bps = max(0.0, expected_funding_bps or 0.0)
+    else:
+        funding_cost_bps = max(0.0, funding_cost_bps)
+
+    live_net_profit_bps = gross_profit_bps - live_execution_cost_bps - funding_cost_bps
+    edge_msg = (
+        f"gross_profit_bps={gross_profit_bps:.2f}, execution_cost_bps={live_execution_cost_bps:.2f}, "
+        f"funding_cost_bps={funding_cost_bps:.2f}, net_profit_bps={live_net_profit_bps:.2f} "
+        "после пересчёта по текущему bid/ask."
+    )
+    if live_net_profit_bps <= 0.0:
+        blocks.append({
+            "code": "LIVE_EXECUTION_EDGE_NON_POSITIVE",
+            "msg": edge_msg + " Запуск grid запрещён: live edge неположительный.",
+        })
+    elif live_net_profit_bps < EXECUTION_MIN_NET_PROFIT_BPS:
+        blocks.append({
+            "code": "LIVE_EXECUTION_EDGE_TOO_THIN",
+            "msg": (
+                edge_msg
+                + f" Минимум для запуска — {EXECUTION_MIN_NET_PROFIT_BPS:.2f} bps; нужен новый расчёт."
+            ),
+        })
+
+    if gross_profit_bps <= live_execution_cost_bps * EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER:
+        blocks.append({
+            "code": "LIVE_GROSS_EDGE_BELOW_COSTS",
+            "msg": (
+                f"gross_profit_bps={gross_profit_bps:.2f} не покрывает live execution_cost_bps="
+                f"{live_execution_cost_bps:.2f} с запасом {EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER:.2f}x; "
+                "запуск fail-closed."
+            ),
+        })
+    return blocks
+
+
 def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Fail-closed защита от исполнения сетки по уже уехавшей цене.
+    """Fail-closed защита от исполнения сетки по уехавшей цене/стоимости.
 
     Fresh ticker сам по себе не гарантирует исполнимость рекомендации: цена могла
     выйти за рекомендованный диапазон между публикацией и действием оператора.
@@ -2869,6 +3012,8 @@ def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, An
             "msg": "Текущий ticker свежий, но не содержит пригодной last/bid/ask цены; запуск grid запрещён до получения валидной live price.",
         })
         return blocks
+
+    blocks.extend(_execution_live_cost_blocks(ticker, rec))
 
     if lower_ks is not None and upper_ks is not None and not (lower_ks <= current_price <= upper_ks):
         blocks.append({
@@ -4010,7 +4155,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.13", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.14", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

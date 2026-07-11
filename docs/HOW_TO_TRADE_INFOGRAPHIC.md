@@ -24,6 +24,7 @@ Treat the recommendation as NO TRADE when any of the following appears:
 - INVALID_MARKET_REFERENCE_PRICE;
 - stale publication-chain or stale market data;
 - current ticker outside range or kill-switch;
+- live best bid/ask missing or invalid, spread above 14 bps, recomputed net edge below 2 bps, or gross edge not covering live execution cost by more than 1.10x;
 - missing Bybit metadata, tickSize, qtyStep, minNotional, leverageFilter, or non-Trading instrument status;
 - funding rate/interval unavailable or adverse enough to destroy net edge;
 - fractional/malformed market timestamp, funding interval, label horizon, or funding event schedule; such values must remain unknown and must never be rounded into an executable assumption;
@@ -47,9 +48,9 @@ A complete `params.trade_plan` must include:
 ## Practical sequence
 
 1. Confirm status is recommended/actionable and not blocked.
-2. Check current price, publication-chain TTL, Bybit metadata, and funding diagnostics.
+2. Check current price, best bid/ask spread, recomputed live edge, publication-chain TTL, Bybit metadata, and funding diagnostics.
 3. Copy only a complete trade plan into Bybit Futures Grid.
 4. Re-check leverage 3-5x, margin, estimated worst-case exposure, minNotional, and liquidation buffer.
 5. Do not override a blocking guard manually.
 
-Runtime guards are authoritative: risk status, Bybit metadata, live ticker, funding snapshot, publication-chain TTL, minNotional/qtyStep/minQty, and LLM gate if enabled.
+Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-ask economics, funding snapshot, publication-chain TTL, minNotional/qtyStep/minQty, and LLM gate if enabled.
