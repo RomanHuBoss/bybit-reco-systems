@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .grid_math import strict_integer
+
 
 def _strict_json_dumps(value: Any) -> str:
     """Строгая JSON-сериализация без NaN/Infinity.
@@ -49,12 +51,8 @@ def _finite_float(value: Any) -> float | None:
 
 
 def _finite_int(value: Any, default: int = 0) -> int:
-    if isinstance(value, bool):
-        return int(default)
-    try:
-        return int(value)
-    except Exception:
-        return int(default)
+    parsed = strict_integer(value)
+    return int(default) if parsed is None else int(parsed)
 
 
 def _strict_bool(value: Any) -> bool | None:
@@ -505,20 +503,16 @@ def _purged_train_indices(
     split = int(validation_start_index)
     if split <= 0 or split >= len(tss) or len(label_available_tss) != len(tss):
         return []
-    try:
-        validation_ts = int(tss[split])
-    except Exception:
+    validation_ts = strict_integer(tss[split])
+    if validation_ts is None:
         return []
 
     indices: list[int] = []
     for idx in range(split):
-        try:
-            train_ts = int(tss[idx])
-            raw_available_ts = label_available_tss[idx]
-            if isinstance(raw_available_ts, bool) or raw_available_ts is None:
-                continue
-            available_ts = int(raw_available_ts)
-        except Exception:
+        train_ts = strict_integer(tss[idx])
+        raw_available_ts = label_available_tss[idx]
+        available_ts = strict_integer(raw_available_ts)
+        if train_ts is None or available_ts is None:
             continue
         # A same-timestamp decision is not guaranteed to observe a label that
         # completes at that instant. Malformed availability before signal time
@@ -613,24 +607,17 @@ def fit_logreg(
     ys: list[int] = []
     tss: list[int] = []
     for row in rows:
-        try:
-            score = _safe_float(row.get("score"), None)
-            success_raw = row.get("success")
-            ts_raw = row.get("ts")
-            if isinstance(success_raw, bool) or isinstance(ts_raw, bool):
-                continue
-            ts = int(ts_raw or 0)
-        except Exception:
-            continue
+        score = _safe_float(row.get("score"), None)
+        success_raw = row.get("success")
+        ts = strict_integer(row.get("ts"))
         if score is None:
             continue
-        try:
-            success = int(success_raw)
-        except Exception:
+        success = strict_integer(success_raw)
+        if ts is None or ts <= 0 or success is None:
             continue
         if success not in (0, 1):
             continue
-        sanitized_rows.append(row)
+        sanitized_rows.append({**row, "ts": ts, "success": success})
         xs_score.append(float(score))
         ys.append(success)
         tss.append(ts)
@@ -668,10 +655,11 @@ def fit_logreg(
             w_used.append(w)
             ts_used.append(int(r.get("ts") or 0))
             raw_available_ts = r.get("label_available_ts")
+            parsed_available_ts = strict_integer(raw_available_ts)
             label_available_used.append(
-                None
-                if raw_available_ts is None or isinstance(raw_available_ts, bool)
-                else _finite_int(raw_available_ts, 0)
+                parsed_available_ts
+                if parsed_available_ts is not None and parsed_available_ts > 0
+                else None
             )
 
     if len(X) < logreg_min_samples:

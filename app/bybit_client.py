@@ -6,6 +6,8 @@ from typing import Any, Mapping
 
 import httpx
 
+from .grid_math import strict_integer
+
 
 RETRYABLE_BYBIT_RETCODES = {10000, 10006, 10016, 10018, 30034}
 
@@ -23,12 +25,8 @@ def _safe_float(value: Any) -> float | None:
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
-    if isinstance(value, bool):
-        return int(default)
-    try:
-        return int(value)
-    except Exception:
-        return int(default)
+    parsed = strict_integer(value)
+    return int(default) if parsed is None else int(parsed)
 
 
 def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
@@ -277,13 +275,18 @@ class BybitPublicClient:
                 break
         if ticker is None:
             return None
-        next_funding_raw = _safe_int(ticker.get("nextFundingTime") or 0)
-        next_funding_ts = next_funding_raw // 1000 if next_funding_raw > 10**11 else next_funding_raw
+        next_funding_raw = strict_integer(ticker.get("nextFundingTime"))
+        if next_funding_raw is not None and next_funding_raw > 0:
+            next_funding_ts = next_funding_raw // 1000 if next_funding_raw > 10**11 else next_funding_raw
+        else:
+            next_funding_ts = None
         funding_rate = _safe_float(ticker.get("fundingRate"))
         funding_interval_min = None
-        interval_hours = _safe_float(ticker.get("fundingIntervalHour"))
+        # Bybit documents fundingIntervalHour as whole hours. A fractional
+        # upstream value is malformed metadata, not a schedule to round.
+        interval_hours = strict_integer(ticker.get("fundingIntervalHour"))
         if interval_hours is not None and interval_hours > 0:
-            funding_interval_min = int(round(interval_hours * 60.0))
+            funding_interval_min = int(interval_hours * 60)
 
         if funding_interval_min is None:
             # Official V5 funding-history docs point operators to instruments-info
@@ -298,9 +301,10 @@ class BybitPublicClient:
             except Exception:
                 info = None
             if isinstance(info, Mapping):
-                interval_min = _safe_float(info.get("fundingInterval"))
+                # Instruments Info exposes fundingInterval as integer minutes.
+                interval_min = strict_integer(info.get("fundingInterval"))
                 if interval_min is not None and interval_min > 0:
-                    funding_interval_min = int(round(interval_min))
+                    funding_interval_min = int(interval_min)
         return {
             "symbol": target,
             "funding_rate": funding_rate,

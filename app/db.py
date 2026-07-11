@@ -349,13 +349,8 @@ def _backfill_effective_horizon_sec(bot_type: str, params: dict[str, Any] | None
     params = params if isinstance(params, dict) else {}
 
     def _hours_to_sec(value: Any) -> int | None:
-        if isinstance(value, bool):
-            return None
-        try:
-            hours = float(value)
-        except Exception:
-            return None
-        if not math.isfinite(hours) or hours <= 0:
+        hours = strict_integer(value)
+        if hours is None or hours <= 0:
             return None
         return int(hours * 3600)
 
@@ -2302,35 +2297,31 @@ def _normalize_funding_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str
     payload = dict(row)
     raw_ts = payload.get("ts")
     raw_funding_rate = payload.get("funding_rate")
-    if isinstance(raw_ts, bool) or isinstance(raw_funding_rate, bool):
+    if isinstance(raw_funding_rate, bool):
+        return None
+    ts = strict_integer(raw_ts)
+    if ts is None:
         return None
     try:
-        ts = int(raw_ts or 0)
         funding_rate = float(raw_funding_rate)
     except Exception:
         return None
     if (not _is_plausible_market_ts(ts)) or (not math.isfinite(funding_rate)):
         return None
     next_funding_ts_raw = payload.get("next_funding_ts")
-    try:
-        next_funding_ts = (
-            int(next_funding_ts_raw)
-            if next_funding_ts_raw not in (None, "") and not isinstance(next_funding_ts_raw, bool)
-            else None
-        )
-    except Exception:
-        next_funding_ts = None
+    next_funding_ts = (
+        strict_integer(next_funding_ts_raw)
+        if next_funding_ts_raw not in (None, "")
+        else None
+    )
     if next_funding_ts is not None and next_funding_ts <= 0:
         next_funding_ts = None
     funding_interval_min = None
     raw_interval = payload.get("funding_interval_min")
-    if raw_interval not in (None, "") and not isinstance(raw_interval, bool):
-        try:
-            interval = float(raw_interval)
-        except Exception:
-            interval = float("nan")
-        if math.isfinite(interval) and interval > 0:
-            funding_interval_min = int(round(interval))
+    if raw_interval not in (None, ""):
+        interval = strict_integer(raw_interval)
+        if interval is not None and interval > 0:
+            funding_interval_min = int(interval)
     return {
         "symbol": str(payload.get("symbol") or ""),
         "ts": ts,
@@ -2378,10 +2369,12 @@ def _normalize_open_interest_row(symbol: str, row: sqlite3.Row | dict[str, Any] 
     payload = dict(row)
     raw_ts = payload.get("ts")
     raw_oi = payload.get("oi")
-    if isinstance(raw_ts, bool) or isinstance(raw_oi, bool):
+    if isinstance(raw_oi, bool):
+        return None
+    ts = strict_integer(raw_ts)
+    if ts is None:
         return None
     try:
-        ts = int(raw_ts or 0)
         oi = float(raw_oi)
     except Exception:
         return None

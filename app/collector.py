@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from .bybit_client import BybitPublicClient
 from . import db
+from .grid_math import strict_integer
 
 # Symbols that Bybit rejects (e.g., futures-only symbols passed into linear collector).
 # Keep a retry TTL instead of poisoning the symbol forever: listings can appear later,
@@ -240,8 +241,10 @@ def _normalize_symbols(symbols: list[str], disabled: dict[str, int], now_ts: int
 
 def _sanitize_ohlcv_row(venue: str, symbol: str, tf_sec: int, row: list[Any]) -> dict[str, Any] | None:
     try:
-        start_ms = int(row[0])
+        start_ms = strict_integer(row[0])
     except Exception:
+        return None
+    if start_ms is None or start_ms <= 0:
         return None
     open_px = _to_float(row[1], minimum=0.0)
     high_px = _to_float(row[2], minimum=0.0)
@@ -275,11 +278,8 @@ def _remote_ticker_ts(ticker: dict[str, Any], fallback_ts: int) -> int:
         ticker.get("lastPriceTime"),
     )
     for raw in candidates:
-        if isinstance(raw, bool):
-            continue
-        try:
-            ts = int(raw)
-        except Exception:
+        ts = strict_integer(raw)
+        if ts is None:
             continue
         if ts > 10**11:
             ts //= 1000
@@ -295,9 +295,9 @@ def _extract_funding_row(symbol: str, ticker: dict[str, Any], fallback_ts: int) 
     next_funding_ts = None
     try:
         raw_next_funding = ticker.get("nextFundingTime")
-        if isinstance(raw_next_funding, bool):
-            raise ValueError("boolean nextFundingTime is invalid")
-        nft = int(raw_next_funding or 0)
+        nft = strict_integer(raw_next_funding)
+        if nft is None:
+            raise ValueError("nextFundingTime must be an exact integer")
         if nft > 10**11:
             nft //= 1000
         next_funding_ts = nft if nft > 0 else None
@@ -309,9 +309,9 @@ def _extract_funding_row(symbol: str, ticker: dict[str, Any], fallback_ts: int) 
     # USDT perpetual. If the ticker omits this field, collection falls back to
     # instruments-info below, where Bybit publishes fundingInterval in minutes.
     funding_interval_min = None
-    interval_hours = _to_float(ticker.get("fundingIntervalHour"), minimum=0.0)
+    interval_hours = strict_integer(ticker.get("fundingIntervalHour"))
     if interval_hours is not None and interval_hours > 0:
-        funding_interval_min = int(round(interval_hours * 60.0))
+        funding_interval_min = int(interval_hours * 60)
 
     return {
         "symbol": symbol,
@@ -354,10 +354,10 @@ def _funding_interval_min_from_instrument_info(client: BybitPublicClient, catego
     if is_pre_listing or not _ticker_delivery_time_is_perpetual(info.get("deliveryTime")):
         return None
 
-    interval_min = _to_float(info.get("fundingInterval"), minimum=0.0)
+    interval_min = strict_integer(info.get("fundingInterval"))
     if interval_min is None or interval_min <= 0:
         return None
-    return int(round(interval_min))
+    return int(interval_min)
 
 
 def _ensure_funding_interval_from_instrument_info(
@@ -368,7 +368,8 @@ def _ensure_funding_interval_from_instrument_info(
 ) -> dict[str, Any] | None:
     if funding_row is None:
         return None
-    if _to_float(funding_row.get("funding_interval_min"), minimum=0.0):
+    current_interval = strict_integer(funding_row.get("funding_interval_min"))
+    if current_interval is not None and current_interval > 0:
         return funding_row
     interval_min = _funding_interval_min_from_instrument_info(client, category, symbol)
     if interval_min is not None and interval_min > 0:
@@ -1203,12 +1204,9 @@ def collect_futures_once(conn, client, symbols_linear: list[str], heartbeat: Cal
         oi_rows_raw = _fetch_open_interest_rows(client, sym, interval="1h", limit=limit, start_ms=start_ms, end_ms=end_ms)
         oi_rows = []
         for row in oi_rows_raw or []:
-            try:
-                ts = int(row.get("ts") or 0)
-            except Exception:
-                continue
+            ts = strict_integer(row.get("ts"))
             oi = _to_float(row.get("oi"), minimum=0.0)
-            if ts <= 0 or oi is None:
+            if ts is None or ts <= 0 or oi is None:
                 continue
             oi_rows.append({"ts": ts, "oi": oi})
         return sym, oi_rows

@@ -168,3 +168,9 @@ All JSON booleans are invalid for numeric trading fields. This applies to market
 `recommendations.rec_id` is an immutable audit identity. Repeating the exact canonical payload is idempotent; reusing the same id with changed direction, score, confidence, status, params or lineage fails closed. Recommendation lifecycle updates must use the existing publication/state-transition mechanisms rather than SQL replacement of the original signal.
 
 Market-shock and fast-veto calculations consume only fully closed candles. Every timestamp is exact-integer validated; future, still-open, boolean and fractional timestamps are excluded rather than truncated.
+
+## Exact temporal and funding integer semantics (2026-07-11)
+
+Bybit `nextFundingTime`/open-interest/OHLCV timestamps, `fundingIntervalHour`, instruments-info `fundingInterval`, label horizons and funding event counts are exact-integer fields. Numeric values such as `5.0` remain compatible because they represent an exact integer; boolean, fractional, blank and non-finite values are invalid.
+
+Invalid upstream timestamps are discarded before they can collide with an existing integer-second persistence key. Invalid funding intervals remain unavailable rather than being rounded into a plausible schedule. Execution-time funding then stays fail-closed: a missing schedule uses the conservative unknown-schedule event count, while a missing/invalid interval blocks costed execution. Purged calibration excludes malformed recommendation or label-availability timestamps instead of manufacturing chronology through truncation.

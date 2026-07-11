@@ -26,6 +26,7 @@ Treat the recommendation as NO TRADE when any of the following appears:
 - current ticker outside range or kill-switch;
 - missing Bybit metadata, tickSize, qtyStep, minNotional, leverageFilter, or non-Trading instrument status;
 - funding rate/interval unavailable or adverse enough to destroy net edge;
+- fractional/malformed market timestamp, funding interval, label horizon, or funding event schedule; such values must remain unknown and must never be rounded into an executable assumption;
 - empty/corrupted payload; Complete `params.trade_plan` exists; no empty/corrupted payload. If this statement is false, do not launch;
 - missing OK LLM gate when the reviewer is configured as a gate;
 - unknown or conflicting same-symbol direction in one-way mode.

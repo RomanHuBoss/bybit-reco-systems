@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-11 - v1.0.12 - strict temporal/funding integer semantics
+
+- Bybit ticker, OHLCV and open-interest timestamps are no longer silently truncated from fractional values into valid integer keys.
+- `fundingIntervalHour` and `fundingInterval` now require exact whole-hour/integer-minute semantics; malformed metadata remains unavailable and therefore fail-closed.
+- Fractional funding/OI rows can no longer overwrite a valid SQLite/PostgreSQL logical key after coercion.
+- Purged calibration rejects fractional recommendation and label-availability timestamps instead of manufacturing chronology through `int()`.
+- Fractional label horizons fall back to the canonical 12-hour futures-grid horizon; unknown funding schedules use the conservative possible-event count.
+- Funding cashflow accepts only exact integer event counts.
+- Baseline: 800 passed. Post-check: 810 passed; 10 new regression items. Ruff remains at the same 9 pre-existing findings, with no new findings.
+- No schema, migration, public API, environment variable or operator lifecycle change. Live PostgreSQL integration remained untested because no verified disposable DSN was supplied.
+
 ## 2026-06-18 - History/order-label regression audit
 
 - The «История и динамика» table now shows newest publications first while the timeline remains chronological.

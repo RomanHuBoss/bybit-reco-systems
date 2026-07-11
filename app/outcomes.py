@@ -23,13 +23,8 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
     params = params if isinstance(params, dict) else {}
 
     def _hours_to_sec(value: object) -> int | None:
-        if isinstance(value, bool):
-            return None
-        try:
-            hours = float(value)
-        except Exception:
-            return None
-        if not math.isfinite(hours) or hours <= 0:
+        hours = strict_integer(value)
+        if hours is None or hours <= 0:
             return None
         return int(hours * 3600)
 

@@ -232,3 +232,21 @@ open positions and reconciliation immediately before real order creation.
 Telegram transport success now requires the literal JSON boolean `true`. A malformed
 HTTP 200 payload such as `{"ok":"false"}` no longer counts as delivery success and
 therefore cannot start the alert cooldown after a failed notification.
+
+## 2026-07-11 exact temporal/funding integer semantics
+
+### RESOLVED/HIGH: fractional market timestamps could overwrite valid funding/OI keys
+
+Bybit/collector/persistence boundaries previously used `int()` on some OHLCV, ticker, funding and open-interest timestamps. A malformed fractional value such as `1700000000.75` became `1700000000` and could replace a valid row at that logical key. These paths now use the shared exact-integer parser; malformed rows are discarded before persistence.
+
+### RESOLVED/HIGH: malformed funding schedules could become executable assumptions
+
+Fractional `fundingIntervalHour`, instruments-info `fundingInterval`, label horizons and next-funding timestamps were rounded or truncated into plausible schedules. They now remain unknown. Costed execution blocks an invalid interval, and an invalid next-event timestamp uses the conservative unknown-schedule event count rather than an optimistic single-event assumption.
+
+### RESOLVED/MEDIUM: purged calibration accepted fractional temporal boundaries
+
+Recommendation and `label_available_ts` values entering chronological OOF are now exact integers. Fractional values are excluded, preserving the proof that every training label was fully observable before its validation decision.
+
+### RESIDUAL: legacy malformed rows are ignored, not deleted
+
+This patch is schema-free and non-destructive. Existing manually inserted fractional funding/OI rows may remain physically present in SQLite; current readers skip them. If a forensic cleanup is required, back up the database and perform it as a separate maintenance operation. Live PostgreSQL behavior was covered by shared normalization/dialect tests but not by a disposable server integration run.

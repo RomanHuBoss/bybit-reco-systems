@@ -2332,7 +2332,7 @@ def _execution_label_horizon_sec(rec: dict[str, Any]) -> int:
         plan.get("expected_horizon_sec"),
     )
     for raw in candidates:
-        value = _finite_float_or_none(raw)
+        value = strict_integer(raw)
         if value is not None and value > 0:
             return int(min(max(value, 6 * 3600), 48 * 3600))
     for raw in (
@@ -2340,9 +2340,9 @@ def _execution_label_horizon_sec(rec: dict[str, Any]) -> int:
         plan.get("label_horizon_hours"),
         _first_mapping(plan.get("expected_horizon")).get("label_horizon_hours"),
     ):
-        value = _finite_float_or_none(raw)
+        value = strict_integer(raw)
         if value is not None and value > 0:
-            return int(min(max(value * 3600.0, 6 * 3600), 48 * 3600))
+            return int(min(max(value * 3600, 6 * 3600), 48 * 3600))
     return 12 * 3600
 
 
@@ -2364,30 +2364,38 @@ def _signed_funding_bps_for_direction(direction: str, funding_rate: float) -> fl
 
 
 def _funding_events_until_horizon(now_ts: int, next_funding_ts: Any, interval_sec: int, horizon_sec: int) -> int:
-    if interval_sec <= 0 or horizon_sec <= 0:
+    now_int = strict_integer(now_ts)
+    interval_int = strict_integer(interval_sec)
+    horizon_int = strict_integer(horizon_sec)
+    if (
+        now_int is None
+        or interval_int is None
+        or horizon_int is None
+        or now_int <= 0
+        or interval_int <= 0
+        or horizon_int <= 0
+    ):
         return 0
-    next_ts = _finite_float_or_none(next_funding_ts)
-    if next_ts is None or next_ts <= 0:
+    next_int = strict_integer(next_funding_ts)
+    if next_int is None or next_int <= 0:
         # If Bybit/DB has the funding interval but not the next event timestamp,
         # execution preflight must not assume that only one event can occur. The
         # first event may be minutes away and a futures grid can carry inventory
         # across every boundary in the label horizon. Match recommendation-time
         # economics: use a conservative ceil(horizon / interval), capped only to
         # avoid absurd legacy horizons.
-        return min(32, max(1, int(math.ceil(float(horizon_sec) / float(interval_sec)))))
+        return min(32, max(1, int(math.ceil(float(horizon_int) / float(interval_int)))))
     # Bybit and some fixtures can provide ms timestamps; normalize defensively.
-    if next_ts > 10_000_000_000:
-        next_ts = next_ts / 1000.0
-    next_int = int(next_ts)
-    now_int = int(now_ts)
+    if next_int > 10_000_000_000:
+        next_int //= 1000
     while next_int <= now_int:
-        next_int += int(interval_sec)
-    horizon_end = now_int + int(horizon_sec)
+        next_int += interval_int
+    horizon_end = now_int + horizon_int
     events = 0
     ts = next_int
     while ts <= horizon_end and events < 32:
         events += 1
-        ts += int(interval_sec)
+        ts += interval_int
     return events
 
 
@@ -2421,7 +2429,8 @@ def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None =
     if not funding:
         return [{"code": "FUNDING_RATE_UNAVAILABLE_AT_EXECUTION", "msg": f"{symbol}: нет funding_rate для execution-time проверки carry; запуск grid заблокирован."}]
 
-    ts = _safe_int(funding.get("ts"), default=0)
+    ts = strict_integer(funding.get("ts"))
+    ts = ts if ts is not None else 0
     age_sec = max(0, now - ts) if ts > 0 else None
     if age_sec is None or age_sec > EXECUTION_FUNDING_MAX_STALENESS_SEC:
         return [{
@@ -2434,10 +2443,10 @@ def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None =
     if signed_bps is None:
         return [{"code": "FUNDING_RATE_INVALID_AT_EXECUTION", "msg": f"{symbol}: funding_rate не является finite-числом; запуск grid заблокирован."}]
 
-    interval_min = _finite_float_or_none(funding.get("funding_interval_min"))
+    interval_min = strict_integer(funding.get("funding_interval_min"))
     if interval_min is None or interval_min <= 0:
         return [{"code": "FUNDING_INTERVAL_UNAVAILABLE_AT_EXECUTION", "msg": f"{symbol}: funding_interval_min отсутствует; нельзя оценить carry до горизонта сделки."}]
-    interval_sec = int(round(interval_min * 60.0))
+    interval_sec = int(interval_min * 60)
     horizon_sec = _execution_label_horizon_sec(rec)
     events = _funding_events_until_horizon(now, funding.get("next_funding_ts"), interval_sec, horizon_sec)
     current_expected_bps = signed_bps * max(0, events)
@@ -4001,7 +4010,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.11", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.12", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
