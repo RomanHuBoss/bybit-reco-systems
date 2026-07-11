@@ -289,3 +289,46 @@ Execution preflight refreshed price and funding but did not reprice transaction 
 ### RESIDUAL: public top-of-book is still not fill truth
 
 Best bid/ask is a stronger execution-cost input than `lastPrice`, but it does not model queue position, depth, market impact, partial fills or latency between preflight and a real external Bybit action. The repository remains a recommendation/audit service, not OMS/EMS. An external executor must refresh the order book, authenticated fee tier, account state and exact order preview immediately before creation, and must reconcile actual fills afterwards.
+
+
+## 2026-07-11 execution evidence and realised PnL integrity
+
+### RESOLVED/HIGH: aggregate trade rows could not prove what was actually executed
+
+Legacy rows had no immutable direct `rec_id`, Bybit `execId`/transaction id, order id, fill price/qty or separate funding events. They could not distinguish model loss from execution loss and were insufficient for partial-fill-safe live validation. A new additive `execution_evidence` ledger now records each execution and funding event against immutable `bot_id -> origin_rec_id`, with unique source/external id and conflict-aware retries.
+
+### RESOLVED/HIGH: funding was absent from realised risk accounting
+
+The legacy net result and daily risk stream used gross `pnl - fee`. Signed funding is now stored and included as `gross_pnl + funding - fee` in both compatibility and exact evidence paths.
+
+### RESOLVED/HIGH: slippage could be double-counted or measured against the wrong price
+
+Bybit fill-based gross PnL already reflects actual execution prices. Slippage is therefore not subtracted again. `orderPrice` is retained as exchange evidence but is not treated as a slippage benchmark. An execution event requires a separately timestamped pre-submit/decision benchmark and computes only adverse benchmark-to-fill deviation as a diagnostic.
+
+### RESOLVED/HIGH: mixed ledgers could double-count one bot
+
+Supported writes fail closed if a bot already has rows in the other ledger. Defensive risk aggregation also gives exact execution events precedence over legacy aggregates in a pre-existing mixed database.
+
+### RESOLVED/MEDIUM: exact execution identifiers were exposed by unauthenticated reads
+
+The evidence and live-validation read endpoints require the same admin-key/loopback authorization model as mutating operator routes.
+
+### RESOLVED/MEDIUM: runtime lock SQLite file could enter a release archive
+
+The release builder excludes SQLite/DB/WAL/SHM artifacts, including `data/app.runtime_locks.sqlite`, and is covered by a regression test.
+
+### RESIDUAL/HIGH: no authenticated Bybit reconciliation adapter is shipped
+
+The repository still does not fetch private executions, transaction logs, wallet/position state or unrealised PnL. An external read-only adapter must normalize Bybit millisecond timestamps to UTC seconds, preserve raw exchange payloads, attribute funding to the correct bot, include all fee components/rebates and submit idempotently. No private order-create/amend/cancel code was added.
+
+### RESIDUAL/HIGH: realised-only risk does not capture open inventory
+
+The unified stream improves realised drawdown/cooldown but cannot see mark-to-market loss, liquidation proximity, unfilled grid orders or account-level cross-effects. Those remain external executor/reconciler responsibilities.
+
+### RESIDUAL/MEDIUM: normalized monetary fields use floating persistence
+
+Canonical ids and raw metadata can preserve source evidence, but summaries use SQLite REAL/PostgreSQL DOUBLE PRECISION. For forensic accounting at very large event counts, an external archive should retain exact source decimal strings; migration to fixed-scale decimal accounting is a separate work package.
+
+### RESIDUAL: live edge remains unproven
+
+The new dataset makes validation possible but contains no user fills by itself. Positive expectancy still requires sufficient independent stopped bots, chronological walk-forward evaluation, no-trade/comparator baselines, regime cohorts, calibration reliability and a predefined stop criterion.

@@ -157,3 +157,18 @@
 Operator execution path теперь содержит отдельный live-price guard между freshness-check и materialization `bot_instance`.
 Он использует последний валидный ticker из persistence-слоя и сохранённый `trade_plan`, чтобы не позволить оператору подтвердить grid-рекомендацию, рассчитанную для уже неактуального диапазона.
 Guard не отправляет и не отменяет ордера; он только блокирует операторское подтверждение в audit/recommendation контуре.
+
+
+## Execution evidence validation contour
+
+`external read-only Bybit adapter -> authenticated evidence API -> execution_evidence -> unified realised event stream -> risk/drawdown/cooldown + descriptive validation export`
+
+`execution_evidence` is additive to dual persistence and never performs order operations. It stores immutable linkage to `bot_instances.origin_rec_id`, exact external identities, exchange fill fields, a separate benchmark snapshot and separate execution/funding event types. SQLite and PostgreSQL use the same logical contract. Legacy `trades` remains for compatibility but is mutually exclusive per bot.
+
+The architecture deliberately separates:
+
+- execution truth: actual fill/funding events;
+- execution-quality diagnostic: adverse benchmark-to-fill deviation;
+- validation claim: not produced automatically.
+
+Private exchange reconciliation, raw payload archival, account inventory and unrealised PnL remain outside this repository.

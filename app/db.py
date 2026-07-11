@@ -157,6 +157,27 @@ def _ensure_funding_rate_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE funding_rate ADD COLUMN funding_interval_min REAL")
 
 
+def _ensure_trade_cost_columns(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "trades")
+    if "funding" not in cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN funding REAL NOT NULL DEFAULT 0")
+    if "slippage" not in cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN slippage REAL NOT NULL DEFAULT 0")
+
+
+def _ensure_execution_evidence_columns(conn: sqlite3.Connection) -> None:
+    """Apply additive upgrades to an already-created evidence ledger."""
+    cols = _table_columns(conn, "execution_evidence")
+    if "order_price" not in cols:
+        conn.execute("ALTER TABLE execution_evidence ADD COLUMN order_price REAL")
+    if "benchmark_price" not in cols:
+        conn.execute("ALTER TABLE execution_evidence ADD COLUMN benchmark_price REAL")
+    if "benchmark_ts" not in cols:
+        conn.execute("ALTER TABLE execution_evidence ADD COLUMN benchmark_ts BIGINT")
+    if "benchmark_source" not in cols:
+        conn.execute("ALTER TABLE execution_evidence ADD COLUMN benchmark_source TEXT")
+
+
 def _ensure_outcome_label_availability_column(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "reco_outcomes")
     if "label_available_ts" not in cols:
@@ -484,6 +505,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     )""")
     _ensure_recommendation_publication_columns(conn)
     _ensure_funding_rate_columns(conn)
+    _ensure_trade_cost_columns(conn)
+    _ensure_execution_evidence_columns(conn)
     _ensure_outcome_label_availability_column(conn)
     if _recommendation_publication_backfill_needed(conn):
         # Полный historical lineage backfill может занимать заметное время на живой
@@ -1392,17 +1415,18 @@ def update_bot_state(conn: sqlite3.Connection, bot_id: str, patch: dict[str, Any
 
 
 def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any], *, commit: bool = True) -> str:
-    """Insert a trade in a conflict-aware way.
+    """Insert a legacy aggregate trade row in a conflict-aware way.
 
-    Returns:
-      - "inserted" when a new trade row is written
-      - "duplicate" when the same trade_id already exists with identical payload
-
-    Raises:
-      ValueError when the same trade_id already exists with different payload.
+    ``pnl`` is gross realised PnL derived from actual fills. Funding follows
+    Bybit transaction-log sign semantics (positive receipt, negative payment).
+    Slippage is retained as an execution-quality diagnostic, but is already
+    embedded in fill-based gross PnL and must not be subtracted a second time.
+    Net PnL is therefore ``pnl + funding - fee``.
     """
     pnl_raw = trade.get("pnl")
     fee_raw = trade.get("fee")
+    funding_raw = trade.get("funding")
+    slippage_raw = trade.get("slippage")
     payload = (
         trade["trade_id"],
         trade["bot_id"],
@@ -1410,57 +1434,47 @@ def insert_trade(conn: sqlite3.Connection, trade: dict[str, Any], *, commit: boo
         trade["symbol"],
         _require_finite_float("pnl", 0.0 if pnl_raw is None else pnl_raw),
         _require_finite_float("fee", 0.0 if fee_raw is None else fee_raw, minimum=0.0),
+        _require_finite_float("funding", 0.0 if funding_raw is None else funding_raw),
+        _require_finite_float("slippage", 0.0 if slippage_raw is None else slippage_raw, minimum=0.0),
         _json_dumps_canonical(trade.get("meta") or {}),
     )
-    cur = conn.execute(
-        """SELECT bot_id, ts, symbol, pnl, fee, meta_json
-           FROM trades WHERE trade_id=?""",
-        (trade["trade_id"],),
-    )
+    select_sql = """SELECT bot_id, ts, symbol, pnl, fee, funding, slippage, meta_json
+                      FROM trades WHERE trade_id=?"""
+    cur = conn.execute(select_sql, (trade["trade_id"],))
     row = cur.fetchone()
     if row:
         existing = (
-            row["bot_id"],
-            int(row["ts"]),
-            row["symbol"],
-            float(row["pnl"]),
-            float(row["fee"]),
+            row["bot_id"], int(row["ts"]), row["symbol"], float(row["pnl"]), float(row["fee"]),
+            float(row["funding"]), float(row["slippage"]),
             _json_dumps_canonical(_json_loads_mapping_or_default(row["meta_json"], {})),
         )
-        incoming = payload[1:]
-        if existing == incoming:
+        if existing == payload[1:]:
             return "duplicate"
         raise ValueError(f"trade_id={trade['trade_id']} already exists with different payload")
+
+    if conn.execute("SELECT 1 FROM execution_evidence WHERE bot_id=? LIMIT 1", (trade["bot_id"],)).fetchone():
+        raise ValueError("cannot mix legacy trades with execution evidence for the same bot")
 
     savepoint = _savepoint_name("trade_insert")
     _begin_savepoint(conn, savepoint)
     try:
         conn.execute(
-            """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, meta_json)
-               VALUES(?,?,?,?,?,?,?)""",
+            """INSERT INTO trades(trade_id, bot_id, ts, symbol, pnl, fee, funding, slippage, meta_json)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
             payload,
         )
         _release_savepoint(conn, savepoint)
     except INTEGRITY_ERRORS:
         _rollback_to_savepoint(conn, savepoint)
         _release_savepoint(conn, savepoint)
-        cur = conn.execute(
-            """SELECT bot_id, ts, symbol, pnl, fee, meta_json
-               FROM trades WHERE trade_id=?""",
-            (trade["trade_id"],),
-        )
-        row = cur.fetchone()
+        row = conn.execute(select_sql, (trade["trade_id"],)).fetchone()
         if row:
             existing = (
-                row["bot_id"],
-                int(row["ts"]),
-                row["symbol"],
-                float(row["pnl"]),
-                float(row["fee"]),
+                row["bot_id"], int(row["ts"]), row["symbol"], float(row["pnl"]), float(row["fee"]),
+                float(row["funding"]), float(row["slippage"]),
                 _json_dumps_canonical(_json_loads_mapping_or_default(row["meta_json"], {})),
             )
-            incoming = payload[1:]
-            if existing == incoming:
+            if existing == payload[1:]:
                 return "duplicate"
             raise ValueError(f"trade_id={trade['trade_id']} already exists with different payload")
         raise
@@ -1485,62 +1499,417 @@ def get_trade_by_id(conn: sqlite3.Connection, trade_id: str) -> dict[str, Any] |
         "symbol": r["symbol"],
         "pnl": _finite_float_or_default(r["pnl"], 0.0),
         "fee": _finite_float_or_default(r["fee"], 0.0),
+        "funding": _finite_float_or_default(r["funding"], 0.0),
+        "slippage": _finite_float_or_default(r["slippage"], 0.0),
         "meta": _json_loads_mapping_or_default(r["meta_json"], {}),
     }
 
 
 def list_trades(conn: sqlite3.Connection, bot_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
     if bot_id:
-        cur = conn.execute(
-            "SELECT * FROM trades WHERE bot_id=? ORDER BY ts DESC LIMIT ?",
-            (bot_id, limit),
-        )
+        cur = conn.execute("SELECT * FROM trades WHERE bot_id=? ORDER BY ts DESC LIMIT ?", (bot_id, limit))
     else:
         cur = conn.execute("SELECT * FROM trades ORDER BY ts DESC LIMIT ?", (limit,))
     out = []
     for r in cur.fetchall():
+        pnl = _finite_float_or_default(r["pnl"], 0.0)
+        fee = _finite_float_or_default(r["fee"], 0.0)
+        funding = _finite_float_or_default(r["funding"], 0.0)
+        slippage = _finite_float_or_default(r["slippage"], 0.0)
         out.append({
-            "trade_id": r["trade_id"],
-            "bot_id": r["bot_id"],
-            "ts": r["ts"],
-            "symbol": r["symbol"],
-            "pnl": _finite_float_or_default(r["pnl"], 0.0),
-            "fee": _finite_float_or_default(r["fee"], 0.0),
+            "trade_id": r["trade_id"], "bot_id": r["bot_id"], "ts": r["ts"], "symbol": r["symbol"],
+            "pnl": pnl, "fee": fee, "funding": funding, "slippage": slippage,
+            "realized_pnl_net": pnl + funding - fee,
             "meta": _json_loads_mapping_or_default(r["meta_json"], {}),
         })
     return out
 
 
-
 def get_bot_trade_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any]:
     cur = conn.execute(
-        """SELECT ts, pnl, fee
-           FROM trades WHERE bot_id=?
-           ORDER BY ts ASC, trade_id ASC""",
+        """SELECT ts, pnl, fee, funding, slippage
+           FROM trades WHERE bot_id=? ORDER BY ts ASC, trade_id ASC""",
         (bot_id,),
     )
     trade_count = 0
-    realized_pnl_gross = 0.0
-    realized_fee = 0.0
+    realized_pnl_gross = realized_fee = realized_funding = realized_slippage = 0.0
     last_trade_ts: int | None = None
     for row in cur.fetchall():
         trade_count += 1
         realized_pnl_gross += _finite_float_or_default(row["pnl"], 0.0)
         realized_fee += _finite_float_or_default(row["fee"], 0.0)
+        realized_funding += _finite_float_or_default(row["funding"], 0.0)
+        realized_slippage += _finite_float_or_default(row["slippage"], 0.0)
         try:
             last_trade_ts = int(row["ts"])
         except Exception:
             pass
-    realized_pnl_net = realized_pnl_gross - realized_fee
+    realized_pnl_net = realized_pnl_gross + realized_funding - realized_fee
     return {
         "trade_count": trade_count,
         "realized_pnl_gross": realized_pnl_gross,
         "realized_fee": realized_fee,
+        "realized_funding": realized_funding,
+        "realized_slippage": realized_slippage,
         "realized_pnl_net": realized_pnl_net,
         "realized_pnl": realized_pnl_net,
         "last_trade_ts": last_trade_ts,
+        "evidence_grade": False,
     }
 
+
+def _optional_execution_float(name: str, value: Any, *, strictly_positive: bool = False) -> float | None:
+    if value is None or value == "":
+        return None
+    num = _require_finite_float(name, value)
+    if strictly_positive and num <= 0:
+        raise ValueError(f"{name} must be > 0")
+    return num
+
+
+def _normalized_execution_text(name: str, value: Any, *, required: bool = True) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        if required:
+            raise ValueError(f"{name} must be a non-empty string")
+        return None
+    if "\x00" in text:
+        raise ValueError(f"{name} must not contain NUL byte")
+    return text
+
+
+def _normalize_execution_event(event: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(event.get("event_type") or "").strip().lower()
+    source = str(event.get("source") or "").strip().lower()
+    if event_type not in {"execution", "funding"}:
+        raise ValueError("event_type must be execution or funding")
+    expected_source = "bybit_execution" if event_type == "execution" else "bybit_transaction_log"
+    if source != expected_source:
+        raise ValueError(f"event_type={event_type} requires source={expected_source}")
+
+    event_id = _normalized_execution_text("event_id", event.get("event_id"))
+    bot_id = _normalized_execution_text("bot_id", event.get("bot_id"))
+    origin_rec_id = _normalized_execution_text("origin_rec_id", event.get("origin_rec_id"))
+    symbol = _normalized_execution_text("symbol", event.get("symbol"))
+    external_event_id = _normalized_execution_text("external_event_id", event.get("external_event_id"))
+    external_order_id = _normalized_execution_text("external_order_id", event.get("external_order_id"), required=False)
+    side_raw = _normalized_execution_text("side", event.get("side"), required=False)
+    side = None
+    if side_raw is not None:
+        side_lower = side_raw.lower()
+        if side_lower not in {"buy", "sell"}:
+            raise ValueError("side must be Buy or Sell")
+        side = "Buy" if side_lower == "buy" else "Sell"
+
+    qty = _optional_execution_float("qty", event.get("qty"), strictly_positive=True)
+    price = _optional_execution_float("price", event.get("price"), strictly_positive=True)
+    order_price = _optional_execution_float("order_price", event.get("order_price"), strictly_positive=True)
+    benchmark_price = _optional_execution_float("benchmark_price", event.get("benchmark_price"), strictly_positive=True)
+    benchmark_ts_raw = event.get("benchmark_ts")
+    benchmark_ts = None if benchmark_ts_raw is None else _require_positive_int("benchmark_ts", benchmark_ts_raw)
+    benchmark_source = _normalized_execution_text("benchmark_source", event.get("benchmark_source"), required=False)
+    if benchmark_source is not None:
+        benchmark_source = benchmark_source.lower()
+        if benchmark_source not in {"pre_submit_mid", "pre_submit_opposite", "decision_reference"}:
+            raise ValueError("benchmark_source must be pre_submit_mid, pre_submit_opposite or decision_reference")
+    gross_pnl = _require_finite_float("gross_pnl", event.get("gross_pnl", 0.0))
+    fee = _require_finite_float("fee", event.get("fee", 0.0))
+    funding = _require_finite_float("funding", event.get("funding", 0.0))
+    slippage_raw = event.get("slippage")
+    slippage = None if slippage_raw is None else _require_finite_float("slippage", slippage_raw, minimum=0.0)
+    currency = str(event.get("currency") or "").strip().upper()
+    if currency != "USDT":
+        raise ValueError("currency must be USDT for Bybit Linear USDT evidence")
+    ts = _require_positive_int("ts", event.get("ts"))
+    meta = event.get("meta") or {}
+    if not isinstance(meta, dict):
+        raise ValueError("meta must be an object")
+
+    if event_type == "execution":
+        missing = []
+        if external_order_id is None:
+            missing.append("external_order_id")
+        if side is None:
+            missing.append("side")
+        if qty is None:
+            missing.append("qty")
+        if price is None:
+            missing.append("price")
+        if order_price is None:
+            missing.append("order_price")
+        if benchmark_price is None:
+            missing.append("benchmark_price")
+        if benchmark_ts is None:
+            missing.append("benchmark_ts")
+        if benchmark_source is None:
+            missing.append("benchmark_source")
+        if missing:
+            raise ValueError("execution evidence requires " + ", ".join(missing))
+        if funding != 0.0:
+            raise ValueError("bybit_execution evidence must record funding as a separate funding event")
+        assert side is not None and qty is not None and price is not None
+        assert order_price is not None and benchmark_price is not None and benchmark_ts is not None
+        if benchmark_ts > ts:
+            raise ValueError("benchmark_ts must not be later than execution ts")
+        computed_slippage = (
+            max(0.0, price - benchmark_price) * qty
+            if side == "Buy"
+            else max(0.0, benchmark_price - price) * qty
+        )
+        if slippage is None:
+            slippage = computed_slippage
+        elif not math.isclose(slippage, computed_slippage, rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError(
+                f"slippage does not match side/qty/benchmark_price/price: expected {computed_slippage}"
+            )
+    else:
+        if funding == 0.0:
+            raise ValueError("funding evidence requires a non-zero signed funding cashflow")
+        if slippage is None:
+            slippage = 0.0
+        if any(value != 0.0 for value in (gross_pnl, fee, slippage)):
+            raise ValueError("funding evidence must not mix gross_pnl, fee or slippage")
+        if any(value is not None for value in (
+            external_order_id, side, qty, price, order_price, benchmark_price, benchmark_ts, benchmark_source
+        )):
+            raise ValueError("funding evidence must not contain execution-only fields")
+
+    return {
+        "event_id": event_id,
+        "bot_id": bot_id,
+        "origin_rec_id": origin_rec_id,
+        "ts": ts,
+        "symbol": str(symbol).upper(),
+        "event_type": event_type,
+        "source": source,
+        "external_event_id": external_event_id,
+        "external_order_id": external_order_id,
+        "side": side,
+        "qty": qty,
+        "price": price,
+        "order_price": order_price,
+        "benchmark_price": benchmark_price,
+        "benchmark_ts": benchmark_ts,
+        "benchmark_source": benchmark_source,
+        "gross_pnl": gross_pnl,
+        "fee": fee,
+        "funding": funding,
+        "slippage": slippage,
+        "currency": currency,
+        "meta": meta,
+    }
+
+
+def _execution_event_comparable(event: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        event["bot_id"], event["origin_rec_id"], int(event["ts"]), event["symbol"],
+        event["event_type"], event["source"], event["external_event_id"],
+        event.get("external_order_id"), event.get("side"), event.get("qty"), event.get("price"), event.get("order_price"),
+        event.get("benchmark_price"), event.get("benchmark_ts"), event.get("benchmark_source"), event["gross_pnl"], event["fee"], event["funding"], event["slippage"], event["currency"],
+        _json_dumps_canonical(event.get("meta") or {}),
+    )
+
+
+def _decode_execution_event_row(row: Any) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "event_id": row["event_id"],
+        "bot_id": row["bot_id"],
+        "origin_rec_id": row["origin_rec_id"],
+        "ts": int(row["ts"]),
+        "symbol": row["symbol"],
+        "event_type": row["event_type"],
+        "source": row["source"],
+        "external_event_id": row["external_event_id"],
+        "external_order_id": row["external_order_id"],
+        "side": row["side"],
+        "qty": None if row["qty"] is None else _finite_float_or_default(row["qty"], 0.0),
+        "price": None if row["price"] is None else _finite_float_or_default(row["price"], 0.0),
+        "order_price": None if row["order_price"] is None else _finite_float_or_default(row["order_price"], 0.0),
+        "benchmark_price": None if row["benchmark_price"] is None else _finite_float_or_default(row["benchmark_price"], 0.0),
+        "benchmark_ts": None if row["benchmark_ts"] is None else int(row["benchmark_ts"]),
+        "benchmark_source": row["benchmark_source"],
+        "gross_pnl": _finite_float_or_default(row["gross_pnl"], 0.0),
+        "fee": _finite_float_or_default(row["fee"], 0.0),
+        "funding": _finite_float_or_default(row["funding"], 0.0),
+        "slippage": _finite_float_or_default(row["slippage"], 0.0),
+        "currency": row["currency"],
+        "meta": _json_loads_mapping_or_default(row["meta_json"], {}),
+    }
+
+
+def get_execution_event_by_id(conn: sqlite3.Connection, event_id: str) -> dict[str, Any] | None:
+    cur = conn.execute("SELECT * FROM execution_evidence WHERE event_id=?", (event_id,))
+    return _decode_execution_event_row(cur.fetchone())
+
+
+def get_execution_event_by_external_id(conn: sqlite3.Connection, source: str, external_event_id: str) -> dict[str, Any] | None:
+    cur = conn.execute(
+        "SELECT * FROM execution_evidence WHERE source=? AND external_event_id=?",
+        (str(source).strip().lower(), str(external_event_id).strip()),
+    )
+    return _decode_execution_event_row(cur.fetchone())
+
+
+def insert_execution_event(conn: sqlite3.Connection, event: dict[str, Any], *, commit: bool = True) -> str:
+    normalized = _normalize_execution_event(event)
+    bot = get_bot_instance(conn, normalized["bot_id"])
+    if bot is None:
+        raise ValueError(f"bot_id={normalized['bot_id']} does not exist")
+    if str(bot.get("origin_rec_id") or "") != normalized["origin_rec_id"]:
+        raise ValueError("origin_rec_id does not match immutable bot origin")
+    if str(bot.get("symbol") or "").upper() != normalized["symbol"]:
+        raise ValueError("symbol does not match bot symbol")
+    if get_recommendation_by_id(conn, normalized["origin_rec_id"]) is None:
+        raise ValueError("origin_rec_id does not exist")
+
+    existing = get_execution_event_by_id(conn, normalized["event_id"])
+    if existing is not None:
+        if _execution_event_comparable(existing) == _execution_event_comparable(normalized):
+            return "duplicate"
+        raise ValueError(f"event_id={normalized['event_id']} already exists with different payload")
+    external = get_execution_event_by_external_id(conn, normalized["source"], normalized["external_event_id"])
+    if external is not None:
+        if _execution_event_comparable(external) == _execution_event_comparable(normalized):
+            return "duplicate"
+        raise ValueError(
+            f"external_event_id={normalized['external_event_id']} already exists with different payload"
+        )
+
+    if conn.execute("SELECT 1 FROM trades WHERE bot_id=? LIMIT 1", (normalized["bot_id"],)).fetchone():
+        raise ValueError("cannot mix execution evidence with legacy trades for the same bot")
+
+    payload = (
+        normalized["event_id"], normalized["bot_id"], normalized["origin_rec_id"], normalized["ts"],
+        normalized["symbol"], normalized["event_type"], normalized["source"], normalized["external_event_id"],
+        normalized["external_order_id"], normalized["side"], normalized["qty"], normalized["price"], normalized["order_price"],
+        normalized["benchmark_price"], normalized["benchmark_ts"], normalized["benchmark_source"], normalized["gross_pnl"], normalized["fee"], normalized["funding"], normalized["slippage"],
+        normalized["currency"], _json_dumps_canonical(normalized["meta"]),
+    )
+    savepoint = _savepoint_name("execution_evidence_insert")
+    _begin_savepoint(conn, savepoint)
+    try:
+        conn.execute(
+            """INSERT INTO execution_evidence(
+                 event_id, bot_id, origin_rec_id, ts, symbol, event_type, source,
+                 external_event_id, external_order_id, side, qty, price, order_price,
+                 benchmark_price, benchmark_ts, benchmark_source, gross_pnl,
+                 fee, funding, slippage, currency, meta_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            payload,
+        )
+        _release_savepoint(conn, savepoint)
+    except INTEGRITY_ERRORS:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        external = get_execution_event_by_external_id(conn, normalized["source"], normalized["external_event_id"])
+        if external is not None:
+            if _execution_event_comparable(external) == _execution_event_comparable(normalized):
+                return "duplicate"
+            raise ValueError(
+                f"external_event_id={normalized['external_event_id']} already exists with different payload"
+            )
+        raise
+    except Exception:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        raise
+    if commit:
+        conn.commit()
+    return "inserted"
+
+
+def list_execution_events(conn: sqlite3.Connection, bot_id: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+    if bot_id:
+        cur = conn.execute(
+            "SELECT * FROM execution_evidence WHERE bot_id=? ORDER BY ts DESC, event_id DESC LIMIT ?",
+            (bot_id, limit),
+        )
+    else:
+        cur = conn.execute("SELECT * FROM execution_evidence ORDER BY ts DESC, event_id DESC LIMIT ?", (limit,))
+    return [item for row in cur.fetchall() if (item := _decode_execution_event_row(row)) is not None]
+
+
+def get_bot_execution_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any]:
+    cur = conn.execute(
+        """SELECT event_type, ts, gross_pnl, fee, funding, slippage
+             FROM execution_evidence WHERE bot_id=?
+             ORDER BY ts ASC, event_id ASC""",
+        (bot_id,),
+    )
+    event_count = execution_count = funding_event_count = 0
+    gross = fee = funding = slippage = 0.0
+    first_event_ts: int | None = None
+    last_event_ts: int | None = None
+    for row in cur.fetchall():
+        event_count += 1
+        if str(row["event_type"]) == "execution":
+            execution_count += 1
+        elif str(row["event_type"]) == "funding":
+            funding_event_count += 1
+        ts = int(row["ts"])
+        first_event_ts = ts if first_event_ts is None else min(first_event_ts, ts)
+        last_event_ts = ts if last_event_ts is None else max(last_event_ts, ts)
+        gross += _finite_float_or_default(row["gross_pnl"], 0.0)
+        fee += _finite_float_or_default(row["fee"], 0.0)
+        funding += _finite_float_or_default(row["funding"], 0.0)
+        slippage += _finite_float_or_default(row["slippage"], 0.0)
+    net = gross + funding - fee
+    return {
+        "event_count": event_count,
+        "execution_count": execution_count,
+        "funding_event_count": funding_event_count,
+        "realized_pnl_gross": gross,
+        "realized_fee": fee,
+        "realized_funding": funding,
+        "realized_slippage": slippage,
+        "slippage_is_diagnostic": True,
+        "realized_pnl_net": net,
+        "net_formula": "gross_pnl + funding - fee",
+        "first_event_ts": first_event_ts,
+        "last_event_ts": last_event_ts,
+        "evidence_grade": event_count > 0,
+    }
+
+
+def list_live_validation_records(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]]:
+    cur = conn.execute(
+        """SELECT b.bot_id, b.started_ts
+             FROM bot_instances b
+             JOIN execution_evidence e ON e.bot_id=b.bot_id
+             GROUP BY b.bot_id, b.started_ts
+             ORDER BY b.started_ts DESC, b.bot_id DESC
+             LIMIT ?""",
+        (limit,),
+    )
+    out: list[dict[str, Any]] = []
+    for row in cur.fetchall():
+        bot = get_bot_instance(conn, row["bot_id"])
+        if bot is None:
+            continue
+        rec_id = str(bot.get("origin_rec_id") or "").strip()
+        rec = get_recommendation_by_id(conn, rec_id) if rec_id else None
+        if rec is None:
+            continue
+        summary = get_bot_execution_summary(conn, bot["bot_id"])
+        out.append({
+            "bot_id": bot["bot_id"],
+            "rec_id": rec_id,
+            "publication_root_rec_id": bot.get("publication_root_rec_id") or rec.get("publication_root_rec_id") or rec_id,
+            "symbol": bot.get("symbol"),
+            "direction": rec.get("direction"),
+            "recommendation_ts": rec.get("ts"),
+            "started_ts": bot.get("started_ts"),
+            "stopped_ts": bot.get("stopped_ts"),
+            "bot_status": bot.get("status"),
+            "score": rec.get("score"),
+            "confidence": rec.get("confidence"),
+            "expected_rr": rec.get("expected_rr"),
+            **summary,
+            "validation_eligible": str(bot.get("status") or "") == "stopped" and summary["execution_count"] > 0,
+        })
+    return out
 
 def _recommended_row_passes_conf_filter(row: sqlite3.Row, min_conf: float, strict_min_conf: bool = False) -> bool:
     if not is_actionable_recommendation_status(row["status"]):
@@ -1933,6 +2302,63 @@ def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: 
             out.append(decoded)
     return out
 
+def list_realized_net_events(conn: sqlite3.Connection, *, since_ts: int = 0) -> list[dict[str, Any]]:
+    """Return one de-duplicated realised PnL stream for risk accounting.
+
+    Evidence-grade events take precedence per bot. Legacy aggregate ``trades``
+    remain a compatibility fallback only for bots that have no execution evidence,
+    preventing the same economic result from being counted twice. Fill-relative
+    slippage is diagnostic because actual gross PnL already reflects execution prices.
+    """
+    start_ts = _require_non_negative_int("since_ts", since_ts)
+    out: list[dict[str, Any]] = []
+    cur = conn.execute(
+        """SELECT event_id, bot_id, ts, gross_pnl, fee, funding, slippage
+             FROM execution_evidence
+            WHERE ts>=?
+            ORDER BY ts ASC, event_id ASC""",
+        (start_ts,),
+    )
+    for row in cur.fetchall():
+        gross = _finite_float_or_default(row["gross_pnl"], 0.0)
+        fee = _finite_float_or_default(row["fee"], 0.0)
+        funding = _finite_float_or_default(row["funding"], 0.0)
+        slippage = _finite_float_or_default(row["slippage"], 0.0)
+        out.append({
+            "event_id": row["event_id"],
+            "bot_id": row["bot_id"],
+            "ts": int(row["ts"]),
+            "net_pnl": gross + funding - fee,
+            "source": "execution_evidence",
+        })
+
+    cur = conn.execute(
+        """SELECT t.trade_id, t.bot_id, t.ts, t.pnl, t.fee, t.funding, t.slippage
+             FROM trades t
+            WHERE t.ts>=?
+              AND NOT EXISTS (
+                    SELECT 1 FROM execution_evidence e
+                     WHERE e.bot_id=t.bot_id AND e.event_type='execution'
+              )
+            ORDER BY t.ts ASC, t.trade_id ASC""",
+        (start_ts,),
+    )
+    for row in cur.fetchall():
+        pnl = _finite_float_or_default(row["pnl"], 0.0)
+        fee = _finite_float_or_default(row["fee"], 0.0)
+        funding = _finite_float_or_default(row["funding"], 0.0)
+        slippage = _finite_float_or_default(row["slippage"], 0.0)
+        out.append({
+            "event_id": row["trade_id"],
+            "bot_id": row["bot_id"],
+            "ts": int(row["ts"]),
+            "net_pnl": pnl + funding - fee,
+            "source": "legacy_trade",
+        })
+    out.sort(key=lambda item: (int(item["ts"]), str(item["source"]), str(item["event_id"])))
+    return out
+
+
 def sum_daily_gross_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
     cur = conn.execute("SELECT pnl FROM trades WHERE ts>=?", (day_start_ts,))
     return sum(_finite_float_or_default(row["pnl"], 0.0) for row in cur.fetchall())
@@ -1944,16 +2370,8 @@ def sum_daily_fees(conn: sqlite3.Connection, day_start_ts: int) -> float:
 
 
 def sum_daily_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
-    """Net daily PnL after fees.
-
-    Risk limits must use net economics, not gross trade PnL.
-    Ignore non-finite rows so one corrupted trade cannot poison the whole day's risk status.
-    """
-    cur = conn.execute("SELECT pnl, fee FROM trades WHERE ts>=?", (day_start_ts,))
-    total = 0.0
-    for row in cur.fetchall():
-        total += _finite_float_or_default(row["pnl"], 0.0) - _finite_float_or_default(row["fee"], 0.0)
-    return total
+    """Net daily PnL from the de-duplicated realised event stream."""
+    return sum(float(item["net_pnl"]) for item in list_realized_net_events(conn, since_ts=day_start_ts))
 
 
 

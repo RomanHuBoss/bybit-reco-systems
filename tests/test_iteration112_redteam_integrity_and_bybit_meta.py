@@ -91,6 +91,8 @@ class _FakePgConnForTradeInsert:
             "symbol": "BTCUSDT",
             "pnl": 12.5,
             "fee": 0.4,
+            "funding": 0.0,
+            "slippage": 0.0,
             "meta_json": "{}",
         }
 
@@ -106,9 +108,11 @@ class _FakePgConnForTradeInsert:
             return _Cursor()
         if normalized.startswith("release savepoint "):
             return _Cursor()
-        if normalized.startswith("select bot_id, ts, symbol, pnl, fee, meta_json from trades where trade_id="):
+        if normalized.startswith("select bot_id, ts, symbol, pnl, fee, funding, slippage, meta_json from trades where trade_id="):
             if any(item.startswith("insert into trades") for item in self.sql):
                 return _Cursor(self._after_conflict_row)
+            return _Cursor(None)
+        if normalized.startswith("select 1 from execution_evidence where bot_id="):
             return _Cursor(None)
         if normalized.startswith("insert into trades"):
             self.aborted = True

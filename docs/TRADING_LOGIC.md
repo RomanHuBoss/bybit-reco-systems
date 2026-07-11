@@ -188,3 +188,19 @@ Market-shock and fast-veto calculations consume only fully closed candles. Every
 Bybit `nextFundingTime`/open-interest/OHLCV timestamps, `fundingIntervalHour`, instruments-info `fundingInterval`, label horizons and funding event counts are exact-integer fields. Numeric values such as `5.0` remain compatible because they represent an exact integer; boolean, fractional, blank and non-finite values are invalid.
 
 Invalid upstream timestamps are discarded before they can collide with an existing integer-second persistence key. Invalid funding intervals remain unavailable rather than being rounded into a plausible schedule. Execution-time funding then stays fail-closed: a missing schedule uses the conservative unknown-schedule event count, while a missing/invalid interval blocks costed execution. Purged calibration excludes malformed recommendation or label-availability timestamps instead of manufacturing chronology through truncation.
+
+
+## Execution evidence, funding and realised PnL
+
+The repository remains recommendation/audit-only. A separate read-only adapter may write exact evidence but cannot place, amend or cancel orders through this project.
+
+Canonical evidence rules:
+
+1. Every execution is one immutable event keyed by `(source=bybit_execution, execId)` and directly linked to `bot_id` and immutable `origin_rec_id`. Multiple fills for one `orderId` remain separate events.
+2. Funding is a separate event keyed by `(source=bybit_transaction_log, transaction id)`. It must not be embedded into an execution event.
+3. `execPnl`/gross realised PnL is fill-based. Canonical net is `sum(gross_pnl) + sum(funding) - sum(fee)`. Signed negative fee represents a rebate.
+4. Spread/slippage must not be deducted again from actual fill PnL. For execution-quality analysis the adapter supplies `benchmark_price`, `benchmark_ts` and `benchmark_source`; adverse benchmark-to-fill deviation is calculated by side and reported separately. `orderPrice` is evidence, not the benchmark.
+5. Legacy `/trades` is compatibility-only. Exact evidence and legacy aggregates cannot be mixed for one bot. Defensive risk aggregation prefers exact execution events if a historical database already contains both.
+6. Risk daily PnL, realised drawdown and cooldown consume the unified de-duplicated stream. This does not include unrealised inventory risk.
+7. Evidence GET endpoints require admin authorization. The live-validation endpoint is descriptive and always reports that a live-edge claim is unsupported without chronological comparator evidence.
+8. External timestamps are stored as UTC seconds; adapters must convert Bybit millisecond fields exactly and reject boolean/fractional timestamps.

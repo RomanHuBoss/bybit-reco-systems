@@ -6,6 +6,17 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## Фактическое исполнение и realised PnL
+
+Проект по-прежнему не выставляет ордера. Внешний read-only execution/reconciliation adapter может передавать в защищённый endpoint `/api/v1/bots/{bot_id}/execution-evidence` два типа immutable events:
+
+- `bybit_execution`: отдельный fill с `execId`, `orderId`, side, qty, `execPrice`, `orderPrice`, gross `execPnl` и signed fee; несколько fills одного order сохраняются отдельными строками;
+- `bybit_transaction_log`: отдельный signed funding cashflow с уникальным transaction id.
+
+Каждое событие напрямую связано с исходным `rec_id`. Для execution event дополнительно требуется timestamped benchmark (`pre_submit_mid`, `pre_submit_opposite` или `decision_reference`), относительно которого рассчитывается adverse fill deviation. Этот показатель является диагностикой исполнения. Поскольку gross PnL уже рассчитан по фактическим fill prices, канонический realised net PnL равен `gross_pnl + funding - fee`; slippage повторно не вычитается.
+
+Точный evidence-ledger и legacy `/trades` нельзя смешивать для одного `bot_id`. Risk/drawdown/cooldown используют единый поток с приоритетом exact evidence, а endpoints чтения evidence защищены `ADMIN_API_KEY`. `/api/v1/validation/live-evidence` формирует только descriptive dataset и не доказывает live edge.
+
 ## Поддерживаемые bot_type
 - `futures_grid` — только Bybit `category=linear`, USDT perpetual, settlement/margin/PnL в USDT.
 
@@ -263,7 +274,7 @@ ruff check app tests main.py
 - совпадает ли Bybit-форма бота с тем, что показывает панель деталей;
 - нет ли в деталях `bybit_plan_validation.errors` или предупреждений о том, что диапазон/шаг сетки не выровнен по ограничениям Bybit;
 - не деградирует ли quality score / confidence после накопления новых outcome labels;
-- корректно ли отрабатывают risk limits после записи реальных trade rows.
+- корректно ли отрабатывают risk limits после записи exact execution/funding evidence; не смешивается ли evidence-ledger с legacy `/trades`.
 
 ## Инженерные заметки
 - используйте внешний process supervisor;

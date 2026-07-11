@@ -233,22 +233,18 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     n_active = len(active_bots)
 
     start = day_start_ts_utc()
-    daily_pnl = db.sum_daily_pnl(conn, start)
+    realized_events = db.list_realized_net_events(conn, since_ts=start)
+    daily_pnl = sum(float(item.get("net_pnl") or 0.0) for item in realized_events)
 
-    # True realised intraday drawdown = peak-to-trough drop of cumulative net PnL,
-    # not merely the negative value of current day net PnL. Otherwise a sequence like
-    # +300, -250 leaves daily_pnl positive while hiding a $250 drawdown.
-    cur = conn.execute(
-        """SELECT ts, (pnl - fee) AS net_pnl
-           FROM trades WHERE ts >= ? ORDER BY ts ASC, trade_id ASC""",
-        (start,),
-    )
+    # True realised intraday drawdown = peak-to-trough drop of the unified net
+    # evidence stream. Evidence-grade events replace legacy aggregate rows per bot
+    # so the same execution is not counted twice.
     cumulative = 0.0
     peak = 0.0
     max_dd = 0.0
-    for row in cur.fetchall():
+    for row in realized_events:
         try:
-            net_pnl = float(row["net_pnl"] or 0.0)
+            net_pnl = float(row.get("net_pnl") or 0.0)
         except Exception:
             net_pnl = 0.0
         if not math.isfinite(net_pnl):
@@ -270,12 +266,13 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     if cooldown_min > 0:
         last_loss_ts = None
 
-        cur = conn.execute(
-            """SELECT ts FROM trades WHERE (pnl - fee) < 0 ORDER BY ts DESC LIMIT 1"""
+        recent_realized = db.list_realized_net_events(
+            conn,
+            since_ts=max(0, db.now_ts() - int(cooldown_min) * 60),
         )
-        row = cur.fetchone()
-        if row:
-            last_loss_ts = int(row["ts"])
+        negative_ts = [int(item["ts"]) for item in recent_realized if float(item.get("net_pnl") or 0.0) < 0.0]
+        if negative_ts:
+            last_loss_ts = max(negative_ts)
 
         cur = conn.execute(
             """SELECT ts FROM decision_log WHERE action='LOSS' ORDER BY ts DESC LIMIT 1"""

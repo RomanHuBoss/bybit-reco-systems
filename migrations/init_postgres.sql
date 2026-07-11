@@ -118,11 +118,47 @@ CREATE TABLE IF NOT EXISTS trades (
   symbol TEXT NOT NULL,
   pnl DOUBLE PRECISION NOT NULL,
   fee DOUBLE PRECISION NOT NULL,
+  funding DOUBLE PRECISION NOT NULL DEFAULT 0,
+  slippage DOUBLE PRECISION NOT NULL DEFAULT 0,
   meta_json TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_trades_bot_id ON trades(bot_id, ts DESC);
+
+CREATE TABLE IF NOT EXISTS execution_evidence (
+  event_id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL,
+  origin_rec_id TEXT NOT NULL,
+  ts BIGINT NOT NULL,
+  symbol TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  external_event_id TEXT NOT NULL,
+  external_order_id TEXT,
+  side TEXT,
+  qty DOUBLE PRECISION,
+  price DOUBLE PRECISION,
+  order_price DOUBLE PRECISION,
+  benchmark_price DOUBLE PRECISION,
+  benchmark_ts BIGINT,
+  benchmark_source TEXT,
+  gross_pnl DOUBLE PRECISION NOT NULL,
+  fee DOUBLE PRECISION NOT NULL,
+  funding DOUBLE PRECISION NOT NULL,
+  slippage DOUBLE PRECISION NOT NULL,
+  currency TEXT NOT NULL,
+  meta_json TEXT NOT NULL,
+  FOREIGN KEY (bot_id) REFERENCES bot_instances(bot_id),
+  FOREIGN KEY (origin_rec_id) REFERENCES recommendations(rec_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_evidence_external_unique
+  ON execution_evidence(source, external_event_id);
+CREATE INDEX IF NOT EXISTS idx_execution_evidence_bot_ts
+  ON execution_evidence(bot_id, ts ASC, event_id ASC);
+CREATE INDEX IF NOT EXISTS idx_execution_evidence_rec_ts
+  ON execution_evidence(origin_rec_id, ts ASC, event_id ASC);
 
 CREATE TABLE IF NOT EXISTS app_config (
   key TEXT PRIMARY KEY,

@@ -61,3 +61,14 @@ A complete `params.trade_plan` must include:
 5. Do not override a blocking guard manually.
 
 Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-ask economics, funding snapshot, publication-chain TTL, minNotional/qtyStep/minQty, and LLM gate if enabled.
+
+
+## After external execution
+
+- Send each Bybit fill separately with immutable `execId`, `orderId`, actual price/qty and the originating `rec_id` through the bot link.
+- Record funding as a separate signed transaction-log event.
+- Capture a timestamped pre-submit/decision benchmark; do not use `orderPrice` as a substitute for slippage measurement.
+- Realised net is `execPnl + funding - fee`. Slippage is an execution-quality diagnostic already reflected in fill-based PnL and is not deducted twice.
+- Never mix exact evidence with legacy `/trades` for the same bot.
+- Evidence export contains sensitive exchange identifiers and requires `ADMIN_API_KEY`.
+- Descriptive live-evidence statistics are not proof of positive expectancy.

@@ -83,13 +83,13 @@ Proxy outcome labeling для grid-рекомендаций.
 - outcome-модель честно считается приближением, а не биржевой truth.
 
 ## `app/db.py`
-- persistence layer, JSON sanitation, runtime-locks и savepoint-safe duplicate classification для `bot_instances` / `trades`;
+- persistence layer, JSON sanitation, runtime-locks и savepoint-safe duplicate classification для `bot_instances`, legacy `trades` и immutable `execution_evidence`;
 Persistence и audit backbone.
 
 Контракт:
 - JSON из БД нормализуется по ожидаемой форме;
 - mutating операции должны быть транзакционными;
-- duplicate bot/trade requests должны быть идемпотентными;
+- duplicate bot/trade/external execution requests должны быть идемпотентными и конфликтные payloads должны блокироваться;
 - publication lineage и runtime lock state должны переживать рестарт процесса.
 
 ## `app/main.py`
@@ -98,4 +98,6 @@ API, background lifecycle, preflight, operator actions.
 Контракт:
 - mutating endpoints защищены ADMIN_API_KEY или loopback policy;
 - `executed` допускается только после повторной проверки risk/preflight;
-- `trade` ingestion не должен silently портить bot state.
+- legacy `trade` и exact execution/funding ingestion не должны смешиваться или silently портить bot state;
+- sensitive execution-evidence reads требуют admin authorization;
+- live-evidence validation остаётся descriptive-only и не публикует утверждение о прибыльности.

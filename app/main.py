@@ -388,7 +388,18 @@ def _normalized_filter_text(value: str | None, *, default: str, field_name: str)
     return normalized
 
 
-def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: str, symbol: str, ts: int | None, pnl: float, fee: float, meta: dict[str, Any]) -> bool:
+def _existing_trade_matches_request(
+    existing: dict[str, Any] | None,
+    *,
+    bot_id: str,
+    symbol: str,
+    ts: int | None,
+    pnl: float,
+    fee: float,
+    meta: dict[str, Any],
+    funding: float = 0.0,
+    slippage: float = 0.0,
+) -> bool:
     if not existing:
         return False
     if str(existing.get("bot_id") or "") != str(bot_id):
@@ -398,11 +409,13 @@ def _existing_trade_matches_request(existing: dict[str, Any] | None, *, bot_id: 
     if ts is not None and _safe_int(existing.get("ts"), 0) != int(ts):
         return False
     try:
-        pnl_match = math.isclose(float(existing.get("pnl") or 0.0), float(pnl), rel_tol=1e-12, abs_tol=1e-12)
-        fee_match = math.isclose(float(existing.get("fee") or 0.0), float(fee), rel_tol=1e-12, abs_tol=1e-12)
+        values_match = all(
+            math.isclose(float(existing.get(name) or 0.0), float(value), rel_tol=1e-12, abs_tol=1e-12)
+            for name, value in (("pnl", pnl), ("fee", fee), ("funding", funding), ("slippage", slippage))
+        )
     except Exception:
         return False
-    if not (pnl_match and fee_match):
+    if not values_match:
         return False
     return (existing.get("meta") or {}) == (meta or {})
 
@@ -4155,7 +4168,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.15", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.16", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -4201,11 +4214,36 @@ class BotStopRequest(BaseModel):
 class BotTradeRequest(BaseModel):
     trade_id: str | None = None
     ts: StrictInt | None = Field(None, gt=0)
-    pnl: StrictFloat = Field(..., allow_inf_nan=False, description="Gross realized PnL before fee; net PnL is computed as pnl - fee")
-    fee: StrictFloat = Field(0.0, ge=0.0, allow_inf_nan=False, description="Exchange fees for this trade; deducted from pnl to compute net")
+    pnl: StrictFloat = Field(..., allow_inf_nan=False, description="Gross realized PnL before costs")
+    fee: StrictFloat = Field(0.0, ge=0.0, allow_inf_nan=False, description="Trading fee expense")
+    funding: StrictFloat = Field(0.0, allow_inf_nan=False, description="Signed funding: positive receipt, negative payment")
+    slippage: StrictFloat = Field(0.0, ge=0.0, allow_inf_nan=False, description="Non-negative fill-quality diagnostic; not subtracted again from fill-based gross PnL")
     operator: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
     stop_bot: bool = False
+
+
+class ExecutionEvidenceRequest(BaseModel):
+    event_id: str | None = None
+    event_type: str = Field(..., pattern="^(execution|funding)$")
+    source: str = Field(..., pattern="^(bybit_execution|bybit_transaction_log)$")
+    external_event_id: str
+    external_order_id: str | None = None
+    ts: StrictInt | None = Field(None, gt=0)
+    side: str | None = Field(None, pattern="^(Buy|Sell|buy|sell)$")
+    qty: StrictFloat | None = Field(None, gt=0.0, allow_inf_nan=False)
+    price: StrictFloat | None = Field(None, gt=0.0, allow_inf_nan=False)
+    order_price: StrictFloat | None = Field(None, gt=0.0, allow_inf_nan=False)
+    benchmark_price: StrictFloat | None = Field(None, gt=0.0, allow_inf_nan=False)
+    benchmark_ts: StrictInt | None = Field(None, gt=0)
+    benchmark_source: str | None = Field(None, pattern="^(pre_submit_mid|pre_submit_opposite|decision_reference)$")
+    gross_pnl: StrictFloat = Field(0.0, allow_inf_nan=False)
+    fee: StrictFloat = Field(0.0, allow_inf_nan=False, description="Signed trading fee: positive expense, negative rebate")
+    funding: StrictFloat = Field(0.0, allow_inf_nan=False, description="Signed funding cashflow: positive receipt, negative payment")
+    slippage: StrictFloat | None = Field(None, ge=0.0, allow_inf_nan=False, description="Adverse benchmark-to-fill deviation derived from side/qty/benchmark_price/price; diagnostic only")
+    currency: str = "USDT"
+    operator: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -5027,11 +5065,15 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
                 ts=req.ts,
                 pnl=req.pnl,
                 fee=req.fee,
+                funding=req.funding,
+                slippage=req.slippage,
                 meta=req.meta,
             ):
                 trade_summary = db.get_bot_trade_summary(conn, bot_id)
                 realized_pnl_gross = float(trade_summary["realized_pnl_gross"])
                 realized_fee = float(trade_summary["realized_fee"])
+                realized_funding = float(trade_summary["realized_funding"])
+                realized_slippage = float(trade_summary["realized_slippage"])
                 realized_pnl_net = float(trade_summary["realized_pnl_net"])
                 _rollback_quietly(conn)
                 return {
@@ -5044,6 +5086,8 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
                     "realized_pnl_gross": realized_pnl_gross,
                     "realized_pnl_net": realized_pnl_net,
                     "realized_fee": realized_fee,
+                    "realized_funding": realized_funding,
+                    "realized_slippage": realized_slippage,
                     "bot_status": bot["status"],
                     "idempotent": True,
                 }
@@ -5063,6 +5107,8 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
             "symbol": bot["symbol"],
             "pnl": req.pnl,
             "fee": req.fee,
+            "funding": req.funding,
+            "slippage": req.slippage,
             "meta": req.meta,
         }
         try:
@@ -5074,6 +5120,8 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
         trade_summary = db.get_bot_trade_summary(conn, bot_id)
         realized_pnl_gross = float(trade_summary["realized_pnl_gross"])
         realized_fee = float(trade_summary["realized_fee"])
+        realized_funding = float(trade_summary["realized_funding"])
+        realized_slippage = float(trade_summary["realized_slippage"])
         realized_pnl_net = float(trade_summary["realized_pnl_net"])
         if insert_result == "duplicate":
             _rollback_quietly(conn)
@@ -5087,6 +5135,8 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
                 "realized_pnl_gross": realized_pnl_gross,
                 "realized_pnl_net": realized_pnl_net,
                 "realized_fee": realized_fee,
+                "realized_funding": realized_funding,
+                "realized_slippage": realized_slippage,
                 "bot_status": bot["status"],
                 "idempotent": True,
             }
@@ -5100,6 +5150,8 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
                     "realized_pnl_gross": realized_pnl_gross,
                     "realized_pnl_net": realized_pnl_net,
                     "realized_fee": realized_fee,
+                    "realized_funding": realized_funding,
+                    "realized_slippage": realized_slippage,
                     "last_trade_ts": int(trade_summary.get("last_trade_ts") or ts),
                     "last_trade_id": trade_id,
                     "last_trade_meta": req.meta,
@@ -5117,7 +5169,7 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
                 stop_state_updated = db.update_bot_state(conn, bot_id, {"stop_reason": "stop_bot_on_trade", "stopped_by": operator, "stopped_ts": stopped_ts}, commit=False)
                 if not stop_state_updated:
                     raise RuntimeError("bot state update failed after trade stop")
-            db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "stop_bot": req.stop_bot}, commit=False)
+            db.log_decision(conn, "TRADE_RECORDED", bot.get("origin_rec_id"), operator, {"bot_id": bot_id, "trade_id": trade_id, "insert_result": insert_result, "pnl": req.pnl, "fee": req.fee, "funding": req.funding, "slippage": req.slippage, "stop_bot": req.stop_bot}, commit=False)
             conn.commit()
         except Exception:
             _rollback_quietly(conn)
@@ -5132,8 +5184,185 @@ def api_record_trade(bot_id: str, req: BotTradeRequest, request: Request, x_api_
             "realized_pnl_gross": realized_pnl_gross,
             "realized_pnl_net": realized_pnl_net,
             "realized_fee": realized_fee,
+            "realized_funding": realized_funding,
+            "realized_slippage": realized_slippage,
             "bot_status": "stopped" if req.stop_bot else bot["status"],
         }
+
+
+@app.post("/api/v1/bots/{bot_id}/execution-evidence")
+def api_record_execution_evidence(
+    bot_id: str,
+    req: ExecutionEvidenceRequest,
+    request: Request,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    """Record immutable Bybit execution/funding evidence without placing orders."""
+    _require_admin_key(x_api_key, request)
+    _ensure_json_payload_has_only_finite_numbers(req.meta, field_name="meta")
+    with closing(_get_conn()) as conn:
+        db.begin_immediate(conn)
+        bot = db.get_bot_instance(conn, bot_id, for_update=True)
+        if not bot:
+            raise HTTPException(status_code=404, detail="bot_id not found")
+
+        event_id = _normalized_non_empty_text(req.event_id, field_name="event_id") if req.event_id is not None else f"EV-{int(time.time())}-{secrets.token_hex(5)}"
+        external_event_id = _normalized_non_empty_text(req.external_event_id, field_name="external_event_id")
+        external_order_id = _normalized_optional_text(req.external_order_id, field_name="external_order_id")
+        operator = _normalized_optional_text(req.operator, field_name="operator")
+        currency = _normalized_non_empty_text(req.currency, field_name="currency").upper()
+        ts = req.ts or int(time.time())
+        current_ts = int(time.time())
+        if ts > current_ts + 300:
+            raise HTTPException(status_code=409, detail="execution evidence timestamp is too far in the future (> 300s)")
+        started_ts = int(bot.get("started_ts") or 0)
+        if started_ts > 0 and ts < started_ts:
+            raise HTTPException(status_code=409, detail="execution evidence timestamp is earlier than bot start")
+        status = str(bot.get("status") or "").strip().lower()
+        if status not in {"running", "stopped"}:
+            raise HTTPException(status_code=409, detail=f"cannot record execution evidence for bot status={status}")
+        stopped_ts = int(bot.get("stopped_ts") or 0)
+        if status == "stopped" and stopped_ts > 0 and ts > stopped_ts + 300:
+            raise HTTPException(status_code=409, detail="execution evidence timestamp is later than bot stop reconciliation window")
+
+        event = {
+            "event_id": event_id,
+            "bot_id": bot_id,
+            "origin_rec_id": bot.get("origin_rec_id"),
+            "ts": ts,
+            "symbol": bot.get("symbol"),
+            "event_type": req.event_type,
+            "source": req.source,
+            "external_event_id": external_event_id,
+            "external_order_id": external_order_id,
+            "side": req.side,
+            "qty": req.qty,
+            "price": req.price,
+            "order_price": req.order_price,
+            "benchmark_price": req.benchmark_price,
+            "benchmark_ts": req.benchmark_ts,
+            "benchmark_source": req.benchmark_source,
+            "gross_pnl": req.gross_pnl,
+            "fee": req.fee,
+            "funding": req.funding,
+            "slippage": req.slippage,
+            "currency": currency,
+            "meta": req.meta,
+        }
+        try:
+            insert_result = db.insert_execution_event(conn, event, commit=False)
+        except ValueError as exc:
+            _rollback_quietly(conn)
+            message = str(exc)
+            status_code = 409 if "already exists with different payload" in message else 422
+            raise HTTPException(status_code=status_code, detail=message)
+
+        summary = db.get_bot_execution_summary(conn, bot_id)
+        if insert_result == "duplicate":
+            canonical = db.get_execution_event_by_external_id(conn, req.source, external_event_id)
+            canonical_event_id = str((canonical or {}).get("event_id") or event_id)
+            _rollback_quietly(conn)
+            return {
+                "ok": True,
+                "event_id": canonical_event_id,
+                "external_event_id": external_event_id,
+                "bot_id": bot_id,
+                "insert_result": "duplicate",
+                "idempotent": True,
+                **summary,
+            }
+        try:
+            state_updated = db.update_bot_state(
+                conn,
+                bot_id,
+                {
+                    "execution_evidence_event_count": int(summary["event_count"]),
+                    "execution_evidence_execution_count": int(summary["execution_count"]),
+                    "execution_evidence_funding_event_count": int(summary["funding_event_count"]),
+                    "execution_evidence_realized_pnl_gross": float(summary["realized_pnl_gross"]),
+                    "execution_evidence_realized_fee": float(summary["realized_fee"]),
+                    "execution_evidence_realized_funding": float(summary["realized_funding"]),
+                    "execution_evidence_realized_slippage": float(summary["realized_slippage"]),
+                    "execution_evidence_realized_pnl_net": float(summary["realized_pnl_net"]),
+                    "execution_evidence_last_event_ts": int(summary.get("last_event_ts") or ts),
+                    "execution_evidence_last_event_id": event_id,
+                    "execution_evidence_last_operator": operator,
+                },
+                commit=False,
+            )
+            if not state_updated:
+                raise RuntimeError("bot state update failed after execution evidence")
+            db.log_decision(
+                conn,
+                "EXECUTION_EVIDENCE_RECORDED",
+                bot.get("origin_rec_id"),
+                operator,
+                {
+                    "bot_id": bot_id,
+                    "event_id": event_id,
+                    "external_event_id": external_event_id,
+                    "event_type": req.event_type,
+                    "source": req.source,
+                    "insert_result": insert_result,
+                },
+                commit=False,
+            )
+            conn.commit()
+        except Exception:
+            _rollback_quietly(conn)
+            raise
+        return {
+            "ok": True,
+            "event_id": event_id,
+            "external_event_id": external_event_id,
+            "bot_id": bot_id,
+            "insert_result": insert_result,
+            "idempotent": False,
+            **summary,
+        }
+
+
+@app.get("/api/v1/execution-evidence")
+def api_execution_evidence(
+    request: Request,
+    bot_id: str | None = None,
+    limit: int = 500,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    _require_admin_key(x_api_key, request)
+    limit = _bounded_limit(limit, default=500, max_value=2000)
+    with closing(_get_conn()) as conn:
+        items = db.list_execution_events(conn, bot_id=bot_id, limit=limit)
+        return {"items": items, "count": len(items), "evidence_grade": True}
+
+
+@app.get("/api/v1/validation/live-evidence")
+def api_live_evidence_validation(
+    request: Request,
+    limit: int = 200,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    _require_admin_key(x_api_key, request)
+    limit = _bounded_limit(limit, default=200, max_value=1000)
+    with closing(_get_conn()) as conn:
+        records = db.list_live_validation_records(conn, limit=limit)
+    eligible = [row for row in records if bool(row.get("validation_eligible"))]
+    net_values = [float(row.get("realized_pnl_net") or 0.0) for row in eligible]
+    wins = sum(1 for value in net_values if value > 0.0)
+    return {
+        "records": records,
+        "count": len(records),
+        "eligible_stopped_bots": len(eligible),
+        "summary": {
+            "total_realized_pnl_net": sum(net_values),
+            "mean_realized_pnl_net": (sum(net_values) / len(net_values)) if net_values else None,
+            "positive_bot_rate": (wins / len(net_values)) if net_values else None,
+            "legacy_trade_rows_excluded": True,
+            "descriptive_only": True,
+            "live_edge_claim_supported": False,
+            "reason": "A chronological comparator, no-trade baseline and sufficient independent sample are still required.",
+        },
+    }
 
 
 @app.get("/api/v1/trades")

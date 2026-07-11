@@ -80,3 +80,24 @@
 - recommendation-path не должен молча считать все USDT perpetual как 8h funding;
 - если Bybit ticker/instrument metadata не дала interval, а expected funding impact материален, рекомендация получает `FUNDING_INTERVAL_UNCONFIRMED`;
 - UI/API должны показать причину отказа и funding interval source.
+
+
+## 15. Partial fills and funding reconciliation
+
+1. External read-only adapter receives two fills with different `execId` for one `orderId`.
+2. Both execution events are stored separately and linked to the same immutable `rec_id`; an exact retry is idempotent, while the same external id with changed economics is rejected.
+3. A funding transaction is stored as a separate event with its own transaction id and signed cashflow.
+4. Summary net equals actual gross fill PnL plus funding minus fee. Benchmark-to-fill slippage remains a separate diagnostic and is not deducted twice.
+5. Daily risk/cooldown sees the same de-duplicated net stream.
+
+## 16. Attempt to mix evidence ledgers
+
+1. A bot already has a legacy `/trades` row or exact execution evidence.
+2. A write to the other ledger is rejected fail-closed.
+3. If a historical/corrupted database nevertheless contains both, risk uses exact execution events and does not count legacy execution aggregates again.
+
+## 17. Live-validation export
+
+1. Admin requests `/api/v1/validation/live-evidence` with valid authorization.
+2. Only bots with immutable execution evidence appear; stopped bots with at least one execution become validation-eligible.
+3. Returned aggregates are descriptive. The response explicitly does not claim live edge because no chronological comparator, no-trade baseline or sample sufficiency test is implied.
