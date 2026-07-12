@@ -1,3 +1,13 @@
+## 2026-07-12 - v1.0.31 - grid order quantity and gap-stop integrity
+
+- Fixed a CRITICAL directional-ledger defect: multiple equal-quantity lots resting at the same grid price are now aggregated instead of collapsed into one side-only order.
+- Corrected repeated LONG/SHORT cycle PnL, per-leg execution friction and inventory-at-funding after adjacent replacement orders merge with an initial directional TP.
+- Close-to-open or horizon gaps that jump beyond a kill-switch are now unlabelable; the proxy no longer assumes execution at a skipped protective boundary.
+- Corrected the daily-loss fallback derivation to use canonical active-order topology (`N` on-grid, `N+1` off-grid) rather than unconditional `grid_count`.
+- Added `tests/test_iteration219_grid_order_quantity_and_gap_stop.py` with 8 RED-to-GREEN regressions.
+- Bumped FastAPI to `1.0.31` and outcome target to `grid_label_v12`; no route, schema or environment-variable change.
+- Baseline: 945/945 passed. Final post-check after documentation synchronization: 953/953 passed; SQLite and PostgreSQL dialect checks passed.
+
 ## 2026-07-12 - v1.0.30 - exact grid commitment and path ambiguity
 
 - Added one canonical arithmetic-grid commitment model for recommender sizing, auto-snap, strict preflight, runtime caps and outcome normalization.

@@ -1,0 +1,316 @@
+# Audit iteration: quantity-aware grid orders and gap-stop integrity
+
+## 1. Input and release identity
+
+- Input ZIP: `bybit-reco-systems-1.0.30-grid-commitment-path-integrity.zip`
+- Input SHA-256: `e00bcc40a65471a95576903f4fea18e65c2a21b98509b6e73f3e58c4e1ac4662`
+- Project root: `bybit-reco-systems-main`
+- Initial version: `1.0.30`
+- Initial outcome target: `grid_label_v11`
+- New version: `1.0.31`
+- New outcome target: `grid_label_v12`
+- Final ZIP: `bybit-reco-systems-1.0.31-grid-order-quantity-gap-stop.zip`
+- Final ZIP SHA-256: `reported in the delivery response after final archive creation (not embedded to avoid a self-referential checksum)`
+
+## 2. Project fingerprint
+
+The archive matches Bybit Recommender:
+
+- FastAPI application in `app/main.py`;
+- `futures_grid` recommendation/audit scope;
+- Bybit `category=linear`, USDT perpetual boundary;
+- SQLite and PostgreSQL persistence;
+- canonical directional semantics in `app/trading_semantics.py`;
+- grid math in `app/grid_math.py`;
+- outcome worker in `app/outcomes.py`;
+- static frontend in `app/ui/static/`;
+- no private order-create/amend/cancel implementation.
+
+Archive safety check found no absolute entries, traversal, symlinks, duplicate paths or nested archives. The input ZIP was not modified.
+
+## 3. Iteration objective
+
+After this iteration, the outcome ledger must preserve every equal-size grid lot resting at a price, charge fees and funding against the resulting true inventory, reject gaps that skip a protective boundary, and derive daily-loss fallback exposure from the canonical active-order topology.
+
+Acceptance criteria:
+
+1. An initial directional TP and an adjacent replacement TP at one price remain two lots.
+2. LONG and SHORT repeated-cycle PnL is symmetric and independently derivable from cash/inventory conservation.
+3. Every execution leg created by the duplicated quantity pays its configured cost.
+4. Funding sees zero inventory after all same-price closing lots have executed.
+5. A close-to-open or horizon gap beyond a kill-switch is unavailable, not priced at the skipped boundary.
+6. Daily-loss fallback uses `N` or `N+1` active orders from canonical topology.
+7. A regression file is RED on v1.0.30 and GREEN on v1.0.31.
+8. Full suite, SQLite bootstrap, PostgreSQL dialect tests and final re-extracted release checks pass.
+
+## 4. Sources reviewed
+
+- Current user request and supplied iteration protocol.
+- `README.md`, `CHANGELOG.md`, `.env.example`.
+- `docs/KNOWN_RISKS.md`, `TRADING_LOGIC.md`, `ARCHITECTURE.md`, `MODULES.md`, `SCENARIOS.md`, `HOW_TO_TRADE_INFOGRAPHIC.md`.
+- The five most recent audit reports relevant to grid outcomes and capital commitment.
+- `app/outcomes.py`, `app/grid_math.py`, `app/recommender.py`, `app/main.py`, `app/risk.py`, `app/trading_semantics.py`, `app/db.py`, `app/db_backend.py`.
+- Related regression tests from iterations 206, 209 and 212-218.
+- Official Bybit Futures Grid P&L, grid-bot and funding documentation for external semantics.
+
+## 5. Baseline environment and inventory
+
+- Python: `3.13.5`
+- Node: `22.16.0`
+- Production Python modules under `app/`: 23
+- Test files: 163
+- Documentation files: 42
+- Frontend files: 3
+- Migration SQL files: 2
+- Highest pre-iteration test number: 218
+- Database backends: SQLite and PostgreSQL compatibility/dialect layer
+
+Baseline commands and results:
+
+```text
+python -m compileall -q app tests main.py       PASSED
+node --check app/ui/static/app.js               PASSED
+python -m pytest -q                             945 passed in 25.24s
+python -m pip check                             FAILED: external MoviePy/Pillow environment mismatch
+python -m ruff check .                          UNAVAILABLE: ruff is not installed
+```
+
+The dependency conflict is global to the harness (`moviepy 2.2.1` requests Pillow below 12 while Pillow 12.2.0 is installed) and was not introduced by this patch.
+
+## 6. Data-flow map affected by this work package
+
+```text
+persisted trade_plan/range/grid_count/direction
+  -> arithmetic_grid_commitment
+  -> initial directional inventory + resting grid orders
+  -> OHLC endpoint/intrabar path simulation
+  -> order fills + replacements + fees
+  -> inventory at funding events
+  -> terminal/stop liquidation-equivalent PnL
+  -> normalized return + success label
+
+operator action / daily risk state
+  -> execution preflight context
+  -> canonical active_order_count
+  -> fallback worst notional
+  -> prospective daily-loss guard
+```
+
+## 7. Confirmed defects
+
+### GRID-219-01 — same-level directional order quantity collapsed
+
+- Severity: **critical**
+- Type: **CONFIRMED DEFECT**
+- File/function: `app/outcomes.py::_grid_outcome`
+- Initial representation: `orders: dict[int, str]`
+- Violated invariant: cash/inventory conservation and per-level order multiplicity
+
+Directional grids can legally have two equal-size closing orders at one grid price: the TP for initial inventory and a replacement TP generated by an adjacent filled opening order. The side-only dictionary retained one string and silently discarded the second lot.
+
+Independent LONG example, levels 99/100/101, entry 100.5, path 100.5 -> 100 -> 101 -> 100:
+
+```text
+Expected realised grid PnL: 0.5 + 1.0 = 1.5
+Capital commitment: 299.5
+Expected return: 1.5 / 299.5 = 0.005008347245409015
+v1.0.30 return: 0.001669449081803005
+```
+
+The symmetric SHORT case was distorted in the same way.
+
+Financial impact: repeated directional-cycle profitability was understated; inventory lineage was wrong; downstream calibration received corrupted labels.
+
+Why prior tests missed it: they verified side topology, active level counts and one-lot replacement behavior, but not multiplicity when two valid same-side lots merged at one price.
+
+### GRID-219-02 — execution friction omitted for collapsed lots
+
+- Severity: **high**
+- Type: **CONFIRMED DEFECT**
+- File/function: `app/outcomes.py::_grid_outcome`
+
+Because one lot disappeared, its fill notional and all later replacement/terminal legs also disappeared from execution-cost accounting.
+
+For the LONG reproducer with 10 bps round-trip cost, independent leg notionals total 802.5 and the correct result is:
+
+```text
+(1.5 - 802.5 * 0.0005) / 299.5 = 0.0036686143572621033
+v1.0.30 = 0.0006652754590984976
+```
+
+### GRID-219-03 — phantom inventory charged funding
+
+- Severity: **high**
+- Type: **CONFIRMED DEFECT**
+- File/function: `app/outcomes.py::_grid_outcome`
+
+After both legitimate LONG lots closed at 101, the collapsed ledger still represented one open slot and charged adverse funding at the next event. Expected return was `0.005008347245409015`; v1.0.30 returned `0.0046711185308848085`.
+
+### GRID-219-04 — gap-through stop priced at an unreachable boundary
+
+- Severity: **high**
+- Type: **CONFIRMED DEFECT**
+- File/function: `app/outcomes.py::_grid_outcome`
+
+A close at 100 followed by an open at 103 while the upper kill-switch is 102 was liquidated at 102. OHLC proves that the boundary was skipped; it does not prove stop/grid-order chronology or an execution at 102. The same error existed for the final horizon price below a lower boundary.
+
+v1.0.30 returned `(success=0, ret=-0.005)`. Safe expected behavior is `None`/unavailable.
+
+### GRID-219-05 — daily-loss fallback used `grid_count` instead of active topology
+
+- Severity: **high**
+- Type: **CONFIRMED DEFECT**
+- File/function: `app/main.py::_execution_daily_loss_budget_guard`
+
+For an off-grid reference with two intervals, three levels are active. The fallback derived `1 * 101 * 2 = 202` USDT instead of `1 * 101 * 3 = 303` USDT. This could understate prospective loss and allow an operator action against a weaker daily-risk denominator.
+
+## 8. Claims not established
+
+- The project has not been proven profitable.
+- The project has not been proven structurally unprofitable after the fix.
+- An OHLCV proxy cannot establish queue priority, partial fills, maker/taker mix, stop slippage or exact exchange execution.
+- The user's live accumulated database was not included in the input release, so its displayed monthly statistics could not be recalculated.
+
+## 9. Implemented fix
+
+### `app/outcomes.py`
+
+- Resting orders are signed integer quantities per level: positive buy quantity, negative sell quantity.
+- Same-side quantities aggregate instead of overwriting.
+- Opposite-side quantities at the same level are treated as unresolved/self-trading chronology and make the ledger unavailable.
+- Fill cash, inventory, execution cost and replacement quantities are multiplied by the absolute lot count.
+- Ledger snapshots, path comparison and restoration include integer order quantities and invalid state.
+- A close-to-open or final-horizon gap that skips an external kill-switch returns unavailable before a fabricated boundary fill is materialized.
+
+### `app/main.py`
+
+- Daily-loss fallback requests `active_order_count` from `arithmetic_grid_commitment`.
+- Worst-notional fallback source is now `qty*max_grid_price*active_orders`.
+- FastAPI version bumped to `1.0.31`.
+- Outcome target bumped to `grid_label_v12`.
+
+No API route, JSON schema, migration SQL, frontend source or environment variable changed.
+
+## 10. RED -> GREEN evidence
+
+New test file:
+
+```text
+tests/test_iteration219_grid_order_quantity_and_gap_stop.py
+```
+
+RED command on pristine v1.0.30:
+
+```text
+python -m pytest -q tests/test_iteration219_grid_order_quantity_and_gap_stop.py
+8 failed in 1.24s
+```
+
+Material RED lines:
+
+```text
+LONG obtained 0.001669449081803005; expected 0.005008347245409015
+SHORT obtained 0.0016638935108153079; expected 0.004991680532445923
+fee case obtained 0.0006652754590984976; expected 0.0036686143572621033
+funding case obtained 0.0046711185308848085; expected 0.005008347245409015
+gap outcomes returned (0, -0.005) instead of unavailable
+daily fallback returned 202.0 instead of 303.0
+```
+
+GREEN command on v1.0.31:
+
+```text
+python -m pytest -q tests/test_iteration219_grid_order_quantity_and_gap_stop.py
+8 passed in 0.91s
+```
+
+Deterministic repeat:
+
+```text
+8 passed in 1.55s
+```
+
+Related economics/outcome/preflight suite:
+
+```text
+110 passed in 2.70s
+```
+
+## 11. Database and compatibility
+
+- Schema change: none.
+- `migrations/init.sql`: unchanged.
+- `migrations/init_postgres.sql`: unchanged.
+- Fresh SQLite bootstrap: 16 application tables.
+- Repeated SQLite bootstrap: same 16 tables, idempotent.
+- Existing v1.0.30 SQLite database reopened by v1.0.31: 16 tables and preserved marker row.
+- PostgreSQL translation/locking/deadlock tests: 18 passed.
+- Live PostgreSQL integration: **SKIPPED**, because no confirmed disposable test DSN was supplied.
+
+At first v1.0.31 startup, the outcome-version guard removes only incompatible proxy outcomes and calibrators. Recommendations, bot instances, trades, exact execution evidence and risk settings remain.
+
+## 12. Security and execution boundary
+
+- No `/v5/order/create`, amend, cancel or batch-order endpoint was added.
+- The service remains recommendation/audit-only and does not become an OMS/EMS.
+- API route decorators are unchanged from v1.0.30.
+- Frontend files are byte-identical to v1.0.30.
+- No `.env`, runtime database, lock database, cache or bytecode is included in the final archive.
+
+## 13. Documentation synchronization
+
+Updated:
+
+- `README.md`
+- `CHANGELOG.md`
+- `docs/TRADING_LOGIC.md`
+- `docs/KNOWN_RISKS.md`
+- `docs/ARCHITECTURE.md`
+- `docs/MODULES.md`
+- `docs/SCENARIOS.md`
+- `docs/HOW_TO_TRADE_INFOGRAPHIC.md`
+- operator DOCX/PDF
+- `how_to_trade.png`
+
+The DOCX and PDF contain five pages each and were visually inspected. The embedded infographic was regenerated for v1.0.31/grid_label_v12.
+
+## 14. Final post-check
+
+```text
+python -m compileall -q app tests main.py      PASSED
+node --check app/ui/static/app.js              PASSED
+new regression, repeated                        8/8 + 8/8 passed
+related suite                                  110/110 passed
+python -m pytest -q                            953 passed in 27.46s
+PostgreSQL dialect/locking suite               18/18 passed
+SQLite fresh/repeat/upgrade                    PASSED
+API route parity                               PASSED
+migration checksum parity                      PASSED
+frontend checksum parity                       PASSED
+private order endpoint scan                    PASSED
+```
+
+Final re-extracted archive verification:
+
+```text
+Final archive verification is executed after the ZIP is closed; exact re-extracted commands and counts are recorded in the delivery response.
+```
+
+## 15. Limitations and residual risks
+
+- No live execution/order reconciliation exists in this repository.
+- Gap-through outcomes are now excluded, not estimated. This reduces sample size but avoids invented stop prices.
+- OHLCV still cannot resolve queue priority, partial fills or multiple same-minute revisits beyond path-invariant states.
+- Real fee tier, maker/taker composition and external executor behavior must be compared with immutable execution evidence.
+- Strategy edge remains unproven until a new chronological `grid_label_v12` sample is accumulated and compared with exact fills/funding.
+
+## 16. Rollback
+
+1. Stop the application.
+2. Restore code version `1.0.30`.
+3. Restore the `data/app.db` backup taken before first v1.0.31 startup if historical v11 proxy outcomes/calibrators are required.
+4. Do not restore a stale runtime-lock database.
+
+## 17. Recommended next work package
+
+After enough `grid_label_v12` observations accumulate, compare proxy and exact evidence at the individual order-lot level: same-price quantity, fill count, realized fees, inventory at funding timestamps, gap exclusions and terminal PnL. Do not change launch thresholds until this reconciliation is available.

@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v11"
+OUTCOME_LABEL_VERSION = "grid_label_v12"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -2819,16 +2819,29 @@ def _execution_daily_loss_budget_guard(
     )
     count_resolution = ctx.get("grid_count_resolution") if isinstance(ctx.get("grid_count_resolution"), dict) else {}
     grid_count = count_resolution.get("conservative_max") or count_resolution.get("value") or 1
+    reference = _finite_float_or_none(ctx.get("reference_price"))
+    range_lower = _finite_float_or_none(ctx.get("range_lower"))
+    range_upper = _finite_float_or_none(ctx.get("range_upper"))
+    direction = normalize_execution_direction(rec.get("direction"))
+    active_orders = max(1, int(grid_count))
+    if reference is not None and range_lower is not None and range_upper is not None and direction is not None:
+        commitment = arithmetic_grid_commitment(
+            lower=range_lower,
+            upper=range_upper,
+            grid_count=grid_count,
+            reference_price=reference,
+            direction=direction,
+        )
+        if commitment is not None:
+            active_orders = max(1, int(commitment["active_order_count"]))
     if order_qty is not None and worst_price is not None and worst_price > 0.0:
-        derived_notional = float(order_qty) * float(worst_price) * max(1, int(grid_count))
+        derived_notional = float(order_qty) * float(worst_price) * float(active_orders)
         if estimated_notional is None or derived_notional > float(estimated_notional):
             estimated_notional = derived_notional
-            notional_key = "order_qty*max_grid_price*grid_count"
+            notional_key = "qty*max_grid_price*active_orders"
 
-    reference = _finite_float_or_none(ctx.get("reference_price"))
     kill_lower = _finite_float_or_none(ctx.get("kill_switch_lower"))
     kill_upper = _finite_float_or_none(ctx.get("kill_switch_upper"))
-    direction = normalize_execution_direction(rec.get("direction"))
 
     missing: list[str] = []
     if estimated_notional is None or estimated_notional <= 0.0:
@@ -4629,7 +4642,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.30", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.31", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

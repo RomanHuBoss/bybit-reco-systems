@@ -1,5 +1,11 @@
 # Архитектура Bybit Recommender
 
+## Quantity-aware ledger and discontinuous-stop boundary (v1.0.31)
+
+`app/outcomes.py` represents each resting level as a signed integer quantity, not a single side flag. Same-side replacement lots are aggregated; opposing quantities at one level invalidate the proxy contract instead of implying self-trading. Cash, inventory, fees, funding exposure and path-equivalence snapshots all include those quantities.
+
+A continuous observed segment may terminate at a kill-switch. A discontinuous close→open or horizon gap that lands beyond the protection cannot be priced at the skipped boundary and is rejected as unavailable. `app/main.py::_execution_daily_loss_budget_guard` reuses `arithmetic_grid_commitment` for its fallback active-order count.
+
 ## Exact commitment/path-invariance boundary (v1.0.30)
 
 `app/grid_math.py::arithmetic_grid_commitment` is the single topology/commitment source for `app/recommender.py`, auto-snap and execution validation in `app/main.py`, and proxy normalization in `app/outcomes.py`. It returns arithmetic levels, buy/sell index sets, initial directional slots, active-order count, maximum position slots and committed notional per unit quantity. Callers may not reconstruct `N × reference` independently.

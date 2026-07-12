@@ -614,16 +614,19 @@ def _grid_outcome(
 ) -> tuple[int, float] | None:
     """Estimate arithmetic Futures Grid total P&L from a conservative order ledger.
 
-    Equal-quantity slots reproduce the persisted arithmetic grid. Observable
-    close->open and open->close movements are processed separately, and a
-    single-sided OHLC excursion is included when its order is unambiguous. When
-    both high and low extend beyond the endpoints, the ambiguous excursions are
-    intentionally ignored rather than inventing an intrabar order.
+    Equal-quantity slots reproduce the persisted arithmetic grid. Resting
+    quantities are aggregated per level, so an initial directional TP and an
+    adjacent replacement TP at the same price remain two executable lots rather
+    than being collapsed into one. Observable close->open and open->close
+    movements are processed separately. For two-sided OHLC excursions, both
+    admissible extreme paths are simulated and a label is kept only when the
+    resulting ledgers are equivalent.
 
     A kill-switch is an actual terminal event: the ledger processes fills up to
     the protective boundary, liquidates residual inventory there and ignores all
-    later candles/funding. Continuing a stopped bot to the horizon would corrupt
-    both return and calibration labels.
+    later candles/funding. A close->open gap beyond that boundary is unavailable
+    because OHLC cannot identify the stop/grid-order execution chronology or a
+    fill at the skipped protective price.
     """
     params = params if isinstance(params, dict) else {}
     direction_norm = normalize_execution_direction(direction)
@@ -711,8 +714,14 @@ def _grid_outcome(
     initial_long_slots = int(topology["initial_long_slots"])
     initial_short_slots = int(topology["initial_short_slots"])
 
-    orders: dict[int, str] = {index: "buy" for index in buy_indices}
-    orders.update({index: "sell" for index in sell_indices})
+    # Signed quantity per price level: positive = buy quantity, negative = sell
+    # quantity. Directional grids can legitimately accumulate multiple orders at
+    # the same price (for example, the existing TP for initial inventory plus a
+    # replacement TP created by a newly filled adjacent buy). A side-only map
+    # silently collapsed those quantities and corrupted realised PnL, fees and
+    # funding inventory.
+    orders: dict[int, int] = {index: 1 for index in buy_indices}
+    orders.update({index: -1 for index in sell_indices})
     position_slots = int(topology["initial_position_slots"])
 
     cash = (-float(initial_long_slots) + float(initial_short_slots)) * entry_f
@@ -724,6 +733,7 @@ def _grid_outcome(
     stopped = False
     stop_price: float | None = None
     stop_ts: int | None = None
+    ledger_invalid = False
 
     def current_position_slots() -> int:
         return int(position_slots)
@@ -746,10 +756,34 @@ def _grid_outcome(
 
     max_adverse_position_value = adverse_exposure_value(entry_f)
 
+    def add_order(index: int, signed_quantity: int) -> None:
+        nonlocal ledger_invalid
+        if signed_quantity == 0 or index < 0 or index > grid_count:
+            return
+        existing = int(orders.get(index, 0))
+        if existing != 0 and (existing > 0) != (signed_quantity > 0):
+            # Opposing resting orders at one level would imply self-trading or an
+            # unresolved cancel/replace chronology. Do not fabricate a label.
+            ledger_invalid = True
+            return
+        combined = existing + int(signed_quantity)
+        if combined == 0:
+            orders.pop(index, None)
+        else:
+            orders[index] = combined
+
+    def gap_crosses_kill_switch(target_price: float) -> bool:
+        target = float(target_price)
+        start = float(previous_price)
+        return bool(
+            (target > ks_upper_f + tolerance and start < ks_upper_f - tolerance)
+            or (target < ks_lower_f - tolerance and start > ks_lower_f + tolerance)
+        )
+
     def process_segment(target_price: float, *, event_ts: int) -> None:
         """Process every resting grid order crossed by one observable price segment."""
         nonlocal cash, execution_cost, position_slots, previous_price
-        nonlocal max_adverse_position_value, stopped, stop_price, stop_ts
+        nonlocal max_adverse_position_value, stopped, stop_price, stop_ts, ledger_invalid
         if stopped:
             return
         target = float(target_price)
@@ -783,21 +817,24 @@ def _grid_outcome(
             crossed = []
 
         for index in crossed:
-            side = orders.pop(index, None)
-            if side is None:
+            signed_quantity = int(orders.pop(index, 0))
+            if signed_quantity == 0:
                 continue
             fill_price = grid_prices[index]
-            execution_cost += fill_price * half_leg_cost_rate
-            if side == "buy":
-                cash -= fill_price
-                position_slots += 1
+            quantity = abs(signed_quantity)
+            execution_cost += float(quantity) * fill_price * half_leg_cost_rate
+            if signed_quantity > 0:
+                cash -= float(quantity) * fill_price
+                position_slots += quantity
                 if index + 1 <= grid_count:
-                    orders.setdefault(index + 1, "sell")
+                    add_order(index + 1, -quantity)
             else:
-                cash += fill_price
-                position_slots -= 1
+                cash += float(quantity) * fill_price
+                position_slots -= quantity
                 if index - 1 >= 0:
-                    orders.setdefault(index - 1, "buy")
+                    add_order(index - 1, quantity)
+            if ledger_invalid:
+                return
 
         previous_price = float(terminal)
         max_adverse_position_value = max(
@@ -819,12 +856,13 @@ def _grid_outcome(
             "stopped": bool(stopped),
             "stop_price": None if stop_price is None else float(stop_price),
             "stop_ts": stop_ts,
+            "ledger_invalid": bool(ledger_invalid),
             "orders": dict(orders),
         }
 
     def restore_ledger(state: dict[str, object]) -> None:
         nonlocal cash, execution_cost, position_slots, previous_price
-        nonlocal max_adverse_position_value, stopped, stop_price, stop_ts, orders
+        nonlocal max_adverse_position_value, stopped, stop_price, stop_ts, ledger_invalid, orders
         cash = float(state["cash"])
         execution_cost = float(state["execution_cost"])
         position_slots = int(state["position_slots"])
@@ -835,7 +873,11 @@ def _grid_outcome(
         stop_price = None if raw_stop_price is None else float(raw_stop_price)
         raw_stop_ts = state["stop_ts"]
         stop_ts = None if raw_stop_ts is None else int(raw_stop_ts)
-        orders = dict(state["orders"])  # type: ignore[arg-type]
+        ledger_invalid = bool(state["ledger_invalid"])
+        orders = {
+            int(index): int(quantity)
+            for index, quantity in dict(state["orders"]).items()  # type: ignore[arg-type]
+        }
 
     def equivalent_ledger(left: dict[str, object], right: dict[str, object]) -> bool:
         for key in ("cash", "execution_cost", "previous_price", "max_adverse_position_value"):
@@ -843,7 +885,7 @@ def _grid_outcome(
                 float(left[key]), float(right[key]), rel_tol=1e-12, abs_tol=max(1e-10, tolerance)
             ):
                 return False
-        for key in ("position_slots", "stopped", "stop_ts", "orders"):
+        for key in ("position_slots", "stopped", "stop_ts", "ledger_invalid", "orders"):
             if left[key] != right[key]:
                 return False
         left_stop = left["stop_price"]
@@ -858,7 +900,7 @@ def _grid_outcome(
         restore_ledger(base)
         for target in targets:
             process_segment(float(target), event_ts=event_ts)
-            if stopped:
+            if stopped or ledger_invalid:
                 break
         return snapshot_ledger()
 
@@ -884,9 +926,18 @@ def _grid_outcome(
                 )
             event_index += 1
 
+        # A close->open jump beyond a protective boundary has no observable
+        # execution path between the prior close and the new market. Limit fills,
+        # stop triggering and cancellation can occur in different orders and the
+        # protective order cannot be assumed to execute at the skipped boundary.
+        if gap_crosses_kill_switch(float(row_open)):
+            return None
+
         # Previous close -> current open is observable and may cross narrow grid
         # levels even when the candle later closes back at the previous price.
         process_segment(float(row_open), event_ts=row_ts)
+        if ledger_invalid:
+            return None
         if stopped:
             break
 
@@ -950,6 +1001,8 @@ def _grid_outcome(
             restore_ledger(high_first)
         else:
             process_segment(close_f, event_ts=row_ts)
+        if ledger_invalid:
+            return None
         if stopped:
             break
 
@@ -966,9 +1019,13 @@ def _grid_outcome(
             event_index += 1
 
         # The exact horizon open is the next observable price after the final
-        # in-window close. Resting orders crossed by that gap execute before the
-        # remaining inventory is liquidated at the same boundary price.
+        # in-window close. A gap through the kill-switch is path-ambiguous and
+        # cannot be priced at the skipped protective boundary.
+        if gap_crosses_kill_switch(exit_f):
+            return None
         process_segment(exit_f, event_ts=ts_end)
+        if ledger_invalid:
+            return None
 
     if not exact_schedule_known:
         expected_events = _int_from_params(funding_model.get("expected_funding_events"), 0, minimum=0, maximum=1000)

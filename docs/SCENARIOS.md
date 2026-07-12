@@ -1,5 +1,13 @@
 # Ключевые сценарии
 
+## 0. Same-level order quantity and gap-through protection (v1.0.31)
+
+Expected behavior:
+- if an adjacent replacement TP shares a price with an initial directional TP, the level quantity becomes two rather than discarding one lot;
+- cash, position, execution cost and funding inventory use the entire aggregated quantity;
+- a close→open or final-horizon gap beyond the kill-switch produces no proxy label because stop/grid-order chronology and fill price are not observable;
+- daily-loss fallback uses `arithmetic_grid_commitment.active_order_count`, including `N+1` for an off-grid reference.
+
 ## 0. Exact commitment and ambiguous intrabar path (v1.0.30)
 
 Expected behavior:

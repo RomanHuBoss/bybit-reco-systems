@@ -1,20 +1,21 @@
 # Модули и контракты
 
-## v1.0.30 responsibility update
+## v1.0.31 responsibility update
 
 - `app/grid_math.py`: owns arithmetic level topology and exact committed-notional calculation.
 - `app/recommender.py`: publishes sizing/economics from the canonical commitment.
-- `app/main.py`: preserves the same commitment during Bybit snapping, strict preflight and runtime caps.
-- `app/outcomes.py`: normalizes PnL by exact commitment and rejects path-dependent two-sided OHLC candles.
+- `app/main.py`: preserves the same commitment during Bybit snapping, strict preflight, runtime caps and daily-loss fallback.
+- `app/outcomes.py`: owns the quantity-aware cash/inventory/order ledger, gap-stop availability and path-equivalence labeling.
 
 
-## `app/outcomes.py` — current v9 contract
+## `app/outcomes.py` — current v12 contract
 
 - chooses the first exact 1m entry open strictly after recommendation publication;
+- stores signed integer order quantity per level, including multiple directional lots at the same price;
+- applies fees and funding to the resulting exact inferred quantity/inventory state;
+- rejects discontinuous gaps beyond the kill-switch and path-dependent OHLC candles;
 - never stores invalid/contradictory grid geometry as a flat or losing outcome;
-- requires valid duplicate range, grid-count and funding aliases to describe one identical persisted bot;
-- logs and skips unlabelable contracts instead of manufacturing an alternative geometry;
-- keeps the explicit inventory ledger, per-leg/terminal costs and adverse inventory funding from v6-v8.
+- logs and skips unlabelable contracts instead of manufacturing an alternative geometry.
 
 
 ## `app/bybit_client.py`

@@ -1,3 +1,20 @@
+## 2026-07-12 order-quantity/gap-stop audit (v1.0.31)
+
+### RESOLVED/CRITICAL: same-level directional lots were collapsed
+The v11 ledger stored one side per price level. In directional mode, an initial TP and a replacement TP can coexist at the same adjacent level; `setdefault` discarded the replacement quantity. Repeated cycle profit, fees and position state at funding timestamps were therefore wrong. v12 stores signed integer quantity per level and applies every inferred leg.
+
+### RESOLVED/HIGH: gap-through stop used a skipped boundary price
+A previous-close to next-open jump beyond the kill-switch was processed as a continuous segment and liquidated at the boundary. The market never printed that observable path, and the ordering of resting limits, cancellation and stop execution is unknown. v12 skips the proxy label instead of understating gap loss or inventing fills.
+
+### RESOLVED/HIGH: legacy daily-loss fallback still used grid_count
+When persisted total-notional fields were absent, the guard derived `qty × max_price × grid_count`, undercounting an off-grid `N+1` topology. v1.0.31 uses `arithmetic_grid_commitment.active_order_count`.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v12`
+First v1.0.31 startup clears only incompatible proxy outcomes and calibrators. Exact execution evidence and recommendation/bot audit rows remain.
+
+### RESIDUAL: gap and intrabar execution remain unavailable without exact evidence
+Skipping ambiguous gaps reduces sample size. Queue priority, partial fills, stop slippage and cancel/replace ordering require external execution evidence; OHLCV cannot establish them.
+
 ## 2026-07-12 exact commitment and intrabar-path audit (v1.0.30)
 
 ### CLOSED: interval count was treated as funded slot count

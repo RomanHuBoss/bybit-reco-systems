@@ -220,4 +220,4 @@ def test_outcome_join_decoder_does_not_crash_on_malformed_label_availability(tmp
 def test_temporal_outcome_contract_uses_new_label_version() -> None:
     from app import main as app_main
 
-    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v11"
+    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v12"

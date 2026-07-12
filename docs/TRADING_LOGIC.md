@@ -1,13 +1,16 @@
 # Торговая логика Bybit Linear USDT Futures grid
 
-## Current exact commitment and path-invariance rules (grid_label_v11)
+## Current quantity-aware commitment and gap-stop rules (grid_label_v12)
 
 - `grid_count` is the number of arithmetic intervals; price levels are `N+1`.
 - If reference is exactly on a level, the pivot is not an active order and active orders are `N`; between levels, all `N+1` levels are active.
 - LONG/SHORT commitment equals initial directional inventory at reference plus adverse-side opening orders at their actual level prices. NEUTRAL commitment equals all active opening orders.
 - `estimated_total_order_notional_usdt`, margin, worst-case notional, strict preflight and outcome return denominator must use this exact commitment, not `reference × qty × grid_count`.
-- A candle with material high and low excursions is evaluated under both `O→H→L→C` and `O→L→H→C`. The label is available only when both paths produce equivalent cash, inventory, fees, resting orders, stop state and terminal PnL.
-- `grid_label_v11` is incompatible with prior proxy outcomes/calibrators and is reset by the version guard.
+- Resting orders are quantity-aware. Multiple same-side lots at one price are aggregated; an initial directional TP and an adjacent replacement TP must not collapse into one lot.
+- A candle with material high and low excursions is evaluated under both `O→H→L→C` and `O→L→H→C`. The label is available only when both paths produce equivalent cash, inventory, fees, resting order quantities, stop state and terminal PnL.
+- A close→open or final-horizon gap beyond the external kill-switch is unavailable. The proxy must not assume a fill at a price skipped by the market or invent stop-vs-grid execution chronology.
+- Daily-loss fallback derives worst-case notional from the canonical active-order topology, not unconditional `qty × max_price × grid_count`.
+- `grid_label_v12` is incompatible with prior proxy outcomes/calibrators and is reset by the version guard.
 
 ## Bybit Linear USDT product boundary
 

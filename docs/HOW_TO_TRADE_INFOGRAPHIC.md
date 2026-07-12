@@ -37,8 +37,10 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
 - An already-open candle before publication is not a tradeable entry. Conflicting persisted grid/funding aliases are skipped, never collapsed into a different bot or a zero-return loss.
 - Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
-- Current label contract is `grid_label_v11`: entry remains the first exact 1m open strictly after publication; exact capital commitment uses N active orders on a grid-level reference and N+1 between levels; directional commitment includes initial inventory plus adverse-side opening orders; kill-switch remains terminal.
+- Current label contract is `grid_label_v12`: entry remains the first exact 1m open strictly after publication; exact capital commitment uses N active orders on a grid-level reference and N+1 between levels; directional commitment includes initial inventory plus adverse-side opening orders; kill-switch remains terminal.
+- Same-level directional lots are quantity-aware: an initial TP and an adjacent replacement TP at one price must both remain in the ledger, fees and funding state.
 - Missing/inside-range kill-switch is unlabelable. For any candle with material high and low excursions, both O-H-L-C and O-L-H-C paths must produce the same ledger/stop/PnL state; otherwise no proxy label is stored.
+- A close-open or horizon gap beyond the kill-switch is also unlabelable; never assume the skipped boundary was an executable stop price.
 - Outcome headline is actionable-only; all-roots and shadow no_trade metrics are separate research/control cohorts.
 
 ## NO TRADE / BLOCKED checklist

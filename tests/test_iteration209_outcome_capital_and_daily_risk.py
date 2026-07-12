@@ -229,4 +229,4 @@ def test_execution_preflight_blocks_kill_switch_loss_above_remaining_daily_budge
 
 
 def test_outcome_semantics_bump_label_version_to_avoid_mixing_legacy_calibration(app_main) -> None:
-    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v11"
+    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v12"
