@@ -6,6 +6,14 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## Inventory-aware horizon finalization and funding (v1.0.26)
+
+Исправлен третий подтверждённый слой outcome-математики. На границе label horizon остаточная LONG/SHORT-позиция теперь приводится к единой liquidation-equivalent net basis: к mark-to-market добавляется недостающая выходная половина round-trip execution cost. До v1.0.26 два одинаковых результата с закрытой и незакрытой позицией сравнивались на разных cost bases, а остаточный inventory выглядел лучше на величину exit fee/slippage proxy.
+
+Funding больше не вычитается плоским процентом от капитала всей сетки. Worker применяет adverse funding только к фактическому net inventory в момент подтверждённого funding event. Neutral без позиции не платит funding; LONG/SHORT платит пропорционально position value, а возможное получение funding по-прежнему не кредитуется как alpha. Если точный schedule отсутствует, используется консервативный fallback по максимальному adverse inventory, реально достигнутому ledger, а не по полному grid capital.
+
+`success` теперь следует заявленному контракту total net PnL: любое конечное положительное значение выше численной погрешности может быть win при наличии mode activity и без kill-switch breach. Скрытый порог `5 bps` удалён, потому что он делал положительные outcomes проигрышами и расходился с `ret`. Из-за несовместимой target-семантики текущий `OUTCOME_LABEL_VERSION=grid_label_v7`; первый запуск v1.0.26 очищает только прежние proxy `reco_outcomes` и связанные calibrators, сохраняя recommendations, bot audit lifecycle, trades и exact execution evidence.
+
 ## Exact arithmetic-grid ledger and exchange interval economics (v1.0.25)
 
 Исправлен второй, более глубокий слой математических ошибок в рекомендации и OHLCV proxy-outcome. Завершённая arithmetic-grid пара теперь получает полный соседний ценовой интервал: коэффициент `fill_efficiency=0.70` больше не уменьшает PnL уже состоявшейся сделки и используется только как отдельный сценарный показатель `projected_capture_bps`. `tp_per_leg`, `gross_profit_bps`, cost-floor и live economics теперь относятся к одной и той же канонической геометрии `(upper-lower)/grid_count`.
@@ -30,7 +38,7 @@ Neutral grid начинается без позиции: если не было 
 
 Proxy-outcome строится только при наличии точной следующей 1m-свечи после `features_ref_ts`, непрерывной минутной последовательности на всём горизонте и свечи ровно на `label_available_ts`. Gap не переносит гипотетический вход или выход на более поздний рынок. Calibration использует только строки с exact `label_available_ts`, который не раньше recommendation timestamp и уже наступил к моменту fit; legacy/malformed/future labels исключаются.
 
-Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, а текущая v1.0.25 использует `grid_label_v6` из-за перехода к явному arithmetic-grid order/inventory ledger. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
+Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, а текущая v1.0.26 использует `grid_label_v7` для inventory-aware funding и liquidation-equivalent horizon finalization. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
 
 ## No-recommendation state, status semantics and shadow outcomes (v1.0.22)
 

@@ -65,9 +65,9 @@ def test_grid_outcome_does_not_treat_long_per_leg_tp_as_whole_grid_success(tmp_p
         )
 
         assert success == 0
-        # Long mode creates an initial position and therefore pays an opening leg.
-        # This tiny move does not cover the stored execution-cost fallback.
-        assert -0.0005 < ret_proxy < 0.0
+        # Long mode pays both the opening leg and the liquidation-equivalent
+        # terminal close of any residual inventory. The tiny move stays negative.
+        assert -0.001 < ret_proxy < 0.0
     finally:
         conn.close()
 
@@ -110,9 +110,9 @@ def test_grid_outcome_does_not_treat_short_per_leg_tp_as_whole_grid_success(tmp_
         )
 
         assert success == 0
-        # Short mode also pays for its initial market position; a tiny move is not
-        # enough to offset that entry friction.
-        assert -0.0005 < ret_proxy < 0.0
+        # Short mode also pays both entry and terminal-close friction; the tiny
+        # favorable move is not enough to cover those executable costs.
+        assert -0.001 < ret_proxy < 0.0
     finally:
         conn.close()
 

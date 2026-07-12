@@ -1,3 +1,25 @@
+## 2026-07-12 inventory-aware total-PnL finalization audit (v1.0.26)
+
+### RESOLVED/HIGH: residual position omitted terminal execution cost
+
+The v6 ledger marked residual inventory at the horizon but charged only the initial/fill legs. A still-open position therefore looked better than an economically equivalent closed position by one half round-trip cost. v7 adds terminal close friction and reports a liquidation-equivalent net horizon result.
+
+### RESOLVED/CRITICAL: funding was charged to full grid capital instead of position value
+
+`compute_outcomes_once` subtracted aggregate expected funding bps after the ledger. Neutral with zero inventory paid funding, and a directional bot holding half of grid capital paid the full-grid amount. v7 applies adverse funding to actual net inventory at event time; possible receipts remain excluded. If event timing is unavailable, the fallback uses maximum adverse inventory reached rather than total configured capital.
+
+### RESOLVED/HIGH: positive net outcomes below 5 bps were labelled losses
+
+The stored `ret` could be positive while `success=0` because an undocumented `0.0005` threshold overrode the total-PnL sign. v7 uses a numerical epsilon only, while still requiring valid mode activity and no kill-switch breach.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v7`
+
+On first v1.0.26 startup the version guard clears only incompatible `reco_outcomes` and related calibrators. Recommendations, bot audit rows, trades, exact execution evidence and risk settings remain.
+
+### RESIDUAL: future funding rates and intraminute event/fill ordering are unknown
+
+The persisted recommendation contains a snapshot rate and schedule, not the future realised funding history. OHLCV also cannot prove whether a level fill occurred immediately before or after an intraminute funding timestamp. v7 is position-aware and conservative, but exact funding truth still requires external execution evidence.
+
 ## 2026-07-12 exact grid-ledger audit (v1.0.25)
 
 ### RESOLVED/CRITICAL: directional and neutral PnL did not follow the grid order ledger

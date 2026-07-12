@@ -315,6 +315,125 @@ def _funding_cost_bps_for_outcome_label(signed_funding_bps: float) -> float:
     return max(0.0, _finite_or_default(signed_funding_bps, 0.0))
 
 
+def _extract_inventory_funding_model(params: dict | None) -> dict[str, float | int | None]:
+    """Return strict funding inputs used by the historical inventory ledger.
+
+    Recommendation economics stores a direction-level funding estimate. Historical
+    outcome labels, however, must charge funding against the position that actually
+    exists at an event. Raw rate/schedule fields are therefore preferred; aggregate
+    expected bps remain a conservative fallback when the exact schedule is absent.
+    """
+    params = params if isinstance(params, dict) else {}
+    trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    blocks = (
+        params.get("cost_model") if isinstance(params.get("cost_model"), dict) else {},
+        trade_plan.get("cost_model") if isinstance(trade_plan.get("cost_model"), dict) else {},
+    )
+
+    raw: dict[str, object] = {}
+    for key in (
+        "funding_rate",
+        "next_funding_ts",
+        "funding_interval_min",
+        "expected_funding_events",
+        "directional_funding_bps_per_event",
+        "expected_funding_bps",
+    ):
+        for block in blocks:
+            if key in block and block.get(key) is not None:
+                raw[key] = block.get(key)
+                break
+
+    funding_rate = None
+    value = raw.get("funding_rate")
+    if value is not None and not isinstance(value, bool):
+        try:
+            candidate = float(value)
+        except Exception:
+            candidate = math.nan
+        if math.isfinite(candidate):
+            funding_rate = float(candidate)
+
+    next_funding_ts = strict_integer(raw.get("next_funding_ts"))
+    if next_funding_ts is not None and next_funding_ts > 100_000_000_000:
+        # Millisecond timestamps are accepted only on an exact whole-second
+        # boundary; truncation would manufacture a funding schedule.
+        if next_funding_ts % 1000 != 0:
+            next_funding_ts = None
+        else:
+            next_funding_ts //= 1000
+    if next_funding_ts is not None and next_funding_ts <= 0:
+        next_funding_ts = None
+
+    interval_min = strict_integer(raw.get("funding_interval_min"))
+    interval_sec = int(interval_min * 60) if interval_min is not None and interval_min > 0 else None
+    expected_events = _int_from_params(raw.get("expected_funding_events"), 0, minimum=0, maximum=1000)
+
+    per_event_bps = None
+    value = raw.get("directional_funding_bps_per_event")
+    if value is not None and not isinstance(value, bool):
+        try:
+            candidate = float(value)
+        except Exception:
+            candidate = math.nan
+        if math.isfinite(candidate):
+            per_event_bps = float(candidate)
+
+    expected_bps = None
+    value = raw.get("expected_funding_bps")
+    if value is not None and not isinstance(value, bool):
+        try:
+            candidate = float(value)
+        except Exception:
+            candidate = math.nan
+        if math.isfinite(candidate):
+            expected_bps = float(candidate)
+
+    return {
+        "funding_rate": funding_rate,
+        "next_funding_ts": next_funding_ts,
+        "funding_interval_sec": interval_sec,
+        "expected_funding_events": expected_events,
+        "directional_funding_bps_per_event": per_event_bps,
+        "expected_funding_bps": expected_bps,
+    }
+
+
+def _exact_funding_event_times(model: dict[str, float | int | None], ts_start: int, ts_end: int) -> list[int]:
+    next_ts = strict_integer(model.get("next_funding_ts"))
+    interval_sec = strict_integer(model.get("funding_interval_sec"))
+    if next_ts is None or interval_sec is None or next_ts <= 0 or interval_sec <= 0 or ts_end < ts_start:
+        return []
+    if next_ts < ts_start:
+        jumps = (ts_start - next_ts + interval_sec - 1) // interval_sec
+        next_ts += jumps * interval_sec
+    events: list[int] = []
+    while next_ts <= ts_end and len(events) < 1000:
+        events.append(int(next_ts))
+        next_ts += interval_sec
+    return events
+
+
+def _fallback_adverse_rate_per_event(model: dict[str, float | int | None]) -> float:
+    per_event_raw = model.get("directional_funding_bps_per_event")
+    expected_raw = model.get("expected_funding_bps")
+    expected_events = _int_from_params(model.get("expected_funding_events"), 0, minimum=0, maximum=1000)
+    per_event_bps = max(0.0, float(per_event_raw)) if per_event_raw is not None else 0.0
+    if per_event_bps <= 0.0 and expected_raw is not None and expected_events > 0:
+        per_event_bps = max(0.0, float(expected_raw)) / float(expected_events)
+    return per_event_bps / 10_000.0
+
+
+def _adverse_funding_cashflow(position_slots: int, price: float, funding_rate: float | None) -> float:
+    """Return only adverse funding cashflow; potential receipts never create alpha."""
+    if position_slots == 0 or funding_rate is None or not math.isfinite(float(funding_rate)):
+        return 0.0
+    # Positive rate: longs pay. Negative rate: shorts pay.
+    if float(position_slots) * float(funding_rate) <= 0.0:
+        return 0.0
+    return abs(float(position_slots)) * float(price) * abs(float(funding_rate))
+
+
 def _signed_return(entry: float, exitp: float, direction: str) -> float:
     if not entry:
         return 0.0
@@ -408,8 +527,9 @@ def _grid_outcome(
     This model keeps one equal-quantity slot per grid interval, creates the same
     initial Long/Short/Neutral order layout documented by Bybit, processes only
     close-to-close grid-line crossings (conservative with 1m OHLCV), charges half
-    of the stored round-trip execution cost on every executed leg, and marks the
-    remaining one-way position at the horizon exit price.
+    of the stored round-trip execution cost on every executed leg and terminal
+    close, applies adverse funding to actual inventory, and marks the remaining
+    one-way position at the horizon exit price.
     """
     params = params if isinstance(params, dict) else {}
     direction_norm = normalize_execution_direction(direction)
@@ -418,6 +538,10 @@ def _grid_outcome(
 
     execution_cost_bps, _ = _extract_cost_components(params)
     half_leg_cost_rate = max(0.0, float(execution_cost_bps)) / 20_000.0
+    funding_model = _extract_inventory_funding_model(params)
+    funding_rate_raw = funding_model.get("funding_rate")
+    funding_rate = float(funding_rate_raw) if funding_rate_raw is not None else None
+    exact_funding_events = _exact_funding_event_times(funding_model, ts_start, ts_end)
 
     trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
     params_sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
@@ -526,8 +650,48 @@ def _grid_outcome(
     initial_position_closures = 0
     previous_price = entry_f
     tolerance = max(1e-10, step_abs * 1e-10)
+    funding_cost = 0.0
+    event_index = 0
+
+    def current_position_slots() -> int:
+        return len(long_lots) - len(short_lots)
+
+    def adverse_exposure_value(price: float) -> float:
+        position_slots = current_position_slots()
+        if position_slots == 0:
+            return 0.0
+        if funding_rate is not None:
+            return (
+                abs(float(position_slots)) * float(price)
+                if float(position_slots) * float(funding_rate) > 0.0
+                else 0.0
+            )
+        # Without raw sign, a positive expected carry is a conservative cost for
+        # whichever inventory exists. A negative estimate is a possible receipt
+        # and must not improve the label.
+        per_event = funding_model.get("directional_funding_bps_per_event")
+        expected = funding_model.get("expected_funding_bps")
+        if (per_event is not None and float(per_event) > 0.0) or (expected is not None and float(expected) > 0.0):
+            return abs(float(position_slots)) * float(price)
+        return 0.0
+
+    max_adverse_position_value = adverse_exposure_value(entry_f)
 
     for row in rows:
+        row_ts = strict_integer(row["ts"])
+        row_open = _finite_positive_or_none(row["open"])
+        if row_ts is not None and row_open is not None:
+            while event_index < len(exact_funding_events) and exact_funding_events[event_index] <= row_ts:
+                if funding_rate is not None:
+                    funding_cost += _adverse_funding_cashflow(current_position_slots(), float(row_open), funding_rate)
+                else:
+                    funding_cost += (
+                        abs(float(current_position_slots()))
+                        * float(row_open)
+                        * _fallback_adverse_rate_per_event(funding_model)
+                    )
+                event_index += 1
+
         close_price = _finite_positive_or_none(row["close"])
         if close_price is None:
             continue
@@ -581,13 +745,41 @@ def _grid_outcome(
                 if index - 1 >= 0:
                     orders.setdefault(index - 1, "buy")
         previous_price = current_price
+        max_adverse_position_value = max(max_adverse_position_value, adverse_exposure_value(current_price))
 
-    open_position_slots = len(long_lots) - len(short_lots)
+    while event_index < len(exact_funding_events):
+        if funding_rate is not None:
+            funding_cost += _adverse_funding_cashflow(current_position_slots(), exit_f, funding_rate)
+        else:
+            funding_cost += (
+                abs(float(current_position_slots()))
+                * exit_f
+                * _fallback_adverse_rate_per_event(funding_model)
+            )
+        event_index += 1
+
+    # When an exact event schedule is unavailable, apply the persisted expected
+    # event count to the maximum adverse inventory actually reached. This remains
+    # conservative without charging a flat full-grid notional to an empty bot.
+    if not exact_funding_events:
+        expected_events = _int_from_params(funding_model.get("expected_funding_events"), 0, minimum=0, maximum=1000)
+        if expected_events > 0 and max_adverse_position_value > 0.0:
+            if funding_rate is not None:
+                adverse_rate_per_event = abs(float(funding_rate))
+            else:
+                adverse_rate_per_event = _fallback_adverse_rate_per_event(funding_model)
+            funding_cost += max_adverse_position_value * adverse_rate_per_event * float(expected_events)
+
+    open_position_slots = current_position_slots()
     gross_pnl = cash + float(open_position_slots) * exit_f
+    # The horizon label is liquidation-equivalent net P&L: an open residual
+    # position must pay the missing exit leg before different outcomes can be
+    # compared on the same realized basis.
+    execution_cost += abs(float(open_position_slots)) * exit_f * half_leg_cost_rate
     capital_reference = entry_f * float(grid_count)
     if capital_reference <= 0.0:
         return 0, 0.0
-    net_proxy = (gross_pnl - execution_cost) / capital_reference
+    net_proxy = (gross_pnl - execution_cost - funding_cost) / capital_reference
 
     min_low = min(float(row["low"]) for row in rows)
     max_high = max(float(row["high"]) for row in rows)
@@ -599,7 +791,7 @@ def _grid_outcome(
     # The label represents total bot P&L, not only repeated oscillations. One
     # completed neutral pair is already a valid grid profit; Long/Short modes can
     # also succeed by closing their initial directional position as intended.
-    material_profit_floor = 0.0005
+    positive_pnl_epsilon = 1e-12
     if direction_norm == "neutral":
         has_mode_activity = completed_grid_pairs >= 1
     else:
@@ -613,7 +805,7 @@ def _grid_outcome(
         has_mode_activity
         and not kill_switch_breached
         and math.isfinite(net_proxy)
-        and net_proxy > material_profit_floor
+        and net_proxy > positive_pnl_epsilon
     )
     return success, float(net_proxy)
 
@@ -731,13 +923,6 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 continue
             exitp = ep
             success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, direction, params)
-            _, funding_cost_bps = _extract_cost_components(params)
-            if venue == "linear":
-                conservative_funding_cost_bps = _funding_cost_bps_for_outcome_label(funding_cost_bps)
-                if conservative_funding_cost_bps:
-                    ret_proxy -= conservative_funding_cost_bps / 10_000.0
-                    if ret_proxy <= 0:
-                        success = 0
 
         else:
             continue

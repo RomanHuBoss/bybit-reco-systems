@@ -118,12 +118,12 @@ UI обязан показывать этот блок рядом с execution/l
 - Feature timestamps reject JSON booleans, fractions and non-finite/malformed values.
 - Outcome entry is exactly `features_ref_ts + 60`; the 1m window through the horizon must be contiguous; exit is exactly `entry_ts + horizon_sec`. Missing candles mean “label unavailable”.
 - Calibration accepts a row only when exact `label_available_ts` is present, is not earlier than recommendation time, and has matured by fit time.
-- Temporal integrity was introduced in `grid_label_v4`; v1.0.24 used `grid_label_v5`, and the current explicit order/inventory-ledger contract is `grid_label_v6`. Older proxy outcomes/calibrators are reset and must not be mixed with v6.
+- Temporal integrity was introduced in `grid_label_v4`; v1.0.24 used `grid_label_v5`, v1.0.25 used the explicit order/inventory ledger `grid_label_v6`, and the current inventory-aware funding/finalization contract is `grid_label_v7`. Older proxy outcomes/calibrators are reset and must not be mixed with v7.
 
 ## Что outcome labeling умеет и чего не умеет
 
 ### Умеет
-- использовать канонический arithmetic step `(upper-lower)/grid_count`; одна завершённая grid-пара получает полный соседний interval, а execution/funding costs вычитаются отдельно; funding receipt не кредитуется как durable edge для calibration;
+- использовать канонический arithmetic step `(upper-lower)/grid_count`; одна завершённая grid-пара получает полный соседний interval, execution cost начисляется на каждую inferred leg и на terminal close остаточного inventory, а funding применяется к фактическому adverse position value в момент события; funding receipt не кредитуется как durable edge для calibration;
 - сохранять точный момент доступности proxy-label (`label_available_ts = entry_ts + effective_horizon`) и использовать purged chronological OOF: train-label обязан быть полностью известен строго до первой validation-рекомендации; legacy labels без точного availability timestamp исключаются из OOF train;
 - сохранять fail-closed kill-switch semantics: breach не может стать успешным label даже при положительном рассчитанном total PnL;
 - применять fail-closed precedence: любой breach нижнего или верхнего `kill_switch` делает proxy outcome неуспешным и не позволяет отдельному `tp_per_leg` touch повысить label;
@@ -134,7 +134,9 @@ UI обязан показывать этот блок рядом с execution/l
 - neutral grid starts flat; LONG/SHORT создают исходную directional-позицию по числу уровней соответствующей стороны; worker ведёт cash, long/short lots и replacement orders по каждому close-to-close пересечению уровня;
 - исполнять cost по каждой фактически inferred leg, закрывать исходные/grid lots по цене уровня и маркировать оставшийся net inventory по exact horizon exit; благоприятное directional movement улучшает total PnL, неблагоприятное ухудшает его;
 - stale `grid_spacing_pct`, `tp_per_leg` или cost floor не меняют historical geometry: outcome использует persisted range и strict integer `grid_count`;
-- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.25 использует `grid_label_v6` и не смешивает proxy labels/calibrators, построенные по прежней accounting/temporal semantics;
+- на label horizon остаточный inventory закрывается на liquidation-equivalent basis с terminal half-leg cost; `success` следует знаку net total PnL после activity/kill-switch gates и не использует скрытый 5 bps cutoff;
+- при exact funding schedule charge считается по net inventory и event price; neutral without inventory pays zero. При неизвестном schedule conservative fallback ограничен максимальным adverse inventory, достигнутым ledger, а не всем grid capital;
+- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.26 использует `grid_label_v7` и не смешивает proxy labels/calibrators, построенные по прежней accounting/temporal semantics;
 - neutral `success=1` допускается уже после одной завершённой прибыльной пары; LONG/SHORT success определяется положительным total grid PnL при фактической mode activity и отсутствии kill-switch breach.
 
 ### Не умеет

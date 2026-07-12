@@ -36,7 +36,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Do not treat a ticker as fresh unless the exchange event timestamp is valid.
 - A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
 - Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
-- Current label contract is `grid_label_v6`: temporal integrity remains strict and outcome accounting uses an explicit equal-quantity order/inventory ledger with full adjacent-interval profit, per-leg costs and marked residual position.
+- Current label contract is `grid_label_v7`: temporal integrity remains strict; the explicit equal-quantity ledger uses full adjacent-interval profit, per-leg plus terminal-close costs, and adverse funding only on actual inventory at event time.
 - Outcome headline is actionable-only; all-roots and shadow no_trade metrics are separate research/control cohorts.
 
 ## NO TRADE / BLOCKED checklist
@@ -91,7 +91,7 @@ Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-a
 - Never mix exact evidence with legacy `/trades` for the same bot.
 - Evidence export contains sensitive exchange identifiers and requires `ADMIN_API_KEY`.
 - Descriptive live-evidence statistics are not proof of positive expectancy.
-- In proxy outcome diagnostics, a directional per-leg TP touch never proves whole-grid profit; success requires matched oscillation cycles, positive capital-normalized net proxy and an intact kill-switch.
+- In proxy outcome diagnostics, a directional per-leg TP touch never proves whole-grid profit; success requires valid mode activity, positive liquidation-equivalent net proxy and an intact kill-switch. There is no hidden 5 bps win threshold.
 - Nevertheless, persistent negative exact evidence is an execution stop condition; do not bypass the `LIVE_VALIDATION_*` blocker.
 ## No recommendations / calibration
 

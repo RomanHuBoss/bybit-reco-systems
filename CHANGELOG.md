@@ -1,3 +1,12 @@
+## 2026-07-12 - v1.0.26 - inventory-aware total-PnL finalization
+
+- Fixed a HIGH outcome-cost defect: residual LONG/SHORT inventory now pays the missing terminal close leg, so open and fully closed horizon outcomes are compared on the same liquidation-equivalent net basis.
+- Fixed a CRITICAL funding-accounting defect: adverse funding is charged against actual position value at each persisted event instead of subtracting aggregate funding bps from the full grid capital. Neutral/no-inventory paths pay zero; possible receipts remain excluded from alpha.
+- Fixed a HIGH classification defect: positive net total PnL below the undocumented 5 bps threshold is no longer stored as a loss. Success requires mode activity, intact kill-switch geometry and net PnL above numerical epsilon.
+- Added strict raw-rate/schedule parsing and a conservative unknown-schedule fallback based on maximum adverse inventory actually reached by the ledger.
+- Bumped `OUTCOME_LABEL_VERSION` to `grid_label_v7`; startup resets only incompatible proxy outcomes/calibrators. No schema, API route, frontend or environment-variable change.
+- Added `tests/test_iteration214_total_pnl_finalization.py` with eight independent red-to-green regressions and minimally updated four prior tests that encoded the old label version or omitted terminal-close costs. Post-check: 908/908 passed in four disjoint 227-test batches; compileall and Node syntax passed. Ruff was unavailable; `pip check` retained the unrelated global MoviePy/Pillow mismatch.
+
 ## 2026-07-12 - v1.0.25 - exact grid PnL ledger and interval economics
 
 - Fixed a CRITICAL outcome defect: LONG/SHORT/NEUTRAL proxy PnL is now calculated from an explicit equal-quantity arithmetic-grid order/inventory ledger instead of a coarse paired-move count plus end-of-horizon drift penalty.
