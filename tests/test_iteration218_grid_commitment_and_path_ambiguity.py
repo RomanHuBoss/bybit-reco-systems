@@ -65,10 +65,14 @@ def _expected_commitment(params: dict, direction: str) -> tuple[int, float]:
         initial_short = pivot if direction == "short" else 0
     else:
         cell = max(0, min(grid_count - 1, math.floor(position)))
-        buy_indices = list(range(0, cell + 1))
-        sell_indices = list(range(cell + 1, grid_count + 1))
-        initial_long = grid_count - cell if direction == "long" else 0
-        initial_short = cell + 1 if direction == "short" else 0
+        if direction in {"neutral", "long"}:
+            buy_indices = list(range(0, cell + 1))
+            sell_indices = list(range(cell + 2, grid_count + 1))
+        else:
+            buy_indices = list(range(0, cell))
+            sell_indices = list(range(cell + 1, grid_count + 1))
+        initial_long = len(sell_indices) if direction == "long" else 0
+        initial_short = len(buy_indices) if direction == "short" else 0
 
     active_orders = len(buy_indices) + len(sell_indices)
     if direction == "long":
@@ -76,7 +80,7 @@ def _expected_commitment(params: dict, direction: str) -> tuple[int, float]:
     elif direction == "short":
         committed_price_sum = initial_short * reference + sum(levels[index] for index in sell_indices)
     else:
-        committed_price_sum = sum(levels[index] for index in buy_indices + sell_indices)
+        committed_price_sum = max(sum(levels[index] for index in buy_indices), sum(levels[index] for index in sell_indices))
     return active_orders, qty * committed_price_sum
 
 
@@ -119,14 +123,14 @@ def test_directional_generated_sizing_counts_every_committed_grid_slot(direction
     params, _ = _generated(direction)
     active_orders, committed_notional = _expected_commitment(params, direction)
 
-    assert active_orders == int(params["grid_count"]) + 1  # generated directional reference is between levels
+    assert active_orders == int(params["grid_count"])  # one dynamic bridge price is initially idle
     assert params["sizing"]["estimated_active_orders"] == active_orders
     assert params["economics"]["estimated_active_orders"] == active_orders
     assert params["sizing"]["estimated_total_order_notional_usdt"] == pytest.approx(committed_notional)
     assert params["economics"]["estimated_total_order_notional_usdt"] == pytest.approx(committed_notional)
 
 
-def test_execution_preflight_accepts_off_grid_n_plus_one_commitment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execution_preflight_accepts_off_grid_dynamic_bridge_commitment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DB_PATH", str(tmp_path / "iteration218.db"))
     monkeypatch.setenv("RUNTIME_LOCK_DB_PATH", str(tmp_path / "iteration218-lock.db"))
     sys.modules.pop("app.main", None)
@@ -164,36 +168,36 @@ def test_long_outcome_uses_actual_committed_notional_for_off_grid_entry(tmp_path
     try:
         db.init_db(conn)
         base_ts = 1_709_000_000
-        _seed(conn, base_ts=base_ts, candle=(100.5, 101.0, 100.5, 101.0))
+        _seed(conn, base_ts=base_ts, candle=(100.5, 102.0, 100.5, 102.0))
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 100.5, 101.0,
+            conn, "linear", "BTCUSDT", 100.5, 102.0,
             base_ts, base_ts + 60, "long",
-            _outcome_params(lower=99.0, upper=101.0, grid_count=2, ks_lower=98.0, ks_upper=102.0),
+            _outcome_params(lower=99.0, upper=102.0, grid_count=3, ks_lower=98.0, ks_upper=103.0),
         )
-        # Commitment: initial long at 100.5 plus opening buys at 99 and 100.
-        assert ret_proxy == pytest.approx(0.5 / (100.5 + 99.0 + 100.0))
+        # Level 101 is the idle bridge. Commitment is one initial long at
+        # 100.5 plus opening buys at 99 and 100.
+        assert ret_proxy == pytest.approx(1.5 / 299.5)
         assert success == 1
     finally:
         conn.close()
-
 
 def test_short_outcome_uses_actual_committed_notional_for_off_grid_entry(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "short-capital.db"))
     try:
         db.init_db(conn)
         base_ts = 1_709_100_000
-        _seed(conn, base_ts=base_ts, candle=(99.5, 99.5, 99.0, 99.0))
+        _seed(conn, base_ts=base_ts, candle=(100.5, 100.5, 99.0, 99.0))
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 99.5, 99.0,
+            conn, "linear", "BTCUSDT", 100.5, 99.0,
             base_ts, base_ts + 60, "short",
-            _outcome_params(lower=99.0, upper=101.0, grid_count=2, ks_lower=98.0, ks_upper=102.0),
+            _outcome_params(lower=99.0, upper=102.0, grid_count=3, ks_lower=98.0, ks_upper=103.0),
         )
-        # Commitment: initial short at 99.5 plus opening sells at 100 and 101.
-        assert ret_proxy == pytest.approx(0.5 / (99.5 + 100.0 + 101.0))
+        # Level 100 is the idle bridge. Commitment is one initial short at
+        # 100.5 plus opening sells at 101 and 102.
+        assert ret_proxy == pytest.approx(1.5 / 303.5)
         assert success == 1
     finally:
         conn.close()
-
 
 def test_two_sided_intrabar_path_with_different_valid_pnl_is_unlabelable(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "ambiguous-path.db"))
@@ -233,11 +237,11 @@ def test_stop_candle_with_opposite_grid_excursion_is_unlabelable(tmp_path: Path)
 
 def test_outcome_contract_is_bumped_for_commitment_and_path_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
-    assert 'version="1.0.32"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
+    assert 'version="1.0.33"' in source
 
 
-def test_auto_snap_preserves_off_grid_n_plus_one_commitment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_snap_preserves_off_grid_dynamic_bridge_commitment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DB_PATH", str(tmp_path / "iteration218-snap.db"))
     monkeypatch.setenv("RUNTIME_LOCK_DB_PATH", str(tmp_path / "iteration218-snap-lock.db"))
     sys.modules.pop("app.main", None)
@@ -266,9 +270,9 @@ def test_auto_snap_preserves_off_grid_n_plus_one_commitment(tmp_path: Path, monk
         upper = float(snapped["params"]["price_range_upper"])
         qty = float(sizing["qty_per_order"])
 
-        assert active_orders == int(snapped["params"]["grid_count"]) + 1
+        assert active_orders == int(snapped["params"]["grid_count"])
         assert sizing["estimated_active_orders"] == active_orders
         assert sizing["estimated_total_order_notional_usdt"] == pytest.approx(committed_notional)
-        assert sizing["estimated_worst_case_total_order_notional_usdt"] == pytest.approx(qty * upper * active_orders)
+        assert sizing["estimated_worst_case_total_order_notional_usdt"] == pytest.approx(qty * upper * int(snapped["params"]["grid_count"]))
     finally:
         sys.modules.pop("app.main", None)

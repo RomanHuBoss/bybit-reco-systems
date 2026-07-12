@@ -1,17 +1,17 @@
-## Current neutral one-way commitment rules (grid_label_v13)
+## Current dynamic bridge topology rules (grid_label_v14)
 
-- `grid_count` remains the number of arithmetic price intervals; `active_order_count` remains all resting Buy and Sell orders (`N` on a grid-line reference, `N+1` between levels).
-- In one-way position mode, opposite neutral opening stacks are mutually exclusive capital paths. Initial neutral commitment is `max(sum(buy opening prices), sum(sell opening prices)) × qty`, not their sum.
-- `committed_slot_count=max(number of Buy opening slots, number of Sell opening slots)`; `max_abs_position_slots` uses the same one-way maximum. These fields must not be replaced by total active-order count.
-- Recommender, Bybit snap, execution preflight, runtime notional/margin caps, daily-loss guard and outcome return denominator consume the same `arithmetic_grid_commitment` result.
-- LONG/SHORT commitment remains initial directional inventory plus adverse-side opening orders.
-- `grid_label_v13` is incompatible with prior proxy outcomes/calibrators and is reset by the version guard; exact execution evidence and audit lifecycle are preserved.
-
-# Торговая логика Bybit Linear USDT Futures grid
+- `grid_count=N` is the number of arithmetic intervals and creates N+1 prices, but dynamic Futures Grid starts with exactly N resting orders.
+- Reference exactly on a price level leaves that pivot idle. Reference between levels also leaves one adjacent bridge level idle until the neighbouring order fills.
+- For NEUTRAL and LONG off-grid entry, the nearest upper level is the idle bridge; for SHORT, the nearest lower level is idle.
+- Directional initial inventory equals the number of initial close-side orders that actually exist after excluding the bridge; no phantom lot is created for the idle level.
+- Neutral one-way commitment remains `max(Buy opening stack, Sell opening stack)` and is computed from the actual initial orders.
+- Recommender, auto-snap, preflight, runtime caps, daily-loss guard and outcome ledger must use the same `arithmetic_grid_commitment` result, including `idle_grid_index`.
+- `grid_label_v14` is incompatible with prior proxy outcomes/calibrators and is reset by the version guard; recommendations, trades, bot audit lifecycle and exact execution evidence remain.
+- The OHLCV ledger remains a proxy and does not prove queue priority, partial fills, actual fee tier or live edge.
 
 ## Historical quantity-aware ledger rules (grid_label_v12, superseded)
 
-`grid_label_v12` introduced quantity-aware same-level lots and gap-stop exclusions, but still summed both opposite neutral opening stacks as committed capital. That neutral commitment rule is superseded by the current `grid_label_v13` one-way maximum-side model above. Its valid retained rules are: `grid_count` denotes intervals; active levels are `N` or `N+1`; directional commitment includes initial inventory plus adverse-side openings; same-price lots retain quantities; path-dependent OHLC and gap-through stops remain unavailable.
+`grid_label_v12` introduced quantity-aware same-level lots and gap-stop exclusions. `grid_label_v13` then corrected neutral one-way commitment, but still used an N+1 initial-order off-grid topology. Both are superseded by `grid_label_v14`: grid_count denotes intervals, exactly N initial orders exist, one pivot/bridge price is idle, directional commitment includes only actual initial inventory plus adverse-side openings, same-price lots retain quantities, and path-dependent OHLC/gap-through stops remain unavailable.
 
 ## Bybit Linear USDT product boundary
 

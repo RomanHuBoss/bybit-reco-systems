@@ -48,44 +48,45 @@ def _seed(conn, *, base_ts: int, candles: list[tuple[float, float, float, float]
     ])
 
 
-def test_long_entry_between_levels_has_nearest_upper_take_profit_order(tmp_path: Path) -> None:
+def test_long_entry_between_levels_waits_for_dynamic_bridge_then_closes_at_next_sell(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "long-between.db"))
     try:
         db.init_db(conn)
         base_ts = 1_708_000_000
-        _seed(conn, base_ts=base_ts, candles=[(100.5, 101.0, 100.5, 101.0)])
+        _seed(conn, base_ts=base_ts, candles=[(100.5, 102.0, 100.5, 102.0)])
 
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 100.5, 101.0,
-            base_ts, base_ts + 60, "long", _params(),
+            conn, "linear", "BTCUSDT", 100.5, 102.0,
+            base_ts, base_ts + 60, "long",
+            _params(lower=99.0, upper=102.0, grid_count=3, ks_lower=98.0, ks_upper=103.0),
         )
 
-        # One initial long slot closes at 101. Off-grid commitment also
-        # reserves buys at 99 and 100: 100.5 + 99 + 100 = 299.5.
-        assert ret_proxy == pytest.approx(0.5 / 299.5)
+        # Level 101 is the idle bridge. One initial long slot closes at 102;
+        # commitment is entry 100.5 plus opening buys at 99 and 100.
+        assert ret_proxy == pytest.approx(1.5 / 299.5)
         assert success == 1
     finally:
         conn.close()
 
-
-def test_short_entry_between_levels_has_nearest_lower_take_profit_order(tmp_path: Path) -> None:
+def test_short_entry_between_levels_waits_for_dynamic_bridge_then_closes_at_next_buy(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "short-between.db"))
     try:
         db.init_db(conn)
         base_ts = 1_708_100_000
-        _seed(conn, base_ts=base_ts, candles=[(99.5, 99.5, 99.0, 99.0)])
+        _seed(conn, base_ts=base_ts, candles=[(100.5, 100.5, 99.0, 99.0)])
 
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 99.5, 99.0,
-            base_ts, base_ts + 60, "short", _params(),
+            conn, "linear", "BTCUSDT", 100.5, 99.0,
+            base_ts, base_ts + 60, "short",
+            _params(lower=99.0, upper=102.0, grid_count=3, ks_lower=98.0, ks_upper=103.0),
         )
 
-        # Off-grid Short commitment is 99.5 + sells at 100 and 101.
-        assert ret_proxy == pytest.approx(0.5 / 300.5)
+        # Level 100 is the idle bridge. One initial short slot closes at 99;
+        # commitment is entry 100.5 plus opening sells at 101 and 102.
+        assert ret_proxy == pytest.approx(1.5 / 303.5)
         assert success == 1
     finally:
         conn.close()
-
 
 def test_minute_open_gap_and_return_counts_guaranteed_grid_cycle(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "open-gap-cycle.db"))
@@ -204,5 +205,5 @@ def test_missing_kill_switch_is_not_a_labelable_executable_grid(tmp_path: Path) 
 
 def test_outcome_contract_is_bumped_for_topology_and_stop_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
-    assert 'version="1.0.32"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
+    assert 'version="1.0.33"' in source

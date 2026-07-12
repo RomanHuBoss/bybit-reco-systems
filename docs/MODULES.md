@@ -1,3 +1,11 @@
+## v1.0.33 responsibility update
+
+- `app/grid_math.py`: resolves dynamic arithmetic prices, N initial orders and the idle bridge index; calculates direction-specific inventory and commitment.
+- `app/recommender.py`: publishes sizing/economics from the canonical dynamic topology.
+- `app/main.py`: auto-snap, preflight, runtime caps and daily-loss fallback validate the same N-order contract.
+- `app/outcomes.py`: seeds only actual initial orders; the bridge appears only through a valid replacement transition.
+- `tests/test_iteration221_off_grid_bridge_topology.py`: independent official-example topology and phantom-fill regressions.
+
 ## v1.0.32 responsibility update
 
 - `app/grid_math.py`: resolves active resting topology, one-way committed slots/notional and maximum directional position.

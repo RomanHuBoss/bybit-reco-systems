@@ -1046,8 +1046,9 @@ def _grid_outcome(
     gross_pnl = cash + float(open_position_slots) * liquidation_price
     execution_cost += abs(float(open_position_slots)) * liquidation_price * half_leg_cost_rate
     # Normalize by the actual initial grid commitment. Number of Grids is the
-    # interval count, while an off-grid reference has one resting order at every
-    # one of the grid_count + 1 price levels. Directional close-only orders are
+    # interval count. There are grid_count + 1 price levels, but dynamic mode
+    # keeps one pivot/bridge level idle, so exactly grid_count initial orders exist.
+    # Directional close-only orders are
     # backed by the initial position; neutral opening orders on both sides reserve
     # margin. Dividing by entry * grid_count overstated returns whenever the
     # reference lay between levels.

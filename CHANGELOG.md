@@ -1,3 +1,13 @@
+## 2026-07-12 - v1.0.33 - dynamic off-grid bridge topology
+
+- Corrected arithmetic-grid initial topology when reference lies between levels: N intervals create N+1 prices but exactly N initial orders, with one adjacent bridge level intentionally idle.
+- Removed the phantom bridge order and matching excess LONG/SHORT initial inventory lot from sizing, auto-snap, strict preflight, runtime caps, daily-loss fallback and OHLCV outcome ledger.
+- Preserved neutral one-way commitment while recalculating the larger opening stack from the actual dynamic order set.
+- Added `idle_grid_index` to canonical commitment diagnostics and fail-closed parity tests.
+- Bumped FastAPI to `1.0.33` and outcome target to `grid_label_v14`; no route, database-schema or environment-variable change.
+- Added `tests/test_iteration221_off_grid_bridge_topology.py`: 8 RED failures on v1.0.32, 8 GREEN after the fix.
+- Baseline: 961/961 passed. Post-check: 969/969 passed. `ruff` unavailable; global `pip check` retains an unrelated MoviePy/Pillow environment conflict.
+
 ## 2026-07-12 - v1.0.32 - neutral one-way commitment integrity
 
 - Fixed neutral arithmetic-grid commitment: opposite resting Buy/Sell stacks remain active, but one-way capital reservation uses the more expensive directional opening stack instead of summing mutually exclusive sides.

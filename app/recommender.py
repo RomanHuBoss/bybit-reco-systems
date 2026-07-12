@@ -2617,11 +2617,11 @@ def _params(
     if commitment is None:
         # Generated geometry should always resolve. Keep a conservative fail-closed
         # estimate if defensive clamps ever produce an unexpected topology.
-        active_grid_orders = max(1, int(grid_levels) + 1)
+        active_grid_orders = max(1, int(grid_levels))
         committed_grid_slots = active_grid_orders
         max_position_slots = active_grid_orders
         committed_notional_per_qty = float(price) * float(active_grid_orders)
-        commitment_model = "fallback_grid_count_plus_one"
+        commitment_model = "fallback_grid_count_initial_orders"
     else:
         active_grid_orders = int(commitment["active_order_count"])
         committed_grid_slots = int(commitment["committed_slot_count"])
@@ -2633,7 +2633,7 @@ def _params(
             commitment_model = (
                 "grid_count_orders_reference_on_level"
                 if commitment.get("exact_grid_line")
-                else "grid_count_plus_one_orders_reference_between_levels"
+                else "grid_count_orders_dynamic_bridge_reference_between_levels"
             )
     total_order_notional = float(order_qty) * committed_notional_per_qty
     # Runtime risk caps use the largest position that can exist in one-way mode,

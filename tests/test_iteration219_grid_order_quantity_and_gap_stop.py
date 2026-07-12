@@ -10,23 +10,23 @@ from app.main import _execution_daily_loss_budget_guard
 from app.outcomes import _grid_outcome
 
 
-def _params(*, cost_bps: float = 0.0, funding: dict | None = None) -> dict:
+def _params(*, cost_bps: float = 0.0, funding: dict | None = None, lower: float = 99.0, upper: float = 101.0, grid_count: int = 2) -> dict:
     cost_model = {"execution_cost_bps": cost_bps, "expected_funding_bps": 0.0}
     if funding:
         cost_model.update(funding)
     return {
-        "grid_count": 2,
-        "grid_levels": 2,
-        "price_range_lower": 99.0,
-        "price_range_upper": 101.0,
+        "grid_count": grid_count,
+        "grid_levels": grid_count,
+        "price_range_lower": lower,
+        "price_range_upper": upper,
         "cost_model": dict(cost_model),
         "trade_plan": {
-            "grid_count": 2,
+            "grid_count": grid_count,
             "cost_model": dict(cost_model),
             "levels": {
-                "range": {"lower": 99.0, "upper": 101.0},
-                "kill_switch": {"lower": 98.0, "upper": 102.0},
-                "tp_per_leg": {"abs": 1.0},
+                "range": {"lower": lower, "upper": upper},
+                "kill_switch": {"lower": lower - 1.0, "upper": upper + 1.0},
+                "tp_per_leg": {"abs": (upper - lower) / grid_count},
             },
         },
     }
@@ -56,17 +56,17 @@ def test_long_same_level_replacement_order_keeps_full_quantity(tmp_path: Path) -
         base_ts = 1_710_000_000
         _seed(conn, base_ts=base_ts, candles=[
             (100.5, 100.5, 100.0, 100.0),
-            (100.0, 101.0, 100.0, 101.0),
-            (101.0, 101.0, 100.0, 100.0),
+            (100.0, 102.0, 100.0, 102.0),
+            (102.0, 102.0, 100.0, 100.0),
         ])
 
         success, ret_proxy = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.5, 100.0,
-            base_ts, base_ts + 180, "long", _params(),
+            base_ts, base_ts + 180, "long", _params(lower=99.0, upper=102.0, grid_count=3),
         )
 
-        # Initial long closes at 101 (+0.5); buy 100 closes at 101 (+1.0).
-        # The second descent reopens two lots but does not erase realised PnL.
+        # Level 101 is initially idle. Initial long closes at 102 (+1.5);
+        # dynamic replacements preserve the realised PnL through the return to 100.
         assert ret_proxy == pytest.approx(1.5 / 299.5)
         assert success == 1
     finally:
@@ -79,17 +79,17 @@ def test_short_same_level_replacement_order_keeps_full_quantity(tmp_path: Path) 
         db.init_db(conn)
         base_ts = 1_710_100_000
         _seed(conn, base_ts=base_ts, candles=[
-            (99.5, 100.0, 99.5, 100.0),
-            (100.0, 100.0, 99.0, 99.0),
-            (99.0, 100.0, 99.0, 100.0),
+            (100.5, 101.0, 100.5, 101.0),
+            (101.0, 101.0, 99.0, 99.0),
+            (99.0, 101.0, 99.0, 101.0),
         ])
 
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 99.5, 100.0,
-            base_ts, base_ts + 180, "short", _params(),
+            conn, "linear", "BTCUSDT", 100.5, 101.0,
+            base_ts, base_ts + 180, "short", _params(lower=99.0, upper=102.0, grid_count=3),
         )
 
-        assert ret_proxy == pytest.approx(1.5 / 300.5)
+        assert ret_proxy == pytest.approx(1.5 / 303.5)
         assert success == 1
     finally:
         conn.close()
@@ -102,18 +102,18 @@ def test_duplicate_level_quantity_charges_every_execution_leg(tmp_path: Path) ->
         base_ts = 1_710_200_000
         _seed(conn, base_ts=base_ts, candles=[
             (100.5, 100.5, 100.0, 100.0),
-            (100.0, 101.0, 100.0, 101.0),
-            (101.0, 101.0, 100.0, 100.0),
+            (100.0, 102.0, 100.0, 102.0),
+            (102.0, 102.0, 100.0, 100.0),
         ])
 
         success, ret_proxy = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.5, 100.0,
-            base_ts, base_ts + 180, "long", _params(cost_bps=10.0),
+            base_ts, base_ts + 180, "long", _params(cost_bps=10.0, lower=99.0, upper=102.0, grid_count=3),
         )
 
-        # 5 bps per leg on notionals: 100.5 initial + 100 buy + 202 sells
-        # + 200 replacement buys + 200 terminal close = 802.5.
-        expected = (1.5 - 802.5 * 0.0005) / 299.5
+        # 5 bps per leg on notionals: 100.5 initial + 100 buy + 101 sell
+        # + 102 sell + 101/100 replacement buys + 200 terminal close = 804.5.
+        expected = (1.5 - 804.5 * 0.0005) / 299.5
         assert ret_proxy == pytest.approx(expected)
         assert success == 1
     finally:
@@ -127,8 +127,8 @@ def test_same_level_quantity_does_not_leave_phantom_inventory_at_funding(tmp_pat
         base_ts = 1_710_300_000
         _seed(conn, base_ts=base_ts, candles=[
             (100.5, 100.5, 100.0, 100.0),
-            (100.0, 101.0, 100.0, 101.0),
-            (101.0, 101.0, 101.0, 101.0),
+            (100.0, 102.0, 100.0, 102.0),
+            (102.0, 102.0, 102.0, 102.0),
         ])
         funding = {
             "funding_rate": 0.001,
@@ -140,12 +140,12 @@ def test_same_level_quantity_does_not_leave_phantom_inventory_at_funding(tmp_pat
         }
 
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 100.5, 101.0,
-            base_ts, base_ts + 180, "long", _params(funding=funding),
+            conn, "linear", "BTCUSDT", 100.5, 102.0,
+            base_ts, base_ts + 180, "long", _params(funding=funding, lower=99.0, upper=102.0, grid_count=3),
         )
 
-        # Both long lots have closed at 101 before the funding timestamp.
-        assert ret_proxy == pytest.approx(1.5 / 299.5)
+        # Both initial/opened long lots are closed before the funding timestamp.
+        assert ret_proxy == pytest.approx(2.5 / 299.5)
         assert success == 1
     finally:
         conn.close()
@@ -214,11 +214,11 @@ def test_daily_loss_fallback_uses_off_grid_active_order_count() -> None:
         SimpleNamespace(daily_dd=0.0),
     )
 
-    assert result["estimated_position_notional_usdt"] == pytest.approx(303.0)
+    assert result["estimated_position_notional_usdt"] == pytest.approx(202.0)
     assert result["estimated_position_notional_source"] == "qty*max_grid_price*committed_slots"
 
 
 def test_outcome_contract_is_bumped_for_order_quantity_and_gap_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
-    assert 'version="1.0.32"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
+    assert 'version="1.0.33"' in source

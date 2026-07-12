@@ -227,8 +227,8 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
 
 def test_outcome_contract_is_bumped_for_inventory_aware_finalization() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
-    assert 'version="1.0.32"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
+    assert 'version="1.0.33"' in source
 
 
 def test_short_inventory_pays_negative_funding_at_position_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

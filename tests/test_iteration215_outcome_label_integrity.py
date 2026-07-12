@@ -248,5 +248,5 @@ def test_malformed_ohlcv_row_makes_horizon_incomplete(tmp_path: Path) -> None:
 
 def test_outcome_contract_is_bumped_for_label_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
-    assert 'version="1.0.32"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
+    assert 'version="1.0.33"' in source

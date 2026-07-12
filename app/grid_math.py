@@ -101,10 +101,11 @@ def arithmetic_grid_commitment(
     """Resolve initial arithmetic-grid orders and committed notional per unit qty.
 
     Bybit ``Number of Grids`` is the number of price intervals, so there are
-    ``grid_count + 1`` price levels.  When the reference lies exactly on one
-    level, that occupied level has no resting order and the initial topology has
-    ``grid_count`` orders.  Between levels, every level carries an order and the
-    topology has ``grid_count + 1`` orders.
+    ``grid_count + 1`` price levels but exactly ``grid_count`` initial orders.
+    When the reference lies exactly on one level, that occupied level is idle.
+    Between levels, Bybit's dynamic topology keeps one adjacent bridge level idle
+    until the neighbouring order fills; it must not be treated as an extra
+    immediately executable order.
 
     Directional close-only orders are backed by the initial position; opening
     orders on the adverse side require additional commitment. In one-way mode,
@@ -144,19 +145,34 @@ def arithmetic_grid_commitment(
 
     if exact_grid_line:
         pivot_index = nearest_index
+        idle_grid_index = pivot_index
         buy_indices = list(range(0, pivot_index))
         sell_indices = list(range(pivot_index + 1, count + 1))
-        initial_long_slots = count - pivot_index if direction_norm == "long" else 0
-        initial_short_slots = pivot_index if direction_norm == "short" else 0
+        initial_long_slots = len(sell_indices) if direction_norm == "long" else 0
+        initial_short_slots = len(buy_indices) if direction_norm == "short" else 0
         cell_index: int | None = None
     else:
         raw_cell = int(((reference_d - lower_d) / step).to_integral_value(rounding=ROUND_FLOOR))
         cell_index = max(0, min(count - 1, raw_cell))
-        buy_indices = list(range(0, cell_index + 1))
-        sell_indices = list(range(cell_index + 1, count + 1))
-        initial_long_slots = count - cell_index if direction_norm == "long" else 0
-        initial_short_slots = cell_index + 1 if direction_norm == "short" else 0
         pivot_index = None
+
+        # Bybit's dynamic Futures Grid topology keeps exactly ``grid_count``
+        # initial orders.  When reference lies between two grid prices, one
+        # adjacent bridge level is intentionally idle and is created only after
+        # the neighbouring order fills.  Placing orders on all ``N + 1`` levels
+        # fabricates an extra opening/closing lot and overstates capital, margin
+        # and historical fills.
+        if direction_norm in {"neutral", "long"}:
+            idle_grid_index = cell_index + 1
+            buy_indices = list(range(0, cell_index + 1))
+            sell_indices = list(range(cell_index + 2, count + 1))
+        else:  # short
+            idle_grid_index = cell_index
+            buy_indices = list(range(0, cell_index))
+            sell_indices = list(range(cell_index + 1, count + 1))
+
+        initial_long_slots = len(sell_indices) if direction_norm == "long" else 0
+        initial_short_slots = len(buy_indices) if direction_norm == "short" else 0
 
     active_order_count = len(buy_indices) + len(sell_indices)
     buy_opening_price_sum = sum((levels[index] for index in buy_indices), ZERO)
@@ -194,6 +210,7 @@ def arithmetic_grid_commitment(
         "exact_grid_line": bool(exact_grid_line),
         "pivot_index": pivot_index,
         "cell_index": cell_index,
+        "idle_grid_index": int(idle_grid_index),
         "buy_indices": buy_indices,
         "sell_indices": sell_indices,
         "initial_long_slots": int(initial_long_slots),

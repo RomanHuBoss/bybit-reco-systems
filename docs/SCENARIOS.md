@@ -1,3 +1,14 @@
+## 0. Dynamic off-grid bridge topology (v1.0.33)
+
+Ожидаемое поведение:
+- N intervals create N+1 prices but exactly N initial orders;
+- if reference is between levels, one adjacent bridge level has no initial order;
+- NEUTRAL/LONG leave the nearest upper bridge idle; SHORT leaves the nearest lower bridge idle;
+- reaching the bridge before an adjacent fill produces no execution and no PnL;
+- after an adjacent fill, the replacement order may be placed on the bridge and can then execute;
+- sizing, margin, worst-case exposure, daily loss and outcome denominator all use the same topology;
+- old `grid_label_v13` outcomes are not mixed with `grid_label_v14`.
+
 ## 0. Neutral one-way capital reservation (v1.0.32)
 
 For a neutral arithmetic grid with levels 99/100/101 and reference 100, two opposite orders are active, but one-way committed investment is the more expensive opening side: `max(99, 101)=101` per unit qty. At reference 100.5, Buy openings total `99+100=199`, the Sell opening totals `101`, so three orders remain active while committed slots are two and committed notional is 199. Preflight must accept this separation; summing both sides or requiring committed slots to equal active orders is a defect.

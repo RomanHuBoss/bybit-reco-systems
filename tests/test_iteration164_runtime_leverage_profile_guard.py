@@ -71,11 +71,40 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
     lower = 0.4681
     upper = 0.5725
     grid_count = 12
-    total_notional = 318.00924
-    active_orders = 13
-    order_notional = 48.6 * price
+    qty = 48.6
+    active_orders = 12
+    committed_slots = 12
+    max_position_slots = 12
+    order_notional = qty * price
+    # Reference lies between levels 5 and 6. Dynamic Long leaves level 6 idle,
+    # holds six initial lots and rests six opening buys below reference.
+    committed_notional_per_qty = 6 * price + sum(lower + ((upper - lower) / grid_count) * i for i in range(6))
+    total_notional = qty * committed_notional_per_qty
+    worst_notional = qty * upper * max_position_slots
     margin = total_notional / max(1, leverage)
+    worst_margin = worst_notional / max(1, leverage)
     step = (upper - lower) / grid_count
+
+    sizing = {
+        "qty_per_order": qty,
+        "order_notional_usdt": order_notional,
+        "estimated_active_orders": active_orders,
+        "estimated_committed_slots": committed_slots,
+        "estimated_max_position_slots": max_position_slots,
+        "estimated_total_order_notional_usdt": total_notional,
+        "estimated_margin_required_usdt": margin,
+        "estimated_worst_case_total_order_notional_usdt": worst_notional,
+        "estimated_worst_case_margin_required_usdt": worst_margin,
+        "estimated_max_position_notional_usdt": worst_notional,
+    }
+    economics = {
+        **sizing,
+        "net_profit_bps": 4.0,
+        "gross_profit_bps": 20.0,
+        "execution_cost_bps": 8.0,
+        "funding_cost_bps": 0.0,
+        "liquidation_buffer_pct": 100.0,
+    }
     return {
         "rec_id": f"R-iteration164-{ts}",
         "publication_root_rec_id": f"R-iteration164-{ts}",
@@ -122,53 +151,16 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
                     "grid_step": {"step_abs": step, "step_pct": step / price * 100.0},
                     "tp_per_leg": {"abs": step, "pct": step / price * 100.0},
                 },
-                "sizing": {
-                    "qty_per_order": 48.6,
-                    "order_notional_usdt": order_notional,
-                    "estimated_active_orders": active_orders,
-                    "estimated_active_orders": active_orders,
-                "estimated_active_orders": active_orders,
-            "estimated_total_order_notional_usdt": total_notional,
-                    "estimated_margin_required_usdt": margin,
-                    "estimated_max_position_notional_usdt": total_notional,
-                },
-                "economics": {
-                    "estimated_active_orders": active_orders,
-                    "estimated_active_orders": active_orders,
-                "estimated_active_orders": active_orders,
-            "estimated_total_order_notional_usdt": total_notional,
-                    "estimated_margin_required_usdt": margin,
-                    "estimated_max_position_notional_usdt": total_notional,
-                },
+                "sizing": dict(sizing),
+                "economics": dict(economics),
             },
             "operator_sheet": {
                 "leverage": leverage,
-                "sizing": {
-                    "estimated_active_orders": active_orders,
-                    "estimated_active_orders": active_orders,
-                "estimated_active_orders": active_orders,
-            "estimated_total_order_notional_usdt": total_notional,
-                    "estimated_margin_required_usdt": margin,
-                    "estimated_max_position_notional_usdt": total_notional,
-                },
+                "sizing": dict(sizing),
+                "economics": dict(economics),
             },
-            "sizing": {
-                "estimated_active_orders": active_orders,
-                "estimated_active_orders": active_orders,
-            "estimated_total_order_notional_usdt": total_notional,
-                "estimated_margin_required_usdt": margin,
-                "estimated_max_position_notional_usdt": total_notional,
-            },
-            "economics": {
-                "net_profit_bps": 4.0,
-                "gross_profit_bps": 20.0,
-                "estimated_active_orders": active_orders,
-                "estimated_active_orders": active_orders,
-            "estimated_total_order_notional_usdt": total_notional,
-                "estimated_margin_required_usdt": margin,
-                "estimated_max_position_notional_usdt": total_notional,
-                "liquidation_buffer_pct": 100.0,
-            },
+            "sizing": dict(sizing),
+            "economics": dict(economics),
             "risk_report": {
                 "decision": "recommended",
                 "rejection_reasons": [],
@@ -186,7 +178,6 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
         "model_version": "test-iteration164",
         "features_ref_ts": ts,
     }
-
 
 def test_execution_runtime_guard_blocks_leverage_below_operator_minimum(client_conn_app) -> None:
     _client, _conn, app_main = client_conn_app

@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v13"
+OUTCOME_LABEL_VERSION = "grid_label_v14"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -2198,7 +2198,7 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                 active_orders = (
                     int(commitment["active_order_count"])
                     if commitment is not None
-                    else max(1, grid_count + 1)
+                    else max(1, grid_count)
                 )
                 committed_slots = (
                     int(commitment["committed_slot_count"])
@@ -3957,7 +3957,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                         "msg": (
                             f"estimated_active_orders={est_active_orders}, но исполнимая arithmetic topology требует "
                             f"{int(grid_commitment['active_order_count'])} ордер(ов) при grid_count={grid_levels}; "
-                            "Number of Grids считает интервалы, а между уровнями существует grid_count+1 resting levels."
+                            "Number of Grids считает интервалы: существует grid_count+1 ценовых уровней, но динамическая topology оставляет один pivot/bridge уровень без начальной заявки, поэтому initial orders = grid_count."
                         ),
                     })
             raw_committed_slots = economics.get("estimated_committed_slots")
@@ -4691,7 +4691,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.32", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.33", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

@@ -1,3 +1,17 @@
+## 2026-07-12 dynamic off-grid bridge topology audit (v1.0.33)
+
+### CLOSED HIGH/CRITICAL: N+1 initial orders at an off-grid reference
+Version 1.0.32 treated every one of the N+1 arithmetic prices as an initial resting order when reference lay between levels. Bybit dynamic topology leaves one adjacent pivot/bridge level empty, so initial orders remain N. The old model overstated committed capital/margin and created phantom fills.
+
+### CLOSED HIGH: excess directional initial inventory
+LONG/SHORT initial inventory was derived from the same incorrect N+1 order set. v1.0.33 removes the bridge-side lot and derives inventory from the actual close-order count.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v14`
+First v1.0.33 startup clears only incompatible proxy outcomes and related calibrators. Recommendations, bot instances, trades, exact execution evidence and risk settings remain.
+
+### RESIDUAL LIMITATION
+The public rules describe dynamic order placement, but the proxy still cannot reconstruct queue priority, partial fills, multiple intraminute oscillations, actual maker/taker status or exchange-side order-cost offsets. Ambiguous OHLC paths remain unavailable rather than fabricated.
+
 ## 2026-07-12 neutral one-way commitment audit (v1.0.32)
 
 ### CLOSED CRITICAL: neutral capital summed mutually exclusive sides

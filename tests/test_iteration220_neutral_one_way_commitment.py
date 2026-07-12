@@ -61,7 +61,7 @@ def _independent_neutral_commitment(params: dict) -> tuple[int, int, float, floa
     else:
         cell = max(0, min(count - 1, math.floor(position)))
         buys = list(range(0, cell + 1))
-        sells = list(range(cell + 1, count + 1))
+        sells = list(range(cell + 2, count + 1))
     buy_sum = sum(levels[index] for index in buys)
     sell_sum = sum(levels[index] for index in sells)
     committed_slots = max(len(buys), len(sells))
@@ -123,7 +123,7 @@ def test_neutral_off_grid_commitment_reserves_only_larger_directional_stack() ->
         lower=99.0, upper=101.0, grid_count=2, reference_price=100.5, direction="neutral"
     )
     assert topology is not None
-    assert topology["active_order_count"] == 3
+    assert topology["active_order_count"] == 2
     assert topology["committed_slot_count"] == 2
     assert topology["max_abs_position_slots"] == 2
     assert topology["committed_notional_per_qty"] == pytest.approx(199.0)
@@ -260,5 +260,5 @@ def test_neutral_preflight_accepts_one_way_commitment_notional(tmp_path: Path, m
 
 def test_contract_bumped_for_neutral_one_way_commitment() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
-    assert 'version="1.0.32"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
+    assert 'version="1.0.33"' in source
