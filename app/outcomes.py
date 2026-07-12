@@ -446,10 +446,10 @@ def _grid_outcome(
     min_p = min(float(r["low"]) for r in rows)
     max_p = max(float(r["high"]) for r in rows)
 
-    # Must match recommender-side economics: only a fraction of nominal spacing is
-    # usually monetised after inventory skew, partial fills and queue priority.
-    # Keep the same break-even floor as the recommender and then add an extra
-    # execution haircut so labels do not become unrealistically optimistic.
+    # Preserve the recommender-side economic floor for malformed/legacy rows:
+    # a spacing that cannot cover execution friction must not manufacture a dense
+    # profitable lattice. Once a completed crossing is inferred, the full effective
+    # arithmetic interval is accounted below and execution cost is deducted once.
     min_step_pct = max((cost_floor / 0.70) * 1.15, 0.0008)
     step_pct = max(grid_spacing_pct / 100.0, min_step_pct)
     step_abs = entry * step_pct
@@ -458,6 +458,8 @@ def _grid_outcome(
 
     completed_steps = 0
     derived_interval_count = 0
+    initial_level_idx = 0
+    final_level_idx = 0
     in_range_ratio = 0.0
     range_span_pct = 0.0
     if step_abs > 0.0 and lo is not None and hi is not None and hi > lo:
@@ -470,10 +472,11 @@ def _grid_outcome(
             rel = (px - lower) / max(step_abs, 1e-12)
             return max(0, min(n_levels, int(rel)))
 
-        idx_prev = _level_idx(closes[0])
+        initial_level_idx = _level_idx(entry)
+        idx_prev = initial_level_idx
         up_moves = 0
         down_moves = 0
-        for px in closes[1:]:
+        for px in closes:
             idx_now = _level_idx(px)
             delta = idx_now - idx_prev
             if delta > 0:
@@ -481,38 +484,55 @@ def _grid_outcome(
             elif delta < 0:
                 down_moves += -delta
             idx_prev = idx_now
+        final_level_idx = idx_prev
 
+        # grid_count is the number of concurrently configured price intervals,
+        # not a lifetime cap on completed trades. The same interval can complete
+        # repeatedly during the outcome horizon as replacement orders are placed.
         completed_steps = min(up_moves, down_moves)
-        if grid_levels > 0:
-            completed_steps = min(completed_steps, grid_levels)
 
         in_range_ratio = sum(1 for px in closes if lower <= px <= upper) / max(1, len(closes))
         range_span_pct = max(0.0, (upper - lower) / entry)
 
-    fill_efficiency = 0.58 if direction == "neutral" else 0.62
-    gross_leg_pct = step_pct * fill_efficiency
+    # A counted completed arithmetic-grid trade earns one full interval before
+    # round-trip execution friction. OHLCV uncertainty is handled by counting only
+    # matched close-to-close crossings; shrinking the interval again applied an
+    # unsupported second haircut to every already-inferred completed trade.
+    gross_leg_pct = step_pct
 
-    # Each completed leg deploys only one slice of the capital committed to the
-    # full grid.  Treating a per-order percentage as a return on the entire grid
-    # inflated proxy returns roughly in proportion to grid_count and polluted
-    # calibration.  Prefer the persisted canonical count; for legacy rows use the
-    # interval count independently derived from range/step.
+    # Each completed trade deploys one slice of the capital committed to the full
+    # grid. Prefer the persisted canonical count; for legacy rows use the interval
+    # count independently derived from range/step. Costs are charged only when a
+    # completed trade was inferred: a neutral grid starts with no initial position.
     capital_slots = max(1, int(grid_levels or derived_interval_count or 1))
     capital_weight = 1.0 / float(capital_slots)
     gross_proxy = completed_steps * gross_leg_pct * capital_weight
-    net_proxy = gross_proxy - (max(1, completed_steps) * cost_floor * capital_weight)
+    net_proxy = gross_proxy - (completed_steps * cost_floor * capital_weight)
 
-    # A grid is meant to harvest oscillation, not directional drift. Penalise any
-    # unresolved displacement that remains at the end of the label horizon.
+    # Add the mark-to-market effect of the residual inventory instead of treating
+    # every end-of-horizon displacement as a full-capital loss. Directional grids
+    # start with inventory and reduce it as price moves in the profitable direction;
+    # neutral grids start flat and carry only displacement-created residual inventory.
+    direction_norm = normalize_execution_direction(direction)
     raw_end_drift = abs((exitp - entry) / entry) if entry else 0.0
-    signed_drift = _signed_return(entry, exitp, direction)
-    if direction == "neutral":
-        net_proxy -= raw_end_drift
-    else:
-        aligned_drift = max(0.0, signed_drift)
-        adverse_drift = max(0.0, -signed_drift)
-        net_proxy -= adverse_drift * 1.15
-        net_proxy -= aligned_drift * 0.25
+    signed_drift = _signed_return(entry, exitp, direction_norm or "neutral")
+    inventory_slots = 0
+    if derived_interval_count > 0:
+        if direction_norm == "long":
+            inventory_slots = max(0, derived_interval_count - final_level_idx)
+        elif direction_norm == "short":
+            inventory_slots = max(0, final_level_idx)
+        elif direction_norm == "neutral":
+            inventory_slots = abs(final_level_idx - initial_level_idx)
+    inventory_fraction = min(1.0, float(inventory_slots) / float(capital_slots))
+
+    if direction_norm == "neutral":
+        # The exact entry prices of residual neutral inventory are not recoverable
+        # from 1m closes. Do not credit directional alpha; conservatively charge the
+        # unresolved displacement only on the estimated open inventory fraction.
+        net_proxy -= raw_end_drift * inventory_fraction
+    elif direction_norm in ("long", "short"):
+        net_proxy += signed_drift * inventory_fraction
 
     main_breach_pct = 0.0
     kill_switch_breach_pct = 0.0

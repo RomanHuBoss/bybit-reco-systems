@@ -3288,6 +3288,10 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
 
     raw_total = 0
     summary_bucket = {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0}
+    cohort_buckets = {
+        "actionable": {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0},
+        "shadow_no_trade": {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0},
+    }
     by_bot_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_symbol_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_raw_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -3334,9 +3338,12 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         outcome_policy = reasons_mapping.get("outcome_policy") if isinstance(reasons_mapping, dict) else None
         sample_role = str(outcome_policy.get("sample_role") or "") if isinstance(outcome_policy, dict) else ""
         if sample_role == "shadow_no_trade" or (not sample_role and reco_status == "no_trade"):
+            cohort_name = "shadow_no_trade"
             shadow_no_trade_total += 1
         else:
+            cohort_name = "actionable"
             actionable_total += 1
+        _accumulate_stat(cohort_buckets[cohort_name], success, ret)
         if reco_status == "executed":
             executed_audit_total += 1
         llm_review = _extract_llm_review_snapshot(row["reasons_json"])
@@ -3412,6 +3419,18 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         neutral_key = (neutral_source or "directional", raw_direction, execution_direction)
         stat = by_neutral_bucket.setdefault(neutral_key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
         _accumulate_stat(stat, success, ret)
+
+    def _cohort_summary(bucket: dict[str, Any]) -> dict[str, Any]:
+        cohort_total = int(bucket["total"])
+        cohort_wins = int(bucket["wins"])
+        return {
+            "total": cohort_total,
+            "wins": cohort_wins,
+            "losses": max(0, cohort_total - cohort_wins),
+            "win_rate": round(cohort_wins / cohort_total, 3) if cohort_total else None,
+            "avg_ret": round((float(bucket["ret_sum"]) / cohort_total) * 100.0, 3) if cohort_total else 0.0,
+            "avg_abs_ret": round((float(bucket["abs_ret_sum"]) / cohort_total) * 100.0, 3) if cohort_total else 0.0,
+        }
 
     total = int(summary_bucket["total"])
     wins = int(summary_bucket["wins"])
@@ -3495,6 +3514,11 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
 
     return {
         "summary": summary,
+        "cohorts": {
+            "all_roots": _cohort_summary(summary_bucket),
+            "actionable": _cohort_summary(cohort_buckets["actionable"]),
+            "shadow_no_trade": _cohort_summary(cohort_buckets["shadow_no_trade"]),
+        },
         "llm_summary": llm_summary,
         "by_bot": by_bot,
         "by_symbol": by_symbol,

@@ -181,7 +181,7 @@ def test_execution_preflight_rejects_fractional_estimated_active_orders(app_main
 
 
 def _seed_oscillating_1m_rows(conn, *, base_ts: int) -> int:
-    closes = [96.0, 104.0, 96.0, 104.0, 96.0, 104.0, 100.0]
+    closes = [100.0, 101.0, 100.0, 101.0, 100.0]
     rows = []
     for idx, close in enumerate(closes):
         open_price = 100.0 if idx == 0 else closes[idx - 1]
@@ -210,13 +210,13 @@ def test_outcome_label_uses_canonical_grid_count_alias_not_only_legacy_grid_leve
         row_count = _seed_oscillating_1m_rows(conn, base_ts=base_ts)
         common = {
             "grid_spacing_pct": 1.0,
-            "price_range_lower": 95.0,
-            "price_range_upper": 105.0,
+            "price_range_lower": 99.0,
+            "price_range_upper": 101.0,
             "cost_model": {"execution_cost_bps": 10.0, "expected_funding_bps": 0.0},
             "trade_plan": {
                 "levels": {
-                    "range": {"lower": 95.0, "upper": 105.0},
-                    "kill_switch": {"lower": 90.0, "upper": 110.0},
+                    "range": {"lower": 99.0, "upper": 101.0},
+                    "kill_switch": {"lower": 95.0, "upper": 105.0},
                     "tp_per_leg": {"abs": 20.0},
                 }
             },
@@ -246,7 +246,7 @@ def test_outcome_label_uses_canonical_grid_count_alias_not_only_legacy_grid_leve
         )
 
         assert canonical == pytest.approx(legacy)
-        assert canonical[1] == pytest.approx(0.0048)
+        assert canonical[1] == pytest.approx(0.009)
     finally:
         conn.close()
 

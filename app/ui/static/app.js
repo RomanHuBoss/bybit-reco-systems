@@ -2457,6 +2457,10 @@ async function loadOutcomes() {
   try { data = await res.json(); } catch (e) { return; }
 
   const s = data.summary || {};
+  const actionableSummary = data.cohorts?.actionable || {};
+  const shadowSummary = data.cohorts?.shadow_no_trade || {};
+  const allRootsSummary = data.cohorts?.all_roots || s;
+  const headlineSummary = actionableSummary;
   const llmSummary = data.llm_summary || {};
   const byExecution = data.by_execution_direction || [];
   const byRaw = data.by_raw_direction || [];
@@ -2470,7 +2474,8 @@ async function loadOutcomes() {
   const recent = (data.recent || []).slice(0, 80);
   const insights = buildOutcomeDiagnostics(llmByEngine, neutralBreakdown, s);
 
-  const total = Number(s.total || 0);
+  const total = Number(allRootsSummary.total || 0);
+  const actionableTotal = Number(actionableSummary.total || 0);
   const llmReviewed = Number(llmSummary.ok_total || 0);
   const llmDisagree = Number(llmSummary.disagree_total || 0);
   const llmDisagreeShare = llmReviewed > 0 ? `${((llmDisagree / llmReviewed) * 100).toFixed(1)}%` : "—";
@@ -2480,20 +2485,22 @@ async function loadOutcomes() {
 
   const html = `
     ${renderModalSummaryCards([
-      { label: "Корневых исходов", value: total },
-      { label: "Win-rate", value: s.win_rate !== null && s.win_rate !== undefined ? `${(Number(s.win_rate) * 100).toFixed(1)}%` : "—" },
-      { label: "Avg ret", value: `${Number(s.avg_ret || 0).toFixed(2)}%` },
-      { label: "Avg |ret|", value: `${Number(s.avg_abs_ret || 0).toFixed(2)}%` },
+      { label: "Actionable roots", value: actionableTotal },
+      { label: "Actionable win-rate", value: headlineSummary.win_rate !== null && headlineSummary.win_rate !== undefined ? `${(Number(headlineSummary.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Actionable avg ret", value: `${Number(headlineSummary.avg_ret || 0).toFixed(2)}%` },
+      { label: "Actionable avg |ret|", value: `${Number(headlineSummary.avg_abs_ret || 0).toFixed(2)}%` },
+      { label: "Все proxy roots", value: total },
+      { label: "Все proxy WR", value: allRootsSummary.win_rate !== null && allRootsSummary.win_rate !== undefined ? `${(Number(allRootsSummary.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Shadow no_trade", value: Number(shadowSummary.total || 0) },
+      { label: "Shadow WR", value: shadowSummary.win_rate !== null && shadowSummary.win_rate !== undefined ? `${(Number(shadowSummary.win_rate) * 100).toFixed(1)}%` : "—" },
       { label: "Повторов убрано", value: Number(s.deduped_duplicates || 0) },
-      { label: "Shadow no_trade", value: Number(s.shadow_no_trade_total || 0) },
-      { label: "Actionable roots", value: Number(s.actionable_total || 0) },
       { label: "Истинный neutral", value: Number(s.true_neutral_total || 0) },
       { label: "Short → neutral", value: Number(s.futures_neutral_total || 0) },
       { label: "LLM reviewed", value: llmReviewed },
       { label: "LLM disagree", value: `${llmDisagree} · ${llmDisagreeShare}` },
       { label: "LLM errors", value: `${Number(llmSummary.error_total || 0)} · ${llmErrorShare}` },
     ])}
-    <p class="modal-note">Это proxy-оценка корневых кандидатов, а не подтверждение биржевого исполнения. В выборку отдельно могут входить явно разрешённые shadow no_trade-кандидаты, чтобы модель не обучалась только на уже отобранных идеях. Повторные active-подтверждения одной идеи не раздувают win-rate.</p>
+    <p class="modal-note">Основной headline показывает только actionable-когорту. Общая proxy-выборка и shadow no_trade показаны отдельно как исследовательский контроль. Это OHLCV proxy-оценка корневых кандидатов, а не подтверждение биржевого исполнения; повторные active-подтверждения одной идеи не раздувают win-rate.</p>
     <div class="modal-section">
       <div class="modal-section-title">На что стоит смотреть в первую очередь</div>
       ${renderOutcomeInsightCards(insights)}

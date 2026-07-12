@@ -1,3 +1,25 @@
+## 2026-07-12 grid outcome accounting audit (v1.0.24)
+
+### RESOLVED/HIGH: cumulative completed grid trades were capped by grid_count
+
+`grid_count` is a concurrent geometry/capital parameter, not a lifetime trade counter. The old label truncated repeated closes of the same intervals to at most `grid_count`, systematically understating oscillation revenue on active ranges. The worker now counts all matched close-to-close interval crossings during the exact horizon and still normalises each completed trade by total committed grid capital.
+
+### RESOLVED/HIGH: neutral no-fill paths and directional drift had wrong PnL semantics
+
+A neutral grid starts flat, but the old proxy charged at least one execution cost and the full entry-to-exit displacement even when no grid cell completed and no residual inventory existed. For LONG/SHORT, favourable movement was subtracted as a penalty. The new contract charges execution cost only for inferred completed trades and applies signed mark-to-market only to estimated residual inventory.
+
+### RESOLVED/MEDIUM: outcome headline mixed actionable and shadow research cohorts
+
+The API still exposes the combined research sample for diagnostics/calibration continuity, but now also returns separate actionable and `shadow_no_trade` cohort summaries. The operator headline renders actionable metrics; all-roots and shadow metrics remain explicitly labelled research controls.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v5`
+
+The accounting target changed incompatibly. On first v1.0.24 startup the existing version guard clears only `reco_outcomes` and related calibrators. Recommendations, bot instances, trades and exact execution evidence are preserved.
+
+### RESIDUAL/HIGH: OHLCV proxy is not fill truth
+
+The model still uses exact contiguous 1m candles and cannot prove intrabar order sequence, queue priority, partial fills, per-order inventory, live fee tier or liquidation mechanics. Positive post-reset proxy expectancy must not be interpreted as demonstrated live alpha; exact execution evidence remains the decisive operational control.
+
 # Known risks
 
 ## 2026-07-12 temporal data-lineage audit (v1.0.23)

@@ -65,7 +65,10 @@ def test_grid_outcome_does_not_treat_long_per_leg_tp_as_whole_grid_success(tmp_p
         )
 
         assert success == 0
-        assert ret_proxy < 0.0
+        # A small aligned move contributes mark-to-market PnL on the remaining
+        # directional inventory, but a per-leg TP touch alone is still not enough
+        # to classify the whole grid as a successful outcome.
+        assert 0.0 < ret_proxy < 0.0005
     finally:
         conn.close()
 
@@ -108,7 +111,10 @@ def test_grid_outcome_does_not_treat_short_per_leg_tp_as_whole_grid_success(tmp_
         )
 
         assert success == 0
-        assert ret_proxy < 0.0
+        # A small aligned move contributes mark-to-market PnL on the remaining
+        # directional inventory, but a per-leg TP touch alone is still not enough
+        # to classify the whole grid as a successful outcome.
+        assert 0.0 < ret_proxy < 0.0005
     finally:
         conn.close()
 

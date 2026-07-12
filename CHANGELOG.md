@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-12 - v1.0.24 - grid outcome accounting and cohort statistics
+
+- Fixed a CRITICAL directional proxy-PnL defect: favourable LONG/SHORT end-of-horizon movement is no longer subtracted as a loss; signed mark-to-market is applied only to estimated residual inventory.
+- Fixed HIGH grid-accounting defects: repeated completed trades are no longer capped by `grid_count`, the first candle move is measured from entry/open, and each inferred completed arithmetic trade uses the full interval minus one round-trip execution cost.
+- Fixed a HIGH neutral-grid defect: zero completed trades no longer incur a phantom fee or full-capital drift loss; neutral no-fill/no-inventory paths return zero.
+- Added additive `cohorts.all_roots`, `cohorts.actionable` and `cohorts.shadow_no_trade` summaries. The operator headline now uses actionable outcomes; combined/shadow samples remain explicitly research controls.
+- Bumped `OUTCOME_LABEL_VERSION` to `grid_label_v5`; first startup resets incompatible proxy outcomes/calibrators while preserving recommendations, bot audit rows, trades and exact execution evidence. No schema, route removal or environment-variable change.
+- Added `tests/test_iteration212_grid_outcome_accounting.py` with seven red-to-green cases; corrected two old tests that encoded the wrong favourable-direction sign and one geometry-inconsistent fixed oracle.
+- Updated README, trading/risk docs, operator DOCX/PDF and root infographic. Input runtime DB/lock artifacts are excluded from the release ZIP.
+- Baseline: 884/884 passed in exhaustive batches. Post-check: 891/891 passed in three disjoint 297-test batches; PostgreSQL dialect/locking 18 passed; SQLite fresh/repeated and existing-copy init passed. Ruff unavailable; `pip check` retains the unrelated global MoviePy/Pillow conflict.
+
 ## 2026-07-12 - v1.0.23 - temporal market-data and calibration lineage
 
 - Fixed a HIGH freshness defect: Bybit V5 envelope time is preserved for ticker rows, so stale/cached snapshots cannot be relabelled with local receipt time.
