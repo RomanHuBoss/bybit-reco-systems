@@ -205,7 +205,13 @@ def grid_leg_economics(
     step_frac = max(ZERO, dec(step_pct) / Decimal("100"))
     notional = max(ZERO, dec(order_notional))
     fill_eff = min(ONE, max(ZERO, dec(fill_efficiency, "0.70")))
-    gross_bps = step_frac * BPS * fill_eff
+    # A completed arithmetic-grid pair earns the full adjacent price interval.
+    # ``fill_efficiency`` describes how much of the *opportunity set* may be
+    # captured over a horizon; it must not haircut the P&L of a trade that has
+    # already completed. Applying it here understated every completed pair and
+    # made the published gross-profit field disagree with Bybit's formula.
+    gross_bps = step_frac * BPS
+    projected_capture_bps = gross_bps * fill_eff
     # Conservative guard: execution_cost_bps should already include round-trip
     # fees, spread and slippage. If a caller accidentally passes a lower value,
     # never let displayed grid economics ignore the configured taker fee floor.
@@ -223,6 +229,7 @@ def grid_leg_economics(
 
     net_bps = gross_bps - exec_bps - funding_cost_bps
     signed_net_bps = gross_bps - exec_bps - signed_funding_bps
+    projected_net_bps = projected_capture_bps - exec_bps - funding_cost_bps
     gross_usdt = notional * gross_bps / BPS
     exec_cost_usdt = notional * exec_bps / BPS
     funding_cost_usdt = notional * funding_cost_bps / BPS
@@ -234,6 +241,9 @@ def grid_leg_economics(
     return {
         "step_abs": as_float(step_abs),
         "gross_profit_bps": as_float(gross_bps),
+        "fill_efficiency": as_float(fill_eff),
+        "projected_capture_bps": as_float(projected_capture_bps),
+        "projected_net_profit_bps": as_float(projected_net_bps),
         "execution_cost_bps": as_float(exec_bps),
         "expected_funding_bps": as_float(signed_funding_bps),
         "funding_cost_bps": as_float(funding_cost_bps),

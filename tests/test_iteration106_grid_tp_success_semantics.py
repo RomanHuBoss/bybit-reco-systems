@@ -65,10 +65,9 @@ def test_grid_outcome_does_not_treat_long_per_leg_tp_as_whole_grid_success(tmp_p
         )
 
         assert success == 0
-        # A small aligned move contributes mark-to-market PnL on the remaining
-        # directional inventory, but a per-leg TP touch alone is still not enough
-        # to classify the whole grid as a successful outcome.
-        assert 0.0 < ret_proxy < 0.0005
+        # Long mode creates an initial position and therefore pays an opening leg.
+        # This tiny move does not cover the stored execution-cost fallback.
+        assert -0.0005 < ret_proxy < 0.0
     finally:
         conn.close()
 
@@ -111,10 +110,9 @@ def test_grid_outcome_does_not_treat_short_per_leg_tp_as_whole_grid_success(tmp_
         )
 
         assert success == 0
-        # A small aligned move contributes mark-to-market PnL on the remaining
-        # directional inventory, but a per-leg TP touch alone is still not enough
-        # to classify the whole grid as a successful outcome.
-        assert 0.0 < ret_proxy < 0.0005
+        # Short mode also pays for its initial market position; a tiny move is not
+        # enough to offset that entry friction.
+        assert -0.0005 < ret_proxy < 0.0
     finally:
         conn.close()
 
@@ -157,6 +155,8 @@ def test_grid_outcome_keeps_neutral_one_sided_tp_touch_on_oscillation_pnl_logic(
         )
 
         assert success == 0
-        assert ret_proxy < 0.0
+        # Neutral starts flat. An intrabar high without a close crossing does not
+        # prove a fill, so the conservative close-to-close ledger stays flat.
+        assert ret_proxy == 0.0
     finally:
         conn.close()

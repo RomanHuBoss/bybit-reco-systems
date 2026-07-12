@@ -85,7 +85,8 @@ Proxy outcome labeling для grid-рекомендаций.
 - labels считаются только для outcome-root записей;
 - label horizon отдельна от operator-facing max holding horizon;
 - новая outcome-запись сохраняет точный `label_available_ts` — конец окна от первой реально доступной tradeable candle; legacy labels без этой метки не допускаются в OOF-train folds;
-- outcome-модель честно считается приближением, а не биржевой truth.
+- arithmetic-grid outcome uses persisted range/count and an explicit equal-quantity close-to-close order/inventory ledger; completed pairs earn the full adjacent interval, per-leg costs are charged once, and residual inventory is marked at exact horizon exit;
+- outcome-модель честно считается приближением, а не биржевой truth: no intrabar fills, queue priority or partial-fill reconstruction.
 
 ## `app/db.py`
 - persistence layer, JSON sanitation, runtime-locks и savepoint-safe duplicate classification для `bot_instances`, legacy `trades` и immutable `execution_evidence`;

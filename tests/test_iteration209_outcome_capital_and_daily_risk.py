@@ -95,27 +95,47 @@ def test_grid_proxy_return_is_normalized_by_committed_grid_capital(tmp_path: Pat
         _seed_1m(conn, base_ts, candles)
         common = {
             "grid_spacing_pct": 1.0,
-            "price_range_lower": 90.0,
-            "price_range_upper": 110.0,
             "cost_model": {"execution_cost_bps": 15.0, "expected_funding_bps": 0.0},
             "trade_plan": {
                 "levels": {
-                    "range": {"lower": 90.0, "upper": 110.0},
                     "kill_switch": {"lower": 85.0, "upper": 115.0},
                     "tp_per_leg": {"abs": 20.0},
                 },
             },
         }
 
+        two_grid = {
+            **common,
+            "grid_count": 2,
+            "grid_levels": 2,
+            "price_range_lower": 99.0,
+            "price_range_upper": 101.0,
+            "trade_plan": {
+                **common["trade_plan"],
+                "levels": {**common["trade_plan"]["levels"], "range": {"lower": 99.0, "upper": 101.0}},
+            },
+        }
+        twenty_grid = {
+            **common,
+            "grid_count": 20,
+            "grid_levels": 20,
+            "price_range_lower": 90.0,
+            "price_range_upper": 110.0,
+            "trade_plan": {
+                **common["trade_plan"],
+                "levels": {**common["trade_plan"]["levels"], "range": {"lower": 90.0, "upper": 110.0}},
+            },
+        }
+
         _, ret_two = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.0, 100.0,
             base_ts, base_ts + len(candles) * 60, "neutral",
-            {**common, "grid_count": 2, "grid_levels": 2},
+            two_grid,
         )
         _, ret_twenty = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.0, 100.0,
             base_ts, base_ts + len(candles) * 60, "neutral",
-            {**common, "grid_count": 20, "grid_levels": 20},
+            twenty_grid,
         )
 
         assert ret_two > ret_twenty > 0.0
@@ -207,4 +227,4 @@ def test_execution_preflight_blocks_kill_switch_loss_above_remaining_daily_budge
 
 
 def test_outcome_semantics_bump_label_version_to_avoid_mixing_legacy_calibration(app_main) -> None:
-    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v5"
+    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v6"

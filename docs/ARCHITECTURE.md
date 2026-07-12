@@ -90,7 +90,7 @@
 5. оператор вручную подтверждает `executed`.
 6. сервис повторно делает execution preflight и только после этого materialize'ит `bot_instance`.
 7. внешний исполнитель или оператор пишет агрегированные `trades`.
-8. `outcomes.py` размечает outcome-root записи по proxy-логике grid-outcome.
+8. `outcomes.py` размечает outcome-root записи через close-to-close arithmetic-grid order/inventory ledger по persisted range/count, сохраняя статус OHLCV proxy, а не execution truth.
 9. calibration использует outcome history для quality-моделей.
 
 ## Потоки и конкуренция

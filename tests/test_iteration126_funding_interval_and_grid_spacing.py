@@ -109,7 +109,7 @@ def test_grid_spacing_floor_includes_adverse_expected_funding() -> None:
 
     assert params["grid_spacing_cost_floor_bps"] == pytest.approx(28.0)
     assert params["grid_spacing_funding_cost_bps"] == pytest.approx(20.0)
-    assert params["grid_spacing_pct"] >= 0.49
+    assert params["grid_spacing_pct"] >= 0.35
     assert params["economics"]["net_profit_bps"] > 0
 
 

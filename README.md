@@ -6,6 +6,14 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## Exact arithmetic-grid ledger and exchange interval economics (v1.0.25)
+
+Исправлен второй, более глубокий слой математических ошибок в рекомендации и OHLCV proxy-outcome. Завершённая arithmetic-grid пара теперь получает полный соседний ценовой интервал: коэффициент `fill_efficiency=0.70` больше не уменьшает PnL уже состоявшейся сделки и используется только как отдельный сценарный показатель `projected_capture_bps`. `tp_per_leg`, `gross_profit_bps`, cost-floor и live economics теперь относятся к одной и той же канонической геометрии `(upper-lower)/grid_count`.
+
+Outcome worker больше не заменяет путь заявок формулой `completed_steps + end_drift`. Он строит равноколичественный ledger уровней для LONG, SHORT и NEUTRAL, учитывает исходную directional-позицию, каждое пересечение уровня между последовательными close, replacement order, цену фактического grid-fill, исполненную половину round-trip cost и mark-to-market оставшейся позиции на границе horizon. Один прибыльный neutral pair уже является валидной grid-активностью; directional mode может получить положительный total PnL через закрытие исходной позиции. Kill-switch breach по-прежнему делает label неуспешным.
+
+Изменение несовместимо с предыдущей target-семантикой, поэтому текущий `OUTCOME_LABEL_VERSION=grid_label_v6`. Первый запуск v1.0.25 удаляет только старые proxy `reco_outcomes` и связанные calibrators. Recommendations, bot audit lifecycle, trades и exact execution evidence сохраняются. Модель остаётся консервативным close-to-close OHLCV proxy: она не доказывает intrabar sequence, queue priority, partial fills, live fee tier или прибыльность.
+
 ## Grid outcome accounting and outcome cohorts (v1.0.24)
 
 Исправлена систематически заниженная OHLCV proxy-статистика arithmetic futures grid. `grid_count` теперь используется как число одновременно финансируемых ценовых интервалов и знаменатель капитала, но не как потолок общего числа завершённых сделок за horizon: одна и та же сетка может закрываться повторно после replacement order. Для каждого подтверждённого matched crossing gross proxy равен полному arithmetic interval, после чего один раз вычитается round-trip execution cost.
@@ -14,7 +22,7 @@ Neutral grid начинается без позиции: если не было 
 
 `GET /api/v1/outcomes/stats` сохраняет общую исследовательскую выборку, но дополнительно возвращает отдельные `cohorts.actionable` и `cohorts.shadow_no_trade`. Главные карточки UI показывают actionable-когорту; общая и shadow-статистика остаются отдельным research/control контуром и не выдаются за результаты запускаемых идей.
 
-Изменение несовместимо с прежней target-семантикой, поэтому текущий `OUTCOME_LABEL_VERSION=grid_label_v5`. При первом запуске сервис штатно очищает только старые `reco_outcomes` и связанные calibrators; recommendations, bot audit lifecycle, trades и exact execution evidence сохраняются. Proxy outcome по-прежнему не реконструирует реальную очередь заявок, partial fills или live PnL.
+Для исторической версии v1.0.24 изменение было несовместимо с прежней target-семантикой и использовало `OUTCOME_LABEL_VERSION=grid_label_v5`. При первом запуске сервис штатно очищает только старые `reco_outcomes` и связанные calibrators; recommendations, bot audit lifecycle, trades и exact execution evidence сохраняются. Proxy outcome по-прежнему не реконструирует реальную очередь заявок, partial fills или live PnL.
 
 ## Temporal data lineage и calibration sample (v1.0.23)
 
@@ -22,7 +30,7 @@ Neutral grid начинается без позиции: если не было 
 
 Proxy-outcome строится только при наличии точной следующей 1m-свечи после `features_ref_ts`, непрерывной минутной последовательности на всём горизонте и свечи ровно на `label_available_ts`. Gap не переносит гипотетический вход или выход на более поздний рынок. Calibration использует только строки с exact `label_available_ts`, который не раньше recommendation timestamp и уже наступил к моменту fit; legacy/malformed/future labels исключаются.
 
-Строгий temporal contract был введён в `grid_label_v4`; текущая поставка использует `grid_label_v5`, потому что последующая v1.0.24 исправляет grid accounting и inventory mark-to-market. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
+Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, а текущая v1.0.25 использует `grid_label_v6` из-за перехода к явному arithmetic-grid order/inventory ledger. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
 
 ## No-recommendation state, status semantics and shadow outcomes (v1.0.22)
 

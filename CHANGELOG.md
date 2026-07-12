@@ -1,3 +1,12 @@
+## 2026-07-12 - v1.0.25 - exact grid PnL ledger and interval economics
+
+- Fixed a CRITICAL outcome defect: LONG/SHORT/NEUTRAL proxy PnL is now calculated from an explicit equal-quantity arithmetic-grid order/inventory ledger instead of a coarse paired-move count plus end-of-horizon drift penalty.
+- Fixed a HIGH recommendation-economics defect: a completed grid pair earns the full adjacent interval; `fill_efficiency=0.70` is diagnostic projected opportunity capture and no longer haircuts realised gross/net profit, TP distance, cost floor or live gross-edge coverage.
+- Fixed HIGH directional/neutral accounting defects: initial directional inventory, replacement orders, actual grid fill prices, per-leg execution cost and marked residual position are included; one profitable neutral pair can be successful and favourable directional movement is not forced to zero.
+- Fixed a HIGH geometry-lineage defect: outcome labels use the persisted range and exact integer `grid_count`; stale `grid_spacing_pct` and cost-derived widening cannot silently rewrite historical grid geometry.
+- Bumped `OUTCOME_LABEL_VERSION` to `grid_label_v6`; startup resets only incompatible proxy outcomes/calibrators while preserving recommendations, bot instances, trades and exact execution evidence. No schema, route or environment-variable change.
+- Added `tests/test_iteration213_grid_pnl_ledger.py` with nine independent red-to-green checks and updated historical tests that encoded the invalid 70% haircut or drift proxy. Post-check: 900 tests passed; compileall and Node syntax passed. Ruff was unavailable; `pip check` retained an unrelated global MoviePy/Pillow mismatch.
+
 # Changelog
 
 ## 2026-07-12 - v1.0.24 - grid outcome accounting and cohort statistics

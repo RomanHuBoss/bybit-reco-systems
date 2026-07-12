@@ -1,3 +1,25 @@
+## 2026-07-12 exact grid-ledger audit (v1.0.25)
+
+### RESOLVED/CRITICAL: directional and neutral PnL did not follow the grid order ledger
+
+The v5 proxy paired abstract up/down index movement and then applied one end-of-horizon drift to a guessed inventory fraction. It could report zero for a strongly favourable LONG path, overstate a neutral monotonic loss, and misprice adverse directional accumulation. v6 now maintains equal-quantity long/short lots, cash, replacement orders, actual grid-level fill prices and marked residual inventory.
+
+### RESOLVED/HIGH: 70% fill-efficiency haircut corrupted completed-trade economics
+
+A completed adjacent arithmetic-grid pair was multiplied by 0.70 before fees. The same heuristic reduced `tp_per_leg`, widened the minimum grid spacing and understated gross edge. Completed-trade gross now equals the full adjacent interval. The 70% value survives only as separately named projected opportunity capture and cannot alter canonical PnL or executable geometry.
+
+### RESOLVED/HIGH: historical outcomes could rewrite persisted grid geometry
+
+The prior worker enlarged the effective step from execution cost and stale aliases. A label could therefore evaluate a different grid from the recommendation. v6 derives the step only from finite `lower < upper` and strict integer `grid_count`; incomplete or contradictory geometry remains non-successful.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v6`
+
+On first v1.0.25 startup the version guard clears only incompatible `reco_outcomes` and related calibrators. Recommendations, bot audit rows, trades and exact execution evidence remain.
+
+### RESIDUAL/HIGH: close-to-close order inference is still not exchange truth
+
+The ledger is materially closer to bot mechanics but intentionally conservative: it does not infer grid fills from intrabar high/low, exact queue order, partial fills, fee tiers, quantity rounding or account liquidation state. Only exact execution evidence can establish realised PnL; v6 proxy statistics remain hypothesis-validation data, not proof of alpha.
+
 ## 2026-07-12 grid outcome accounting audit (v1.0.24)
 
 ### RESOLVED/HIGH: cumulative completed grid trades were capped by grid_count

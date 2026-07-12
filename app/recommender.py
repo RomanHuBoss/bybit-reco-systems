@@ -1644,7 +1644,10 @@ def _build_trade_plan(
     if step_pct is not None and step_pct <= 0:
         step_pct = None
     step_abs = (price * step_pct / 100.0) if (price is not None and step_pct is not None) else None
-    tp_leg_abs = (0.7 * step_abs) if step_abs is not None else (0.25 * atr_abs_used if atr_abs_used else None)
+    # In an arithmetic futures grid, one completed pair spans two adjacent grid
+    # prices. The per-leg TP/reference distance therefore equals the executable
+    # grid interval; 70% was a heuristic capture haircut, not exchange geometry.
+    tp_leg_abs = step_abs if step_abs is not None else (0.25 * atr_abs_used if atr_abs_used else None)
     grid_count_resolution = resolve_integer_aliases([
         ("params.grid_count", params.get("grid_count")),
         ("params.grid_levels", params.get("grid_levels")),
@@ -1697,7 +1700,7 @@ def _build_trade_plan(
             "tp_per_leg": {
                 "abs": _round_price(tp_leg_abs, decimals=10),
                 "pct": _round_price((tp_leg_abs / price * 100.0) if (tp_leg_abs is not None and price) else None, decimals=4),
-                "comment": "Ориентир на прибыль на одну 'ногу' (часто ~0.6–0.8 от шага сетки).",
+                "comment": "Расстояние между соседними уровнями arithmetic-grid; завершённая пара использует полный интервал.",
             },
         },
         "close_conditions": [
@@ -2440,7 +2443,11 @@ def _params(
         _finite_float(cost_model.get("net_cost_bps"), 0.0),
     )
     cost_floor_pct = max(cost_floor_bps_for_spacing / 10000.0, 0.0001)
-    min_spacing_pct = max((cost_floor_pct / 0.70) * 1.25, 0.0008)
+    # A completed pair earns the full adjacent interval. Keep a 25% economic
+    # buffer over costs, but do not divide the interval by a synthetic 70%
+    # fill-efficiency coefficient: execution frequency and per-trade P&L are
+    # different dimensions.
+    min_spacing_pct = max(cost_floor_pct * 1.25, 0.0008)
     vol_spacing_pct = max(atr_pct * (0.45 + 0.25 * range_score), 0.0010)
     grid_spacing_pct_frac = max(min_spacing_pct, vol_spacing_pct)
 
@@ -2556,7 +2563,7 @@ def _params(
         min_operator_leverage = int(effective_limits.get("min_leverage") or 1)
         max_operator_leverage = int(effective_limits.get("max_leverage") or max(1, min_operator_leverage))
 
-        gross_profit_bps_est = float(actual_grid_spacing_pct_frac * 10000.0 * 0.70)
+        gross_profit_bps_est = float(actual_grid_spacing_pct_frac * 10000.0)
         trendiness = _clamp(float(agg.get("trendiness") or f.get("trend_strength") or 0.0), 0.0, 1.0)
         liquidation_safe_max_leverage = _max_liquidation_safe_grid_leverage(
             direction=direction,

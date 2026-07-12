@@ -132,4 +132,12 @@
 5. После maturity worker строит counterfactual proxy outcome; legacy no-trade без opt-in и hard-blocked rows пропускаются.
 6. UI считает shadow roots отдельно и не называет их фактическими сделками.
 7. Необученный calibrator остаётся raw-only и сам по себе не является причиной отсутствия рекомендаций.
+## 22. Arithmetic-grid outcome ledger v6
+
+1. Version guard обнаруживает несовместимый label contract и удаляет только прежние proxy outcomes/calibrators.
+2. Worker требует finite persisted range, strict integer `grid_count`, exact next-candle entry и непрерывный 1m horizon.
+3. Neutral starts flat; LONG/SHORT получают исходные равноколичественные lots согласно уровням выше/ниже entry.
+4. Только close-to-close crossings исполняют level order; fill меняет cash/inventory, создаёт replacement order и начисляет half round-trip execution cost.
+5. На exact horizon exit остаточная позиция mark-to-market; kill-switch breach принудительно оставляет `success=0`.
+6. Одна прибыльная neutral pair или фактическая directional activity с положительным total PnL может дать success. Статистика остаётся proxy и не заменяет exact execution evidence.
 

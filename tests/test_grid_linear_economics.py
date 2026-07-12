@@ -29,9 +29,11 @@ def test_grid_leg_economics_is_net_of_execution_costs_and_funding() -> None:
         expected_funding_bps="2",
         fill_efficiency="0.70",
     )
-    assert econ["gross_profit_bps"] == pytest.approx(42.0)
-    assert econ["net_profit_bps"] == pytest.approx(24.0)
-    assert econ["net_profit_usdt"] == pytest.approx(0.06)
+    assert econ["gross_profit_bps"] == pytest.approx(60.0)
+    assert econ["projected_capture_bps"] == pytest.approx(42.0)
+    assert econ["projected_net_profit_bps"] == pytest.approx(24.0)
+    assert econ["net_profit_bps"] == pytest.approx(42.0)
+    assert econ["net_profit_usdt"] == pytest.approx(0.105)
     assert econ["breakeven"] is True
 
 
@@ -45,7 +47,8 @@ def test_grid_leg_economics_rejects_fee_dominated_grid() -> None:
         expected_funding_bps="0",
         fill_efficiency="0.70",
     )
-    assert econ["gross_profit_bps"] == pytest.approx(7.0)
+    assert econ["gross_profit_bps"] == pytest.approx(10.0)
+    assert econ["projected_capture_bps"] == pytest.approx(7.0)
     assert econ["net_profit_bps"] < 0
     assert econ["breakeven"] is False
 

@@ -367,7 +367,7 @@ def _resolve_grid_tp_leg_abs(entry: float, params: dict | None, fallback_step_ab
         return float(entry) * float(tp_pct) / 100.0
 
     if fallback_step_abs is not None and fallback_step_abs > 0.0:
-        return float(fallback_step_abs) * 0.70
+        return float(fallback_step_abs)
     return None
 
 
@@ -397,10 +397,27 @@ def _grid_outcome(
     direction: str,
     params: dict | None,
 ) -> tuple[int, float]:
-    params = params or {}
+    """Estimate arithmetic Futures Grid total P&L from an explicit order ledger.
+
+    The previous proxy counted paired index movement and then applied one coarse
+    end-of-horizon drift to a guessed inventory fraction. That loses the actual
+    prices at which directional initial positions are closed or neutral inventory
+    is accumulated. It also widened the historical grid step when costs were high,
+    so the label no longer represented the persisted recommendation geometry.
+
+    This model keeps one equal-quantity slot per grid interval, creates the same
+    initial Long/Short/Neutral order layout documented by Bybit, processes only
+    close-to-close grid-line crossings (conservative with 1m OHLCV), charges half
+    of the stored round-trip execution cost on every executed leg, and marks the
+    remaining one-way position at the horizon exit price.
+    """
+    params = params if isinstance(params, dict) else {}
+    direction_norm = normalize_execution_direction(direction)
+    if direction_norm not in {"neutral", "long", "short"}:
+        return 0, 0.0
+
     execution_cost_bps, _ = _extract_cost_components(params)
-    cost_floor = execution_cost_bps / 10_000.0
-    grid_spacing_pct = _finite_or_default(params.get("grid_spacing_pct"), 0.0)
+    half_leg_cost_rate = max(0.0, float(execution_cost_bps)) / 20_000.0
 
     trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
     params_sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
@@ -416,183 +433,189 @@ def _grid_outcome(
         ("params.trade_plan.sizing.grid_count", plan_sizing.get("grid_count")),
         ("params.trade_plan.economics.grid_count", plan_economics.get("grid_count")),
     ])
-    # Outcome labels must never use the larger side of a conflicting legacy
-    # payload because that would inflate completed oscillations. Strict launch
-    # validation blocks the conflict; historical labeling uses the lower cap.
-    grid_levels = _int_from_params(grid_count_resolution.get("conservative_min"), 0, minimum=0, maximum=1000)
+    # Strict generated payloads agree. For legacy conflicting aliases retain the
+    # previous conservative lower-cap policy, but never synthesize a larger grid.
+    grid_count_raw = (
+        grid_count_resolution.get("value")
+        if grid_count_resolution.get("ok")
+        else grid_count_resolution.get("conservative_min")
+    )
+    grid_count = _int_from_params(grid_count_raw, 0, minimum=0, maximum=1000)
 
     levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}
     range_block = levels.get("range") if isinstance(levels.get("range"), dict) else {}
     kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
 
-    lo = _finite_positive_or_none(params.get("price_range_lower"))
-    hi = _finite_positive_or_none(params.get("price_range_upper"))
-    if lo is None:
-        lo = _finite_positive_or_none(range_block.get("lower"))
-    if hi is None:
-        hi = _finite_positive_or_none(range_block.get("upper"))
-    ks_lo = _finite_positive_or_none(kill_switch.get("lower")) if kill_switch else None
-    ks_hi = _finite_positive_or_none(kill_switch.get("upper")) if kill_switch else None
-    if ks_lo is None:
-        ks_lo = lo
-    if ks_hi is None:
-        ks_hi = hi
+    lower = _finite_positive_or_none(params.get("price_range_lower"))
+    upper = _finite_positive_or_none(params.get("price_range_upper"))
+    if lower is None:
+        lower = _finite_positive_or_none(range_block.get("lower"))
+    if upper is None:
+        upper = _finite_positive_or_none(range_block.get("upper"))
+    ks_lower = _finite_positive_or_none(kill_switch.get("lower")) if kill_switch else None
+    ks_upper = _finite_positive_or_none(kill_switch.get("upper")) if kill_switch else None
 
     rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
-    if not rows or not entry:
-        return 0, -cost_floor
+    if (
+        not rows
+        or not math.isfinite(float(entry))
+        or not math.isfinite(float(exitp))
+        or float(entry) <= 0.0
+        or float(exitp) <= 0.0
+        or lower is None
+        or upper is None
+        or float(upper) <= float(lower)
+        or grid_count <= 0
+        or not (float(lower) <= float(entry) <= float(upper))
+    ):
+        return 0, 0.0
 
-    closes = [float(r["close"]) for r in rows]
-    min_p = min(float(r["low"]) for r in rows)
-    max_p = max(float(r["high"]) for r in rows)
+    lower_f = float(lower)
+    upper_f = float(upper)
+    entry_f = float(entry)
+    exit_f = float(exitp)
+    step_abs = (upper_f - lower_f) / float(grid_count)
+    if not math.isfinite(step_abs) or step_abs <= 0.0:
+        return 0, 0.0
+    grid_prices = [lower_f + step_abs * index for index in range(grid_count + 1)]
 
-    # Preserve the recommender-side economic floor for malformed/legacy rows:
-    # a spacing that cannot cover execution friction must not manufacture a dense
-    # profitable lattice. Once a completed crossing is inferred, the full effective
-    # arithmetic interval is accounted below and execution cost is deducted once.
-    min_step_pct = max((cost_floor / 0.70) * 1.15, 0.0008)
-    step_pct = max(grid_spacing_pct / 100.0, min_step_pct)
-    step_abs = entry * step_pct
-    tp_leg_abs = _resolve_grid_tp_leg_abs(entry, params, fallback_step_abs=step_abs)
-    tp_hit = _grid_tp_hit(min_p, max_p, entry, direction, tp_leg_abs)
-
-    completed_steps = 0
-    derived_interval_count = 0
-    initial_level_idx = 0
-    final_level_idx = 0
-    in_range_ratio = 0.0
-    range_span_pct = 0.0
-    if step_abs > 0.0 and lo is not None and hi is not None and hi > lo:
-        lower = float(lo)
-        upper = float(hi)
-        n_levels = max(1, int(round((upper - lower) / max(step_abs, 1e-12))))
-        derived_interval_count = int(n_levels)
-
-        def _level_idx(px: float) -> int:
-            rel = (px - lower) / max(step_abs, 1e-12)
-            return max(0, min(n_levels, int(rel)))
-
-        initial_level_idx = _level_idx(entry)
-        idx_prev = initial_level_idx
-        up_moves = 0
-        down_moves = 0
-        for px in closes:
-            idx_now = _level_idx(px)
-            delta = idx_now - idx_prev
-            if delta > 0:
-                up_moves += delta
-            elif delta < 0:
-                down_moves += -delta
-            idx_prev = idx_now
-        final_level_idx = idx_prev
-
-        # grid_count is the number of concurrently configured price intervals,
-        # not a lifetime cap on completed trades. The same interval can complete
-        # repeatedly during the outcome horizon as replacement orders are placed.
-        completed_steps = min(up_moves, down_moves)
-
-        in_range_ratio = sum(1 for px in closes if lower <= px <= upper) / max(1, len(closes))
-        range_span_pct = max(0.0, (upper - lower) / entry)
-
-    # A counted completed arithmetic-grid trade earns one full interval before
-    # round-trip execution friction. OHLCV uncertainty is handled by counting only
-    # matched close-to-close crossings; shrinking the interval again applied an
-    # unsupported second haircut to every already-inferred completed trade.
-    gross_leg_pct = step_pct
-
-    # Each completed trade deploys one slice of the capital committed to the full
-    # grid. Prefer the persisted canonical count; for legacy rows use the interval
-    # count independently derived from range/step. Costs are charged only when a
-    # completed trade was inferred: a neutral grid starts with no initial position.
-    capital_slots = max(1, int(grid_levels or derived_interval_count or 1))
-    capital_weight = 1.0 / float(capital_slots)
-    gross_proxy = completed_steps * gross_leg_pct * capital_weight
-    net_proxy = gross_proxy - (completed_steps * cost_floor * capital_weight)
-
-    # Add the mark-to-market effect of the residual inventory instead of treating
-    # every end-of-horizon displacement as a full-capital loss. Directional grids
-    # start with inventory and reduce it as price moves in the profitable direction;
-    # neutral grids start flat and carry only displacement-created residual inventory.
-    direction_norm = normalize_execution_direction(direction)
-    raw_end_drift = abs((exitp - entry) / entry) if entry else 0.0
-    signed_drift = _signed_return(entry, exitp, direction_norm or "neutral")
-    inventory_slots = 0
-    if derived_interval_count > 0:
+    position_on_grid = (entry_f - lower_f) / step_abs
+    nearest_index = int(round(position_on_grid))
+    exact_grid_line = abs(position_on_grid - nearest_index) <= 1e-9
+    if exact_grid_line:
+        pivot_index = max(0, min(grid_count, nearest_index))
+        buy_indices = set(range(0, pivot_index))
+        sell_indices = set(range(pivot_index + 1, grid_count + 1))
         if direction_norm == "long":
-            inventory_slots = max(0, derived_interval_count - final_level_idx)
+            initial_long_slots = grid_count - pivot_index
+            initial_short_slots = 0
         elif direction_norm == "short":
-            inventory_slots = max(0, final_level_idx)
-        elif direction_norm == "neutral":
-            inventory_slots = abs(final_level_idx - initial_level_idx)
-    inventory_fraction = min(1.0, float(inventory_slots) / float(capital_slots))
+            initial_long_slots = 0
+            initial_short_slots = pivot_index
+        else:
+            initial_long_slots = initial_short_slots = 0
+    else:
+        cell_index = max(0, min(grid_count - 1, int(math.floor(position_on_grid))))
+        if direction_norm == "neutral":
+            buy_indices = set(range(0, cell_index + 1))
+            sell_indices = set(range(cell_index + 1, grid_count + 1))
+            initial_long_slots = initial_short_slots = 0
+        elif direction_norm == "long":
+            buy_indices = set(range(0, cell_index + 1))
+            sell_indices = set(range(cell_index + 2, grid_count + 1))
+            initial_long_slots = grid_count - cell_index - 1
+            initial_short_slots = 0
+        else:
+            buy_indices = set(range(0, cell_index))
+            sell_indices = set(range(cell_index + 1, grid_count + 1))
+            initial_long_slots = 0
+            initial_short_slots = cell_index
 
+    orders: dict[int, str] = {index: "buy" for index in buy_indices}
+    orders.update({index: "sell" for index in sell_indices})
+    long_lots = ["initial"] * int(initial_long_slots)
+    short_lots = ["initial"] * int(initial_short_slots)
+
+    # Cash plus marked position gives gross P&L for equal base-asset quantity
+    # slots. Quantity is normalized to one; denominator restores return on the
+    # total reference notional committed to grid_count equal slots.
+    cash = (-float(initial_long_slots) + float(initial_short_slots)) * entry_f
+    execution_cost = float(initial_long_slots + initial_short_slots) * entry_f * half_leg_cost_rate
+    completed_grid_pairs = 0
+    executed_grid_legs = 0
+    initial_position_closures = 0
+    previous_price = entry_f
+    tolerance = max(1e-10, step_abs * 1e-10)
+
+    for row in rows:
+        close_price = _finite_positive_or_none(row["close"])
+        if close_price is None:
+            continue
+        current_price = float(close_price)
+        if current_price > previous_price + tolerance:
+            crossed = [
+                index
+                for index, grid_price in enumerate(grid_prices)
+                if grid_price > previous_price + tolerance and grid_price <= current_price + tolerance
+            ]
+        elif current_price < previous_price - tolerance:
+            crossed = [
+                index
+                for index in range(grid_count, -1, -1)
+                if grid_prices[index] < previous_price - tolerance
+                and grid_prices[index] >= current_price - tolerance
+            ]
+        else:
+            crossed = []
+
+        for index in crossed:
+            side = orders.pop(index, None)
+            if side is None:
+                continue
+            fill_price = grid_prices[index]
+            executed_grid_legs += 1
+            execution_cost += fill_price * half_leg_cost_rate
+
+            if side == "buy":
+                cash -= fill_price
+                if short_lots:
+                    origin = short_lots.pop()
+                    if origin == "grid":
+                        completed_grid_pairs += 1
+                    else:
+                        initial_position_closures += 1
+                else:
+                    long_lots.append("grid")
+                if index + 1 <= grid_count:
+                    orders.setdefault(index + 1, "sell")
+            else:
+                cash += fill_price
+                if long_lots:
+                    origin = long_lots.pop()
+                    if origin == "grid":
+                        completed_grid_pairs += 1
+                    else:
+                        initial_position_closures += 1
+                else:
+                    short_lots.append("grid")
+                if index - 1 >= 0:
+                    orders.setdefault(index - 1, "buy")
+        previous_price = current_price
+
+    open_position_slots = len(long_lots) - len(short_lots)
+    gross_pnl = cash + float(open_position_slots) * exit_f
+    capital_reference = entry_f * float(grid_count)
+    if capital_reference <= 0.0:
+        return 0, 0.0
+    net_proxy = (gross_pnl - execution_cost) / capital_reference
+
+    min_low = min(float(row["low"]) for row in rows)
+    max_high = max(float(row["high"]) for row in rows)
+    kill_switch_breached = bool(
+        (ks_lower is not None and min_low <= float(ks_lower))
+        or (ks_upper is not None and max_high >= float(ks_upper))
+    )
+
+    # The label represents total bot P&L, not only repeated oscillations. One
+    # completed neutral pair is already a valid grid profit; Long/Short modes can
+    # also succeed by closing their initial directional position as intended.
+    material_profit_floor = 0.0005
     if direction_norm == "neutral":
-        # The exact entry prices of residual neutral inventory are not recoverable
-        # from 1m closes. Do not credit directional alpha; conservatively charge the
-        # unresolved displacement only on the estimated open inventory fraction.
-        net_proxy -= raw_end_drift * inventory_fraction
-    elif direction_norm in ("long", "short"):
-        net_proxy += signed_drift * inventory_fraction
-
-    main_breach_pct = 0.0
-    kill_switch_breach_pct = 0.0
-    exit_outside_pct = 0.0
-    if lo is not None and hi is not None and hi > lo:
-        lower = float(lo)
-        upper = float(hi)
-        below_main = max(0.0, lower - min_p) / entry
-        above_main = max(0.0, max_p - upper) / entry
-        main_breach_pct = below_main + above_main
-        if main_breach_pct > 0.0:
-            net_proxy -= 0.60 * main_breach_pct
-
-        if ks_lo is not None and ks_hi is not None and ks_hi > ks_lo:
-            below_ks = max(0.0, float(ks_lo) - min_p) / entry
-            above_ks = max(0.0, max_p - float(ks_hi)) / entry
-            kill_switch_breach_pct = below_ks + above_ks
-            if kill_switch_breach_pct > 0.0:
-                net_proxy -= (1.25 * kill_switch_breach_pct) + cost_floor
-
-        if exitp < lower:
-            exit_outside_pct = (lower - exitp) / entry
-        elif exitp > upper:
-            exit_outside_pct = (exitp - upper) / entry
-        if exit_outside_pct > 0.0:
-            net_proxy -= max(cost_floor * 0.75, exit_outside_pct * 0.75)
-
-    min_range_ratio = 0.58 if direction == "neutral" else 0.45
-    if in_range_ratio > 0.0 and in_range_ratio < min_range_ratio:
-        occupancy_penalty_base = max(range_span_pct * 0.85, step_pct * 2.0)
-        net_proxy -= (min_range_ratio - in_range_ratio) * occupancy_penalty_base
-
-    # A per-leg TP touch is not evidence that the whole grid closed profitably.
-    # OHLCV does not reveal queue priority, inventory state or whether the opposite
-    # leg remained open.  Therefore only matched oscillation cycles may produce a
-    # positive whole-grid label; TP remains a diagnostic barrier, never an override.
-    min_steps_required = 2
-    required_profit = max(
-        (cost_floor * capital_weight) * (1.60 if direction == "neutral" else 1.35),
-        (gross_leg_pct * capital_weight) * (1.20 if direction == "neutral" else 0.95),
-        0.0005,
-    )
-
-    if tp_hit and tp_leg_abs is not None and entry:
-        tp_leg_net_on_grid_capital = (
-            (float(tp_leg_abs) / float(entry)) - cost_floor
-        ) * capital_weight
-        # Do not manufacture profit from the touch.  If the independently modelled
-        # whole-grid proxy is already negative, keep that loss; if it is positive,
-        # the normal oscillation/cost rules below still decide success.
-        if tp_leg_net_on_grid_capital <= 0.0:
-            net_proxy = min(net_proxy, tp_leg_net_on_grid_capital)
-
+        has_mode_activity = completed_grid_pairs >= 1
+    else:
+        has_mode_activity = bool(
+            initial_position_closures >= 1
+            or completed_grid_pairs >= 1
+            or executed_grid_legs >= 1
+            or abs(exit_f - entry_f) / entry_f >= 0.001
+        )
     success = int(
-        completed_steps >= min_steps_required
-        and (in_range_ratio == 0.0 or in_range_ratio >= min_range_ratio)
-        and kill_switch_breach_pct <= 1e-12
-        and net_proxy > required_profit
+        has_mode_activity
+        and not kill_switch_breached
+        and math.isfinite(net_proxy)
+        and net_proxy > material_profit_floor
     )
-    return success, net_proxy
+    return success, float(net_proxy)
 
 
 def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:

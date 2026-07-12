@@ -36,7 +36,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Do not treat a ticker as fresh unless the exchange event timestamp is valid.
 - A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
 - Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
-- Current label contract is `grid_label_v5`: temporal integrity remains strict and grid accounting now counts repeated completed trades, starts neutral flat, and applies signed residual-inventory PnL.
+- Current label contract is `grid_label_v6`: temporal integrity remains strict and outcome accounting uses an explicit equal-quantity order/inventory ledger with full adjacent-interval profit, per-leg costs and marked residual position.
 - Outcome headline is actionable-only; all-roots and shadow no_trade metrics are separate research/control cohorts.
 
 ## NO TRADE / BLOCKED checklist
@@ -66,7 +66,7 @@ A complete `params.trade_plan` must include:
 - levels.range.lower / levels.range.upper;
 - levels.kill_switch.lower / levels.kill_switch.upper;
 - levels.grid_step.step_abs;
-- levels.tp_per_leg.abs or pct;
+- levels.tp_per_leg.abs or pct; for arithmetic grid it must match the adjacent grid interval, not a 70% haircut;
 - grid_count and arithmetic grid model;
 - explicit leverage and isolated margin mode;
 - sizing/economics sufficient for qtyStep, minNotional, margin, and worst-case exposure validation.

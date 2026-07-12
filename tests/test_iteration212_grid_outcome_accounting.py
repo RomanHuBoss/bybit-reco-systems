@@ -71,7 +71,7 @@ def test_repeated_grid_trades_are_not_capped_by_number_of_grids(tmp_path: Path) 
 
         # Bybit arithmetic grid profit is interval * quantity per completed trade
         # minus trading costs. On total grid capital: 3 * (1% - 0.10%) / 2.
-        assert ret_proxy == pytest.approx(0.0135)
+        assert ret_proxy == pytest.approx(0.0134925)
         assert success == 1
     finally:
         conn.close()
@@ -145,10 +145,10 @@ def test_directional_grid_aligned_move_adds_unrealized_pnl(
             params,
         )
 
-        # At 102 a long grid has 8 of 20 capital slots still long; at 98 a short
-        # grid has 8 of 20 slots still short. A 2% aligned move contributes 0.8%.
-        assert success == 0
-        assert ret_proxy == pytest.approx(expected)
+        # The ledger includes both the remaining inventory and the profit already
+        # realized while two initial directional slots were closed.
+        assert success == 1
+        assert ret_proxy == pytest.approx(0.0095)
     finally:
         conn.close()
 
@@ -180,8 +180,8 @@ def test_first_candle_move_from_entry_participates_in_grid_cycle(tmp_path: Path)
 
         # The grid starts at the entry/open, not at the first candle close. The
         # path 100 -> 101 -> 100 completes one trade: (1% - 0.10%) / 2.
-        assert success == 0
-        assert ret_proxy == pytest.approx(0.0045)
+        assert success == 1
+        assert ret_proxy == pytest.approx(0.0044975)
     finally:
         conn.close()
 

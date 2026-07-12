@@ -118,26 +118,28 @@ UI обязан показывать этот блок рядом с execution/l
 - Feature timestamps reject JSON booleans, fractions and non-finite/malformed values.
 - Outcome entry is exactly `features_ref_ts + 60`; the 1m window through the horizon must be contiguous; exit is exactly `entry_ts + horizon_sec`. Missing candles mean “label unavailable”.
 - Calibration accepts a row only when exact `label_available_ts` is present, is not earlier than recommendation time, and has matured by fit time.
-- Temporal integrity was introduced in `grid_label_v4`; the current accounting/inventory contract is `grid_label_v5`. Older proxy outcomes/calibrators are reset and must not be mixed with v5.
+- Temporal integrity was introduced in `grid_label_v4`; v1.0.24 used `grid_label_v5`, and the current explicit order/inventory-ledger contract is `grid_label_v6`. Older proxy outcomes/calibrators are reset and must not be mixed with v6.
 
 ## Что outcome labeling умеет и чего не умеет
 
 ### Умеет
-- учитывать grid spacing, cost floor и adverse funding-carry; funding receipt не кредитуется как durable edge для calibration;
+- использовать канонический arithmetic step `(upper-lower)/grid_count`; одна завершённая grid-пара получает полный соседний interval, а execution/funding costs вычитаются отдельно; funding receipt не кредитуется как durable edge для calibration;
 - сохранять точный момент доступности proxy-label (`label_available_ts = entry_ts + effective_horizon`) и использовать purged chronological OOF: train-label обязан быть полностью известен строго до первой validation-рекомендации; legacy labels без точного availability timestamp исключаются из OOF train;
-- штрафовать break-out, kill-switch breach и плохую occupancy range;
+- сохранять fail-closed kill-switch semantics: breach не может стать успешным label даже при положительном рассчитанном total PnL;
 - применять fail-closed precedence: любой breach нижнего или верхнего `kill_switch` делает proxy outcome неуспешным и не позволяет отдельному `tp_per_leg` touch повысить label;
 - отдельное касание directional `tp_per_leg` не является terminal whole-grid PnL event: без фактической последовательности fills и закрытого inventory оно остаётся диагностикой и не может самостоятельно создать `success=1`;
 - completed-leg gross return и execution cost переводятся в доходность капитала всей сетки через деление на подтверждённый canonical `grid_count`; legacy payload использует независимо выведенное число интервалов, если count отсутствует;
 - `grid_count` задаёт число одновременно финансируемых intervals и capital denominator, но не ограничивает cumulative completed trades за horizon; replacement orders позволяют одному interval закрыться повторно;
 - один inferred completed arithmetic-grid trade даёт full interval gross minus one round-trip execution cost, нормированные на весь grid capital; отдельный произвольный fill-efficiency haircut повторно не применяется;
-- neutral grid starts flat: no matched crossing and no residual inventory means zero proxy return; residual neutral displacement penalises only estimated open-inventory fraction;
-- LONG/SHORT residual inventory contributes signed mark-to-market PnL: aligned movement improves, adverse movement worsens proxy return; first movement is measured from entry/open to the first candle close;
-- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.24 использует `grid_label_v5` и не смешивает proxy labels/calibrators, построенные по прежней accounting/temporal semantics;
-- считать `success=1` только по завершённым oscillation cycles с положительным capital-normalized net proxy; `tp_per_leg` используется лишь как диагностический уровень и не является самостоятельным success-path.
+- neutral grid starts flat; LONG/SHORT создают исходную directional-позицию по числу уровней соответствующей стороны; worker ведёт cash, long/short lots и replacement orders по каждому close-to-close пересечению уровня;
+- исполнять cost по каждой фактически inferred leg, закрывать исходные/grid lots по цене уровня и маркировать оставшийся net inventory по exact horizon exit; благоприятное directional movement улучшает total PnL, неблагоприятное ухудшает его;
+- stale `grid_spacing_pct`, `tp_per_leg` или cost floor не меняют historical geometry: outcome использует persisted range и strict integer `grid_count`;
+- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.25 использует `grid_label_v6` и не смешивает proxy labels/calibrators, построенные по прежней accounting/temporal semantics;
+- neutral `success=1` допускается уже после одной завершённой прибыльной пары; LONG/SHORT success определяется положительным total grid PnL при фактической mode activity и отсутствии kill-switch breach.
 
 ### Не умеет
-- реконструировать реальные fill sequence;
+- доказать intrabar fill sequence: proxy исполняет только уровни, пересечённые последовательными 1m close; high/low используются для kill-switch, но не для оптимистичного fill inference;
+- реконструировать реальную exchange fill sequence;
 - учитывать queue priority и live slippage distribution;
 - учитывать частичные исполнения на уровне отдельных ордеров;
 - моделировать liquidation engine и real margin waterfall.

@@ -246,7 +246,9 @@ def test_outcome_label_uses_canonical_grid_count_alias_not_only_legacy_grid_leve
         )
 
         assert canonical == pytest.approx(legacy)
-        assert canonical[1] == pytest.approx(0.009)
+        # Fees are charged on the actual 101 and 100 fill notionals, not on two
+        # identical reference-price legs.
+        assert canonical[1] == pytest.approx(0.008995)
     finally:
         conn.close()
 
