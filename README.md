@@ -6,6 +6,16 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## Grid ledger topology and protective stop finalization (v1.0.29)
+
+Исправлен шестой подтверждённый слой outcome-математики. Если LONG/SHORT входит между двумя arithmetic grid levels, ledger теперь создаёт исходный directional slot и ближайший TP-order на соседнем уровне. Ранее ближайший уровень пропускался: у LONG возле верхней границы и SHORT возле нижней границы могло не оказаться ни исходной позиции, ни первого TP, поэтому реальное направленное движение записывалось как ноль.
+
+Minute path больше не схлопывается в один `previous close -> current close`. Отдельно учитываются наблюдаемые `previous close -> current open` и `open -> close`; односторонний OHLC excursion учитывается, когда его порядок однозначен. Двусторонний intrabar order по-прежнему не выдумывается из OHLC.
+
+Kill-switch теперь является terminal event: ledger обрабатывает fills только до защитной границы, закрывает остаточный inventory на ней и не начисляет последующие grid trades/funding. Отсутствующий kill-switch, граница внутри grid range или одновременное касание обеих защитных границ в одной неоднозначной свече делают proxy label unavailable.
+
+Текущий `OUTCOME_LABEL_VERSION=grid_label_v10`. Первый запуск v1.0.29 очищает только несовместимые proxy outcomes и связанные calibrators; recommendations, bot lifecycle, trades, exact execution evidence и risk settings сохраняются. Это исправляет расчёт, но не доказывает наличие live edge.
+
 ## Post-publication entry and persisted grid-contract integrity (v1.0.28)
 
 Исправлен пятый подтверждённый слой outcome-математики. Proxy-entry теперь берётся по open первой точной минутной свечи, которая начинается **после фактической публикации рекомендации**, а не автоматически по `features_ref_ts + 60`. Если recommender завершил цикл позже, уже открывшаяся свеча не используется задним числом. Это исключает невозможный pre-publication fill и look-ahead в entry price.
@@ -54,7 +64,7 @@ Neutral grid начинается без позиции: если не было 
 
 Proxy-outcome строится только при наличии точной следующей 1m-свечи после `features_ref_ts`, непрерывной минутной последовательности на всём горизонте и свечи ровно на `label_available_ts`. Gap не переносит гипотетический вход или выход на более поздний рынок. Calibration использует только строки с exact `label_available_ts`, который не раньше recommendation timestamp и уже наступил к моменту fit; legacy/malformed/future labels исключаются.
 
-Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, v1.0.26 использовала `grid_label_v7` для inventory-aware funding/finalization, v1.0.27 использовала `grid_label_v8` для sign-consistent success, exact funding-window precedence и fail-closed cost aliases, а текущая v1.0.28 использует `grid_label_v9` для post-publication entry и strict persisted-contract integrity. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
+Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, v1.0.26 использовала `grid_label_v7` для inventory-aware funding/finalization, v1.0.27 использовала `grid_label_v8` для sign-consistent success, exact funding-window precedence и fail-closed cost aliases, v1.0.28 использовала `grid_label_v9` для post-publication entry и strict persisted-contract integrity, а текущая v1.0.29 использует `grid_label_v10` для directional order topology, observable endpoint path и terminal kill-switch accounting. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
 
 ## No-recommendation state, status semantics and shadow outcomes (v1.0.22)
 

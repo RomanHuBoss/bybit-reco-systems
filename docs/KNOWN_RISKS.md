@@ -1,3 +1,20 @@
+## 2026-07-12 grid-ledger topology and protective-stop audit (v1.0.29)
+
+### CLOSED HIGH: nearest directional TP omitted for between-level entry
+LONG/SHORT initialization used an off-by-one boundary when entry was not exactly on a grid line. The nearest TP order and matching initial slot were absent, which could turn a directional gain or loss into zero. v1.0.29 restores the adjacent order symmetrically.
+
+### CLOSED HIGH: observable open gaps and one-sided excursions ignored
+The ledger compared only consecutive closes. A `100 close -> 101 open -> 100 close` completed pair was recorded as no activity. v1.0.29 processes close->open and open->close separately and includes only unambiguous single-sided OHLC excursions.
+
+### CLOSED CRITICAL: trading continued after kill-switch breach
+The old label only forced `success=0` but continued virtual orders to horizon; a later recovery could turn the stored `ret` positive after the bot should have stopped. v1.0.29 stops at the boundary, liquidates there and ignores subsequent fills/funding.
+
+### CLOSED HIGH: invalid protective geometry remained labelable
+Missing kill-switches or boundaries inside the grid range described no executable protected bot. v1.0.29 marks these contracts unavailable. A candle crossing both outer boundaries is also unavailable because OHLC cannot establish first hit.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v10`
+First v1.0.29 startup clears only incompatible `reco_outcomes` and related calibrators. Recommendations, bot audit rows, trades, exact execution evidence and risk settings remain.
+
 ## 2026-07-12 post-publication entry and grid-contract integrity audit (v1.0.28)
 
 ### CLOSED/HIGH: outcome could enter before the recommendation existed

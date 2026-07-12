@@ -90,6 +90,7 @@ def test_neutral_grid_without_any_fill_has_zero_proxy_return(tmp_path: Path) -> 
         params["price_range_lower"] = 90.0
         params["price_range_upper"] = 110.0
         params["trade_plan"]["levels"]["range"] = {"lower": 90.0, "upper": 110.0}
+        params["trade_plan"]["levels"]["kill_switch"] = {"lower": 85.0, "upper": 115.0}
 
         success, ret_proxy = _grid_outcome(
             conn,
@@ -132,6 +133,7 @@ def test_directional_grid_aligned_move_adds_unrealized_pnl(
         params["price_range_lower"] = 90.0
         params["price_range_upper"] = 110.0
         params["trade_plan"]["levels"]["range"] = {"lower": 90.0, "upper": 110.0}
+        params["trade_plan"]["levels"]["kill_switch"] = {"lower": 85.0, "upper": 115.0}
 
         success, ret_proxy = _grid_outcome(
             conn,

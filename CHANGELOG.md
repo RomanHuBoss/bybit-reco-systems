@@ -1,3 +1,13 @@
+## 2026-07-12 - v1.0.29 - grid ledger topology and protective-stop finalization
+
+- Fixed non-grid-line LONG/SHORT initialization: the nearest adjacent TP order and its matching initial directional slot are no longer skipped.
+- Split observable minute movement into previous-close -> open and open -> close segments; count single-sided intraminute excursions only when OHLC chronology is unambiguous.
+- Made kill-switch breach terminal: fills stop at the protective boundary, residual inventory is liquidated there, and later candles/funding cannot repair the outcome.
+- Reject missing/inside-range kill-switch geometry and dual-boundary intrabar ambiguity instead of fabricating a label.
+- Bumped FastAPI to `1.0.29` and outcome target to `grid_label_v10`; no route, schema, frontend or environment-variable change.
+- Added `tests/test_iteration217_grid_ledger_topology_and_stop.py`: 9 tests, RED 8 failures on v1.0.28, GREEN 9/9.
+- Baseline: 927/927 passed. Post-check: 936/936 passed.
+
 ## 2026-07-12 - v1.0.28 - post-publication entry and grid-contract integrity
 
 - Outcome entry now uses the first exact 1m candle open strictly after recommendation publication, preventing historical pre-publication fills when the recommender cycle is delayed.

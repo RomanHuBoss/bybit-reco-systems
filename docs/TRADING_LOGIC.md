@@ -9,6 +9,14 @@
 - Kline/open-interest request `limit`, `start/end` и `startTime/endTime` нормализуются только из exact integers. Отрицательные или инвертированные временные окна, boolean и fractional значения отклоняются до REST-запроса, чтобы collector не строил историю по усечённым границам.
 - Funding в risk/recommendation payload теперь хранит `directional_funding_bps_per_event`; legacy alias `directional_funding_bps_8h` не использовать для новой логики.
 
+## Current grid-ledger topology and protective-stop rules (grid_label_v10)
+
+- For a LONG entry between levels, every level above entry is a TP sell and the initial position contains one equal slot per such sell; SHORT is symmetric for buy-to-close levels below entry.
+- Observable minute movement is processed as separate close->open and open->close segments. A one-sided high/low excursion is counted only when OHLC makes its chronology unambiguous; two-sided intrabar sequencing is not invented.
+- `levels.kill_switch.lower` and `upper` are mandatory and must strictly contain the persisted range. A breach terminates the ledger at the boundary, liquidates residual inventory there and suppresses all later fills/funding.
+- If one OHLC candle reaches both outer kill-switches, first-hit order is unknowable; the outcome remains unavailable rather than choosing a profitable or losing chronology.
+- `grid_label_v10` is incompatible with earlier proxy outcomes/calibrators and is reset by the version guard.
+
 ## Current proxy-entry and persisted-contract rules (grid_label_v9)
 
 - Signal evidence is available from `features_ref_ts`, but a hypothetical order cannot be filled before the recommendation is published. Entry is the open of the first exact 1m candle strictly after publication; an already-open candle is never backfilled as an entry.
@@ -124,9 +132,9 @@ UI обязан показывать этот блок рядом с execution/l
 - Ticker freshness uses authoritative Bybit response time when present; local receipt time is not a substitute for exchange event time.
 - Kline start timestamps are exact integers, whole-second and timeframe-aligned. Shifted values are rejected, not floored.
 - Feature timestamps reject JSON booleans, fractions and non-finite/malformed values.
-- Outcome entry is exactly `features_ref_ts + 60`; the 1m window through the horizon must be contiguous; exit is exactly `entry_ts + horizon_sec`. Missing candles mean “label unavailable”.
+- Signal availability starts at `features_ref_ts`, but outcome entry is the open of the first exact 1m candle strictly after recommendation publication; the 1m window through the horizon must be contiguous and the exact horizon boundary must exist. Missing candles mean “label unavailable”.
 - Calibration accepts a row only when exact `label_available_ts` is present, is not earlier than recommendation time, and has matured by fit time.
-- Temporal integrity was introduced in `grid_label_v4`; v1.0.24 used `grid_label_v5`, v1.0.25 used the explicit order/inventory ledger `grid_label_v6`, v1.0.26 used inventory-aware funding/finalization `grid_label_v7`; v1.0.27 used the sign-consistent funding-window/cost-alias contract `grid_label_v8`; the current post-publication-entry and strict persisted-contract target is `grid_label_v9`. Older proxy outcomes/calibrators are reset and must not be mixed with v9.
+- Temporal integrity was introduced in `grid_label_v4`; v1.0.24 used `grid_label_v5`, v1.0.25 used the explicit order/inventory ledger `grid_label_v6`, v1.0.26 used inventory-aware funding/finalization `grid_label_v7`; v1.0.27 used the sign-consistent funding-window/cost-alias contract `grid_label_v8`; v1.0.28 used post-publication-entry and strict persisted-contract target `grid_label_v9`; the current topology/terminal-stop target is `grid_label_v10`. Older proxy outcomes/calibrators are reset and must not be mixed with `grid_label_v10`.
 
 ## Что outcome labeling умеет и чего не умеет
 
@@ -147,7 +155,7 @@ UI обязан показывать этот блок рядом с execution/l
 - `success` определяется как finite liquidation-equivalent `ret > 0` при intact kill-switch; отдельный activity/drift threshold запрещён, потому что он создаёт противоречие `ret > 0, success=0`;
 - при подтверждённых `next_funding_ts + interval` aggregate expected-event fallback не применяется: если в horizon нет точного события, funding cost равен нулю;
 - дубли `params.cost_model`/`trade_plan.cost_model` разрешаются по максимальному валидному execution cost; boolean/malformed/zero alias не маскирует более строгий cost;
-- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.28 использует `grid_label_v9` и не смешивает proxy labels/calibrators, построенные по прежней accounting/temporal semantics;
+- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.29 использует `grid_label_v10` и не смешивает proxy labels/calibrators, построенные по прежней accounting/temporal semantics;
 - neutral `success=1` допускается уже после одной завершённой прибыльной пары; LONG/SHORT success определяется положительным total grid PnL при фактической mode activity и отсутствии kill-switch breach.
 
 ### Не умеет

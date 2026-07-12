@@ -612,20 +612,18 @@ def _grid_outcome(
     direction: str,
     params: dict | None,
 ) -> tuple[int, float] | None:
-    """Estimate arithmetic Futures Grid total P&L from an explicit order ledger.
+    """Estimate arithmetic Futures Grid total P&L from a conservative order ledger.
 
-    The previous proxy counted paired index movement and then applied one coarse
-    end-of-horizon drift to a guessed inventory fraction. That loses the actual
-    prices at which directional initial positions are closed or neutral inventory
-    is accumulated. It also widened the historical grid step when costs were high,
-    so the label no longer represented the persisted recommendation geometry.
+    Equal-quantity slots reproduce the persisted arithmetic grid. Observable
+    close->open and open->close movements are processed separately, and a
+    single-sided OHLC excursion is included when its order is unambiguous. When
+    both high and low extend beyond the endpoints, the ambiguous excursions are
+    intentionally ignored rather than inventing an intrabar order.
 
-    This model keeps one equal-quantity slot per grid interval, creates the same
-    initial Long/Short/Neutral order layout documented by Bybit, processes only
-    close-to-close grid-line crossings (conservative with 1m OHLCV), charges half
-    of the stored round-trip execution cost on every executed leg and terminal
-    close, applies adverse funding to actual inventory, and marks the remaining
-    one-way position at the horizon exit price.
+    A kill-switch is an actual terminal event: the ledger processes fills up to
+    the protective boundary, liquidates residual inventory there and ignores all
+    later candles/funding. Continuing a stopped bot to the horizon would corrupt
+    both return and calibration labels.
     """
     params = params if isinstance(params, dict) else {}
     direction_norm = normalize_execution_direction(direction)
@@ -659,9 +657,6 @@ def _grid_outcome(
         ("params.trade_plan.sizing.grid_count", plan_sizing.get("grid_count")),
         ("params.trade_plan.economics.grid_count", plan_economics.get("grid_count")),
     ])
-    # Outcome labels must represent the exact persisted bot. Conflicting or
-    # malformed aliases describe no single executable grid and therefore cannot
-    # be collapsed to a conservative count without simulating another strategy.
     if grid_count_resolution.get("ok") is not True:
         return None
     grid_count = _int_from_params(
@@ -669,7 +664,7 @@ def _grid_outcome(
     )
 
     levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}
-    kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
+    kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else None
     resolved_range = _resolve_grid_range(params, trade_plan)
     lower, upper = resolved_range if resolved_range is not None else (None, None)
     ks_lower = _finite_positive_or_none(kill_switch.get("lower")) if kill_switch else None
@@ -688,6 +683,9 @@ def _grid_outcome(
         or float(upper) <= float(lower)
         or grid_count <= 0
         or not (float(lower) <= float(entry) <= float(upper))
+        or ks_lower is None
+        or ks_upper is None
+        or not (float(ks_lower) < float(lower) < float(upper) < float(ks_upper))
     ):
         return None
 
@@ -695,6 +693,8 @@ def _grid_outcome(
     upper_f = float(upper)
     entry_f = float(entry)
     exit_f = float(exitp)
+    ks_lower_f = float(ks_lower)
+    ks_upper_f = float(ks_upper)
     step_abs = (upper_f - lower_f) / float(grid_count)
     if not math.isfinite(step_abs) or step_abs <= 0.0:
         return None
@@ -723,84 +723,87 @@ def _grid_outcome(
             initial_long_slots = initial_short_slots = 0
         elif direction_norm == "long":
             buy_indices = set(range(0, cell_index + 1))
-            sell_indices = set(range(cell_index + 2, grid_count + 1))
-            initial_long_slots = grid_count - cell_index - 1
+            # Every grid level above the market is a take-profit sell, including
+            # the immediately adjacent upper level. The previous +2 offset
+            # dropped that order and its matching initial position slot.
+            sell_indices = set(range(cell_index + 1, grid_count + 1))
+            initial_long_slots = grid_count - cell_index
             initial_short_slots = 0
         else:
-            buy_indices = set(range(0, cell_index))
+            # Every grid level below the market closes one initial short slot,
+            # including the immediately adjacent lower level.
+            buy_indices = set(range(0, cell_index + 1))
             sell_indices = set(range(cell_index + 1, grid_count + 1))
             initial_long_slots = 0
-            initial_short_slots = cell_index
+            initial_short_slots = cell_index + 1
 
     orders: dict[int, str] = {index: "buy" for index in buy_indices}
     orders.update({index: "sell" for index in sell_indices})
     position_slots = int(initial_long_slots) - int(initial_short_slots)
 
-    # Cash plus marked position gives gross P&L for equal base-asset quantity
-    # slots. Quantity is normalized to one; denominator restores return on the
-    # total reference notional committed to grid_count equal slots.
     cash = (-float(initial_long_slots) + float(initial_short_slots)) * entry_f
     execution_cost = float(initial_long_slots + initial_short_slots) * entry_f * half_leg_cost_rate
     previous_price = entry_f
     tolerance = max(1e-10, step_abs * 1e-10)
     funding_cost = 0.0
     event_index = 0
+    stopped = False
+    stop_price: float | None = None
+    stop_ts: int | None = None
 
     def current_position_slots() -> int:
         return int(position_slots)
 
     def adverse_exposure_value(price: float) -> float:
-        position_slots = current_position_slots()
-        if position_slots == 0:
+        current_slots = current_position_slots()
+        if current_slots == 0:
             return 0.0
         if funding_rate is not None:
             return (
-                abs(float(position_slots)) * float(price)
-                if float(position_slots) * float(funding_rate) > 0.0
+                abs(float(current_slots)) * float(price)
+                if float(current_slots) * float(funding_rate) > 0.0
                 else 0.0
             )
-        # Without raw sign, a positive expected carry is a conservative cost for
-        # whichever inventory exists. A negative estimate is a possible receipt
-        # and must not improve the label.
         per_event = funding_model.get("directional_funding_bps_per_event")
         expected = funding_model.get("expected_funding_bps")
         if (per_event is not None and float(per_event) > 0.0) or (expected is not None and float(expected) > 0.0):
-            return abs(float(position_slots)) * float(price)
+            return abs(float(current_slots)) * float(price)
         return 0.0
 
     max_adverse_position_value = adverse_exposure_value(entry_f)
 
-    for row in rows:
-        row_ts = strict_integer(row["ts"])
-        row_open = _finite_positive_or_none(row["open"])
-        if row_ts is not None and row_open is not None:
-            while event_index < len(exact_funding_events) and exact_funding_events[event_index] <= row_ts:
-                if funding_rate is not None:
-                    funding_cost += _adverse_funding_cashflow(current_position_slots(), float(row_open), funding_rate)
-                else:
-                    funding_cost += (
-                        abs(float(current_position_slots()))
-                        * float(row_open)
-                        * _fallback_adverse_rate_per_event(funding_model)
-                    )
-                event_index += 1
+    def process_segment(target_price: float, *, event_ts: int) -> None:
+        """Process every resting grid order crossed by one observable price segment."""
+        nonlocal cash, execution_cost, position_slots, previous_price
+        nonlocal max_adverse_position_value, stopped, stop_price, stop_ts
+        if stopped:
+            return
+        target = float(target_price)
+        start = float(previous_price)
+        if not math.isfinite(target) or target <= 0.0:
+            return
 
-        close_price = _finite_positive_or_none(row["close"])
-        if close_price is None:
-            continue
-        current_price = float(close_price)
-        if current_price > previous_price + tolerance:
+        terminal = target
+        breached = False
+        if target > start + tolerance and start < ks_upper_f <= target + tolerance:
+            terminal = ks_upper_f
+            breached = True
+        elif target < start - tolerance and target - tolerance <= ks_lower_f < start:
+            terminal = ks_lower_f
+            breached = True
+
+        if terminal > start + tolerance:
             crossed = [
                 index
                 for index, grid_price in enumerate(grid_prices)
-                if grid_price > previous_price + tolerance and grid_price <= current_price + tolerance
+                if grid_price > start + tolerance and grid_price <= terminal + tolerance
             ]
-        elif current_price < previous_price - tolerance:
+        elif terminal < start - tolerance:
             crossed = [
                 index
                 for index in range(grid_count, -1, -1)
-                if grid_prices[index] < previous_price - tolerance
-                and grid_prices[index] >= current_price - tolerance
+                if grid_prices[index] < start - tolerance
+                and grid_prices[index] >= terminal - tolerance
             ]
         else:
             crossed = []
@@ -811,7 +814,6 @@ def _grid_outcome(
                 continue
             fill_price = grid_prices[index]
             execution_cost += fill_price * half_leg_cost_rate
-
             if side == "buy":
                 cash -= fill_price
                 position_slots += 1
@@ -822,25 +824,101 @@ def _grid_outcome(
                 position_slots -= 1
                 if index - 1 >= 0:
                     orders.setdefault(index - 1, "buy")
-        previous_price = current_price
-        max_adverse_position_value = max(max_adverse_position_value, adverse_exposure_value(current_price))
 
-    while event_index < len(exact_funding_events):
-        if funding_rate is not None:
-            funding_cost += _adverse_funding_cashflow(current_position_slots(), exit_f, funding_rate)
+        previous_price = float(terminal)
+        max_adverse_position_value = max(
+            max_adverse_position_value,
+            adverse_exposure_value(float(terminal)),
+        )
+        if breached:
+            stopped = True
+            stop_price = float(terminal)
+            stop_ts = int(event_ts)
+
+    for row in rows:
+        row_ts = strict_integer(row["ts"])
+        row_open = _finite_positive_or_none(row["open"])
+        row_high = _finite_positive_or_none(row["high"])
+        row_low = _finite_positive_or_none(row["low"])
+        row_close = _finite_positive_or_none(row["close"])
+        if row_ts is None or None in (row_open, row_high, row_low, row_close):
+            return None
+
+        # Funding at the minute boundary is charged against inventory already
+        # held before the first trade of that minute.
+        while event_index < len(exact_funding_events) and exact_funding_events[event_index] <= row_ts:
+            if funding_rate is not None:
+                funding_cost += _adverse_funding_cashflow(current_position_slots(), float(row_open), funding_rate)
+            else:
+                funding_cost += (
+                    abs(float(current_position_slots()))
+                    * float(row_open)
+                    * _fallback_adverse_rate_per_event(funding_model)
+                )
+            event_index += 1
+
+        # Previous close -> current open is observable and may cross narrow grid
+        # levels even when the candle later closes back at the previous price.
+        process_segment(float(row_open), event_ts=row_ts)
+        if stopped:
+            break
+
+        upper_breach = float(row_high) >= ks_upper_f - tolerance
+        lower_breach = float(row_low) <= ks_lower_f + tolerance
+        if upper_breach and lower_breach:
+            # OHLC does not reveal which protective boundary was reached first.
+            # Any chosen chronology would fabricate a different stopped bot.
+            return None
+        if upper_breach:
+            process_segment(ks_upper_f, event_ts=row_ts)
+            break
+        if lower_breach:
+            process_segment(ks_lower_f, event_ts=row_ts)
+            break
+
+        open_f = float(row_open)
+        close_f = float(row_close)
+        high_excursion = float(row_high) > max(open_f, close_f) + tolerance
+        low_excursion = float(row_low) < min(open_f, close_f) - tolerance
+        if high_excursion and not low_excursion:
+            # Only the upper excursion extends beyond both endpoints, so the
+            # chronology open -> high -> close is unambiguous.
+            process_segment(float(row_high), event_ts=row_ts)
+            process_segment(close_f, event_ts=row_ts)
+        elif low_excursion and not high_excursion:
+            process_segment(float(row_low), event_ts=row_ts)
+            process_segment(close_f, event_ts=row_ts)
         else:
-            funding_cost += (
-                abs(float(current_position_slots()))
-                * exit_f
-                * _fallback_adverse_rate_per_event(funding_model)
-            )
-        event_index += 1
+            # Two-sided intrabar order is unknowable from OHLC. Count only the
+            # endpoint movement that every possible path must contain.
+            process_segment(close_f, event_ts=row_ts)
+        if stopped:
+            break
 
-    # When an exact event schedule is unavailable, apply the persisted expected
-    # event count to the maximum adverse inventory actually reached. This remains
-    # conservative without charging a flat full-grid notional to an empty bot.
+    if not stopped:
+        while event_index < len(exact_funding_events):
+            if funding_rate is not None:
+                funding_cost += _adverse_funding_cashflow(current_position_slots(), exit_f, funding_rate)
+            else:
+                funding_cost += (
+                    abs(float(current_position_slots()))
+                    * exit_f
+                    * _fallback_adverse_rate_per_event(funding_model)
+                )
+            event_index += 1
+
+        # The exact horizon open is the next observable price after the final
+        # in-window close. Resting orders crossed by that gap execute before the
+        # remaining inventory is liquidated at the same boundary price.
+        process_segment(exit_f, event_ts=ts_end)
+
     if not exact_schedule_known:
         expected_events = _int_from_params(funding_model.get("expected_funding_events"), 0, minimum=0, maximum=1000)
+        interval_sec = strict_integer(funding_model.get("funding_interval_sec"))
+        if stopped and stop_ts is not None and interval_sec is not None and interval_sec > 0:
+            active_duration = max(0, int(stop_ts) - int(ts_start))
+            possible_events = max(1, int(math.ceil(float(active_duration) / float(interval_sec))))
+            expected_events = min(expected_events, possible_events)
         if expected_events > 0 and max_adverse_position_value > 0.0:
             if funding_rate is not None:
                 adverse_rate_per_event = abs(float(funding_rate))
@@ -848,36 +926,22 @@ def _grid_outcome(
                 adverse_rate_per_event = _fallback_adverse_rate_per_event(funding_model)
             funding_cost += max_adverse_position_value * adverse_rate_per_event * float(expected_events)
 
+    liquidation_price = float(stop_price) if stopped and stop_price is not None else exit_f
     open_position_slots = current_position_slots()
-    gross_pnl = cash + float(open_position_slots) * exit_f
-    # The horizon label is liquidation-equivalent net P&L: an open residual
-    # position must pay the missing exit leg before different outcomes can be
-    # compared on the same realized basis.
-    execution_cost += abs(float(open_position_slots)) * exit_f * half_leg_cost_rate
+    gross_pnl = cash + float(open_position_slots) * liquidation_price
+    execution_cost += abs(float(open_position_slots)) * liquidation_price * half_leg_cost_rate
     capital_reference = entry_f * float(grid_count)
     if capital_reference <= 0.0:
         return None
     net_proxy = (gross_pnl - execution_cost - funding_cost) / capital_reference
 
-    min_low = min(float(row["low"]) for row in rows)
-    max_high = max(float(row["high"]) for row in rows)
-    kill_switch_breached = bool(
-        (ks_lower is not None and min_low <= float(ks_lower))
-        or (ks_upper is not None and max_high >= float(ks_upper))
-    )
-
-    # Success is the sign of liquidation-equivalent total net P&L, with a hard
-    # kill-switch override. A second activity/drift threshold would make ret>0
-    # rows become losses and corrupt calibration. Flat/no-fill neutral paths remain
-    # losses naturally because their net P&L is zero.
     positive_pnl_epsilon = 1e-12
     success = int(
-        not kill_switch_breached
+        not stopped
         and math.isfinite(net_proxy)
         and net_proxy > positive_pnl_epsilon
     )
     return success, float(net_proxy)
-
 
 def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
     min_horizon = min(BOT_HORIZONS.values())

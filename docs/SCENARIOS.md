@@ -1,5 +1,14 @@
 # Ключевые сценарии
 
+## 0A. Between-level directional entry and protective stop
+
+Ожидаемое поведение:
+- LONG entry between levels creates the nearest upper sell plus one matching initial long slot; SHORT creates the nearest lower buy plus one matching initial short slot;
+- a close->open gap and a subsequent open->close reversal are two observable segments and may complete a grid pair;
+- a one-sided OHLC excursion is counted only when its order is unambiguous;
+- first kill-switch breach stops the ledger and liquidates at the boundary; later recovery is irrelevant;
+- missing/inside-range kill-switch or both boundaries touched in one candle means no proxy label.
+
 ## 0. Delayed publication or damaged persisted grid contract
 
 Ожидаемое поведение:

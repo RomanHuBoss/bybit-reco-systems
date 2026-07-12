@@ -13,6 +13,10 @@
 - блокировать очевидно опасные идеи через risk gate / market shock / fast-veto / LLM-review;
 - сохранять audit trail, publication lineage, operator actions и proxy-outcomes.
 
+## Outcome path/stop boundary (v1.0.29)
+
+`app/outcomes.py` now treats the persisted arithmetic grid as an explicit protected state machine. Non-grid-line directional entry creates all adjacent close orders and matching initial slots. The worker processes observable endpoint segments, accepts only unambiguous one-sided OHLC excursions, and terminates cash/inventory/funding evolution at the first valid kill-switch boundary. Missing/inside-range protection or dual-boundary intrabar ambiguity produces no label.
+
 ## Outcome temporal/contract boundary (v1.0.28)
 
 `app/outcomes.py` treats publication time as an availability boundary. A proxy position may start only at the open of the first exact 1m candle strictly after both the signal reference bar and the persisted recommendation publication. Missing exact candles remain unavailable.
