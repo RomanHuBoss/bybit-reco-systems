@@ -1,3 +1,20 @@
+## 2026-07-12 outcome label integrity audit (v1.0.27)
+
+### CLOSED: positive net PnL could still be stored as a loss
+The former activity gate required a completed neutral pair or at least 0.1% directional movement. Small profitable LONG/SHORT outcomes and profitable NEUTRAL residual inventory therefore had `ret > 0` but `success=0`. v1.0.27 defines success by positive liquidation-equivalent net PnL with kill-switch precedence only.
+
+### CLOSED: exact no-event funding window could receive phantom carry
+An empty exact event list was previously indistinguishable from an unavailable schedule, so stale expected-event metadata could charge funding after the next event was already known to lie outside the label horizon. Exact schedule presence now suppresses fallback event charging.
+
+### CLOSED: duplicate cost aliases could understate execution friction
+Outcome cost extraction previously trusted the first block. A zero or malformed primary alias could hide a stricter nested cost. All valid aliases now resolve conservatively to the maximum execution cost.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v8`
+First v1.0.27 startup clears only incompatible `reco_outcomes` and related calibrators. Recommendations, bot audit rows, trades, exact execution evidence and risk settings remain.
+
+### RESIDUAL: OHLCV remains a conservative close-to-close proxy
+The worker still cannot prove intrabar order sequence, queue priority, partial fills, maker/taker truth or future funding rates. Positive proxy performance is not evidence of live edge.
+
 ## 2026-07-12 inventory-aware total-PnL finalization audit (v1.0.26)
 
 ### RESOLVED/HIGH: residual position omitted terminal execution cost

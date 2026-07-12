@@ -36,7 +36,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Do not treat a ticker as fresh unless the exchange event timestamp is valid.
 - A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
 - Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
-- Current label contract is `grid_label_v7`: temporal integrity remains strict; the explicit equal-quantity ledger uses full adjacent-interval profit, per-leg plus terminal-close costs, and adverse funding only on actual inventory at event time.
+- Current label contract is `grid_label_v8`: temporal integrity remains strict; the explicit equal-quantity ledger uses full adjacent-interval profit, per-leg plus terminal-close costs, and adverse funding only on actual inventory at event time.
 - Outcome headline is actionable-only; all-roots and shadow no_trade metrics are separate research/control cohorts.
 
 ## NO TRADE / BLOCKED checklist

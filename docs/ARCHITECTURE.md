@@ -90,7 +90,7 @@
 5. оператор вручную подтверждает `executed`.
 6. сервис повторно делает execution preflight и только после этого materialize'ит `bot_instance`.
 7. внешний исполнитель или оператор пишет агрегированные `trades`.
-8. `outcomes.py` размечает outcome-root записи через close-to-close arithmetic-grid order/inventory ledger по persisted range/count, применяет execution cost к каждой inferred leg и terminal close, а adverse funding - к фактическому inventory на event time; результат остаётся OHLCV proxy, а не execution truth.
+8. `outcomes.py` размечает outcome-root записи через close-to-close arithmetic-grid order/inventory ledger по persisted range/count, применяет execution cost к каждой inferred leg и terminal close, adverse funding - только к фактическому inventory на точных событиях внутри horizon, а success - по знаку total net PnL с kill-switch precedence; результат остаётся OHLCV proxy, а не execution truth.
 9. calibration использует outcome history для quality-моделей.
 
 ## Потоки и конкуренция

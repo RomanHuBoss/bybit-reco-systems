@@ -143,3 +143,11 @@
 7. Одна прибыльная neutral pair или фактическая directional activity с положительным total PnL может дать success; отдельного 5 bps cutoff нет. Kill-switch breach всегда оставляет `success=0`.
 8. Статистика остаётся proxy и не заменяет exact execution evidence.
 
+
+
+## Outcome label v8 integrity
+
+- Positive finite liquidation-equivalent total net PnL is a win unless a kill-switch was breached.
+- A confirmed funding schedule with no event in the horizon charges zero; expected-event fallback is only for an unavailable schedule.
+- Conflicting duplicated execution-cost aliases resolve to the maximum valid cost.
+- Malformed OHLC candles make the horizon unavailable and do not create a loss label.

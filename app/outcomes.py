@@ -147,6 +147,31 @@ def _get_open_at_exact(conn, venue: str, symbol: str, ts: int) -> float | None:
     return float(r["open"]) if r else None
 
 
+def _is_valid_outcome_candle(row: object) -> bool:
+    try:
+        raw_ts = row["ts"]  # type: ignore[index]
+        raw_values = [row[key] for key in ("open", "high", "low", "close")]  # type: ignore[index]
+    except Exception:
+        return False
+    if isinstance(raw_ts, bool) or any(isinstance(value, bool) for value in raw_values):
+        return False
+    candle_ts = strict_integer(raw_ts)
+    if candle_ts is None or candle_ts <= 0:
+        return False
+    try:
+        open_px, high_px, low_px, close_px = (float(value) for value in raw_values)
+    except Exception:
+        return False
+    values = (open_px, high_px, low_px, close_px)
+    if not all(math.isfinite(value) and value > 0.0 for value in values):
+        return False
+    if high_px < max(open_px, close_px, low_px):
+        return False
+    if low_px > min(open_px, close_px, high_px):
+        return False
+    return True
+
+
 def _has_complete_1m_window(conn, venue: str, symbol: str, ts_start: int, ts_end_exclusive: int) -> bool:
     start = strict_integer(ts_start)
     end = strict_integer(ts_end_exclusive)
@@ -158,7 +183,7 @@ def _has_complete_1m_window(conn, venue: str, symbol: str, ts_start: int, ts_end
         return False
     for index, row in enumerate(rows):
         row_ts = strict_integer(row["ts"])
-        if row_ts != start + index * 60:
+        if row_ts != start + index * 60 or not _is_valid_outcome_candle(row):
             return False
     return True
 
@@ -243,57 +268,58 @@ def _int_from_params(value: object, default: int = 0, *, minimum: int | None = N
 
 
 def _extract_cost_components(params: dict | None, fallback_execution_bps: float = 15.0) -> tuple[float, float]:
-    # Execution friction cannot be negative. A poisoned/manual payload with a
-    # negative explicit cost would otherwise turn costs into alpha and create
-    # optimistic outcome labels. Invalid fallbacks also revert to the canonical
-    # conservative default rather than silently becoming zero.
+    # Execution friction cannot be negative. Duplicate cost_model blocks are
+    # aliases of the same generated contract, so a lower/zero/malformed copy must
+    # not hide a stricter valid value from another block. Resolve all candidates
+    # conservatively instead of accepting the first mapping by precedence.
     fallback_bps = _finite_or_default(fallback_execution_bps, 15.0)
     if fallback_bps < 0.0:
         fallback_bps = 15.0
 
-    execution_bps = None
-    funding_bps = None
-    net_cost_bps = None
-    if params:
-        for block in (params.get("cost_model") or {}, (params.get("trade_plan") or {}).get("cost_model") or {}):
+    def _candidate(value: object, *, signed: bool = False) -> float | None:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(number) or (not signed and number < 0.0):
+            return None
+        return float(number)
+
+    execution_candidates: list[float] = []
+    net_cost_candidates: list[float] = []
+    funding_candidates: list[float] = []
+    if isinstance(params, dict):
+        trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+        for block in (params.get("cost_model"), trade_plan.get("cost_model")):
             if not isinstance(block, dict):
                 continue
-            if execution_bps is None:
-                for key in ("execution_cost_bps", "total_cost_bps"):
-                    if block.get(key) is not None:
-                        try:
-                            candidate = _finite_or_default(block.get(key), fallback_bps)
-                            execution_bps = candidate if candidate >= 0.0 else fallback_bps
-                            break
-                        except Exception:
-                            logger.debug("cost block parse error", exc_info=True)
+            for key in ("execution_cost_bps", "total_cost_bps"):
+                candidate = _candidate(block.get(key))
+                if candidate is not None:
+                    execution_candidates.append(candidate)
+            candidate = _candidate(block.get("net_cost_bps"))
+            if candidate is not None:
+                net_cost_candidates.append(candidate)
+            candidate = _candidate(block.get("expected_funding_bps"), signed=True)
+            if candidate is not None:
+                funding_candidates.append(candidate)
 
-            if net_cost_bps is None and block.get("net_cost_bps") is not None:
-                try:
-                    candidate = _finite_or_default(block.get("net_cost_bps"), fallback_bps)
-                    net_cost_bps = candidate if candidate >= 0.0 else fallback_bps
-                except Exception:
-                    logger.debug("net cost block parse error", exc_info=True)
+    # Max is fail-closed for duplicated execution/net-cost aliases. For signed
+    # funding it chooses the most adverse valid value; if every value is negative,
+    # it chooses the smallest possible receipt rather than manufacturing alpha.
+    execution_bps = max(execution_candidates) if execution_candidates else None
+    net_cost_bps = max(net_cost_candidates) if net_cost_candidates else None
+    funding_bps_out = max(funding_candidates) if funding_candidates else 0.0
 
-            if funding_bps is None and block.get("expected_funding_bps") is not None:
-                try:
-                    funding_bps = _finite_or_default(block.get("expected_funding_bps"), 0.0)
-                except Exception:
-                    logger.debug("funding block parse error", exc_info=True)
-
-    funding_bps_out = _finite_or_default(funding_bps if funding_bps is not None else 0.0, 0.0)
     if execution_bps is None and net_cost_bps is not None:
-        # Legacy/manual payload может содержать только net_cost_bps. Для outcome-labeling
-        # execution friction и funding carry учитываются раздельно: grid-модель использует
-        # execution-cost floor внутри _grid_outcome(), а funding для linear вычитается позже.
-        # Если blindly принять net_cost_bps за execution_cost_bps и потом ещё раз вычесть
-        # expected_funding_bps, то funding будет учтён дважды и историческая разметка
-        # станет излишне пессимистичной. Поэтому по возможности раскладываем net = exec + funding.
+        # Legacy/manual payload may contain only net_cost_bps. Outcome labeling
+        # accounts for execution and funding separately, so decompose signed net
+        # cost rather than subtracting funding twice.
         execution_bps = max(0.0, float(net_cost_bps) - float(funding_bps_out))
 
-    execution_bps_out = _finite_or_default(execution_bps if execution_bps is not None else fallback_bps, fallback_bps)
-    if execution_bps_out < 0.0:
-        execution_bps_out = fallback_bps
+    execution_bps_out = float(execution_bps) if execution_bps is not None else float(fallback_bps)
     return float(execution_bps_out), float(funding_bps_out)
 
 
@@ -541,6 +567,10 @@ def _grid_outcome(
     funding_model = _extract_inventory_funding_model(params)
     funding_rate_raw = funding_model.get("funding_rate")
     funding_rate = float(funding_rate_raw) if funding_rate_raw is not None else None
+    exact_schedule_known = bool(
+        strict_integer(funding_model.get("next_funding_ts")) is not None
+        and strict_integer(funding_model.get("funding_interval_sec")) is not None
+    )
     exact_funding_events = _exact_funding_event_times(funding_model, ts_start, ts_end)
 
     trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
@@ -582,6 +612,7 @@ def _grid_outcome(
     rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
     if (
         not rows
+        or any(not _is_valid_outcome_candle(row) for row in rows)
         or not math.isfinite(float(entry))
         or not math.isfinite(float(exitp))
         or float(entry) <= 0.0
@@ -637,24 +668,20 @@ def _grid_outcome(
 
     orders: dict[int, str] = {index: "buy" for index in buy_indices}
     orders.update({index: "sell" for index in sell_indices})
-    long_lots = ["initial"] * int(initial_long_slots)
-    short_lots = ["initial"] * int(initial_short_slots)
+    position_slots = int(initial_long_slots) - int(initial_short_slots)
 
     # Cash plus marked position gives gross P&L for equal base-asset quantity
     # slots. Quantity is normalized to one; denominator restores return on the
     # total reference notional committed to grid_count equal slots.
     cash = (-float(initial_long_slots) + float(initial_short_slots)) * entry_f
     execution_cost = float(initial_long_slots + initial_short_slots) * entry_f * half_leg_cost_rate
-    completed_grid_pairs = 0
-    executed_grid_legs = 0
-    initial_position_closures = 0
     previous_price = entry_f
     tolerance = max(1e-10, step_abs * 1e-10)
     funding_cost = 0.0
     event_index = 0
 
     def current_position_slots() -> int:
-        return len(long_lots) - len(short_lots)
+        return int(position_slots)
 
     def adverse_exposure_value(price: float) -> float:
         position_slots = current_position_slots()
@@ -717,31 +744,16 @@ def _grid_outcome(
             if side is None:
                 continue
             fill_price = grid_prices[index]
-            executed_grid_legs += 1
             execution_cost += fill_price * half_leg_cost_rate
 
             if side == "buy":
                 cash -= fill_price
-                if short_lots:
-                    origin = short_lots.pop()
-                    if origin == "grid":
-                        completed_grid_pairs += 1
-                    else:
-                        initial_position_closures += 1
-                else:
-                    long_lots.append("grid")
+                position_slots += 1
                 if index + 1 <= grid_count:
                     orders.setdefault(index + 1, "sell")
             else:
                 cash += fill_price
-                if long_lots:
-                    origin = long_lots.pop()
-                    if origin == "grid":
-                        completed_grid_pairs += 1
-                    else:
-                        initial_position_closures += 1
-                else:
-                    short_lots.append("grid")
+                position_slots -= 1
                 if index - 1 >= 0:
                     orders.setdefault(index - 1, "buy")
         previous_price = current_price
@@ -761,7 +773,7 @@ def _grid_outcome(
     # When an exact event schedule is unavailable, apply the persisted expected
     # event count to the maximum adverse inventory actually reached. This remains
     # conservative without charging a flat full-grid notional to an empty bot.
-    if not exact_funding_events:
+    if not exact_schedule_known:
         expected_events = _int_from_params(funding_model.get("expected_funding_events"), 0, minimum=0, maximum=1000)
         if expected_events > 0 and max_adverse_position_value > 0.0:
             if funding_rate is not None:
@@ -788,22 +800,13 @@ def _grid_outcome(
         or (ks_upper is not None and max_high >= float(ks_upper))
     )
 
-    # The label represents total bot P&L, not only repeated oscillations. One
-    # completed neutral pair is already a valid grid profit; Long/Short modes can
-    # also succeed by closing their initial directional position as intended.
+    # Success is the sign of liquidation-equivalent total net P&L, with a hard
+    # kill-switch override. A second activity/drift threshold would make ret>0
+    # rows become losses and corrupt calibration. Flat/no-fill neutral paths remain
+    # losses naturally because their net P&L is zero.
     positive_pnl_epsilon = 1e-12
-    if direction_norm == "neutral":
-        has_mode_activity = completed_grid_pairs >= 1
-    else:
-        has_mode_activity = bool(
-            initial_position_closures >= 1
-            or completed_grid_pairs >= 1
-            or executed_grid_legs >= 1
-            or abs(exit_f - entry_f) / entry_f >= 0.001
-        )
     success = int(
-        has_mode_activity
-        and not kill_switch_breached
+        not kill_switch_breached
         and math.isfinite(net_proxy)
         and net_proxy > positive_pnl_epsilon
     )

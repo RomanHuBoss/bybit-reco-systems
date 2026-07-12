@@ -118,7 +118,7 @@ UI обязан показывать этот блок рядом с execution/l
 - Feature timestamps reject JSON booleans, fractions and non-finite/malformed values.
 - Outcome entry is exactly `features_ref_ts + 60`; the 1m window through the horizon must be contiguous; exit is exactly `entry_ts + horizon_sec`. Missing candles mean “label unavailable”.
 - Calibration accepts a row only when exact `label_available_ts` is present, is not earlier than recommendation time, and has matured by fit time.
-- Temporal integrity was introduced in `grid_label_v4`; v1.0.24 used `grid_label_v5`, v1.0.25 used the explicit order/inventory ledger `grid_label_v6`, and the current inventory-aware funding/finalization contract is `grid_label_v7`. Older proxy outcomes/calibrators are reset and must not be mixed with v7.
+- Temporal integrity was introduced in `grid_label_v4`; v1.0.24 used `grid_label_v5`, v1.0.25 used the explicit order/inventory ledger `grid_label_v6`, v1.0.26 used inventory-aware funding/finalization `grid_label_v7`; the current sign-consistent funding-window/cost-alias contract is `grid_label_v8`. Older proxy outcomes/calibrators are reset and must not be mixed with v8.
 
 ## Что outcome labeling умеет и чего не умеет
 
@@ -131,12 +131,15 @@ UI обязан показывать этот блок рядом с execution/l
 - completed-leg gross return и execution cost переводятся в доходность капитала всей сетки через деление на подтверждённый canonical `grid_count`; legacy payload использует независимо выведенное число интервалов, если count отсутствует;
 - `grid_count` задаёт число одновременно финансируемых intervals и capital denominator, но не ограничивает cumulative completed trades за horizon; replacement orders позволяют одному interval закрыться повторно;
 - один inferred completed arithmetic-grid trade даёт full interval gross minus one round-trip execution cost, нормированные на весь grid capital; отдельный произвольный fill-efficiency haircut повторно не применяется;
-- neutral grid starts flat; LONG/SHORT создают исходную directional-позицию по числу уровней соответствующей стороны; worker ведёт cash, long/short lots и replacement orders по каждому close-to-close пересечению уровня;
+- neutral grid starts flat; LONG/SHORT создают исходную directional-позицию по числу уровней соответствующей стороны; worker ведёт cash, signed inventory slots и replacement orders по каждому close-to-close пересечению уровня;
 - исполнять cost по каждой фактически inferred leg, закрывать исходные/grid lots по цене уровня и маркировать оставшийся net inventory по exact horizon exit; благоприятное directional movement улучшает total PnL, неблагоприятное ухудшает его;
 - stale `grid_spacing_pct`, `tp_per_leg` или cost floor не меняют historical geometry: outcome использует persisted range и strict integer `grid_count`;
 - на label horizon остаточный inventory закрывается на liquidation-equivalent basis с terminal half-leg cost; `success` следует знаку net total PnL после activity/kill-switch gates и не использует скрытый 5 bps cutoff;
 - при exact funding schedule charge считается по net inventory и event price; neutral without inventory pays zero. При неизвестном schedule conservative fallback ограничен максимальным adverse inventory, достигнутым ledger, а не всем grid capital;
-- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.26 использует `grid_label_v7` и не смешивает proxy labels/calibrators, построенные по прежней accounting/temporal semantics;
+- `success` определяется как finite liquidation-equivalent `ret > 0` при intact kill-switch; отдельный activity/drift threshold запрещён, потому что он создаёт противоречие `ret > 0, success=0`;
+- при подтверждённых `next_funding_ts + interval` aggregate expected-event fallback не применяется: если в horizon нет точного события, funding cost равен нулю;
+- дубли `params.cost_model`/`trade_plan.cost_model` разрешаются по максимальному валидному execution cost; boolean/malformed/zero alias не маскирует более строгий cost;
+- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.27 использует `grid_label_v8` и не смешивает proxy labels/calibrators, построенные по прежней accounting/temporal semantics;
 - neutral `success=1` допускается уже после одной завершённой прибыльной пары; LONG/SHORT success определяется положительным total grid PnL при фактической mode activity и отсутствии kill-switch breach.
 
 ### Не умеет

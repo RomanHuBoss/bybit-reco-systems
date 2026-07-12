@@ -1,3 +1,12 @@
+## 2026-07-12 - v1.0.27 - outcome label integrity and funding-window precedence
+
+- Fixed a HIGH label-integrity defect: every finite positive liquidation-equivalent total net PnL is now a win unless the kill-switch was breached. The residual mode-activity/0.1% drift gate no longer converts positive LONG, SHORT or NEUTRAL outcomes into losses.
+- Fixed a HIGH phantom-funding defect: an exact known schedule with zero events inside the horizon charges zero; stale aggregate `expected_funding_events` is used only when the exact schedule is unavailable.
+- Fixed a HIGH cost-alias defect: duplicated outcome cost models resolve to the maximum valid non-negative execution cost, so zero/boolean/malformed aliases cannot hide a stricter cost.
+- Hardened temporal input: malformed OHLC geometry makes the 1m horizon incomplete rather than materializing a fabricated loss.
+- Bumped `OUTCOME_LABEL_VERSION` to `grid_label_v8` and FastAPI version to `1.0.27`; no schema, route, frontend or environment-variable change.
+- Added `tests/test_iteration215_outcome_label_integrity.py` with nine checks (eight RED on v1.0.26, one preservation check). Baseline: 908 passed. Post-check: 917 passed.
+
 ## 2026-07-12 - v1.0.26 - inventory-aware total-PnL finalization
 
 - Fixed a HIGH outcome-cost defect: residual LONG/SHORT inventory now pays the missing terminal close leg, so open and fully closed horizon outcomes are compared on the same liquidation-equivalent net basis.

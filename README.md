@@ -6,6 +6,14 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## Outcome label integrity and exact funding-window precedence (v1.0.27)
+
+Исправлен четвёртый подтверждённый слой outcome-математики. `success` теперь строго следует liquidation-equivalent total net PnL: любое finite `ret > 0` является win, если kill-switch не нарушен. Удалён оставшийся скрытый `mode activity`/`0.1% drift` gate, из-за которого небольшая прибыль LONG/SHORT и положительный остаточный PnL NEUTRAL записывались как проигрыши при положительном `ret`.
+
+Точный funding schedule теперь имеет приоритет над aggregate estimate. Если `next_funding_ts` и interval подтверждены, но внутри label horizon нет события, funding равен нулю даже при устаревшем `expected_funding_events=1`. Fallback по expected events используется только когда точный schedule действительно отсутствует.
+
+Дублирующие `params.cost_model` и `trade_plan.cost_model` разрешаются fail-closed по максимальному валидному execution cost: нулевой, boolean или повреждённый alias больше не может скрыть более строгую стоимость. Malformed OHLCV row делает horizon incomplete и не превращается в fabricated loss. Текущий `OUTCOME_LABEL_VERSION=grid_label_v8`; первый запуск v1.0.27 очищает только несовместимые proxy outcomes/calibrators, сохраняя recommendations, bot lifecycle, trades и exact execution evidence.
+
 ## Inventory-aware horizon finalization and funding (v1.0.26)
 
 Исправлен третий подтверждённый слой outcome-математики. На границе label horizon остаточная LONG/SHORT-позиция теперь приводится к единой liquidation-equivalent net basis: к mark-to-market добавляется недостающая выходная половина round-trip execution cost. До v1.0.26 два одинаковых результата с закрытой и незакрытой позицией сравнивались на разных cost bases, а остаточный inventory выглядел лучше на величину exit fee/slippage proxy.
@@ -38,7 +46,7 @@ Neutral grid начинается без позиции: если не было 
 
 Proxy-outcome строится только при наличии точной следующей 1m-свечи после `features_ref_ts`, непрерывной минутной последовательности на всём горизонте и свечи ровно на `label_available_ts`. Gap не переносит гипотетический вход или выход на более поздний рынок. Calibration использует только строки с exact `label_available_ts`, который не раньше recommendation timestamp и уже наступил к моменту fit; legacy/malformed/future labels исключаются.
 
-Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, а текущая v1.0.26 использует `grid_label_v7` для inventory-aware funding и liquidation-equivalent horizon finalization. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
+Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, v1.0.26 использовала `grid_label_v7` для inventory-aware funding/finalization, а текущая v1.0.27 использует `grid_label_v8` для sign-consistent success, exact funding-window precedence и fail-closed cost aliases. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
 
 ## No-recommendation state, status semantics and shadow outcomes (v1.0.22)
 
