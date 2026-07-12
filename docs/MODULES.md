@@ -1,3 +1,11 @@
+## v1.0.34 responsibility update
+
+- `app/grid_math.py`: separates all-initial-order neutral commitment from maximum one-way position exposure.
+- `app/recommender.py`: publishes `neutral_all_initial_opening_orders` and sizes qty/margin against the full initial neutral order set.
+- `app/main.py`: preserves and validates the same commitment during metadata snap, strict preflight and runtime risk checks; exposes version 1.0.34 / `grid_label_v15`.
+- `app/outcomes.py`: continues to consume the canonical helper, so neutral percentage returns use full initial opening-order commitment.
+- `tests/test_iteration222_neutral_full_opening_commitment.py`: independent exact-level, official-style N=5, sizing, snap, preflight and outcome-denominator regressions.
+
 ## v1.0.33 responsibility update
 
 - `app/grid_math.py`: resolves dynamic arithmetic prices, N initial orders and the idle bridge index; calculates direction-specific inventory and commitment.
@@ -9,9 +17,9 @@
 ## v1.0.32 responsibility update
 
 - `app/grid_math.py`: resolves active resting topology, one-way committed slots/notional and maximum directional position.
-- `app/recommender.py`: publishes active-order count separately from committed/max-position slots and sizes neutral margin from the larger directional stack.
+- `app/recommender.py`: publishes active-order count separately from committed/max-position slots and HISTORICAL/SUPERSEDED: v1.0.32 sized neutral margin from the larger directional stack; v1.0.34 sums every initial opening order.
 - `app/main.py`: preserves those fields through Bybit snapping and validates/uses them in preflight, runtime caps and daily-loss calculations.
-- `app/outcomes.py`: normalizes neutral total PnL by one-way committed investment through the canonical helper.
+- `app/outcomes.py`: normalizes neutral total PnL by the full initial opening-order commitment through the canonical helper.
 
 # Модули и контракты
 

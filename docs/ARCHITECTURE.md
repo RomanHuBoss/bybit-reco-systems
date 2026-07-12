@@ -1,3 +1,9 @@
+## Neutral opening-order commitment boundary (v1.0.34)
+
+`app/grid_math.py::arithmetic_grid_commitment` is the single source of truth for both reservation and exposure, but these are intentionally distinct. For NEUTRAL it sums every initial Buy/Sell opening-order price into `committed_notional_per_qty` and counts all initial orders in `committed_slot_count`. It separately returns `max_abs_position_slots` as the larger directional stack. Recommender, snap, preflight, runtime risk and outcomes may not replace the commitment sum with a max-side approximation.
+
+The dynamic bridge contract remains: N intervals, N+1 prices, one idle bridge, exactly N initial orders. Therefore neutral committed slots are N, while maximum net position is generally smaller.
+
 ## Dynamic bridge topology boundary (v1.0.33)
 
 `app/grid_math.py::arithmetic_grid_commitment` is the single source of truth for initial arithmetic topology. It emits N+1 prices, exactly N initial orders, one `idle_grid_index`, directional initial inventory, one-way committed slots and maximum position slots. Recommender, payload snap, execution preflight, runtime risk, daily-loss guard and outcome ledger consume this contract; no module may reconstruct an N+1 initial-order model independently.
@@ -6,7 +12,7 @@ Outcome replacement orders may later occupy the bridge only after the adjacent f
 
 ## Neutral one-way commitment boundary (v1.0.32)
 
-`app/grid_math.py::arithmetic_grid_commitment` is the single topology/commitment source. It returns all resting orders separately from one-way committed slots and maximum directional exposure. For NEUTRAL, `committed_notional_per_qty` is the larger of the Buy-opening and Sell-opening price sums; for LONG/SHORT it remains initial inventory plus adverse-side openings. Recommender, snap, preflight, runtime risk and outcomes consume this contract and may not reconstruct commitment from `grid_count` or total active orders.
+`app/grid_math.py::arithmetic_grid_commitment` is the single topology/commitment source. It returns all resting orders separately from one-way committed slots and maximum directional exposure. HISTORICAL/SUPERSEDED: v1.0.32 used the larger Buy/Sell price sum. v1.0.34 requires the sum of all initial neutral opening orders; for LONG/SHORT it remains initial inventory plus adverse-side openings. Recommender, snap, preflight, runtime risk and outcomes consume this contract and may not reconstruct commitment from `grid_count` or total active orders.
 
 # Архитектура Bybit Recommender
 

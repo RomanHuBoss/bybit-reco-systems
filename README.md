@@ -1,5 +1,17 @@
 # Bybit Recommender — Bybit Linear USDT Futures grid-only build
 
+## Neutral full opening-order commitment (v1.0.34)
+
+Исправлена критическая ошибка sizing/risk/outcome-математики NEUTRAL-сетки. В версиях 1.0.32-1.0.33 ошибочно предполагалось, что в one-way режиме достаточно резервировать только более дорогой из двух первоначальных opening stacks: `max(sum(Buy), sum(Sell))`. Однако NEUTRAL стартует без позиции, а все первоначальные Buy и Sell лимитные заявки являются opening orders и требуют доступной маржи. One-way netting ограничивает максимальную **позицию**, но не делает противоположные первоначальные заявки бесплатными.
+
+Канонический `arithmetic_grid_commitment` теперь разделяет две величины:
+- `committed_notional_per_qty = sum(all initial Buy prices) + sum(all initial Sell prices)`;
+- `max_abs_position_slots = max(Buy slots, Sell slots)`.
+
+Dynamic bridge topology v1.0.33 сохраняется: N интервалов образуют N+1 цен, но одна bridge-цена пуста, поэтому первоначальных заявок ровно N. Для NEUTRAL committed slots также равны N, а maximum one-way position остаётся размером большей стороны. Recommender, auto-snap, strict preflight, runtime caps и outcome denominator используют один и тот же контракт.
+
+Текущий `OUTCOME_LABEL_VERSION=grid_label_v15`; первый запуск v1.0.34 очищает только несовместимые proxy outcomes/calibrators. Recommendations, bot lifecycle, trades, exact execution evidence и risk settings сохраняются. Исправление делает sizing более консервативным и уменьшает процентную доходность NEUTRAL при том же абсолютном PnL; оно не доказывает наличие live edge.
+
 Сервис собирает рыночные данные Bybit Linear USDT Futures / USDT Perpetual, рассчитывает multi-timeframe признаки и строит рекомендации только для `futures_grid`. Любые другие классы ботов и стратегий в этой сборке не поддерживаются. Дополнительно может подключаться локальный LLM-reviewer по свечам; полный журнал решений и состояний хранится в выбранном backend: SQLite или PostgreSQL.
 
 Проект рассчитан прежде всего на **операторский / полуавтоматический контур**: система формирует интерпретируемую рекомендацию, показывает причины, ограничения и риск-контекст, а оператор уже принимает решение о запуске бота на бирже.
@@ -12,9 +24,9 @@
 
 Ошибка завышала active orders, committed capital, margin, worst-case exposure и initial directional inventory; одновременно outcome-ledger создавал fills на bridge-уровне, где исходной заявки быть не должно. Канонический `arithmetic_grid_commitment` теперь возвращает `idle_grid_index`, а recommender, auto-snap, strict preflight, runtime caps, daily-loss guard и outcome используют одну dynamic topology.
 
-Для NEUTRAL/LONG между уровнями idle bridge — ближайший верхний уровень; для SHORT — ближайший нижний. После исполнения соседней заявки replacement-order может появиться на bridge level. One-way neutral commitment из v1.0.32 сохраняется: финансируется более дорогой directional opening stack, а не сумма обеих сторон.
+Для NEUTRAL/LONG между уровнями idle bridge — ближайший верхний уровень; для SHORT — ближайший нижний. После исполнения соседней заявки replacement-order может появиться на bridge level. Dynamic bridge topology сохраняется, но утверждение v1.0.32 о финансировании только более дорогого directional opening stack отменено v1.0.34: для NEUTRAL резервируются все первоначальные opening orders обеих сторон, а maximum position по-прежнему равна большей стороне.
 
-Текущий `OUTCOME_LABEL_VERSION=grid_label_v14`; первый запуск v1.0.33 очищает только несовместимые proxy outcomes/calibrators. Recommendations, bot lifecycle, trades, exact execution evidence и risk settings сохраняются. Исправление устраняет систематическое искажение sizing/outcomes, но не доказывает live edge.
+В v1.0.33 использовался `OUTCOME_LABEL_VERSION=grid_label_v14`; текущий контракт v1.0.34 — `grid_label_v15`. Первый запуск новой версии очищает только несовместимые proxy outcomes/calibrators. Recommendations, bot lifecycle, trades, exact execution evidence и risk settings сохраняются. Исправление устраняет систематическое искажение sizing/outcomes, но не доказывает live edge.
 
 ## Exact grid commitment and path-ambiguity integrity (v1.0.30)
 
@@ -83,7 +95,7 @@ Neutral grid начинается без позиции: если не было 
 
 Proxy-outcome строится только при наличии точной следующей 1m-свечи после `features_ref_ts`, непрерывной минутной последовательности на всём горизонте и свечи ровно на `label_available_ts`. Gap не переносит гипотетический вход или выход на более поздний рынок. Calibration использует только строки с exact `label_available_ts`, который не раньше recommendation timestamp и уже наступил к моменту fit; legacy/malformed/future labels исключаются.
 
-Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, v1.0.26 использовала `grid_label_v7` для inventory-aware funding/finalization, v1.0.27 использовала `grid_label_v8` для sign-consistent success, exact funding-window precedence и fail-closed cost aliases, v1.0.28 использовала `grid_label_v9` для post-publication entry и strict persisted-contract integrity, v1.0.29 использовала `grid_label_v10` для directional order topology, observable endpoint path и terminal kill-switch accounting, v1.0.30 использовала `grid_label_v11` для exact capital commitment и path-ambiguity integrity, v1.0.31 использовала `grid_label_v12` для quantity-aware resting-order ledger и gap-stop integrity, v1.0.32 использовала `grid_label_v13` для neutral one-way commitment integrity, а текущая v1.0.33 использует `grid_label_v14` для dynamic off-grid bridge topology. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
+Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, v1.0.26 использовала `grid_label_v7` для inventory-aware funding/finalization, v1.0.27 использовала `grid_label_v8` для sign-consistent success, exact funding-window precedence и fail-closed cost aliases, v1.0.28 использовала `grid_label_v9` для post-publication entry и strict persisted-contract integrity, v1.0.29 использовала `grid_label_v10` для directional order topology, observable endpoint path и terminal kill-switch accounting, v1.0.30 использовала `grid_label_v11` для exact capital commitment и path-ambiguity integrity, v1.0.31 использовала `grid_label_v12` для quantity-aware resting-order ledger и gap-stop integrity, v1.0.32 использовала `grid_label_v13` для ошибочной max-side neutral commitment, v1.0.33 использовала `grid_label_v14` для dynamic off-grid bridge topology, а текущая v1.0.34 использует `grid_label_v15` для полного резервирования всех первоначальных NEUTRAL opening orders. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
 
 ## No-recommendation state, status semantics and shadow outcomes (v1.0.22)
 

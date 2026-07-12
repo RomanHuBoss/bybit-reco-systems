@@ -1,3 +1,15 @@
+## 0. Neutral full initial-order reservation (v1.0.34)
+
+Expected behavior:
+- NEUTRAL starts flat, therefore every initial Buy and Sell order is opening/margin-bearing;
+- dynamic bridge topology still creates exactly N initial orders for N intervals;
+- `committed_slot_count=N` and committed notional is the sum of prices of all N initial orders per unit qty;
+- `max_abs_position_slots=max(Buy slots, Sell slots)` is separate and must not replace commitment;
+- for levels 99/100/101 at reference 100, commitment is `99+101=200`, while maximum net position is one slot;
+- for the six-price N=5 example at reference 20,000, active/committed initial orders are 10k, 14k, 18k, 26k and 30k, totaling 98k per unit qty; max one-way stack is 56k/three slots;
+- a legacy payload reporting only max-side committed notional/slots is blocked by preflight;
+- old `grid_label_v14` outcomes are not mixed with `grid_label_v15`.
+
 ## 0. Dynamic off-grid bridge topology (v1.0.33)
 
 Ожидаемое поведение:
@@ -11,7 +23,7 @@
 
 ## 0. Neutral one-way capital reservation (v1.0.32)
 
-For a neutral arithmetic grid with levels 99/100/101 and reference 100, two opposite orders are active, but one-way committed investment is the more expensive opening side: `max(99, 101)=101` per unit qty. At reference 100.5, Buy openings total `99+100=199`, the Sell opening totals `101`, so three orders remain active while committed slots are two and committed notional is 199. Preflight must accept this separation; summing both sides or requiring committed slots to equal active orders is a defect.
+HISTORICAL/SUPERSEDED: v1.0.32 treated only the larger neutral side as committed. v1.0.34 requires the sum of all initial opening orders; maximum one-way position remains the larger side.
 
 # Ключевые сценарии
 

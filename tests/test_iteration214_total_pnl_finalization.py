@@ -72,8 +72,8 @@ def test_terminal_residual_position_pays_closing_execution_cost(tmp_path: Path) 
         # Sell 1 slot at 101, then terminate the remaining short at 102.
         # Gross=-1. Fees/slippage proxy is 5 bps on each leg:
         # 101*0.0005 + 102*0.0005 = 0.1015. One-way neutral
-        # commitment is the higher initial side, 101 USDT.
-        assert ret_proxy == pytest.approx(-1.1015 / 101.0)
+        # full initial neutral commitment is buy 99 plus sell 101 = 200 USDT.
+        assert ret_proxy == pytest.approx(-1.1015 / 200.0)
         assert success == 0
     finally:
         conn.close()
@@ -227,8 +227,8 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
 
 def test_outcome_contract_is_bumped_for_inventory_aware_finalization() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
-    assert 'version="1.0.33"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v15"' in source
+    assert 'version="1.0.34"' in source
 
 
 def test_short_inventory_pays_negative_funding_at_position_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

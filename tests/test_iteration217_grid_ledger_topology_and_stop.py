@@ -105,7 +105,7 @@ def test_minute_open_gap_and_return_counts_guaranteed_grid_cycle(tmp_path: Path)
 
         # Previous close -> next open crosses the sell at 101; open -> close
         # crosses the replacement buy at 100. Both segments are observable.
-        assert ret_proxy == pytest.approx(1.0 / 101.0)
+        assert ret_proxy == pytest.approx(1.0 / 200.0)
         assert success == 1
     finally:
         conn.close()
@@ -124,7 +124,7 @@ def test_single_sided_intraminute_excursion_counts_unambiguous_cycle(tmp_path: P
         )
 
         # With low == open == close, the only possible excursion is 100 -> 101 -> 100.
-        assert ret_proxy == pytest.approx(1.0 / 101.0)
+        assert ret_proxy == pytest.approx(1.0 / 200.0)
         assert success == 1
     finally:
         conn.close()
@@ -147,7 +147,7 @@ def test_kill_switch_breach_stops_ledger_at_boundary_not_after_recovery(tmp_path
 
         # Sell at 101, then the upper kill-switch closes the short at 102.
         # The later recovery to 100 occurs after the bot has stopped.
-        assert ret_proxy == pytest.approx(-1.0 / 101.0)
+        assert ret_proxy == pytest.approx(-1.0 / 200.0)
         assert success == 0
     finally:
         conn.close()
@@ -165,7 +165,7 @@ def test_intraminute_kill_switch_breach_cannot_be_erased_by_same_candle_close(tm
             base_ts, base_ts + 60, "neutral", _params(),
         )
 
-        assert ret_proxy == pytest.approx(-1.0 / 101.0)
+        assert ret_proxy == pytest.approx(-1.0 / 200.0)
         assert success == 0
     finally:
         conn.close()
@@ -205,5 +205,5 @@ def test_missing_kill_switch_is_not_a_labelable_executable_grid(tmp_path: Path) 
 
 def test_outcome_contract_is_bumped_for_topology_and_stop_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
-    assert 'version="1.0.33"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v15"' in source
+    assert 'version="1.0.34"' in source

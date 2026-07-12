@@ -58,9 +58,9 @@ def test_neutral_off_grid_omits_upper_bridge_level() -> None:
     assert topology["sell_indices"] == [4, 5]
     assert topology["idle_grid_index"] == 3
     assert topology["active_order_count"] == 5
-    assert topology["committed_slot_count"] == 3
+    assert topology["committed_slot_count"] == 5
     assert topology["max_abs_position_slots"] == 3
-    assert topology["committed_notional_per_qty"] == pytest.approx(56_000.0)
+    assert topology["committed_notional_per_qty"] == pytest.approx(98_000.0)
 
 
 def test_long_off_grid_omits_nearest_tp_and_initial_lot() -> None:
@@ -152,12 +152,12 @@ def test_neutral_bridge_order_is_created_only_after_adjacent_buy_fill(tmp_path: 
             base_ts, base_ts + 120, "neutral", _params(),
         )
         assert success == 1
-        assert ret == pytest.approx(4_000.0 / 56_000.0)
+        assert ret == pytest.approx(4_000.0 / 98_000.0)
     finally:
         conn.close()
 
 
 def test_outcome_contract_is_bumped_for_dynamic_bridge_topology() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
-    assert 'version="1.0.33"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v15"' in source
+    assert 'version="1.0.34"' in source

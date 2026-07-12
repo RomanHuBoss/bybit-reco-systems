@@ -108,13 +108,12 @@ def arithmetic_grid_commitment(
     immediately executable order.
 
     Directional close-only orders are backed by the initial position; opening
-    orders on the adverse side require additional commitment. In one-way mode,
-    neutral opening orders may rest on both sides, while reserved order cost is
-    governed by the more expensive directional opening stack rather than their
-    sum. ``committed_notional_per_qty`` therefore represents the initial
-    investment/notional commitment for one unit of
-    per-grid quantity without pretending that interval count always equals order
-    count.
+    orders on the adverse side require additional commitment. Neutral mode starts
+    without a position, so every initial Buy and Sell order is opening/margin-
+    bearing. ``committed_notional_per_qty`` therefore sums both neutral opening
+    stacks, while ``max_abs_position_slots`` remains the larger one-way stack.
+    Keeping reservation and maximum net position separate prevents both margin
+    understatement and double-counting directional exposure.
     """
     lower_d = dec(lower)
     upper_d = dec(upper)
@@ -192,13 +191,13 @@ def arithmetic_grid_commitment(
         committed_slot_count = initial_short_slots + len(sell_indices)
         max_abs_position_slots = initial_short_slots + len(sell_indices)
     else:
-        # The project deliberately uses one-way position semantics. Bybit may keep
-        # opening orders on both sides active, but order cost is reserved against
-        # the more expensive direction rather than the sum of mutually exclusive
-        # long and short stacks. Summing both sides almost doubles neutral-grid
-        # investment, margin and the denominator of outcome returns.
-        committed_price_sum = max(buy_opening_price_sum, sell_opening_price_sum)
-        committed_slot_count = max(len(buy_indices), len(sell_indices))
+        # Neutral starts flat and every initial resting order is opening/margin-
+        # bearing. One-way netting limits the maximum simultaneous position to the
+        # larger directional stack, but it does not make the opposite opening
+        # orders free. Reserve both stacks for sizing/preflight and keep the
+        # maximum net position as a separate risk quantity.
+        committed_price_sum = buy_opening_price_sum + sell_opening_price_sum
+        committed_slot_count = len(buy_indices) + len(sell_indices)
         max_abs_position_slots = max(len(buy_indices), len(sell_indices))
 
     if active_order_count <= 0 or committed_price_sum <= ZERO:

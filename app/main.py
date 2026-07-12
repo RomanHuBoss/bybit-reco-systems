@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v14"
+OUTCOME_LABEL_VERSION = "grid_label_v15"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -2227,7 +2227,7 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                     mapping["estimated_committed_slots"] = int(committed_slots)
                     mapping["estimated_max_position_slots"] = int(max_position_slots)
                     mapping["grid_commitment_model"] = (
-                        "one_way_max_directional_opening_stack"
+                        "neutral_all_initial_opening_orders"
                         if normalize_execution_direction(out.get("direction") or params.get("direction")) == "neutral"
                         else "arithmetic_levels_plus_directional_inventory"
                     )
@@ -3966,13 +3966,13 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                 if est_committed_slots is None:
                     errors.append({
                         "code": "COMMITTED_SLOTS_NOT_INTEGER",
-                        "msg": f"estimated_committed_slots={raw_committed_slots!r} не является точным целым числом; оценка one-way commitment неоднозначна.",
+                        "msg": f"estimated_committed_slots={raw_committed_slots!r} не является точным целым числом; оценка initial-order commitment неоднозначна.",
                     })
                 elif grid_commitment is not None and est_committed_slots != int(grid_commitment["committed_slot_count"]):
                     errors.append({
                         "code": "COMMITTED_SLOTS_TOPOLOGY_MISMATCH",
                         "msg": (
-                            f"estimated_committed_slots={est_committed_slots}, но one-way arithmetic topology требует "
+                            f"estimated_committed_slots={est_committed_slots}, но arithmetic topology требует "
                             f"{int(grid_commitment['committed_slot_count'])}; active resting orders и одновременно "
                             "резервируемые directional slots не являются одним показателем."
                         ),
@@ -4691,7 +4691,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.33", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.34", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

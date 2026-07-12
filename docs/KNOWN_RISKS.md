@@ -1,3 +1,17 @@
+## 2026-07-12 neutral opening-order margin audit (v1.0.34)
+
+### RESOLVED/CRITICAL: opposite NEUTRAL opening orders were treated as free
+Version 1.0.33 correctly restored the idle bridge but inherited an incorrect v1.0.32 capital oracle: `max(Buy opening stack, Sell opening stack)`. NEUTRAL starts flat, so all initial Buy and Sell orders are opening orders and require margin availability. The old model understated committed notional/margin, overstated percentage return, and could pass payloads that lacked funds for all initial orders.
+
+### RESOLVED/HIGH: commitment and maximum net position were conflated
+v1.0.34 sums all initial neutral opening orders for `committed_notional_per_qty` and `committed_slot_count`, while retaining `max_abs_position_slots=max(Buy slots, Sell slots)` for one-way exposure. This distinction is enforced in generated payloads, snap, preflight, runtime caps and outcomes.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v15`
+The denominator and sizing contract changed. First v1.0.34 startup removes only incompatible proxy outcomes and calibrators; recommendations, bot instances, trades, exact execution evidence and risk settings remain.
+
+### RESIDUAL LIMITATION
+The deterministic commitment floor does not reproduce private-account margin offsets, existing positions, fee reserve, liquidation engine or exchange-side rejection. The external executor must still query current private account/order cost. Strategy profitability remains unproven.
+
 ## 2026-07-12 dynamic off-grid bridge topology audit (v1.0.33)
 
 ### CLOSED HIGH/CRITICAL: N+1 initial orders at an off-grid reference
@@ -15,7 +29,7 @@ The public rules describe dynamic order placement, but the proxy still cannot re
 ## 2026-07-12 neutral one-way commitment audit (v1.0.32)
 
 ### CLOSED CRITICAL: neutral capital summed mutually exclusive sides
-The v1.0.31 topology counted every resting order correctly but also used the sum of both neutral opening stacks as committed capital. In one-way mode only the more expensive directional opening stack governs reserved order cost. The old denominator could nearly double neutral required margin and halve reported return. v1.0.32 uses the maximum side price sum and keeps active-order count separate.
+HISTORICAL/SUPERSEDED: v1.0.32 changed neutral commitment to the larger opening stack. The v1.0.34 audit proved this oracle incorrect for a flat NEUTRAL bot because all initial Buy/Sell orders are opening orders. Current code sums both stacks and separates that commitment from maximum one-way position.
 
 ### CLOSED HIGH: risk and preflight reused total resting-order count
 Auto-snap, runtime caps and daily-loss fallback could multiply worst price by all opposite orders. v1.0.32 uses `max_abs_position_slots`, while strict preflight validates independent active, committed and maximum-position counts.

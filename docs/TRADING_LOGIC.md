@@ -1,10 +1,22 @@
+## Current neutral opening-order reservation rules (grid_label_v15)
+
+- NEUTRAL starts with zero position; every initial Buy and Sell resting order is an opening order and therefore part of the deterministic commitment floor.
+- `committed_notional_per_qty = sum(initial Buy prices) + sum(initial Sell prices)`.
+- `committed_slot_count = number of all initial opening orders` (exactly N under the current dynamic bridge topology).
+- `max_abs_position_slots = max(Buy opening slots, Sell opening slots)` remains a separate one-way exposure metric.
+- One-way position netting constrains simultaneous net inventory; it does not make opposite initial opening orders free or remove their preflight margin requirement.
+- Recommender, auto-snap, preflight, runtime caps and outcome normalization must consume the same `arithmetic_grid_commitment` result.
+- `grid_label_v15` is incompatible with v14 proxy outcomes/calibrators; the version guard resets those derived rows while preserving recommendations, bot lifecycle, trades and exact execution evidence.
+
+The v1.0.32 max-side commitment rule and its iteration220 oracle are superseded. Dynamic bridge topology from v1.0.33 remains valid: N intervals create N+1 prices, one bridge price is idle, and exactly N initial orders remain.
+
 ## Current dynamic bridge topology rules (grid_label_v14)
 
 - `grid_count=N` is the number of arithmetic intervals and creates N+1 prices, but dynamic Futures Grid starts with exactly N resting orders.
 - Reference exactly on a price level leaves that pivot idle. Reference between levels also leaves one adjacent bridge level idle until the neighbouring order fills.
 - For NEUTRAL and LONG off-grid entry, the nearest upper level is the idle bridge; for SHORT, the nearest lower level is idle.
 - Directional initial inventory equals the number of initial close-side orders that actually exist after excluding the bridge; no phantom lot is created for the idle level.
-- Neutral one-way commitment remains `max(Buy opening stack, Sell opening stack)` and is computed from the actual initial orders.
+- Neutral commitment now sums every actual initial Buy/Sell opening order; maximum one-way position remains the larger directional stack.
 - Recommender, auto-snap, preflight, runtime caps, daily-loss guard and outcome ledger must use the same `arithmetic_grid_commitment` result, including `idle_grid_index`.
 - `grid_label_v14` is incompatible with prior proxy outcomes/calibrators and is reset by the version guard; recommendations, trades, bot audit lifecycle and exact execution evidence remain.
 - The OHLCV ledger remains a proxy and does not prove queue priority, partial fills, actual fee tier or live edge.

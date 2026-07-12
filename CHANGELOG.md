@@ -1,3 +1,13 @@
+## 2026-07-12 - v1.0.34 - neutral opening-order margin reservation
+
+- Fixed a CRITICAL neutral-grid sizing defect: every initial Buy and Sell order is opening/margin-bearing because NEUTRAL starts flat; commitment now sums both initial opening stacks instead of reserving only the larger side.
+- Kept one-way maximum position separate: `max_abs_position_slots` remains the larger directional stack, while `committed_slot_count` covers all initial opening orders.
+- Aligned recommender sizing, Bybit metadata snap, strict preflight, runtime limits and outcome return normalization on the corrected commitment contract.
+- Rejected legacy max-side neutral payloads fail-closed through topology parity checks.
+- Bumped FastAPI to `1.0.34` and outcome target to `grid_label_v15`; no API-route, database-schema or environment-variable change.
+- Added `tests/test_iteration222_neutral_full_opening_commitment.py`: 8 independent checks; 7 RED failures on v1.0.33 and 8/8 GREEN after the fix.
+- Full post-check: 977/977 tests passed. Previous v1.0.32 documentation/tests asserting max-side reservation are explicitly superseded rather than silently retained.
+
 ## 2026-07-12 - v1.0.33 - dynamic off-grid bridge topology
 
 - Corrected arithmetic-grid initial topology when reference lies between levels: N intervals create N+1 prices but exactly N initial orders, with one adjacent bridge level intentionally idle.

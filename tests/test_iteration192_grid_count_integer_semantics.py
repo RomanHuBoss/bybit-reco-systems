@@ -247,9 +247,9 @@ def test_outcome_label_uses_canonical_grid_count_alias_not_only_legacy_grid_leve
 
         assert canonical == pytest.approx(legacy)
         # Fees are charged on the actual 101 and 100 fill notionals. Two
-        # completed pairs are normalized by the one-way neutral commitment
-        # (the higher 101-USDT opening stack), not by both opposite sides.
-        assert canonical[1] == pytest.approx((2.0 * (1.0 - 0.0005 * (101.0 + 100.0))) / 101.0)
+        # completed pairs are normalized by the full initial neutral opening-order
+        # commitment: buy 99 plus sell 101 = 200 USDT.
+        assert canonical[1] == pytest.approx((2.0 * (1.0 - 0.0005 * (101.0 + 100.0))) / 200.0)
     finally:
         conn.close()
 

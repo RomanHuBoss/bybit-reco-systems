@@ -110,7 +110,7 @@ def test_one_profitable_neutral_grid_pair_is_a_success(tmp_path: Path) -> None:
             base_ts, base_ts + 120, "neutral", _params(grid_count=2),
         )
 
-        assert ret_proxy == pytest.approx(1.0 / 101.0)
+        assert ret_proxy == pytest.approx(1.0 / 200.0)
         assert success == 1
     finally:
         conn.close()
@@ -149,9 +149,9 @@ def test_neutral_monotonic_inventory_loss_uses_actual_grid_entry_prices(tmp_path
         )
 
         # Shorts open at 101..110. Marking all ten at 110 loses 45 USDT.
-        # In one-way mode neutral commitment is the more expensive opening
-        # stack, here sell levels 101..110 = 1055 USDT.
-        assert ret_proxy == pytest.approx(-45.0 / 1055.0)
+        # Neutral starts flat, so every initial buy and sell order is margin-bearing;
+        # levels 90..99 plus 101..110 total 2000 USDT.
+        assert ret_proxy == pytest.approx(-45.0 / 2000.0)
         assert success == 0
     finally:
         conn.close()
@@ -191,8 +191,8 @@ def test_outcome_uses_persisted_range_and_grid_count_not_cost_widened_step(tmp_p
         )
 
         # Gross 1 USDT minus price-aware 40 bps per fill, normalized by
-        # one-way neutral commitment at the more expensive 101-USDT side.
-        assert ret_proxy == pytest.approx((1.0 - 0.004 * (101.0 + 100.0)) / 101.0)
+        # full initial neutral commitment of 200 USDT.
+        assert ret_proxy == pytest.approx((1.0 - 0.004 * (101.0 + 100.0)) / 200.0)
         assert success == 1
     finally:
         conn.close()
@@ -200,5 +200,5 @@ def test_outcome_uses_persisted_range_and_grid_count_not_cost_widened_step(tmp_p
 
 def test_outcome_contract_is_bumped_for_grid_ledger_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
-    assert 'version="1.0.33"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v15"' in source
+    assert 'version="1.0.34"' in source

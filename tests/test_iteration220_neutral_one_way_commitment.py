@@ -64,9 +64,9 @@ def _independent_neutral_commitment(params: dict) -> tuple[int, int, float, floa
         sells = list(range(cell + 2, count + 1))
     buy_sum = sum(levels[index] for index in buys)
     sell_sum = sum(levels[index] for index in sells)
-    committed_slots = max(len(buys), len(sells))
-    committed_per_qty = max(buy_sum, sell_sum)
-    max_position_notional = qty * upper * committed_slots
+    committed_slots = len(buys) + len(sells)
+    committed_per_qty = buy_sum + sell_sum
+    max_position_notional = qty * upper * max(len(buys), len(sells))
     return len(buys) + len(sells), committed_slots, qty * committed_per_qty, max_position_notional
 
 
@@ -107,18 +107,18 @@ def _seed(conn, *, base_ts: int, candles: list[tuple[float, float, float, float]
     ])
 
 
-def test_neutral_exact_level_commitment_uses_more_expensive_one_way_side() -> None:
+def test_neutral_exact_level_commitment_reserves_all_initial_opening_orders() -> None:
     topology = arithmetic_grid_commitment(
         lower=99.0, upper=101.0, grid_count=2, reference_price=100.0, direction="neutral"
     )
     assert topology is not None
     assert topology["active_order_count"] == 2
-    assert topology["committed_slot_count"] == 1
+    assert topology["committed_slot_count"] == 2
     assert topology["max_abs_position_slots"] == 1
-    assert topology["committed_notional_per_qty"] == pytest.approx(101.0)
+    assert topology["committed_notional_per_qty"] == pytest.approx(200.0)
 
 
-def test_neutral_off_grid_commitment_reserves_only_larger_directional_stack() -> None:
+def test_neutral_off_grid_commitment_reserves_all_initial_opening_orders() -> None:
     topology = arithmetic_grid_commitment(
         lower=99.0, upper=101.0, grid_count=2, reference_price=100.5, direction="neutral"
     )
@@ -129,7 +129,7 @@ def test_neutral_off_grid_commitment_reserves_only_larger_directional_stack() ->
     assert topology["committed_notional_per_qty"] == pytest.approx(199.0)
 
 
-def test_generated_neutral_sizing_uses_one_way_commitment_but_keeps_all_active_orders() -> None:
+def test_generated_neutral_sizing_reserves_all_initial_opening_orders() -> None:
     params = _generated_neutral()
     active_orders, committed_slots, committed_notional, worst_notional = _independent_neutral_commitment(params)
 
@@ -140,7 +140,7 @@ def test_generated_neutral_sizing_uses_one_way_commitment_but_keeps_all_active_o
     assert params["economics"]["estimated_total_order_notional_usdt"] == pytest.approx(committed_notional)
 
 
-def test_neutral_outcome_return_uses_one_way_investment_denominator(tmp_path: Path) -> None:
+def test_neutral_outcome_return_uses_full_initial_order_denominator(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "neutral-return.db"))
     try:
         db.init_db(conn)
@@ -153,7 +153,7 @@ def test_neutral_outcome_return_uses_one_way_investment_denominator(tmp_path: Pa
             conn, "linear", "BTCUSDT", 100.0, 100.0,
             base_ts, base_ts + 120, "neutral", _outcome_params(),
         )
-        assert ret_proxy == pytest.approx(1.0 / 101.0)
+        assert ret_proxy == pytest.approx(1.0 / 200.0)
         assert success == 1
     finally:
         conn.close()
@@ -194,7 +194,7 @@ def test_neutral_daily_loss_guard_uses_max_one_way_position_not_all_orders(tmp_p
         sys.modules.pop("app.main", None)
 
 
-def test_neutral_auto_snap_keeps_active_order_count_separate_from_committed_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_neutral_auto_snap_keeps_max_position_separate_from_full_commitment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DB_PATH", str(tmp_path / "snap.db"))
     monkeypatch.setenv("RUNTIME_LOCK_DB_PATH", str(tmp_path / "snap-lock.db"))
     sys.modules.pop("app.main", None)
@@ -222,7 +222,7 @@ def test_neutral_auto_snap_keeps_active_order_count_separate_from_committed_slot
         sys.modules.pop("app.main", None)
 
 
-def test_neutral_preflight_accepts_one_way_commitment_notional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_neutral_preflight_accepts_full_initial_opening_commitment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DB_PATH", str(tmp_path / "preflight.db"))
     monkeypatch.setenv("RUNTIME_LOCK_DB_PATH", str(tmp_path / "preflight-lock.db"))
     sys.modules.pop("app.main", None)
@@ -260,5 +260,5 @@ def test_neutral_preflight_accepts_one_way_commitment_notional(tmp_path: Path, m
 
 def test_contract_bumped_for_neutral_one_way_commitment() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v14"' in source
-    assert 'version="1.0.33"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v15"' in source
+    assert 'version="1.0.34"' in source

@@ -29,6 +29,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Long: TP above entry/reference, SL below entry/reference.
 - Short: TP below entry/reference, SL above entry/reference.
 - Neutral grid: no single directional TP; lower and upper outer levels are kill-switch exits.
+- All initial NEUTRAL Buy/Sell orders are opening orders and belong in committed notional; one-way net position remains capped by the larger side.
 - Any backend/UI disagreement in `directional_exit_levels` means no directional TP/SL should be rendered as executable.
 
 ## Temporal evidence integrity
@@ -37,7 +38,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
 - An already-open candle before publication is not a tradeable entry. Conflicting persisted grid/funding aliases are skipped, never collapsed into a different bot or a zero-return loss.
 - Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
-- Current label contract is `grid_label_v14`: entry remains the first exact 1m open strictly after publication; N intervals create N+1 prices but exactly N initial orders, with one idle pivot/bridge level; directional inventory and neutral one-way commitment are derived from those actual orders; kill-switch remains terminal.
+- Current label contract is `grid_label_v15`: entry remains the first exact 1m open strictly after publication; N intervals create N+1 prices but exactly N initial orders, with one idle pivot/bridge level; directional inventory and neutral full initial-order commitment are derived from those actual orders; kill-switch remains terminal.
 - Same-level directional lots are quantity-aware: an initial TP and an adjacent replacement TP at one price must both remain in the ledger, fees and funding state.
 - Missing/inside-range kill-switch is unlabelable. For any candle with material high and low excursions, both O-H-L-C and O-L-H-C paths must produce the same ledger/stop/PnL state; otherwise no proxy label is stored.
 - A close-open or horizon gap beyond the kill-switch is also unlabelable; never assume the skipped boundary was an executable stop price.
@@ -73,7 +74,7 @@ A complete `params.trade_plan` must include:
 - levels.tp_per_leg.abs or pct; for arithmetic grid it must match the adjacent grid interval, not a 70% haircut;
 - grid_count and arithmetic grid model;
 - explicit leverage and isolated margin mode;
-- sizing/economics sufficient for qtyStep, minNotional, margin, and worst-case exposure validation; keep active orders separate from one-way committed/max-position slots. `grid_count` is intervals: N+1 prices exist, but one pivot/bridge is idle and initial active orders remain N; neutral capital uses only the larger directional opening stack computed from those actual orders.
+- sizing/economics sufficient for qtyStep, minNotional, margin, and worst-case exposure validation; keep initial-order commitment separate from maximum one-way position. `grid_count` is intervals: N+1 prices exist, one pivot/bridge is idle and initial active orders remain N; neutral capital sums all N initial Buy/Sell opening orders, while max position uses only the larger side.
 
 ## Practical sequence
 

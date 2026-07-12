@@ -2628,7 +2628,7 @@ def _params(
         max_position_slots = int(commitment["max_abs_position_slots"])
         committed_notional_per_qty = float(commitment["committed_notional_per_qty"])
         if direction == "neutral":
-            commitment_model = "one_way_max_directional_opening_stack"
+            commitment_model = "neutral_all_initial_opening_orders"
         else:
             commitment_model = (
                 "grid_count_orders_reference_on_level"
