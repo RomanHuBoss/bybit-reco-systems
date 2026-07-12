@@ -1,3 +1,13 @@
+## Cost-layer separation - v1.0.36 / grid_label_v17
+
+Bybit Grid Profit одной завершённой arithmetic-пары равен полному соседнему интервалу минус комиссии двух resting fills. `spread + slippage` являются разовой market setup/terminal friction, а funding является signed position-time Total P&L. Эти слои нельзя вычитать из каждой пары: при K циклах это умножает разовые/горизонтные расходы на K.
+
+Канонический контракт:
+- `grid_round_trip_fee_bps` определяет spacing, density и net grid profit;
+- `market_round_trip_cost_bps` используется для initial/terminal execution stress и диагностики;
+- funding начисляется по фактическому inventory на событиях и проверяется отдельным funding guard;
+- live bid/ask spread остаётся отдельным liquidity cap и не становится recurring fee каждой limit-пары.
+
 ## Current neutral opening-order reservation rules (grid_label_v15)
 
 ## Bybit cross-margin and one-way execution contract (v1.0.35)
@@ -93,7 +103,7 @@ execution-time validation должна блокировать исполнени
 4. Строится основной диапазон `price_range_lower/upper`; для Bybit arithmetic grid исполнимый шаг публикуется как `grid_spacing_pct = (upper - lower) / grid_count / reference_price`.
 5. Вокруг диапазона строится `kill_switch` через padding от старшего ATR.
 6. Рассчитывается `params.economics`: gross/net profit per grid, execution cost, funding impact, minimum viable order notional, estimated margin required и approximate worst-boundary liquidation buffer.
-7. Если net profit per grid после fees/spread/slippage/funding <= 0 или слишком тонкий, рекомендация получает блок `GRID_NET_PROFIT_*` и не должна запускаться. Минимальный шаг grid, score и expected RR рассчитываются от execution-cost плюс неблагоприятный expected funding carry; положительный funding receipt не уменьшает шаг, не повышает score/RR и не засчитывается как approval-edge. Если `next_funding_ts` отсутствует, recommendation и execution-preflight консервативно считают возможные funding events по горизонту и interval вместо предположения «funding не будет» или «будет только один event».
+7. Если interval minus recurring fees двух grid fills <= 0 или слишком тонок, рекомендация получает блок `GRID_NET_PROFIT_*`. Spread/slippage относятся к разовой market setup/terminal friction, а adverse funding — к position-time Total P&L и отдельным launch/risk gates; эти расходы не вычитаются из каждой пары. Funding receipt не повышает score/RR и не засчитывается как approval-edge. Если `next_funding_ts` отсутствует, recommendation и execution-preflight консервативно оценивают возможные funding events по горизонту и interval, но не умножают этот horizon cost на число grid cycles.
 8. Для UI и operator guidance формируется `trade_plan`.
 
 ## Что именно проверяется перед `executed`

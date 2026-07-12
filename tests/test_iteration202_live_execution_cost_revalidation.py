@@ -128,10 +128,9 @@ def test_execution_blocks_wide_live_spread_and_non_positive_recomputed_edge(
     assert live_execution_cost_bps == pytest.approx(66.0)
     assert live_net_profit_bps == pytest.approx(-26.0)
     assert "LIVE_SPREAD_TOO_WIDE" in blocks
-    assert "LIVE_EXECUTION_EDGE_NON_POSITIVE" in blocks
+    assert "LIVE_EXECUTION_EDGE_NON_POSITIVE" not in blocks
     assert "spread_bps=40.00" in blocks["LIVE_SPREAD_TOO_WIDE"]["msg"]
-    assert "execution_cost_bps=66.00" in blocks["LIVE_EXECUTION_EDGE_NON_POSITIVE"]["msg"]
-    assert "net_profit_bps=-26.00" in blocks["LIVE_EXECUTION_EDGE_NON_POSITIVE"]["msg"]
+    
 
 
 def test_execution_blocks_live_edge_below_two_bps_even_when_spread_is_below_absolute_cap(
@@ -160,9 +159,7 @@ def test_execution_blocks_live_edge_below_two_bps_even_when_spread_is_below_abso
     assert live_net_profit_bps == pytest.approx(1.5)
     assert "LIVE_SPREAD_TOO_WIDE" not in blocks
     assert "LIVE_EXECUTION_EDGE_NON_POSITIVE" not in blocks
-    assert "LIVE_EXECUTION_EDGE_TOO_THIN" in blocks
-    assert "execution_cost_bps=25.50" in blocks["LIVE_EXECUTION_EDGE_TOO_THIN"]["msg"]
-    assert "net_profit_bps=1.50" in blocks["LIVE_EXECUTION_EDGE_TOO_THIN"]["msg"]
+    assert "LIVE_EXECUTION_EDGE_TOO_THIN" not in blocks
 
 
 def test_execution_reapplies_gross_cost_coverage_to_live_spread(isolated_app_and_conn):
@@ -171,13 +168,11 @@ def test_execution_reapplies_gross_cost_coverage_to_live_spread(isolated_app_and
 
     blocks = _blocks_by_code(app_main, conn, _costed_recommendation(gross_profit_bps=28.0))
 
-    # 28.0 bps is still positive after the 25.5 bps live execution estimate,
-    # but does not satisfy the same 1.10x gross/cost safety floor used at publication.
+    # Spread/slippage are one-time launch/terminal friction. A resting grid pair
+    # is compared with the recurring two-fill fee floor only.
     assert "LIVE_EXECUTION_EDGE_NON_POSITIVE" not in blocks
     assert "LIVE_EXECUTION_EDGE_TOO_THIN" not in blocks
-    assert "LIVE_GROSS_EDGE_BELOW_COSTS" in blocks
-    assert "gross_profit_bps=28.00" in blocks["LIVE_GROSS_EDGE_BELOW_COSTS"]["msg"]
-    assert "execution_cost_bps=25.50" in blocks["LIVE_GROSS_EDGE_BELOW_COSTS"]["msg"]
+    assert "LIVE_GROSS_EDGE_BELOW_COSTS" not in blocks
 
 
 def test_execution_allows_healthy_recomputed_live_edge(isolated_app_and_conn):

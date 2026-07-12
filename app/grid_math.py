@@ -492,9 +492,10 @@ def grid_leg_economics(
     # made the published gross-profit field disagree with Bybit's formula.
     gross_bps = step_frac * BPS
     projected_capture_bps = gross_bps * fill_eff
-    # Conservative guard: execution_cost_bps should already include round-trip
-    # fees, spread and slippage. If a caller accidentally passes a lower value,
-    # never let displayed grid economics ignore the configured taker fee floor.
+    # ``execution_cost_bps`` is retained as a compatibility parameter, but for
+    # this function it means the recurring round-trip cost of the two resting grid
+    # fills. Market spread/slippage and horizon funding are separate Total-P&L
+    # layers. Never let displayed pair economics ignore the configured fee floor.
     fee_floor_bps = max(ZERO, dec(taker_fee_bps)) * Decimal("2")
     exec_bps = max(max(ZERO, dec(execution_cost_bps)), fee_floor_bps)
 
@@ -507,16 +508,23 @@ def grid_leg_economics(
     funding_cost_bps = max(ZERO, signed_funding_bps)
     funding_benefit_excluded_bps = max(ZERO, -signed_funding_bps)
 
-    net_bps = gross_bps - exec_bps - funding_cost_bps
-    signed_net_bps = gross_bps - exec_bps - signed_funding_bps
-    projected_net_bps = projected_capture_bps - exec_bps - funding_cost_bps
+    # Per-grid profit follows Bybit's completed-pair formula: interval minus
+    # trading fees for the two fills. Funding is position-time Total P&L and must
+    # not be subtracted from every completed pair. Keep it as a separate horizon
+    # stress diagnostic so approvals can remain conservative without multiplying
+    # the same carry cost by the number of grid cycles.
+    net_bps = gross_bps - exec_bps
+    total_pnl_stress_bps = net_bps - funding_cost_bps
+    signed_net_bps = net_bps - signed_funding_bps
+    projected_net_bps = projected_capture_bps - exec_bps
     gross_usdt = notional * gross_bps / BPS
     exec_cost_usdt = notional * exec_bps / BPS
     funding_cost_usdt = notional * funding_cost_bps / BPS
     signed_funding_usdt = notional * signed_funding_bps / BPS
     funding_benefit_excluded_usdt = notional * funding_benefit_excluded_bps / BPS
-    net_usdt = gross_usdt - exec_cost_usdt - funding_cost_usdt
-    signed_net_usdt = gross_usdt - exec_cost_usdt - signed_funding_usdt
+    net_usdt = gross_usdt - exec_cost_usdt
+    total_pnl_stress_usdt = net_usdt - funding_cost_usdt
+    signed_net_usdt = net_usdt - signed_funding_usdt
     step_abs = ref * step_frac if ref > ZERO else ZERO
     return {
         "step_abs": as_float(step_abs),
@@ -525,10 +533,13 @@ def grid_leg_economics(
         "projected_capture_bps": as_float(projected_capture_bps),
         "projected_net_profit_bps": as_float(projected_net_bps),
         "execution_cost_bps": as_float(exec_bps),
+        "grid_round_trip_fee_bps": as_float(exec_bps),
         "expected_funding_bps": as_float(signed_funding_bps),
         "funding_cost_bps": as_float(funding_cost_bps),
         "funding_benefit_excluded_bps": as_float(funding_benefit_excluded_bps),
         "net_profit_bps": as_float(net_bps),
+        "total_pnl_stress_after_one_grid_bps": as_float(total_pnl_stress_bps),
+        "funding_allocated_to_grid_leg": False,
         "net_profit_with_signed_funding_bps": as_float(signed_net_bps),
         "gross_profit_usdt": as_float(gross_usdt),
         "execution_cost_usdt": as_float(exec_cost_usdt),
@@ -536,6 +547,7 @@ def grid_leg_economics(
         "funding_cost_usdt": as_float(funding_cost_usdt),
         "funding_benefit_excluded_usdt": as_float(funding_benefit_excluded_usdt),
         "net_profit_usdt": as_float(net_usdt),
+        "total_pnl_stress_after_one_grid_usdt": as_float(total_pnl_stress_usdt),
         "net_profit_with_signed_funding_usdt": as_float(signed_net_usdt),
         "breakeven": bool(net_bps > ZERO and net_usdt > ZERO),
     }

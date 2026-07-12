@@ -19,7 +19,7 @@ def test_linear_usdt_pnl_long_and_short_are_settled_in_usdt() -> None:
     assert linear_pnl_usdt("short", "0.5", "10000", "10100") == pytest.approx(-50)
 
 
-def test_grid_leg_economics_is_net_of_execution_costs_and_funding() -> None:
+def test_grid_leg_economics_separates_recurring_grid_fees_from_funding() -> None:
     econ = grid_leg_economics(
         reference_price="100",
         step_pct="0.60",
@@ -31,9 +31,11 @@ def test_grid_leg_economics_is_net_of_execution_costs_and_funding() -> None:
     )
     assert econ["gross_profit_bps"] == pytest.approx(60.0)
     assert econ["projected_capture_bps"] == pytest.approx(42.0)
-    assert econ["projected_net_profit_bps"] == pytest.approx(24.0)
-    assert econ["net_profit_bps"] == pytest.approx(42.0)
-    assert econ["net_profit_usdt"] == pytest.approx(0.105)
+    assert econ["projected_net_profit_bps"] == pytest.approx(26.0)
+    assert econ["net_profit_bps"] == pytest.approx(44.0)
+    assert econ["total_pnl_stress_after_one_grid_bps"] == pytest.approx(42.0)
+    assert econ["net_profit_usdt"] == pytest.approx(0.11)
+    assert econ["total_pnl_stress_after_one_grid_usdt"] == pytest.approx(0.105)
     assert econ["breakeven"] is True
 
 

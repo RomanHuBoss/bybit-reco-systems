@@ -88,7 +88,7 @@ def test_funding_helper_falls_back_to_instrument_info_for_interval(monkeypatch: 
     assert transport.calls[1][1] == {"category": "linear", "symbol": "BTCUSDT"}
 
 
-def test_grid_spacing_floor_includes_adverse_expected_funding() -> None:
+def test_grid_spacing_floor_excludes_horizon_funding_from_each_pair() -> None:
     params = _params(
         "futures_grid",
         "linear",
@@ -107,9 +107,9 @@ def test_grid_spacing_floor_includes_adverse_expected_funding() -> None:
         cost_model={"execution_cost_bps": 8.0, "expected_funding_bps": 20.0},
     )
 
-    assert params["grid_spacing_cost_floor_bps"] == pytest.approx(28.0)
-    assert params["grid_spacing_funding_cost_bps"] == pytest.approx(20.0)
-    assert params["grid_spacing_pct"] >= 0.35
+    assert params["grid_spacing_cost_floor_bps"] == pytest.approx(8.0)
+    assert params["grid_spacing_funding_cost_bps"] == pytest.approx(0.0)
+    assert params["cost_model"]["expected_funding_bps"] == pytest.approx(20.0)
     assert params["economics"]["net_profit_bps"] > 0
 
 

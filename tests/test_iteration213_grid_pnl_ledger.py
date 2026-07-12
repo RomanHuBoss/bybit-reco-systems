@@ -63,8 +63,10 @@ def test_completed_grid_pair_uses_full_exchange_interval_not_fill_haircut() -> N
     )
 
     assert econ["gross_profit_bps"] == pytest.approx(60.0)
-    assert econ["net_profit_bps"] == pytest.approx(42.0)
-    assert econ["net_profit_usdt"] == pytest.approx(0.105)
+    assert econ["net_profit_bps"] == pytest.approx(44.0)
+    assert econ["total_pnl_stress_after_one_grid_bps"] == pytest.approx(42.0)
+    assert econ["net_profit_usdt"] == pytest.approx(0.11)
+    assert econ["total_pnl_stress_after_one_grid_usdt"] == pytest.approx(0.105)
     assert econ["projected_capture_bps"] == pytest.approx(42.0)
 
 
@@ -200,5 +202,5 @@ def test_outcome_uses_persisted_range_and_grid_count_not_cost_widened_step(tmp_p
 
 def test_outcome_contract_is_bumped_for_grid_ledger_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v16"' in source
-    assert 'version="1.0.35"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v17"' in source
+    assert 'version="1.0.36"' in source

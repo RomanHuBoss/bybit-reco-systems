@@ -1,3 +1,10 @@
+## v1.0.36 cost-layer ownership
+
+- `app/recommender.py` публикует recurring grid fee, one-time market friction и funding как разные поля/слои.
+- `app/grid_math.py` считает Grid Profit пары только после двух fill fees и публикует отдельный Total-P&L funding stress.
+- `app/outcomes.py` применяет market friction к initial directional entry/terminal residual exit, grid fee к resting fills и funding к фактическому inventory во времени.
+- `app/main.py` оставляет spread отдельным live-liquidity gate, recurring fee - per-grid edge gate, funding - отдельным schedule/inventory gate.
+
 ## v1.0.35 cross-margin safety boundary
 
 The recommendation service models Bybit Linear USDT Futures Grid as a unified-account, cross-margin, one-way product. `app/grid_math.py::arithmetic_grid_cross_margin_stress` is the deterministic safety contract shared by leverage selection and execution preflight. It consumes canonical grid commitment and external kill-switch geometry and returns per-unit committed capital, adverse loss, execution/maintenance reserve and remaining equity buffer. It deliberately does not model or expose a standalone isolated liquidation price.

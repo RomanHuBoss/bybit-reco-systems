@@ -1421,7 +1421,13 @@ def _estimate_cost_model(
             nfts_out = nfts if nfts > 0 else None
         expected_funding_bps = directional_funding_bps_per_event * expected_funding_events
 
-    execution_cost_bps = max(0.0, fee_bps_round_trip + spread_bps_used + slippage_bps)
+    grid_round_trip_fee_bps = max(0.0, fee_bps_round_trip)
+    one_time_market_friction_bps = max(0.0, spread_bps_used + slippage_bps)
+    market_round_trip_cost_bps = grid_round_trip_fee_bps + one_time_market_friction_bps
+    # Backward-compatible alias: ``execution_cost_bps`` remains the conservative
+    # market round-trip estimate used for setup/terminal-exit stress. Recurring
+    # grid-pair economics must use ``grid_round_trip_fee_bps`` instead.
+    execution_cost_bps = market_round_trip_cost_bps
     # Conservative approval/scoring cost: funding receipts are not durable edge.
     # Keep the signed funding-aware value as a diagnostic, but any gate, score or
     # expected-RR default must use only adverse carry. Otherwise a short/long can
@@ -1435,7 +1441,10 @@ def _estimate_cost_model(
         "spread_bps": spread_bps_used,
         "spread_missing": spread_missing,
         "fee_bps_round_trip": fee_bps_round_trip,
+        "grid_round_trip_fee_bps": float(grid_round_trip_fee_bps),
         "slippage_bps": float(slippage_bps),
+        "one_time_market_friction_bps": float(one_time_market_friction_bps),
+        "market_round_trip_cost_bps": float(market_round_trip_cost_bps),
         "execution_cost_bps": float(execution_cost_bps),
         "funding_rate": fr,
         "direction": direction,
@@ -2315,12 +2324,12 @@ def _params(
         # $1 reference price is dangerous for linear futures because it can create
         # apparently valid TP/SL, liquidation and min-notional geometry for an
         # instrument whose live price was actually unavailable.
-        funding_cost_bps_for_spacing = max(0.0, _finite_float(cost_model.get("expected_funding_bps"), 0.0))
+        funding_cost_bps_for_spacing = 0.0
         execution_cost_bps = max(
             0.0,
             _finite_float(
-                cost_model.get("total_cost_bps")
-                or cost_model.get("execution_cost_bps")
+                cost_model.get("grid_round_trip_fee_bps")
+                or cost_model.get("fee_bps_round_trip")
                 or max(0.0, _finite_float(taker_fee_bps, 0.0) * 2.0),
                 0.0,
             ),
@@ -2408,22 +2417,23 @@ def _params(
         }
         return _sanitize_json_numbers(params)
 
-    execution_cost_bps = max(
+    market_execution_cost_bps = max(
         0.0,
-        float(cost_model.get("total_cost_bps") or cost_model.get("execution_cost_bps") or max(0.0, float(taker_fee_bps) * 2.0)),
+        float(cost_model.get("market_round_trip_cost_bps") or cost_model.get("total_cost_bps") or cost_model.get("execution_cost_bps") or max(0.0, float(taker_fee_bps) * 2.0)),
     )
-    # Grid spacing must cover not only fees/spread/slippage but also the adverse
-    # expected funding carry for the planned horizon. Received funding is deliberately
-    # excluded from the approval edge because it can flip by the time inventory is
-    # accumulated. Without this, high-funding symbols could still render a visually
-    # dense grid whose gross step cannot plausibly pay the carry, only to be blocked
-    # later as GRID_NET_PROFIT_NON_POSITIVE. Build the geometry fail-closed instead.
-    funding_cost_bps_for_spacing = max(0.0, _finite_float(cost_model.get("expected_funding_bps"), 0.0))
-    cost_floor_bps_for_spacing = execution_cost_bps + funding_cost_bps_for_spacing
-    economic_cost_bps_for_density = max(
-        cost_floor_bps_for_spacing,
-        _finite_float(cost_model.get("net_cost_bps"), 0.0),
+    grid_round_trip_fee_bps = max(
+        0.0,
+        float(cost_model.get("grid_round_trip_fee_bps") or cost_model.get("fee_bps_round_trip") or max(0.0, float(taker_fee_bps) * 2.0)),
     )
+    # A completed Bybit grid pair earns one interval minus the fees of the two
+    # resting limit fills. Bid/ask spread and slippage belong to one-time market
+    # setup/terminal liquidation, while funding belongs to position-time Total P&L.
+    # Charging either layer to every pair widens the grid and depresses outcomes
+    # in proportion to the number of completed cycles.
+    funding_cost_bps_for_spacing = 0.0
+    cost_floor_bps_for_spacing = grid_round_trip_fee_bps
+    economic_cost_bps_for_density = grid_round_trip_fee_bps
+    execution_cost_bps = market_execution_cost_bps
     cost_floor_pct = max(cost_floor_bps_for_spacing / 10000.0, 0.0001)
     # A completed pair earns the full adjacent interval. Keep a 25% economic
     # buffer over costs, but do not divide the interval by a synthetic 70%
@@ -2633,7 +2643,7 @@ def _params(
         step_pct=params.get("grid_spacing_pct"),
         order_notional=order_notional_usdt,
         taker_fee_bps=taker_fee_bps,
-        execution_cost_bps=cost_model.get("execution_cost_bps") or execution_cost_bps,
+        execution_cost_bps=grid_round_trip_fee_bps,
         expected_funding_bps=cost_model.get("expected_funding_bps") or 0.0,
         fill_efficiency="0.70",
     )
@@ -3990,12 +4000,17 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             net_profit_bps = _finite_or_none(econ.get("net_profit_bps"))
             gross_profit_bps = _finite_or_none(econ.get("gross_profit_bps"))
             liq_buffer_pct = _finite_or_none(econ.get("liquidation_buffer_pct"))
-            execution_cost_bps = _finite_or_none(cost_model.get("execution_cost_bps")) or _finite_or_none(cost_model.get("total_cost_bps")) or 0.0
+            execution_cost_bps = (
+                _finite_or_none(econ.get("grid_round_trip_fee_bps"))
+                or _finite_or_none(cost_model.get("grid_round_trip_fee_bps"))
+                or _finite_or_none(cost_model.get("fee_bps_round_trip"))
+                or 0.0
+            )
             if bot_type == "futures_grid":
                 if net_profit_bps is None:
                     blocks.append({"code": "GRID_ECONOMICS_MISSING", "msg": "нет net profit per grid — рекомендация не исполнима без экономики сетки"})
                 elif net_profit_bps <= 0.0:
-                    blocks.append({"code": "GRID_NET_PROFIT_NON_POSITIVE", "msg": f"net_profit_per_grid={net_profit_bps:.2f} bps после fees/spread/slippage/funding <= 0"})
+                    blocks.append({"code": "GRID_NET_PROFIT_NON_POSITIVE", "msg": f"net_profit_per_grid={net_profit_bps:.2f} bps после комиссий двух grid fills <= 0"})
                 elif net_profit_bps < 2.0:
                     blocks.append({"code": "GRID_NET_PROFIT_TOO_THIN", "msg": f"net_profit_per_grid={net_profit_bps:.2f} bps слишком мал; комиссии/проскальзывание легко съедят прибыль"})
                 if gross_profit_bps is not None and execution_cost_bps > 0 and gross_profit_bps <= execution_cost_bps * 1.10:

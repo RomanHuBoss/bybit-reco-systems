@@ -85,7 +85,7 @@ def test_feature_snapshot_does_not_treat_funding_receipt_as_negative_cost() -> N
     assert snapshot["funding_norm"] == pytest.approx(0.0)
 
 
-def test_grid_density_reduces_level_count_when_adverse_funding_makes_costs_high() -> None:
+def test_grid_density_does_not_multiply_horizon_funding_by_grid_count() -> None:
     base = _params(
         "futures_grid",
         "linear",
@@ -111,6 +111,7 @@ def test_grid_density_reduces_level_count_when_adverse_funding_makes_costs_high(
         cost_model={"execution_cost_bps": 8.0, "expected_funding_bps": 18.0, "net_cost_bps": 26.0},
     )
 
-    assert expensive["grid_density_economic_cost_bps"] == pytest.approx(26.0)
-    assert expensive["grid_count"] < base["grid_count"]
-    assert expensive["grid_spacing_cost_floor_bps"] == pytest.approx(26.0)
+    assert expensive["grid_density_economic_cost_bps"] == pytest.approx(8.0)
+    assert expensive["grid_count"] == base["grid_count"]
+    assert expensive["grid_spacing_cost_floor_bps"] == pytest.approx(8.0)
+    assert expensive["cost_model"]["expected_funding_bps"] == pytest.approx(18.0)

@@ -340,6 +340,34 @@ def _extract_cost_components(params: dict | None, fallback_execution_bps: float 
     return float(execution_bps_out), float(funding_bps_out)
 
 
+
+
+def _extract_grid_round_trip_fee_bps(params: dict | None, fallback_market_bps: float) -> float:
+    """Resolve recurring fee for one completed resting grid pair.
+
+    Generated payloads expose ``grid_round_trip_fee_bps`` and the legacy
+    ``fee_bps_round_trip`` alias. Spread/slippage are market-entry/exit friction
+    and must not be charged to each resting limit pair. Old payloads without a
+    fee field retain the conservative market-cost fallback.
+    """
+    params = params if isinstance(params, dict) else {}
+    trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    candidates: list[float] = []
+    for block in (params.get("cost_model"), trade_plan.get("cost_model")):
+        if not isinstance(block, dict):
+            continue
+        for key in ("grid_round_trip_fee_bps", "fee_bps_round_trip"):
+            raw = block.get(key)
+            if raw is None or isinstance(raw, bool):
+                continue
+            try:
+                value = float(raw)
+            except Exception:
+                continue
+            if math.isfinite(value) and value >= 0.0:
+                candidates.append(value)
+    return max(candidates) if candidates else max(0.0, float(fallback_market_bps))
+
 def _extract_total_cost_bps(params: dict | None, fallback: float = 15.0) -> float:
     execution_bps, _ = _extract_cost_components(params, fallback_execution_bps=fallback)
     return float(execution_bps)
@@ -633,8 +661,12 @@ def _grid_outcome(
     if direction_norm not in {"neutral", "long", "short"}:
         return None
 
-    execution_cost_bps, _ = _extract_cost_components(params)
-    half_leg_cost_rate = max(0.0, float(execution_cost_bps)) / 20_000.0
+    market_execution_cost_bps, _ = _extract_cost_components(params)
+    grid_round_trip_fee_bps = _extract_grid_round_trip_fee_bps(
+        params, fallback_market_bps=market_execution_cost_bps
+    )
+    market_half_leg_cost_rate = max(0.0, float(market_execution_cost_bps)) / 20_000.0
+    grid_half_leg_fee_rate = max(0.0, float(grid_round_trip_fee_bps)) / 20_000.0
     funding_model = _extract_inventory_funding_model(params)
     if funding_model.get("valid") is not True:
         return None
@@ -725,7 +757,11 @@ def _grid_outcome(
     position_slots = int(topology["initial_position_slots"])
 
     cash = (-float(initial_long_slots) + float(initial_short_slots)) * entry_f
-    execution_cost = float(initial_long_slots + initial_short_slots) * entry_f * half_leg_cost_rate
+    execution_cost = (
+        float(initial_long_slots + initial_short_slots)
+        * entry_f
+        * market_half_leg_cost_rate
+    )
     previous_price = entry_f
     tolerance = max(1e-10, step_abs * 1e-10)
     funding_cost = 0.0
@@ -822,7 +858,7 @@ def _grid_outcome(
                 continue
             fill_price = grid_prices[index]
             quantity = abs(signed_quantity)
-            execution_cost += float(quantity) * fill_price * half_leg_cost_rate
+            execution_cost += float(quantity) * fill_price * grid_half_leg_fee_rate
             if signed_quantity > 0:
                 cash -= float(quantity) * fill_price
                 position_slots += quantity
@@ -1044,7 +1080,11 @@ def _grid_outcome(
     liquidation_price = float(stop_price) if stopped and stop_price is not None else exit_f
     open_position_slots = current_position_slots()
     gross_pnl = cash + float(open_position_slots) * liquidation_price
-    execution_cost += abs(float(open_position_slots)) * liquidation_price * half_leg_cost_rate
+    execution_cost += (
+        abs(float(open_position_slots))
+        * liquidation_price
+        * market_half_leg_cost_rate
+    )
     # Normalize by the actual initial grid commitment. Number of Grids is the
     # interval count. There are grid_count + 1 price levels, but dynamic mode
     # keeps one pivot/bridge level idle, so exactly grid_count initial orders exist.

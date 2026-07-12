@@ -1,3 +1,10 @@
+## v1.0.36 grid-cost responsibilities
+
+- `recommender._estimate_cost_model`: формирует `grid_round_trip_fee_bps`, `one_time_market_friction_bps`, `market_round_trip_cost_bps`.
+- `grid_math.grid_leg_economics`: не распределяет funding и market friction на каждую завершённую пару.
+- `outcomes._grid_outcome`: использует разные half-leg rates для market entry/exit и resting grid fills.
+- `main._execution_live_cost_blocks`: live spread проверяется отдельно; per-grid edge сравнивается с recurring fee floor.
+
 ## v1.0.35 cross-margin responsibilities
 
 - `app/grid_math.py`: exact arithmetic-grid commitment plus conservative cross-margin equity stress; generic isolated-price helpers are not used by Futures Grid production paths.

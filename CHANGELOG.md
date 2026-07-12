@@ -1,3 +1,12 @@
+## 2026-07-12 - v1.0.36 - Grid cost-layer separation
+
+- Fixed a HIGH economics/outcome defect: spread, slippage and full-horizon funding are no longer charged to every completed grid pair.
+- Added explicit `grid_round_trip_fee_bps`, `one_time_market_friction_bps` and `market_round_trip_cost_bps` layers while retaining the legacy market-cost alias for compatibility.
+- Grid spacing, density, publication economics and live gross/fee coverage now use only recurring two-fill grid fees; live spread, terminal friction and adverse funding remain separate fail-closed gates/stresses.
+- Outcome ledger charges market friction only to initial directional market inventory and terminal residual liquidation; resting grid fills pay their own fee legs, and funding remains inventory/time based.
+- Bumped FastAPI to `1.0.36` and outcome target to `grid_label_v17`; no API route, database schema or environment variable changed.
+- Added `tests/test_iteration224_grid_cost_layer_separation.py`; post-check collected 992 tests and passed all 992 through exhaustive non-overlapping batches.
+
 ## 2026-07-12 - v1.0.35 - Bybit cross-margin safety contract
 
 - Fixed a CRITICAL exchange-contract defect: Bybit Futures Grid Bot is now modelled as `account_mode=unified`, `margin_mode=cross`, `position_mode=one_way`; generated and legacy `isolated` payloads no longer masquerade as executable Grid Bot plans.

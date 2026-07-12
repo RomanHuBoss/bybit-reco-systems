@@ -1,3 +1,13 @@
+## 0. Grid cost-layer separation - v1.0.36
+
+Expected behavior:
+- completed grid pair pays exactly the two resting-fill fee legs;
+- bid/ask spread and slippage are not multiplied by completed trade count;
+- directional initial market inventory and terminal residual close use market-friction legs;
+- funding is charged by actual inventory/event timing, never once per grid pair;
+- grid spacing/density use recurring fee only, while spread/funding remain separate launch and Total-P&L controls;
+- old `grid_label_v16` outcomes are not mixed with `grid_label_v17`.
+
 ## 0. Bybit Futures Grid cross-margin contract - v1.0.35
 
 Expected behavior:

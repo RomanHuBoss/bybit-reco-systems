@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v16"
+OUTCOME_LABEL_VERSION = "grid_label_v17"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -1307,7 +1307,7 @@ def _operator_next_actions_for_reco(
         add(
             "WAIT_FOR_WIDER_NET_EDGE",
             "Ждать более широкой сеточной прибыли",
-            "Издержки исполнения/funding съедают edge. Без роста net_profit_per_grid или снижения spread/slippage запуск оставлять no_trade/blocked.",
+            "Комиссии двух grid fills съедают прибыль интервала. Spread/slippage и funding проверяются отдельными launch/total-PnL guards; запуск оставлять no_trade/blocked до нового расчёта.",
             "warning",
         )
 
@@ -1361,7 +1361,7 @@ def _operator_next_actions_for_reco(
         add(
             "WAIT_FOR_WIDER_NET_EDGE",
             "Ждать более широкой сеточной прибыли",
-            "Текущий net edge недостаточен для 3-5x leverage profile после fees, spread, slippage и funding. Нужен новый расчёт с лучшей экономикой, а не ручной запуск.",
+            "Совокупная экономика горизонта недостаточна для 3-5x leverage profile после recurring fees, разовой market friction и adverse funding. Нужен новый расчёт, а не ручной запуск.",
             "warning",
         )
     if "funding" in warning_blob or "издержки" in warning_blob:
@@ -2060,7 +2060,8 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
         if not isinstance(levels.get("tp_per_leg"), dict):
             levels["tp_per_leg"] = tp_per_leg
         # Same principle as grid step: do not round a TP hint below the modelled
-        # per-leg edge after fees, spread, slippage and funding.
+        # adjacent interval. Recurring fees are checked against that interval;
+        # market friction and funding remain separate Total-P&L layers.
         snapped_tp = snap(tp_per_leg.get("abs"), tick_size, mode="up")
         if snapped_tp is not None and snapped_tp > 0:
             tp_per_leg["abs"] = snapped_tp
@@ -3109,44 +3110,24 @@ def _execution_live_cost_blocks(ticker: dict[str, Any] | None, rec: dict[str, An
         EXECUTION_MIN_LINEAR_SLIPPAGE_BPS,
         live_spread_bps * EXECUTION_GRID_SLIPPAGE_SPREAD_MULTIPLIER,
     )
-    live_execution_cost_bps = fee_floor_bps + live_spread_bps + live_slippage_bps
+    live_market_round_trip_cost_bps = fee_floor_bps + live_spread_bps + live_slippage_bps
+    stored_grid_fee_bps = _finite_float_or_none(economics.get("grid_round_trip_fee_bps"))
+    if stored_grid_fee_bps is None:
+        stored_grid_fee_bps = _finite_float_or_none(cost_model.get("grid_round_trip_fee_bps"))
+    if stored_grid_fee_bps is None:
+        stored_grid_fee_bps = _finite_float_or_none(cost_model.get("fee_bps_round_trip"))
+    live_grid_round_trip_fee_bps = max(fee_floor_bps, stored_grid_fee_bps or 0.0)
 
-    # Carry forward any conservative residual in the stored execution model
-    # instead of silently dropping a component when only spread/slippage change.
-    stored_execution_cost_bps = _finite_float_or_none(economics.get("execution_cost_bps"))
-    if stored_execution_cost_bps is None:
-        stored_execution_cost_bps = _finite_float_or_none(cost_model.get("execution_cost_bps"))
-    stored_spread_bps = _finite_float_or_none(cost_model.get("spread_bps"))
-    stored_slippage_bps = _finite_float_or_none(cost_model.get("slippage_bps"))
-    if (
-        stored_execution_cost_bps is not None
-        and stored_execution_cost_bps >= 0
-        and stored_spread_bps is not None
-        and stored_spread_bps >= 0
-        and stored_slippage_bps is not None
-        and stored_slippage_bps >= 0
-    ):
-        stored_non_spread_cost_bps = max(
-            0.0,
-            stored_execution_cost_bps - stored_spread_bps - stored_slippage_bps,
-        )
-        live_execution_cost_bps = max(
-            live_execution_cost_bps,
-            stored_non_spread_cost_bps + live_spread_bps + live_slippage_bps,
-        )
-
-    funding_cost_bps = _finite_float_or_none(economics.get("funding_cost_bps"))
-    if funding_cost_bps is None:
-        expected_funding_bps = _finite_float_or_none(cost_model.get("expected_funding_bps"))
-        funding_cost_bps = max(0.0, expected_funding_bps or 0.0)
-    else:
-        funding_cost_bps = max(0.0, funding_cost_bps)
-
-    live_net_profit_bps = gross_profit_bps - live_execution_cost_bps - funding_cost_bps
+    # The live bid/ask spread remains a liquidity/launch gate and market friction
+    # diagnostic. It is not subtracted from every completed resting grid pair.
+    # Funding is validated by the dedicated inventory/schedule guard and belongs
+    # to total P&L, not the per-pair Bybit Grid Profit formula.
+    live_net_profit_bps = gross_profit_bps - live_grid_round_trip_fee_bps
     edge_msg = (
-        f"gross_profit_bps={gross_profit_bps:.2f}, execution_cost_bps={live_execution_cost_bps:.2f}, "
-        f"funding_cost_bps={funding_cost_bps:.2f}, net_profit_bps={live_net_profit_bps:.2f} "
-        "после пересчёта по текущему bid/ask."
+        f"gross_profit_bps={gross_profit_bps:.2f}, grid_round_trip_fee_bps="
+        f"{live_grid_round_trip_fee_bps:.2f}, net_grid_profit_bps={live_net_profit_bps:.2f}; "
+        f"live_market_round_trip_cost_bps={live_market_round_trip_cost_bps:.2f} "
+        "учитывается отдельно как launch/terminal friction."
     )
     if live_net_profit_bps <= 0.0:
         blocks.append({
@@ -3162,12 +3143,12 @@ def _execution_live_cost_blocks(ticker: dict[str, Any] | None, rec: dict[str, An
             ),
         })
 
-    if gross_profit_bps <= live_execution_cost_bps * EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER:
+    if gross_profit_bps <= live_grid_round_trip_fee_bps * EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER:
         blocks.append({
             "code": "LIVE_GROSS_EDGE_BELOW_COSTS",
             "msg": (
-                f"gross_profit_bps={gross_profit_bps:.2f} не покрывает live execution_cost_bps="
-                f"{live_execution_cost_bps:.2f} с запасом {EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER:.2f}x; "
+                f"gross_profit_bps={gross_profit_bps:.2f} не покрывает live grid_round_trip_fee_bps="
+                f"{live_grid_round_trip_fee_bps:.2f} с запасом {EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER:.2f}x; "
                 "запуск fail-closed."
             ),
         })
@@ -4637,7 +4618,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.35", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.36", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

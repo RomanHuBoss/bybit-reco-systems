@@ -1,3 +1,7 @@
+## Grid cost layers and repeated-cycle bias - v1.0.36
+
+До v1.0.36 `execution_cost_bps + expected_funding_bps` вычитались из каждой завершённой grid-пары. Это создавало систематический pessimistic bias, пропорциональный числу циклов, и могло ошибочно блокировать плотные сетки. Теперь recurring grid fees, one-time market friction и position-time funding разделены. Остаточный риск: OHLCV proxy не знает maker/taker truth, partial fills и фактический fee tier; exact execution evidence остаётся обязательным для вывода о live edge.
+
 ## Bybit cross-margin Grid Bot contract - v1.0.35
 
 **Closed defect:** previous releases generated `margin_mode=isolated` and displayed an approximate isolated-position liquidation price, although Bybit Futures Grid Bot uses cross margin and one-way position mode. That formula ignored account/bot equity interaction and could produce a false safety buffer.
