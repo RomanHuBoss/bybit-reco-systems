@@ -52,7 +52,7 @@ def _generated_small_qty_rec() -> dict:
         "symbol": "BTCUSDT",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_count": grid_count,
             "grid_levels": grid_count,

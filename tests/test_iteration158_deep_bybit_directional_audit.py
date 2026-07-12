@@ -32,7 +32,7 @@ def _rec(direction: str = "short") -> dict:
         "symbol": "BTCUSDT",
         "direction": direction,
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "price_ref": 100.0,
             "price_range_lower": 90.0,

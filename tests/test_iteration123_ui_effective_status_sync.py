@@ -102,7 +102,7 @@ def test_operator_list_and_detail_use_same_effective_bybit_guard_status(client_c
                 "bot_type": "futures_grid",
                 "direction": "long",
                 "account_mode": "unified",
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "score": 0.82,
                 "confidence": 0.91,
                 "expected_rr": 1.4,

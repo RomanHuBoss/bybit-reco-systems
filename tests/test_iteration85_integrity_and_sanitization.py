@@ -45,7 +45,7 @@ def test_compute_outcomes_skips_recommendations_with_venue_bot_type_mismatch(tmp
                     "bot_type": "futures_grid",
                     "direction": "unsupported",
                     "account_mode": "unified",
-                    "margin_mode": "isolated",
+                    "margin_mode": "cross",
                     "score": 0.8,
                     "confidence": 0.7,
                     "expected_rr": 1.3,

@@ -115,7 +115,7 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
         "bot_type": "futures_grid",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.91,
         "confidence": 0.92,
         "expected_rr": 1.194,
@@ -131,7 +131,7 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
             "grid_count": grid_count,
             "grid_levels": grid_count,
             "leverage": leverage,
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "leverage_policy": {
                 "min_operator_leverage": policy_min,
                 "max_operator_leverage": policy_max,
@@ -144,7 +144,7 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
                 "grid_type": "arithmetic",
                 "grid_count": grid_count,
                 "leverage": leverage,
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "levels": {
                     "range": {"lower": lower, "upper": upper},
                     "kill_switch": {"lower": 0.4613, "upper": 0.5789},

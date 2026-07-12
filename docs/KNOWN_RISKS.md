@@ -1,3 +1,11 @@
+## Bybit cross-margin Grid Bot contract - v1.0.35
+
+**Closed defect:** previous releases generated `margin_mode=isolated` and displayed an approximate isolated-position liquidation price, although Bybit Futures Grid Bot uses cross margin and one-way position mode. That formula ignored account/bot equity interaction and could produce a false safety buffer.
+
+The current deterministic safety gate does not claim to reproduce Bybit's private liquidation engine. It computes a conservative bot-equity stress from exact arithmetic-grid commitment, leverage, both external kill-switches, adverse inventory PnL, execution cost and a maintenance-margin reserve. Funding receipts and grid-profit recovery are not credited. `margin_mode=isolated`, missing geometry, malformed leverage or an unavailable stress calculation are fail-closed.
+
+**Residual risk:** exact cross-margin liquidation still depends on private wallet equity, other positions/orders, risk tier, mark price, fee tier and Bybit's live engine. The external executor must recheck all private account state. The recommendation service cannot guarantee a liquidation price or production execution safety.
+
 ## 2026-07-12 neutral opening-order margin audit (v1.0.34)
 
 ### RESOLVED/CRITICAL: opposite NEUTRAL opening orders were treated as free
@@ -310,7 +318,7 @@ Launch-score классифицирует пригодность текущег�
 LLM не должен принимать финальное торговое решение вместо scoring/risk/shock логики.
 
 ## 7. Cross margin / hedge mode / exact live liquidation modeling не поддержаны
-В этой ревизии проект исходит из `futures_grid + isolated` как из безопасного operational minimum. Leverage поддерживается только как Bybit Linear USDT Futures leverage с проверкой `leverageFilter` и conservative worst-boundary liquidation buffer. Точный liquidation price должен подтверждаться внешним execution/reconciliation контуром или Bybit calculator/API account data.
+Текущая ревизия использует `futures_grid + cross + one_way`. Leverage допускается только после cross-margin bot-equity stress на обеих kill-switch границах. Одиночная isolated liquidation price не является safety oracle; private account state обязан повторно проверяться внешним execution/reconciliation контуром.
 
 ## 8. Telegram alerts best-effort
 Оповещения не гарантируют доставку и не заменяют внешний мониторинг / process supervisor.
@@ -350,7 +358,7 @@ Auto-generated operator payloads are now snapped conservatively against Bybit me
 ## 14. Операторская инфографика не является исполнимым контрактом
 `how_to_trade.png` и `docs/HOW_TO_TRADE_INFOGRAPHIC.md` описывают quick-reference для оператора. Исполнимость всегда определяется runtime guards: risk status, Bybit metadata, live ticker, funding snapshot, publication-chain TTL, minNotional/qtyStep/minQty и LLM gate, если он включён.
 
-Текущий shipped-профиль использует интервал `min_leverage=3` и `max_leverage=5`. Это сохраняет повышенную чувствительность к ликвидации на верхней границе 4-5x и допустимо только при fail-closed liquidation-buffer проверках, малой марже на bot и явном резерве капитала вне позиции. Если оператор хочет lower-risk профиль, он должен явно снизить `max_leverage` или `min_leverage` в `RISK_LIMITS_JSON` и принять, что часть идей останется `no_trade`/`blocked`, а не станет автоматически исполнимой.
+Текущий shipped-профиль использует интервал `min_leverage=3` и `max_leverage=5`. Это допустимо только при fail-closed cross-margin equity-stress проверке, выделенном капитале бота и внешней проверке private wallet state. Для lower-risk профиля оператор должен явно снизить leverage limits и принять дополнительные `no_trade`/`blocked` решения.
 
 ---
 
@@ -375,7 +383,7 @@ Residual limitation: the service still does not know the operator's actual walle
 
 ## 2026-06-15 execution-preflight liquidation boundary hardening
 
-Execution preflight now recomputes the leverage liquidation-buffer gate against the adverse grid/kill-switch boundary when `leverage > 1`, and takes the minimum of this recomputed value and any supplied `params.economics.liquidation_buffer_pct`. This prevents a manually edited or legacy payload from passing only because the reference-price buffer looks safe while the boundary-side buffer is already below the operator floor. The exact liquidation price still remains an approximation and must be rechecked by an external execution/reconciliation layer with live account data.
+Execution preflight recomputes cross-margin bot-equity stress from canonical grid geometry and both kill-switch boundaries whenever `leverage > 1`; a manually supplied buffer is not trusted. If exact geometry or the stress result is unavailable, execution is blocked. No standalone liquidation price is published for Futures Grid Bot.
 
 ## 2026-06-15 UI numeric parsing fail-closed hardening
 

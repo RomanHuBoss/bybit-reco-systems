@@ -49,7 +49,7 @@ def _rec(*, rec_id: str, ts: int, status: str = "recommended", mode: str = "advi
         "bot_type": "futures_grid",
         "direction": "long",
         "account_mode": "one_way",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.5,
         "confidence": 0.8,
         "expected_rr": 1.4,

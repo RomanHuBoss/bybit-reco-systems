@@ -71,7 +71,7 @@ def _base_rec() -> dict:
         "symbol": "BTCUSDT",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_count": 5,
             "grid_levels": 5,

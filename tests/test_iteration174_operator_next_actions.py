@@ -71,9 +71,9 @@ def test_low_liquidation_buffer_details_expose_next_safe_actions(app_main) -> No
 
     assert actions[0]["code"] == "DO_NOT_LAUNCH_LOW_LIQUIDATION_BUFFER"
     assert "5.53%" in actions[0]["detail"]
-    assert "≤3x" in actions[0]["detail"]
+    assert "isolated liquidation price" in actions[0]["detail"]
     assert actions[1]["code"] == "RECALCULATE_WITH_LOWER_LEVERAGE_OR_NARROWER_RANGE"
-    assert "Не снижайте 12%" in actions[1]["detail"]
+    assert "cross-margin stress" in actions[1]["detail"]
 
 
 def test_frontend_renders_next_actions_after_blockers_before_rank_diagnostics() -> None:

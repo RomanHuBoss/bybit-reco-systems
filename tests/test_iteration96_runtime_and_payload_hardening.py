@@ -82,7 +82,7 @@ def test_materialize_existing_bot_closes_transaction_on_idempotent_reuse(isolate
                 "bot_type": "futures_grid",
                 "direction": "long",
                 "account_mode": "one_way",
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "score": 0.44,
                 "confidence": 0.71,
                 "expected_rr": 1.2,

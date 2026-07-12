@@ -1,3 +1,13 @@
+## 2026-07-12 - v1.0.35 - Bybit cross-margin safety contract
+
+- Fixed a CRITICAL exchange-contract defect: Bybit Futures Grid Bot is now modelled as `account_mode=unified`, `margin_mode=cross`, `position_mode=one_way`; generated and legacy `isolated` payloads no longer masquerade as executable Grid Bot plans.
+- Replaced the standalone isolated-position liquidation-price gate with deterministic cross-margin bot-equity stress at both kill-switch boundaries. The stress includes exact grid commitment, leverage, adverse inventory loss, execution cost and maintenance reserve, while crediting neither funding receipts nor hypothetical grid profit.
+- Aligned generator, leverage selection, operator decision context, strict execution preflight and frontend risk labels on one cross-margin contract.
+- Preserved the generic isolated liquidation helper only as a non-Grid utility; no production Futures Grid path calls it.
+- Bumped FastAPI to `1.0.35` and outcome target to `grid_label_v16`; no API route, database schema or environment variable changed.
+- Added `tests/test_iteration223_bybit_cross_margin_contract.py`: 8/8 RED on v1.0.34 and 8/8 GREEN after the fix.
+- Baseline: 977/977 passed. Post-fix working suite: 985/985 passed before release-document synchronization.
+
 ## 2026-07-12 - v1.0.34 - neutral opening-order margin reservation
 
 - Fixed a CRITICAL neutral-grid sizing defect: every initial Buy and Sell order is opening/margin-bearing because NEUTRAL starts flat; commitment now sums both initial opening stacks instead of reserving only the larger side.

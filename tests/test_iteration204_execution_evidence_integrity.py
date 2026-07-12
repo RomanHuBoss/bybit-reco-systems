@@ -54,7 +54,7 @@ def _seed_recommendation_and_bot(conn, *, stopped: bool = False) -> tuple[str, s
                 "bot_type": "futures_grid",
                 "direction": "long",
                 "account_mode": "one_way",
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "score": 0.61,
                 "confidence": 0.72,
                 "expected_rr": 1.5,

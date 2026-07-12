@@ -41,7 +41,7 @@ def _seed_stopped_evidence_bot(
                 "bot_type": "futures_grid",
                 "direction": "long",
                 "account_mode": "one_way",
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "score": 0.5,
                 "confidence": 0.7,
                 "expected_rr": 1.2,

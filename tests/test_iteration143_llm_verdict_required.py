@@ -20,7 +20,7 @@ def _active_rec_without_llm(ts_now: int) -> dict:
         "bot_type": "futures_grid",
         "direction": "long",
         "account_mode": "one_way",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.78,
         "confidence": 0.86,
         "expected_rr": 1.4,

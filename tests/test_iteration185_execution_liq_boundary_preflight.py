@@ -43,8 +43,8 @@ def _meta() -> dict[str, str]:
 
 
 def _rec(direction: str, *, economics: dict[str, Any] | None = None) -> dict[str, Any]:
-    # 5x looks safe at reference=100 (~19.4% approximate buffer), but at the
-    # adverse boundary 90/110 the same approximate liq price leaves < 12% room.
+    # Cross-margin stress must be recomputed from the actual grid commitment and
+    # materially adverse external kill-switches; a manual stored buffer is not trusted.
     params_economics = {
         "net_profit_bps": 8.0,
         "gross_profit_bps": 30.0,
@@ -57,7 +57,7 @@ def _rec(direction: str, *, economics: dict[str, Any] | None = None) -> dict[str
         "symbol": "BTCUSDT",
         "direction": direction,
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "leverage": 5,
             "grid_count": 10,
@@ -78,7 +78,7 @@ def _rec(direction: str, *, economics: dict[str, Any] | None = None) -> dict[str
                 "economics": params_economics,
                 "levels": {
                     "range": {"lower": 90.0, "upper": 110.0},
-                    "kill_switch": {"lower": 90.0, "upper": 110.0},
+                    "kill_switch": {"lower": 50.0, "upper": 150.0},
                     "grid_step": {"step_abs": 2.0, "step_pct": 2.0},
                     "tp_per_leg": {"abs": 1.4, "pct": 1.4},
                 },
@@ -88,7 +88,7 @@ def _rec(direction: str, *, economics: dict[str, Any] | None = None) -> dict[str
 
 
 @pytest.mark.parametrize("direction", ["long", "short"])
-def test_execution_preflight_uses_adverse_boundary_for_liquidation_buffer_fallback(app_main, direction: str) -> None:
+def test_execution_preflight_uses_cross_margin_stress_at_kill_switch(app_main, direction: str) -> None:
     validation = app_main._validate_trade_plan_against_bybit_meta(
         _rec(direction),
         _meta(),

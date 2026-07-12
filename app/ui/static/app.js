@@ -247,8 +247,8 @@ function liquidityTierRu(tier) {
 }
 
 function marginModeRu(mode) {
-  if (mode === "isolated") return "Изолированная (isolated)";
-  if (mode === "cross") return "Кросс — не поддерживается";
+  if (mode === "cross") return "Кросс-маржа Bybit Grid Bot";
+  if (mode === "isolated") return "Изолированная — не соответствует Bybit Grid Bot";
   return mode || "—";
 }
 
@@ -720,7 +720,7 @@ function buildOperatorValues(it) {
   const killLowerRaw = firstFiniteValue([ks, operatorSheetKillSwitch], ["lower", "kill_switch_lower"]);
   const killUpperRaw = firstFiniteValue([ks, operatorSheetKillSwitch], ["upper", "kill_switch_upper"]);
   const leverageRaw = firstFiniteValue([params, operatorSheet], ["leverage"]);
-  const marginModeRaw = params.margin_mode || operatorSheet.margin_mode || "isolated";
+  const marginModeRaw = params.margin_mode || operatorSheet.margin_mode || "cross";
   const rangeLower = formatBybitPrice(rangeLowerRaw, meta, "down");
   const rangeUpper = formatBybitPrice(rangeUpperRaw, meta, "up");
   const entryRef = formatBybitPrice(entryRefRaw, meta, "nearest");
@@ -927,18 +927,18 @@ function buildRiskEconomicsFields(it) {
     {
       label: "Профиль риска",
       value: riskProfileRu(ctx.risk_profile),
-      help: "Сводная оценка риска по запасу до ликвидации. Это ориентир для оператора, а не гарантия биржевой ликвидационной цены.",
+      help: "Сводная оценка риска по cross-margin equity buffer на kill-switch. Это консервативный стресс капитала бота, а не точная биржевая ликвидационная цена.",
     },
     {
-      label: "Запас до ликвидации",
+      label: "Cross-margin equity buffer",
       value: ctx.liquidation_buffer_pct === null || ctx.liquidation_buffer_pct === undefined ? "—" : formatPercentDot(ctx.liquidation_buffer_pct, 2, false),
-      help: "Оценочный процентный запас до ликвидации с учётом стороны и плеча. Точная цена ликвидации зависит от Bybit risk tier, mark price и маржи аккаунта.",
+      help: "Остаток выделенного капитала после неблагоприятного движения к kill-switch, execution costs и maintenance reserve. Funding benefit и grid profit не кредитуются.",
     },
     {
-      label: "Расчётная ликвидация",
-      value: ctx.estimated_liquidation_price === null || ctx.estimated_liquidation_price === undefined ? "—" : formatBybitPrice(ctx.estimated_liquidation_price, it?.bybit_meta || {}, "nearest"),
+      label: "Isolated liquidation price",
+      value: "не рассчитывается",
       mono: true,
-      help: "Приблизительная цена ликвидации для isolated linear USDT. Используется как защитная оценка, не как точная биржевая величина.",
+      help: "Bybit Futures Grid Bot использует cross margin; одиночная isolated liquidation price неприменима. Используется cross-margin equity buffer на kill-switch.",
     },
     {
       label: "Чистая прибыль/сетка",

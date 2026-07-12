@@ -244,7 +244,7 @@ def test_neutral_preflight_accepts_full_initial_opening_commitment(tmp_path: Pat
             "symbol": "BTCUSDT",
             "direction": "neutral",
             "account_mode": "unified",
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "params": params,
         }
         validation = app_main._validate_trade_plan_against_bybit_meta(
@@ -260,5 +260,5 @@ def test_neutral_preflight_accepts_full_initial_opening_commitment(tmp_path: Pat
 
 def test_contract_bumped_for_neutral_one_way_commitment() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v15"' in source
-    assert 'version="1.0.34"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v16"' in source
+    assert 'version="1.0.35"' in source

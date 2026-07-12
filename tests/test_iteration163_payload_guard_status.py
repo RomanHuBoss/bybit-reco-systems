@@ -52,7 +52,7 @@ def _recommended_empty_payload_rec() -> dict:
         "bot_type": "futures_grid",
         "direction": "short",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.81,
         "confidence": 0.77,
         "risk_score": 0.19,

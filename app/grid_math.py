@@ -224,6 +224,152 @@ def arithmetic_grid_commitment(
     }
 
 
+def arithmetic_grid_cross_margin_stress(
+    *,
+    lower: Any,
+    upper: Any,
+    grid_count: Any,
+    reference_price: Any,
+    direction: str,
+    leverage: Any,
+    kill_switch_lower: Any,
+    kill_switch_upper: Any,
+    execution_cost_bps: Any = 0,
+    maintenance_margin_rate: Any = "0.005",
+) -> dict[str, Any] | None:
+    """Conservative bot-equity stress for Bybit Futures Grid cross margin.
+
+    Bybit Futures Grid Bot runs in cross margin and one-way position mode.  A
+    single-position isolated liquidation-price formula is therefore not a valid
+    safety oracle.  This helper instead asks a narrower, auditable question:
+    after funding the bot's initial grid commitment, does the dedicated bot
+    equity remain positive after a monotonic adverse move to the configured
+    kill-switch, opening/closing execution costs and a maintenance-margin
+    reserve?  Funding receipts and grid-profit recoveries are deliberately not
+    credited.
+
+    Values are returned per unit order quantity so callers can use the same
+    result for leverage selection, UI diagnostics and strict preflight.
+    """
+    topology = arithmetic_grid_commitment(
+        lower=lower,
+        upper=upper,
+        grid_count=grid_count,
+        reference_price=reference_price,
+        direction=direction,
+    )
+    if topology is None:
+        return None
+
+    ref = dec(reference_price)
+    lower_ks = dec(kill_switch_lower)
+    upper_ks = dec(kill_switch_upper)
+    lev = dec(leverage)
+    mmr = max(ZERO, dec(maintenance_margin_rate))
+    half_cost_rate = max(ZERO, dec(execution_cost_bps)) / Decimal("20000")
+    direction_norm = normalize_execution_direction(direction)
+    if (
+        ref <= ZERO
+        or lower_ks <= ZERO
+        or upper_ks <= lower_ks
+        or lev <= ZERO
+        or direction_norm not in {"neutral", "long", "short"}
+    ):
+        return None
+
+    levels = [dec(value) for value in topology.get("grid_prices") or []]
+    buy_prices = [levels[int(index)] for index in topology.get("buy_indices") or []]
+    sell_prices = [levels[int(index)] for index in topology.get("sell_indices") or []]
+    initial_long_slots = int(topology.get("initial_long_slots") or 0)
+    initial_short_slots = int(topology.get("initial_short_slots") or 0)
+
+    committed = dec(topology.get("committed_notional_per_qty"))
+    if committed <= ZERO:
+        return None
+    initial_margin = committed / lev
+
+    def _long_stress() -> dict[str, Decimal]:
+        entries = [ref] * initial_long_slots + [price for price in buy_prices if price >= lower_ks]
+        gross_loss = sum((max(ZERO, entry - lower_ks) for entry in entries), ZERO)
+        entry_notional = sum(entries, ZERO)
+        exit_notional = lower_ks * Decimal(len(entries))
+        execution_cost = (entry_notional + exit_notional) * half_cost_rate
+        maintenance = exit_notional * mmr
+        total = gross_loss + execution_cost + maintenance
+        return {
+            "position_slots": Decimal(len(entries)),
+            "entry_notional": entry_notional,
+            "exit_notional": exit_notional,
+            "gross_loss": gross_loss,
+            "execution_cost": execution_cost,
+            "maintenance_reserve": maintenance,
+            "total_stress": total,
+            "equity_buffer": initial_margin - total,
+        }
+
+    def _short_stress() -> dict[str, Decimal]:
+        entries = [ref] * initial_short_slots + [price for price in sell_prices if price <= upper_ks]
+        gross_loss = sum((max(ZERO, upper_ks - entry) for entry in entries), ZERO)
+        entry_notional = sum(entries, ZERO)
+        exit_notional = upper_ks * Decimal(len(entries))
+        execution_cost = (entry_notional + exit_notional) * half_cost_rate
+        maintenance = exit_notional * mmr
+        total = gross_loss + execution_cost + maintenance
+        return {
+            "position_slots": Decimal(len(entries)),
+            "entry_notional": entry_notional,
+            "exit_notional": exit_notional,
+            "gross_loss": gross_loss,
+            "execution_cost": execution_cost,
+            "maintenance_reserve": maintenance,
+            "total_stress": total,
+            "equity_buffer": initial_margin - total,
+        }
+
+    long_side = _long_stress()
+    short_side = _short_stress()
+    applicable: list[tuple[str, dict[str, Decimal]]]
+    if direction_norm == "long":
+        applicable = [("long", long_side)]
+    elif direction_norm == "short":
+        applicable = [("short", short_side)]
+    else:
+        applicable = [("long", long_side), ("short", short_side)]
+    worst_side, worst = min(applicable, key=lambda item: item[1]["equity_buffer"])
+
+    def _pct(value: Decimal) -> float | None:
+        if initial_margin <= ZERO:
+            return None
+        return as_float(value / initial_margin * Decimal("100"))
+
+    return {
+        "model": "bybit_futures_grid_cross_margin_equity_stress_v1",
+        "direction": direction_norm,
+        "leverage": as_float(lev),
+        "committed_notional_per_qty": as_float(committed),
+        "initial_margin_per_qty": as_float(initial_margin),
+        "kill_switch_lower": as_float(lower_ks),
+        "kill_switch_upper": as_float(upper_ks),
+        "execution_cost_bps": as_float(max(ZERO, dec(execution_cost_bps))),
+        "maintenance_margin_rate": as_float(mmr),
+        "worst_side": worst_side,
+        "worst_loss_per_qty": as_float(worst["gross_loss"]),
+        "maintenance_and_fee_reserve_per_qty": as_float(
+            worst["execution_cost"] + worst["maintenance_reserve"]
+        ),
+        "equity_buffer_per_qty": as_float(worst["equity_buffer"]),
+        "equity_buffer_pct": _pct(worst["equity_buffer"]),
+        "long": {
+            key: as_float(value) for key, value in long_side.items()
+        } | {"equity_buffer_pct": _pct(long_side["equity_buffer"])},
+        "short": {
+            key: as_float(value) for key, value in short_side.items()
+        } | {"equity_buffer_pct": _pct(short_side["equity_buffer"])},
+        "funding_benefit_credited": False,
+        "grid_profit_credited": False,
+    }
+
+
 def quantize_step(value: Any, step: Any, *, mode: str = "nearest") -> Decimal | None:
     v = dec(value)
     s = dec(step)

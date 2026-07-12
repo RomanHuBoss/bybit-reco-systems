@@ -71,7 +71,7 @@ const result = buildOperatorValues({
     reference_price: 100
   },
   params: {
-    margin_mode: 'isolated',
+    margin_mode: 'cross',
     leverage: 3,
     trade_plan: {
       reference_price: 100,

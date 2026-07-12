@@ -120,7 +120,7 @@ def test_api_execute_handles_poisoned_ttl_and_timestamp_values(client_and_conn) 
                 "bot_type": "futures_grid",
                 "direction": "long",
                 "account_mode": "one_way",
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "score": 0.45,
                 "confidence": 0.7,
                 "expected_rr": 1.1,

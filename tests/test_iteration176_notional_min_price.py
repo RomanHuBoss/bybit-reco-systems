@@ -56,13 +56,13 @@ def _notional_only_rec(order_notional: float, *, lower: float = 80.0) -> dict:
         "symbol": "BTCUSDT",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_type": "arithmetic",
             "grid_count": 5,
             "grid_levels": 5,
             "leverage": 2,
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "trade_plan": {
                 "reference_price": 100.0,
                 "grid_type": "arithmetic",

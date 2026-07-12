@@ -29,7 +29,7 @@ def _base_rec():
         "symbol": "BTCUSDT",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_levels": 5,
             "leverage": 1,

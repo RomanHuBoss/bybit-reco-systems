@@ -37,8 +37,7 @@ from .db_backend import describe_target
 from .bot_types import sql_in_clause
 from .grid_math import (
     arithmetic_grid_commitment,
-    estimate_linear_liq_price,
-    liquidation_buffer_pct,
+    arithmetic_grid_cross_margin_stress,
     quantize_step,
     resolve_integer_aliases,
     strict_integer,
@@ -56,7 +55,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v15"
+OUTCOME_LABEL_VERSION = "grid_label_v16"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -1218,50 +1217,6 @@ def _guard_item_code_set(items: Any) -> set[str]:
     }
 
 
-def _estimated_max_safe_leverage_for_liq_buffer(
-    direction: str,
-    reference_price: float | None,
-    lower_adverse_price: float | None,
-    upper_adverse_price: float | None,
-    *,
-    min_buffer_pct: float = OPERATOR_MIN_LIQUIDATION_BUFFER_PCT,
-    max_leverage: int = 100,
-) -> int | None:
-    """Return highest integer leverage whose approximate liq buffer stays above the floor.
-
-    This is deliberately advisory: exact Bybit liquidation depends on risk tier,
-    mark price and account margin.  The calculation uses the same conservative
-    approximation as the execution guard, so it can explain *why* a row is blocked
-    without becoming a separate permission model.
-    """
-    ref = _finite_float_or_none(reference_price)
-    if ref is None or ref <= 0:
-        return None
-    dir_norm = str(direction or "").strip().lower()
-    sides = ("long", "short") if dir_norm == "neutral" else (dir_norm,)
-    if any(side not in {"long", "short"} for side in sides):
-        return None
-
-    max_lev = int(max(1, min(int(max_leverage or 1), 100)))
-    best: int | None = None
-    for lev in range(1, max_lev + 1):
-        ok = True
-        for side in sides:
-            adverse = lower_adverse_price if side == "long" else upper_adverse_price
-            adverse_ref = _finite_float_or_none(adverse) or ref
-            if adverse_ref <= 0:
-                ok = False
-                break
-            liq = estimate_linear_liq_price(side, ref, lev)
-            buf = liquidation_buffer_pct(side, adverse_ref, liq) if liq is not None else None
-            if buf is None or float(buf) < float(min_buffer_pct):
-                ok = False
-                break
-        if ok:
-            best = int(lev)
-    return best
-
-
 def _operator_next_actions_for_reco(
     rec: dict[str, Any],
     *,
@@ -1325,30 +1280,26 @@ def _operator_next_actions_for_reco(
         })
 
     if "LIQUIDATION_BUFFER_TOO_LOW" in error_codes:
-        safe_lev = _estimated_max_safe_leverage_for_liq_buffer(
-            direction,
-            ctx.get("entry_price"),
-            _finite_float_or_none(economics.get("liquidation_buffer_adverse_boundary_long")) or ctx.get("kill_switch_lower") or ctx.get("range_lower"),
-            _finite_float_or_none(economics.get("liquidation_buffer_adverse_boundary_short")) or ctx.get("kill_switch_upper") or ctx.get("range_upper"),
-            min_buffer_pct=liq_floor,
-        )
         buffer_txt = f"{liq_buffer:.2f}%" if liq_buffer is not None else "не оценён"
         lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущее плечо"
+        policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
+        diagnostics = policy.get("diagnostics") if isinstance(policy.get("diagnostics"), dict) else {}
+        safe_lev = _safe_int_or_none(diagnostics.get("liquidation_safe_max_leverage"))
         safe_lev_txt = (
-            f"Оценочно безопасный максимум по текущей геометрии: ≤{safe_lev}x."
+            f"Максимум, прошедший текущий cross-margin stress: ≤{safe_lev}x."
             if safe_lev is not None and leverage is not None and safe_lev < leverage
-            else "Текущая геометрия не даёт запаса даже после простого целочисленного подбора плеча; нужен новый расчёт диапазона/маржи."
+            else "Нужен новый расчёт диапазона, kill-switch, капитала или плеча; isolated liquidation price здесь не является допустимым oracle."
         )
         add(
             "DO_NOT_LAUNCH_LOW_LIQUIDATION_BUFFER",
             "Не запускать текущий grid",
-            f"Запас до ликвидации {buffer_txt} ниже обязательного пола {liq_floor:.0f}% при {lev_txt}. Это корректная fail-closed блокировка, а не отсутствие сигнала. {safe_lev_txt}",
+            f"Cross-margin equity buffer {buffer_txt} ниже обязательного пола {liq_floor:.0f}% при {lev_txt}. Это корректная fail-closed блокировка. {safe_lev_txt}",
             "danger",
         )
         add(
             "RECALCULATE_WITH_LOWER_LEVERAGE_OR_NARROWER_RANGE",
             "Пересчитать профиль риска",
-            "Снизьте 3-5x leverage profile в RISK_LIMITS_JSON либо сузьте adverse-сторону диапазона/kill-switch и дождитесь новой публикации. Не снижайте 12% liquidation-buffer floor ради прохождения проверки.",
+            "Снизьте leverage либо измените диапазон/kill-switch и дождитесь новой публикации. Не подменяйте cross-margin stress одиночной isolated-liquidation формулой.",
             "warning",
         )
 
@@ -1530,20 +1481,13 @@ def _operator_decision_context_for_reco(
 
     direction = str(rec.get("direction") or "").strip().lower()
     leverage = _finite_float_or_none(params.get("leverage"))
-    liq_price = _finite_float_or_none(economics.get("estimated_liquidation_price"))
-    liq_buffer = _finite_float_or_none(economics.get("liquidation_buffer_pct"))
-    if liq_price is None and reference_price is not None and leverage is not None and leverage > 0 and direction in {"long", "short"}:
-        try:
-            estimated = estimate_linear_liq_price(direction, reference_price, leverage)
-            liq_price = float(estimated) if estimated is not None else None
-        except Exception:
-            liq_price = None
-    if liq_buffer is None and reference_price is not None and liq_price is not None and direction in {"long", "short"}:
-        try:
-            buffer_value = liquidation_buffer_pct(direction, reference_price, liq_price)
-            liq_buffer = float(buffer_value) if buffer_value is not None else None
-        except Exception:
-            liq_buffer = None
+    # Bybit Futures Grid uses cross margin.  Do not fabricate a standalone
+    # isolated liquidation price; expose the deterministic bot-equity stress
+    # generated from grid commitment and kill-switch geometry instead.
+    liq_price = None
+    liq_buffer = _finite_float_or_none(economics.get("cross_margin_stress_buffer_pct"))
+    if liq_buffer is None:
+        liq_buffer = _finite_float_or_none(economics.get("liquidation_buffer_pct"))
 
     guard_errors = guard.get("errors") if isinstance(guard, dict) and isinstance(guard.get("errors"), list) else []
     guard_warnings = guard.get("warnings") if isinstance(guard, dict) and isinstance(guard.get("warnings"), list) else []
@@ -2585,7 +2529,7 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
     if leverage is None:
         blocks.append({
             "code": "LEVERAGE_MISSING_AT_EXECUTION",
-            "msg": "execution payload не содержит явное leverage; нельзя проверить runtime leverage caps, margin и liquidation semantics.",
+            "msg": "execution payload не содержит явное leverage; нельзя проверить runtime leverage caps, margin и cross-margin stress semantics.",
         })
 
     min_leverage = _finite_float_or_none(effective_limits.get("min_leverage"))
@@ -3400,12 +3344,12 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             warnings.append({"code": "ACCOUNT_MODE_LEGACY_ALIAS", "msg": "account_mode=one_way трактуется как legacy-алиас позиции/position-mode; штатное значение этой ревизии — account_mode=unified."})
         elif account_mode != "unified":
             errors.append({"code": "ACCOUNT_MODE_UNSUPPORTED", "msg": f"futures_grid поддерживает только account_mode=unified; получено {account_mode}. Неподдержанный режим блокируется fail-closed."})
-        # Проектная логика, risk-gates и operator guidance собраны вокруг isolated futures-grid.
-        # Поддержку cross/hedge-mode здесь лучше явно блокировать, чем молча притворяться совместимой.
+        # Bybit Futures Grid Bot uses cross margin and one-way position mode.
+        # An isolated payload would apply the wrong liquidation/risk semantics.
         if not margin_mode:
-            errors.append({"code": "MARGIN_MODE_MISSING", "msg": "futures_grid требует явный margin_mode=isolated; legacy/manual recommendation без режима исполнения блокируется fail-closed."})
-        elif margin_mode != "isolated":
-            errors.append({"code": "MARGIN_MODE_UNSUPPORTED", "msg": f"futures_grid в этом проекте поддерживается только в margin_mode=isolated, получено {margin_mode}."})
+            errors.append({"code": "MARGIN_MODE_MISSING", "msg": "futures_grid требует явный margin_mode=cross; legacy/manual recommendation без режима исполнения блокируется fail-closed."})
+        elif margin_mode != "cross":
+            errors.append({"code": "MARGIN_MODE_UNSUPPORTED", "msg": f"Bybit futures_grid поддерживается только в margin_mode=cross, получено {margin_mode}."})
         if rec_symbol and not _is_exact_linear_usdt_symbol(rec_symbol):
             errors.append({"code": "USDT_PERPETUAL_SYMBOL_REQUIRED", "msg": f"futures_grid поддерживается только для точных alphanumeric USDT perpetual symbols без разделителей, получено symbol={rec_symbol}."})
 
@@ -3719,7 +3663,7 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
         errors.append({"code": "TP_PER_LEG_PCT_NON_POSITIVE", "msg": f"tp_per_leg.pct должен быть > 0, получено {tp_pct}."})
 
     if bot_type == "futures_grid" and venue == "linear" and leverage is None:
-        leverage_missing_msg = "leverage не указан; execution-time preflight не может подтвердить плечо, маржу и liquidation buffer."
+        leverage_missing_msg = "leverage не указан; execution-time preflight не может подтвердить плечо, маржу и cross-margin equity buffer."
         if require_execution_plan:
             errors.append({"code": "LEVERAGE_MISSING_FOR_EXECUTION", "msg": leverage_missing_msg})
         else:
@@ -3740,48 +3684,50 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                     "msg": f"Leverage {leverage} не выровнен по leverage_step={leverage_step}; ближайшее допустимое значение={snapped['leverage']}",
                 })
 
-    # Linear USDT perpetual supports leverage. Do not blanket-block leverage > 1;
-    # instead enforce Bybit leverageFilter above and require a liquidation buffer
-    # estimate. For neutral grids validate the worse side because inventory can
-    # accumulate either long or short as the range is traversed.
+    # Bybit Futures Grid uses cross margin.  Recompute a deterministic
+    # bot-equity stress from canonical grid commitment and kill-switch geometry;
+    # never use a single-position isolated liquidation-price approximation.
     if leverage is not None and venue == "linear" and leverage > 1:
         economics = params.get("economics") if isinstance(params.get("economics"), dict) else {}
-        supplied_liq_buffer_pct = _finite_float_or_none(economics.get("liquidation_buffer_pct"))
-        candidate_buffers: list[float] = []
-        if reference_price is not None:
-            sides = ("long", "short") if direction == "neutral" else (direction,)
-            for side in sides:
-                estimated = estimate_linear_liq_price(side, reference_price, leverage)
-                liq = float(estimated) if estimated is not None else None
-                if liq is None:
-                    continue
-                # A reference-price buffer can look safe while the grid/kill-switch
-                # adverse boundary is already too close to the approximate liq price.
-                # Execution validation therefore recomputes the same worst-boundary
-                # semantics used by generated recommendations instead of trusting a
-                # manually supplied economics field.
-                adverse_reference = None
-                if side == "long":
-                    adverse_reference = lower_ks if lower_ks is not None else lower
-                elif side == "short":
-                    adverse_reference = upper_ks if upper_ks is not None else upper
-                if adverse_reference is None:
-                    adverse_reference = reference_price
-                buf = liquidation_buffer_pct(side, adverse_reference, liq)
-                if buf is not None:
-                    candidate_buffers.append(float(buf))
-        if supplied_liq_buffer_pct is not None:
-            candidate_buffers.append(float(supplied_liq_buffer_pct))
-        liq_buffer_pct = min(candidate_buffers) if candidate_buffers else None
-        if liq_buffer_pct is None:
-            warnings.append({
-                "code": "LIQUIDATION_BUFFER_NOT_ESTIMATED",
-                "msg": "Leverage > 1 требует оценки worst-side liquidation buffer; точная ликвидация зависит от risk tier и маржи аккаунта.",
+        cost_model = params.get("cost_model") if isinstance(params.get("cost_model"), dict) else {}
+        execution_cost_bps = _finite_float_or_none(economics.get("execution_cost_bps"))
+        if execution_cost_bps is None:
+            execution_cost_bps = _finite_float_or_none(cost_model.get("execution_cost_bps"))
+        if execution_cost_bps is None:
+            execution_cost_bps = _finite_float_or_none(cost_model.get("total_cost_bps"))
+        count_resolution = resolve_integer_aliases([
+            ("params.grid_count", params.get("grid_count")),
+            ("params.grid_levels", params.get("grid_levels")),
+            ("plan.grid_count", plan.get("grid_count")),
+        ])
+        resolved_count = count_resolution.get("value") if count_resolution.get("ok") else None
+        stress = None
+        if all(value is not None for value in (reference_price, lower, upper, lower_ks, upper_ks, resolved_count)):
+            stress = arithmetic_grid_cross_margin_stress(
+                lower=lower,
+                upper=upper,
+                grid_count=resolved_count,
+                reference_price=reference_price,
+                direction=direction,
+                leverage=leverage,
+                kill_switch_lower=lower_ks,
+                kill_switch_upper=upper_ks,
+                execution_cost_bps=execution_cost_bps or 0.0,
+            )
+        stress_buffer_pct = (
+            _finite_float_or_none(stress.get("equity_buffer_pct"))
+            if isinstance(stress, dict)
+            else None
+        )
+        if stress_buffer_pct is None:
+            errors.append({
+                "code": "CROSS_MARGIN_STRESS_UNAVAILABLE",
+                "msg": "Leverage > 1 требует проверяемого cross-margin equity stress по grid geometry и kill-switch; isolated liquidation price не используется.",
             })
-        elif liq_buffer_pct < 12.0:
+        elif stress_buffer_pct < 12.0:
             errors.append({
                 "code": "LIQUIDATION_BUFFER_TOO_LOW",
-                "msg": f"Оценочный worst-side liquidation buffer={liq_buffer_pct:.2f}% слишком мал для запуска futures grid с leverage={leverage}.",
+                "msg": f"Cross-margin equity buffer={stress_buffer_pct:.2f}% слишком мал для запуска futures grid с leverage={leverage}.",
             })
 
     sizing_candidates = [
@@ -4691,7 +4637,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.34", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.35", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

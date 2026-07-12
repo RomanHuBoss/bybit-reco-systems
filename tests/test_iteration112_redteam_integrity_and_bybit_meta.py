@@ -196,7 +196,7 @@ def test_insert_bot_instance_classifies_duplicate_origin_after_postgres_integrit
             "venue": "linear",
             "symbol": "BTCUSDT",
             "bot_type": "futures_grid",
-            "mode": {"account_mode": "unified", "margin_mode": "isolated", "direction": "long"},
+            "mode": {"account_mode": "unified", "margin_mode": "cross", "direction": "long"},
             "params": {},
             "state": {},
             "status": "running",

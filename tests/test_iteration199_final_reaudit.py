@@ -26,7 +26,7 @@ def _valid_recommendation(*, rec_id: str = "R-final", account_mode: str = "unifi
         "bot_type": "futures_grid",
         "direction": "long",
         "account_mode": account_mode,
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.25,
         "confidence": 0.70,
         "expected_rr": 1.10,
@@ -36,7 +36,7 @@ def _valid_recommendation(*, rec_id: str = "R-final", account_mode: str = "unifi
             "grid_levels": 8,
             "grid_type": "arithmetic",
             "leverage": 3,
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "trade_plan": {
                 "reference_price": 100.0,
                 "grid_type": "arithmetic",

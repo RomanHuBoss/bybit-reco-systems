@@ -48,13 +48,13 @@ def _operator_sheet_rec(*, operator_sheet: dict, params_extra: dict | None = Non
         "grid_type": "arithmetic",
         "grid_count": 5,
         "grid_levels": 5,
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "operator_sheet": dict(operator_sheet),
         "trade_plan": {
             "reference_price": 100.0,
             "grid_type": "arithmetic",
             "grid_count": 5,
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "levels": {
                 "range": {"lower": 99.0, "upper": 101.0},
                 "kill_switch": {"lower": 98.5, "upper": 101.5},
@@ -71,7 +71,7 @@ def _operator_sheet_rec(*, operator_sheet: dict, params_extra: dict | None = Non
         "symbol": "BTCUSDT",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": params,
     }
 

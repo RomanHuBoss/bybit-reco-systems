@@ -116,7 +116,7 @@ def test_funding_signal_annualizes_by_bybit_interval() -> None:
     assert eight_hour["annualized_pct"] == pytest.approx(10.95)
 
 
-def test_recommender_liquidation_buffer_uses_adverse_grid_boundary() -> None:
+def test_recommender_cross_margin_stress_uses_kill_switch_geometry() -> None:
     from app.recommender import _params
 
     params = _params(
@@ -139,8 +139,11 @@ def test_recommender_liquidation_buffer_uses_adverse_grid_boundary() -> None:
 
     econ = params["economics"]
     assert params["leverage"] == 3
-    assert econ["liquidation_buffer_pct_adverse_boundary"] < econ["liquidation_buffer_pct_reference"]
-    assert econ["liquidation_buffer_pct"] == pytest.approx(econ["liquidation_buffer_pct_adverse_boundary"])
+    assert econ["estimated_liquidation_price"] is None
+    assert econ["liquidation_model"] == "bybit_futures_grid_cross_margin_equity_stress"
+    assert econ["cross_margin_stress_buffer_pct"] == pytest.approx(econ["liquidation_buffer_pct"])
+    assert econ["cross_margin_stress_buffer_pct"] > 0
+    assert econ["cross_margin_worst_loss_per_qty"] > 0
 
 
 def test_recommender_default_sizing_preserves_target_notional_for_expensive_contracts() -> None:

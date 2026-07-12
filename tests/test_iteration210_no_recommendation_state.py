@@ -85,7 +85,7 @@ def _no_trade_recommendation(*, rec_id: str, symbol: str, ts: int, shadow_eligib
         "bot_type": "futures_grid",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.40,
         "confidence": 0.50,
         "expected_rr": 0.50,

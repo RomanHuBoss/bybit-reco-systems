@@ -50,7 +50,7 @@ def _rec(direction: str = "short") -> dict:
         "symbol": "BTCUSDT",
         "direction": direction,
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_count": 5,
             "grid_levels": 5,

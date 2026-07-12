@@ -86,7 +86,7 @@ def test_strict_preflight_still_blocks_operator_sheet_only_payload_without_full_
     }
     rec = _operator_sheet_only_rec()
     rec["account_mode"] = "unified"
-    rec["margin_mode"] = "isolated"
+    rec["margin_mode"] = "cross"
     rec["params"]["operator_sheet"]["leverage"] = 2.0
     rec["params"]["operator_sheet"]["sizing"] = {"order_qty": 0.1, "order_notional_usdt": 10.0}
     rec["params"]["operator_sheet"]["economics"] = {

@@ -104,7 +104,7 @@ def _insert_reco(
             "bot_type": "futures_grid",
             "direction": "long",
             "account_mode": "one_way",
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "score": score,
             "confidence": confidence,
             "expected_rr": 1.3,

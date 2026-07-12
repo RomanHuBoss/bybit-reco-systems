@@ -82,7 +82,7 @@ const fields = buildOperatorFieldSpecs({
   },
   params: {
     leverage: 3,
-    margin_mode: 'isolated',
+    margin_mode: 'cross',
     trade_plan: {
       reference_price: 100,
       grid_count: 20,
@@ -133,7 +133,7 @@ const fields = buildOperatorFieldSpecs({
   },
   params: {
     leverage: 3,
-    margin_mode: 'isolated',
+    margin_mode: 'cross',
     trade_plan: {
       reference_price: 100,
       grid_count: 20,

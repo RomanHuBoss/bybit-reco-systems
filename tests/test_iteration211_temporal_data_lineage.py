@@ -19,7 +19,7 @@ def _recommendation(rec_id: str, ts: int) -> dict:
         "bot_type": "futures_grid",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.62,
         "confidence": 0.55,
         "expected_rr": 1.2,
@@ -220,4 +220,4 @@ def test_outcome_join_decoder_does_not_crash_on_malformed_label_availability(tmp
 def test_temporal_outcome_contract_uses_new_label_version() -> None:
     from app import main as app_main
 
-    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v15"
+    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v16"

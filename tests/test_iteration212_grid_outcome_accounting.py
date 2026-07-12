@@ -198,7 +198,7 @@ def _recommendation(*, rec_id: str, status: str, shadow: bool) -> dict:
         "bot_type": "futures_grid",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.5,
         "confidence": 0.5,
         "expected_rr": 0.5,

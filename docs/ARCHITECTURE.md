@@ -1,3 +1,9 @@
+## v1.0.35 cross-margin safety boundary
+
+The recommendation service models Bybit Linear USDT Futures Grid as a unified-account, cross-margin, one-way product. `app/grid_math.py::arithmetic_grid_cross_margin_stress` is the deterministic safety contract shared by leverage selection and execution preflight. It consumes canonical grid commitment and external kill-switch geometry and returns per-unit committed capital, adverse loss, execution/maintenance reserve and remaining equity buffer. It deliberately does not model or expose a standalone isolated liquidation price.
+
+This remains an audit/recommendation boundary, not a private-account liquidation engine. Live wallet equity, other positions/orders, risk tiers and actual mark-price liquidation are external executor responsibilities.
+
 ## Neutral opening-order commitment boundary (v1.0.34)
 
 `app/grid_math.py::arithmetic_grid_commitment` is the single source of truth for both reservation and exposure, but these are intentionally distinct. For NEUTRAL it sums every initial Buy/Sell opening-order price into `committed_notional_per_qty` and counts all initial orders in `committed_slot_count`. It separately returns `max_abs_position_slots` as the larger directional stack. Recommender, snap, preflight, runtime risk and outcomes may not replace the commitment sum with a max-side approximation.

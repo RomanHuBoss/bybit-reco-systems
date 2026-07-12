@@ -34,7 +34,7 @@ def _rec(now: int) -> dict:
         "symbol": "BTCUSDT",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_count": 10,
             "grid_levels": 10,
@@ -111,7 +111,7 @@ def test_details_panel_keeps_entry_price_and_adds_price_actuality_and_risk_block
     assert "Цена входа" in app_js
     assert "Текущая цена" in app_js
     assert "Отклонение от входа" in app_js
-    assert "Запас до ликвидации" in app_js
+    assert "Cross-margin equity buffer" in app_js
     assert "Чистая прибыль/сетка" in app_js
     assert "Издержки исполнения" in app_js
     assert "Funding-риск" in app_js

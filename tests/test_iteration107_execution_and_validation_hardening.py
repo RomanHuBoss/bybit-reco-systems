@@ -57,7 +57,7 @@ def _insert_reco(
                 "bot_type": "futures_grid",
                 "direction": "long",
                 "account_mode": "unified",
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "score": 0.44,
                 "confidence": 0.71,
                 "expected_rr": 1.2,
@@ -103,7 +103,7 @@ def test_materialize_chain_reuse_rejects_expired_active_recommendation(isolated_
             "venue": "linear",
             "symbol": "BTCUSDT",
             "bot_type": "futures_grid",
-            "mode": {"account_mode": "unified", "margin_mode": "isolated", "direction": "long"},
+            "mode": {"account_mode": "unified", "margin_mode": "cross", "direction": "long"},
             "params": {"grid_levels": 8},
             "state": {"created_from_rec_id": "R-root"},
             "status": "running",
@@ -143,7 +143,7 @@ def test_materialize_chain_reuse_respects_non_actionable_statuses(isolated_app_a
             "venue": "linear",
             "symbol": "BTCUSDT",
             "bot_type": "futures_grid",
-            "mode": {"account_mode": "unified", "margin_mode": "isolated", "direction": "long"},
+            "mode": {"account_mode": "unified", "margin_mode": "cross", "direction": "long"},
             "params": {"grid_levels": 8},
             "state": {"created_from_rec_id": "R-root-2"},
             "status": "running",
@@ -298,7 +298,7 @@ def test_validate_trade_plan_detects_mode_and_leverage_constraint_errors(isolate
         "venue": "linear",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "cross",
+        "margin_mode": "isolated",
         "params": {
             "leverage": 2.15,
             "trade_plan": {
@@ -463,7 +463,7 @@ def test_validate_trade_plan_blocks_bybit_meta_symbol_mismatch(isolated_app_and_
         "symbol": "BTCUSDT",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "leverage": 2,
             "trade_plan": {
@@ -549,7 +549,7 @@ def test_validate_trade_plan_blocks_bybit_category_mismatch(isolated_app_and_con
         "bot_type": "futures_grid",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "leverage": 2,
             "trade_plan": {
@@ -603,8 +603,8 @@ def test_validate_trade_plan_rejects_non_usdt_linear_perpetual_domain(isolated_a
         "bot_type": "futures_grid",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
-        "params": {"grid_levels": 8, "leverage": 2, "margin_mode": "isolated"},
+        "margin_mode": "cross",
+        "params": {"grid_levels": 8, "leverage": 2, "margin_mode": "cross"},
     }
     meta = {
         "category": "linear",

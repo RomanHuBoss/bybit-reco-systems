@@ -53,7 +53,7 @@ def _base_rec(*, symbol: str = "BTCUSDT", direction: str = "long", net_profit_bp
         "symbol": symbol,
         "direction": direction,
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_count": 5,
             "grid_levels": 5,

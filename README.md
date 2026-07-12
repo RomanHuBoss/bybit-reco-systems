@@ -1,5 +1,10 @@
 # Bybit Recommender — Bybit Linear USDT Futures grid-only build
 
+## Bybit cross-margin safety contract (v1.0.35)
+
+Bybit Futures Grid Bot is modelled as `account_mode=unified`, `margin_mode=cross`, `position_mode=one_way`. A standalone isolated-position liquidation price is not used as a safety oracle. The deterministic gate recomputes a conservative cross-margin equity stress from exact grid commitment, leverage, execution cost and both kill-switch boundaries. Funding receipts and hypothetical grid profits are not credited to the stress buffer. Exact wallet equity, other positions/orders, risk tier and mark-price liquidation remain external executor checks. Legacy isolated-mode payloads are blocked fail-closed.
+
+
 ## Neutral full opening-order commitment (v1.0.34)
 
 Исправлена критическая ошибка sizing/risk/outcome-математики NEUTRAL-сетки. В версиях 1.0.32-1.0.33 ошибочно предполагалось, что в one-way режиме достаточно резервировать только более дорогой из двух первоначальных opening stacks: `max(sum(Buy), sum(Sell))`. Однако NEUTRAL стартует без позиции, а все первоначальные Buy и Sell лимитные заявки являются opening orders и требуют доступной маржи. One-way netting ограничивает максимальную **позицию**, но не делает противоположные первоначальные заявки бесплатными.
@@ -216,7 +221,7 @@ Execution preflight теперь использует этот exact-evidence к
 `how_to_trade.png` является быстрым регламентом для малого счёта, но не заменяет backend preflight. Текущая синхронизированная модель:
 
 - проект - recommendation/audit service, а не OMS/EMS: он не выставляет реальные ордера на Bybit;
-- поддерживается только `futures_grid` для Bybit Linear USDT Perpetual, `account_mode=unified`, `margin_mode=isolated`, `grid_type=arithmetic`;
+- поддерживается только `futures_grid` для Bybit Linear USDT Perpetual, `account_mode=unified`, `margin_mode=cross`, `grid_type=arithmetic`;
 - shipped risk profile: 1 running bot на счёт, daily DD 10 USDT, cooldown 90 min, max position notional 500 USDT, max margin per bot 100 USDT и интервал `min_leverage=3`, `max_leverage=5`; эти же значения встроены в код и действуют даже без скопированного `.env`;
 - если оператор задаёт `max_leverage < 5`, это трактуется как более строгий risk cap внутри или ниже диапазона 3-5x, а не как обещание, что каждая идея станет исполнимой;
 - любой `critical`/`blocking` preflight, `INVALID_MARKET_REFERENCE_PRICE`, устаревшая publication-chain, цена вне range/kill-switch, отсутствующая валидная пара bid/ask, live spread > 14 bps, пересчитанный net edge < 2 bps, неподтверждённый funding/minNotional/qtyStep или отсутствие OK LLM-gate при включённом reviewer означает `NO TRADE`.

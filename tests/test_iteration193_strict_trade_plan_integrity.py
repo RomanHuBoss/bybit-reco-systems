@@ -48,7 +48,7 @@ def _legacy_alias_complete_rec() -> dict:
         "symbol": "BTCUSDT",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_count": 4,
             "grid_type": "arithmetic",

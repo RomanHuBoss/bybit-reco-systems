@@ -1,3 +1,12 @@
+## Cross-margin Grid Bot contract - v1.0.35 / grid_label_v16
+
+- Required mode: unified account, `margin_mode=cross`, `position_mode=one_way`.
+- Do not launch a payload marked `isolated`; it uses the wrong risk semantics for Bybit Futures Grid Bot.
+- Use `cross_margin_stress_buffer_pct` at the external kill-switch, not a standalone liquidation price.
+- The stress includes committed grid capital, leverage, adverse inventory PnL, execution costs and maintenance reserve.
+- Funding receipt and hypothetical grid profit do not improve the safety buffer.
+- The external executor must still verify wallet equity, other positions/orders, risk tier and live Bybit state.
+
 # How to trade - operator quick reference
 
 This repository is a recommendation/audit service, not OMS/EMS. It does not manage live order lifecycle, open orders, fills, partial fills, or exchange reconciliation. The executable truth must remain in an external Bybit execution/reconciliation layer.
@@ -38,7 +47,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
 - An already-open candle before publication is not a tradeable entry. Conflicting persisted grid/funding aliases are skipped, never collapsed into a different bot or a zero-return loss.
 - Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
-- Current label contract is `grid_label_v15`: entry remains the first exact 1m open strictly after publication; N intervals create N+1 prices but exactly N initial orders, with one idle pivot/bridge level; directional inventory and neutral full initial-order commitment are derived from those actual orders; kill-switch remains terminal.
+- Current label contract is `grid_label_v16`: entry remains the first exact 1m open strictly after publication; N intervals create N+1 prices but exactly N initial orders, with one idle pivot/bridge level; directional inventory and neutral full initial-order commitment are derived from those actual orders; kill-switch remains terminal.
 - Same-level directional lots are quantity-aware: an initial TP and an adjacent replacement TP at one price must both remain in the ledger, fees and funding state.
 - Missing/inside-range kill-switch is unlabelable. For any candle with material high and low excursions, both O-H-L-C and O-L-H-C paths must produce the same ledger/stop/PnL state; otherwise no proxy label is stored.
 - A close-open or horizon gap beyond the kill-switch is also unlabelable; never assume the skipped boundary was an executable stop price.
@@ -73,7 +82,7 @@ A complete `params.trade_plan` must include:
 - levels.grid_step.step_abs;
 - levels.tp_per_leg.abs or pct; for arithmetic grid it must match the adjacent grid interval, not a 70% haircut;
 - grid_count and arithmetic grid model;
-- explicit leverage and isolated margin mode;
+- explicit leverage, cross margin and one-way position mode;
 - sizing/economics sufficient for qtyStep, minNotional, margin, and worst-case exposure validation; keep initial-order commitment separate from maximum one-way position. `grid_count` is intervals: N+1 prices exist, one pivot/bridge is idle and initial active orders remain N; neutral capital sums all N initial Buy/Sell opening orders, while max position uses only the larger side.
 
 ## Practical sequence

@@ -1,5 +1,10 @@
 ## Current neutral opening-order reservation rules (grid_label_v15)
 
+## Bybit cross-margin and one-way execution contract (v1.0.35)
+
+Bybit Futures Grid Bot is modelled as `account_mode=unified`, `margin_mode=cross`, `position_mode=one_way`. A standalone isolated-position liquidation price is not used as a safety oracle. The deterministic gate recomputes a conservative cross-margin equity stress from exact grid commitment, leverage, execution cost and both kill-switch boundaries. Funding receipts and hypothetical grid profits are not credited to the stress buffer. Exact wallet equity, other positions/orders, risk tier and mark-price liquidation remain external executor checks. Legacy isolated-mode payloads are blocked fail-closed.
+
+
 - NEUTRAL starts with zero position; every initial Buy and Sell resting order is an opening order and therefore part of the deterministic commitment floor.
 - `committed_notional_per_qty = sum(initial Buy prices) + sum(initial Sell prices)`.
 - `committed_slot_count = number of all initial opening orders` (exactly N under the current dynamic bridge topology).
@@ -63,7 +68,7 @@ The v1.0.32 max-side commitment rule and its iteration220 oracle are superseded.
 - `futures_grid`: `neutral`, `long`, `short`
 
 ## Режимы, которые система считает поддержанными
-- `futures_grid`: `venue=linear`, `account_mode=unified`, `margin_mode=isolated`
+- `futures_grid`: `venue=linear`, `account_mode=unified`, `margin_mode=cross`
 
 ## Операторский профиль плеча и малого счёта
 
@@ -122,7 +127,7 @@ execution-time validation должна блокировать исполнени
 ### Режимные инварианты
 - `bot_type` согласован с `venue` и `direction`;
 - `account_mode` и `margin_mode` не противоречат модели проекта;
-- для supported execution-path обязательно присутствует явный `margin_mode=isolated`, иначе recommendation блокируется fail-closed;
+- для supported execution-path обязательно присутствует явный `margin_mode=cross`, иначе recommendation блокируется fail-closed;
 - `leverage` > 0 и укладывается в `min/max leverage`; дополнительно runtime risk caps могут ограничить `max_leverage`, `max_position_notional_usdt` и `max_margin_per_bot_usdt` на один futures grid;
 - `leverage` выровнен по `leverage_step`, если биржа прислала такой constraint; leverage > 1 допускается только с явным worst-side/worst-boundary estimated liquidation buffer и блокируется, если buffer слишком мал;
 - recommendation-layer выбирает operator minimum leverage не по фиксированному ceiling издержек, а по projected net grid edge после fees/slippage/adverse funding. Это предотвращает starvation-сценарий, когда default taker fee floor уже выше старого threshold, из-за чего все идеи падали в `MIN_LEVERAGE_PER_BOT`;

@@ -48,7 +48,7 @@ def _base_rec() -> dict:
         "symbol": "BTCUSDT",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_levels": 5,
             "leverage": 1,
@@ -198,7 +198,7 @@ def test_bybit_preflight_validates_grid_count_even_without_complete_trade_plan(a
         "grid_count": 401,
         "grid_type": "arithmetic",
         "leverage": 1,
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
     }
 
     validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True)
@@ -208,7 +208,7 @@ def test_bybit_preflight_validates_grid_count_even_without_complete_trade_plan(a
 
 def test_execution_preflight_blocks_missing_trade_plan_fail_closed(app_main):
     rec = _base_rec()
-    rec["params"] = {"grid_count": 8, "grid_type": "arithmetic", "leverage": 1, "margin_mode": "isolated"}
+    rec["params"] = {"grid_count": 8, "grid_type": "arithmetic", "leverage": 1, "margin_mode": "cross"}
 
     validation = app_main._validate_trade_plan_against_bybit_meta(rec, _meta(), require_meta=True, require_execution_plan=True)
 

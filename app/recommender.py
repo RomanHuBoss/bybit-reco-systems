@@ -18,10 +18,9 @@ from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
 from .grid_math import (
     arithmetic_grid_commitment,
+    arithmetic_grid_cross_margin_stress,
     grid_leg_economics,
     margin_required_usdt,
-    estimate_linear_liq_price,
-    liquidation_buffer_pct,
     quantize_step,
     resolve_integer_aliases,
     strict_integer,
@@ -1677,6 +1676,9 @@ def _build_trade_plan(
         "bot_type": bot_type,
         "venue": venue,
         "direction": direction,
+        "account_mode": "unified" if venue == "linear" else venue,
+        "margin_mode": "cross" if venue == "linear" else "default",
+        "position_mode": "one_way" if venue == "linear" else "default",
         "cost_model": _sanitize_json_numbers(dict(cost_model or {})),
         "sizing": _sanitize_json_numbers(dict(params.get("sizing") or {})),
         "economics": _sanitize_json_numbers(dict(params.get("economics") or {})),
@@ -1718,8 +1720,8 @@ def _build_trade_plan(
         span_note = _finite_or_none(params.get("range_span_pct_total"))
         span_str = f"{span_note:.2f}" if span_note is not None else "n/a"
         plan["notes"] += (
-            f" Для futures_grid с leverage={leverage} и span≈{span_str}% проверьте, что liquidation price лежит за пределами kill_switch "
-            f"[{ks.get('lower')}, {ks.get('upper')}]."
+            f" Для futures_grid с leverage={leverage} и span≈{span_str}% проверьте cross-margin equity stress на kill_switch "
+            f"[{ks.get('lower')}, {ks.get('upper')}]; одиночная isolated liquidation price к Bybit Grid Bot неприменима."
         )
 
     return plan
@@ -2038,7 +2040,7 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
 
 def _mode(venue: str, direction: str) -> tuple[str, str]:
     if venue == "linear":
-        return "unified", "isolated"
+        return "unified", "cross"
     return venue, "default"
 
 
@@ -2242,66 +2244,45 @@ def _select_operator_grid_leverage(
     return _approve("adaptive_interval_selected")
 
 
+
 def _max_liquidation_safe_grid_leverage(
     *,
     direction: str,
     reference_price: float,
-    adverse_long_price: float,
-    adverse_short_price: float,
+    lower: float,
+    upper: float,
+    grid_count: int,
+    kill_switch_lower: float,
+    kill_switch_upper: float,
+    execution_cost_bps: float,
     min_leverage: int,
     max_leverage: int,
     min_buffer_pct: float = 12.0,
 ) -> int | None:
-    """Highest leverage in the operator interval passing approximate liq buffer.
-
-    This is only a pre-selector clamp. The normal economics/risk/preflight checks
-    still recompute and block fail-closed if the final payload violates the
-    liquidation-buffer floor.
-    """
-    try:
-        price = float(reference_price)
-    except Exception:
-        return None
-    if not math.isfinite(price) or price <= 0.0:
-        return None
+    """Highest leverage whose cross-margin bot-equity stress clears the floor."""
     min_lev = max(1, int(min_leverage or 1))
     max_lev = max(min_lev, int(max_leverage or min_lev))
-    dir_norm = str(direction or "neutral").strip().lower()
-
-    def _side_buffer(side: str, lev: int) -> float | None:
-        liq = estimate_linear_liq_price(side, price, lev)
-        if liq is None:
-            return None
-        adverse = adverse_long_price if side == "long" else adverse_short_price
-        try:
-            adverse_f = float(adverse)
-        except Exception:
-            return None
-        if not math.isfinite(adverse_f) or adverse_f <= 0.0:
-            return None
-        return liquidation_buffer_pct(side, adverse_f, liq)
-
     safe: int | None = None
     for lev in range(min_lev, max_lev + 1):
-        if dir_norm == "neutral":
-            buffers = [_side_buffer("long", lev), _side_buffer("short", lev)]
-            if any(x is None for x in buffers):
-                continue
-            worst = min(float(x) for x in buffers if x is not None)
-        elif dir_norm in {"long", "short"}:
-            buf = _side_buffer(dir_norm, lev)
-            if buf is None:
-                continue
-            worst = float(buf)
-        else:
-            buffers = [_side_buffer("long", lev), _side_buffer("short", lev)]
-            if any(x is None for x in buffers):
-                continue
-            worst = min(float(x) for x in buffers if x is not None)
-        if worst >= float(min_buffer_pct):
+        stress = arithmetic_grid_cross_margin_stress(
+            lower=lower,
+            upper=upper,
+            grid_count=grid_count,
+            reference_price=reference_price,
+            direction=direction,
+            leverage=lev,
+            kill_switch_lower=kill_switch_lower,
+            kill_switch_upper=kill_switch_upper,
+            execution_cost_bps=execution_cost_bps,
+        )
+        buffer_pct = stress.get("equity_buffer_pct") if isinstance(stress, dict) else None
+        try:
+            buffer_f = float(buffer_pct)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(buffer_f) and buffer_f >= float(min_buffer_pct):
             safe = lev
     return safe
-
 
 def _params(
     bot_type: str,
@@ -2371,7 +2352,7 @@ def _params(
             "label_horizon_hours": int(BOT_HORIZONS.get(bot_type, 12 * 3600) // 3600),
             "cost_model": dict(cost_model),
             "leverage": 1,
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "leverage_policy": {
                 "min_operator_leverage": 1,
                 "max_operator_leverage": 1,
@@ -2569,8 +2550,12 @@ def _params(
         liquidation_safe_max_leverage = _max_liquidation_safe_grid_leverage(
             direction=direction,
             reference_price=price,
-            adverse_long_price=adverse_long_ref,
-            adverse_short_price=adverse_short_ref,
+            lower=lower,
+            upper=upper,
+            grid_count=grid_levels,
+            kill_switch_lower=adverse_long_ref,
+            kill_switch_upper=adverse_short_ref,
+            execution_cost_bps=execution_cost_bps,
             min_leverage=min_operator_leverage,
             max_leverage=max_operator_leverage,
             min_buffer_pct=12.0,
@@ -2589,7 +2574,7 @@ def _params(
             liquidation_safe_max_leverage=liquidation_safe_max_leverage,
         )
         params["leverage"] = int(leverage)
-        params["margin_mode"] = "isolated"
+        params["margin_mode"] = "cross"
         params["leverage_policy"] = {
             "min_operator_leverage": int(min_operator_leverage),
             "max_operator_leverage": int(max_operator_leverage),
@@ -2601,7 +2586,7 @@ def _params(
         }
     else:
         params["leverage"] = 1
-        params["margin_mode"] = "isolated"
+        params["margin_mode"] = "cross"
 
     # Conservative minimum viable sizing. The project does not know the operator's
     # wallet balance, so this is an exchange-preflightable default, not a position
@@ -2653,86 +2638,86 @@ def _params(
         fill_efficiency="0.70",
     )
 
-    def _liq_metrics(side: str) -> dict[str, Any]:
-        liq = estimate_linear_liq_price(side, price, leverage_used) if venue == "linear" else None
-        ref_buf = liquidation_buffer_pct(side, price, liq) if liq is not None else None
-        adverse_ref = adverse_long_ref if side == "long" else adverse_short_ref
-        adverse_buf = liquidation_buffer_pct(side, adverse_ref, liq) if liq is not None and adverse_ref > 0 else None
-        buffers = [float(x) for x in (ref_buf, adverse_buf) if x is not None]
-        return {
-            "estimated_liquidation_price": float(liq) if liq is not None else None,
-            "liquidation_buffer_pct_reference": float(ref_buf) if ref_buf is not None else None,
-            "liquidation_buffer_pct_adverse_boundary": float(adverse_buf) if adverse_buf is not None else None,
-            "liquidation_buffer_reference_price": float(price),
-            "liquidation_buffer_adverse_boundary_price": float(adverse_ref) if adverse_ref > 0 else None,
-            "liquidation_buffer_pct": min(buffers) if buffers else None,
-        }
-
-    if direction == "neutral" and venue == "linear":
-        long_metrics = _liq_metrics("long")
-        short_metrics = _liq_metrics("short")
-        buffers = [
-            float(x)
-            for x in (long_metrics.get("liquidation_buffer_pct"), short_metrics.get("liquidation_buffer_pct"))
-            if x is not None
-        ]
-        params["economics"] = {
-            **grid_econ,
-            "order_notional_usdt": float(order_notional_usdt),
-            "qty_per_order": _round_price(order_qty, decimals=10),
-            "grid_type": "arithmetic",
-            "grid_count": int(grid_levels),
-            "estimated_active_orders": int(active_grid_orders),
-            "estimated_committed_slots": int(committed_grid_slots),
-            "estimated_max_position_slots": int(max_position_slots),
-            "estimated_total_order_notional_usdt": float(total_order_notional),
-            "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
-            "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
-            "estimated_margin_required_usdt": float(margin_required),
-            "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
-            "grid_commitment_model": commitment_model,
-            "reference_on_grid_level": bool(commitment.get("exact_grid_line")) if commitment is not None else None,
-            "estimated_max_position_notional_usdt": float(max(total_order_notional, worst_case_total_notional)),
-            "estimated_liquidation_price_long": long_metrics.get("estimated_liquidation_price"),
-            "estimated_liquidation_price_short": short_metrics.get("estimated_liquidation_price"),
-            "liquidation_buffer_pct_long_reference": long_metrics.get("liquidation_buffer_pct_reference"),
-            "liquidation_buffer_pct_short_reference": short_metrics.get("liquidation_buffer_pct_reference"),
-            "liquidation_buffer_pct_long_adverse_boundary": long_metrics.get("liquidation_buffer_pct_adverse_boundary"),
-            "liquidation_buffer_pct_short_adverse_boundary": short_metrics.get("liquidation_buffer_pct_adverse_boundary"),
-            "liquidation_buffer_adverse_boundary_long": long_metrics.get("liquidation_buffer_adverse_boundary_price"),
-            "liquidation_buffer_adverse_boundary_short": short_metrics.get("liquidation_buffer_adverse_boundary_price"),
-            "liquidation_buffer_pct": min(buffers) if buffers else None,
-            "liquidation_model": "approx_linear_isolated; buffer is worst of reference and kill-switch boundary; exact Bybit liq depends on risk tier, mark price and wallet margin",
-            "risk_profile": "conservative" if leverage_used <= 1 and float(grid_econ.get("net_profit_bps") or 0.0) >= 4.0 else ("moderate" if leverage_used <= 2 else "aggressive"),
-        }
-    else:
-        liq_side = direction if direction in ("long", "short") else "long"
-        metrics = _liq_metrics(liq_side)
-        params["economics"] = {
-            **grid_econ,
-            "order_notional_usdt": float(order_notional_usdt),
-            "qty_per_order": _round_price(order_qty, decimals=10),
-            "grid_type": "arithmetic",
-            "grid_count": int(grid_levels),
-            "estimated_active_orders": int(active_grid_orders),
-            "estimated_committed_slots": int(committed_grid_slots),
-            "estimated_max_position_slots": int(max_position_slots),
-            "estimated_total_order_notional_usdt": float(total_order_notional),
-            "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
-            "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
-            "estimated_margin_required_usdt": float(margin_required),
-            "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
-            "grid_commitment_model": commitment_model,
-            "reference_on_grid_level": bool(commitment.get("exact_grid_line")) if commitment is not None else None,
-            "estimated_max_position_notional_usdt": float(max(total_order_notional, worst_case_total_notional)),
-            "estimated_liquidation_price": metrics.get("estimated_liquidation_price"),
-            "liquidation_buffer_pct_reference": metrics.get("liquidation_buffer_pct_reference"),
-            "liquidation_buffer_pct_adverse_boundary": metrics.get("liquidation_buffer_pct_adverse_boundary"),
-            "liquidation_buffer_adverse_boundary_price": metrics.get("liquidation_buffer_adverse_boundary_price"),
-            "liquidation_buffer_pct": metrics.get("liquidation_buffer_pct"),
-            "liquidation_model": "approx_linear_isolated; buffer is worst of reference and kill-switch boundary; exact Bybit liq depends on risk tier, mark price and wallet margin",
-            "risk_profile": "conservative" if leverage_used <= 1 and float(grid_econ.get("net_profit_bps") or 0.0) >= 4.0 else ("moderate" if leverage_used <= 2 else "aggressive"),
-        }
+    cross_margin_stress = arithmetic_grid_cross_margin_stress(
+        lower=lower,
+        upper=upper,
+        grid_count=grid_levels,
+        reference_price=price,
+        direction=direction,
+        leverage=leverage_used,
+        kill_switch_lower=adverse_long_ref,
+        kill_switch_upper=adverse_short_ref,
+        execution_cost_bps=execution_cost_bps,
+    )
+    stress_buffer_pct = (
+        float(cross_margin_stress.get("equity_buffer_pct"))
+        if isinstance(cross_margin_stress, dict)
+        and cross_margin_stress.get("equity_buffer_pct") is not None
+        else None
+    )
+    stress_long = cross_margin_stress.get("long") if isinstance(cross_margin_stress, dict) else {}
+    stress_short = cross_margin_stress.get("short") if isinstance(cross_margin_stress, dict) else {}
+    stress_fields = {
+        # Backward fields remain present but no longer pretend an isolated
+        # liquidation price applies to a cross-margin Futures Grid bot.
+        "estimated_liquidation_price": None,
+        "estimated_liquidation_price_long": None,
+        "estimated_liquidation_price_short": None,
+        "liquidation_buffer_pct_reference": None,
+        "liquidation_buffer_pct_adverse_boundary": None,
+        "liquidation_buffer_pct_long_reference": None,
+        "liquidation_buffer_pct_short_reference": None,
+        "liquidation_buffer_pct_long_adverse_boundary": None,
+        "liquidation_buffer_pct_short_adverse_boundary": None,
+        "liquidation_buffer_adverse_boundary_price": None,
+        "liquidation_buffer_adverse_boundary_long": float(adverse_long_ref),
+        "liquidation_buffer_adverse_boundary_short": float(adverse_short_ref),
+        "liquidation_buffer_pct": stress_buffer_pct,
+        "cross_margin_stress_buffer_pct": stress_buffer_pct,
+        "cross_margin_stress_buffer_pct_long": (
+            stress_long.get("equity_buffer_pct") if isinstance(stress_long, dict) else None
+        ),
+        "cross_margin_stress_buffer_pct_short": (
+            stress_short.get("equity_buffer_pct") if isinstance(stress_short, dict) else None
+        ),
+        "cross_margin_initial_margin_per_qty": (
+            cross_margin_stress.get("initial_margin_per_qty") if isinstance(cross_margin_stress, dict) else None
+        ),
+        "cross_margin_worst_loss_per_qty": (
+            cross_margin_stress.get("worst_loss_per_qty") if isinstance(cross_margin_stress, dict) else None
+        ),
+        "cross_margin_equity_buffer_per_qty": (
+            cross_margin_stress.get("equity_buffer_per_qty") if isinstance(cross_margin_stress, dict) else None
+        ),
+        "cross_margin_worst_side": (
+            cross_margin_stress.get("worst_side") if isinstance(cross_margin_stress, dict) else None
+        ),
+        "liquidation_model": "bybit_futures_grid_cross_margin_equity_stress",
+        "risk_profile": (
+            "conservative"
+            if leverage_used <= 1 and float(grid_econ.get("net_profit_bps") or 0.0) >= 4.0 and (stress_buffer_pct is None or stress_buffer_pct >= 20.0)
+            else ("moderate" if leverage_used <= 2 and (stress_buffer_pct is None or stress_buffer_pct >= 12.0) else "aggressive")
+        ),
+    }
+    params["economics"] = {
+        **grid_econ,
+        "order_notional_usdt": float(order_notional_usdt),
+        "qty_per_order": _round_price(order_qty, decimals=10),
+        "grid_type": "arithmetic",
+        "grid_count": int(grid_levels),
+        "estimated_active_orders": int(active_grid_orders),
+        "estimated_committed_slots": int(committed_grid_slots),
+        "estimated_max_position_slots": int(max_position_slots),
+        "estimated_total_order_notional_usdt": float(total_order_notional),
+        "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
+        "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
+        "estimated_margin_required_usdt": float(margin_required),
+        "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
+        "grid_commitment_model": commitment_model,
+        "reference_on_grid_level": bool(commitment.get("exact_grid_line")) if commitment is not None else None,
+        "estimated_max_position_notional_usdt": float(max(total_order_notional, worst_case_total_notional)),
+        **stress_fields,
+    }
     params["sizing"] = {
         "basis": "minimum_viable_operator_default",
         "order_notional_usdt": float(order_notional_usdt),

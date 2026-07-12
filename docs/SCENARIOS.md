@@ -1,3 +1,13 @@
+## 0. Bybit Futures Grid cross-margin contract - v1.0.35
+
+Expected behavior:
+- generated Linear USDT Futures Grid payloads use `account_mode=unified`, `margin_mode=cross`, `position_mode=one_way`;
+- `margin_mode=isolated` is blocked before operator execution;
+- leverage above 1x requires a finite cross-margin equity buffer computed from exact grid commitment and both external kill-switches;
+- the stress includes adverse inventory loss, entry/exit friction and maintenance reserve, and credits no funding receipt or hypothetical grid profit;
+- the UI does not publish an isolated liquidation price for Bybit Futures Grid;
+- exact private-account liquidation remains an external executor check.
+
 ## 0. Neutral full initial-order reservation (v1.0.34)
 
 Expected behavior:

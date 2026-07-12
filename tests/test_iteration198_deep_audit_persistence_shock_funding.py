@@ -19,7 +19,7 @@ def _recommendation(*, rec_id: str = "R-audit", ts: int = 1_700_800_000) -> dict
         "bot_type": "futures_grid",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.25,
         "confidence": 0.70,
         "expected_rr": 1.10,

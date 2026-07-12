@@ -22,7 +22,7 @@ def safe_linear_grid_params(params: dict | None = None, *, reference: float = 10
     payload.setdefault("grid_levels", grid_count)
     payload.setdefault("grid_type", "arithmetic")
     payload.setdefault("leverage", 1)
-    payload.setdefault("margin_mode", "isolated")
+    payload.setdefault("margin_mode", "cross")
     payload.setdefault("price_range_lower", lower)
     payload.setdefault("price_range_upper", upper)
     step_abs = max(0.1, round((float(upper) - float(lower)) / max(1, grid_count + 2), 1))

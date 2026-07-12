@@ -62,7 +62,7 @@ def _insert_reco(conn, *, rec_id: str, ts_now: int, lower: float = 99.0, upper: 
                 "bot_type": "futures_grid",
                 "direction": "long",
                 "account_mode": "unified",
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "score": 0.44,
                 "confidence": 0.71,
                 "expected_rr": 1.2,
@@ -102,7 +102,7 @@ def test_bybit_instrument_status_is_fail_closed(isolated_app_and_conn):
         "symbol": "BTCUSDT",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_levels": 20,
             "leverage": 2,

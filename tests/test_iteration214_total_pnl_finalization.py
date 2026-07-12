@@ -113,7 +113,7 @@ def _recommendation(*, rec_id: str, signal_ts: int, direction: str, params: dict
         "bot_type": "futures_grid",
         "direction": direction,
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.6,
         "confidence": 0.6,
         "expected_rr": 1.0,
@@ -227,8 +227,8 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
 
 def test_outcome_contract_is_bumped_for_inventory_aware_finalization() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v15"' in source
-    assert 'version="1.0.34"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v16"' in source
+    assert 'version="1.0.35"' in source
 
 
 def test_short_inventory_pays_negative_funding_at_position_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

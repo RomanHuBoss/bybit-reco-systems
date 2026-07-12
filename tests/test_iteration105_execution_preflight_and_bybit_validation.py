@@ -45,7 +45,7 @@ def _insert_recommendation(conn, *, rec_id: str, ts_now: int) -> None:
                 "bot_type": "futures_grid",
                 "direction": "long",
                 "account_mode": "unified",
-                "margin_mode": "isolated",
+                "margin_mode": "cross",
                 "score": 0.44,
                 "confidence": 0.71,
                 "expected_rr": 1.2,

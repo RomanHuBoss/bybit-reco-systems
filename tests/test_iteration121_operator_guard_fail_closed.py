@@ -29,7 +29,7 @@ def _recommended_grid_rec() -> dict:
         "bot_type": "futures_grid",
         "direction": "long",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.68,
         "confidence": 0.74,
         "risk_score": 0.30,
@@ -44,7 +44,7 @@ def _recommended_grid_rec() -> dict:
             "grid_count": 8,
             "grid_type": "arithmetic",
             "leverage": 2,
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "risk_report": {
                 "decision": "recommended",
                 "rejection_reasons": [],

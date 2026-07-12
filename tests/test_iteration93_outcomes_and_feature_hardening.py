@@ -16,7 +16,7 @@ def _make_recommendation(rec_id: str, ts: int, params: dict) -> dict:
         "bot_type": "futures_grid",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.41,
         "confidence": 0.73,
         "expected_rr": 1.5,

@@ -1,3 +1,10 @@
+## v1.0.35 cross-margin responsibilities
+
+- `app/grid_math.py`: exact arithmetic-grid commitment plus conservative cross-margin equity stress; generic isolated-price helpers are not used by Futures Grid production paths.
+- `app/recommender.py`: publishes `margin_mode=cross`, `position_mode=one_way`, clamps leverage through the stress model and stores stress diagnostics instead of a fabricated liquidation price.
+- `app/main.py`: strict preflight rejects isolated Grid Bot payloads and independently recomputes stress from canonical persisted geometry.
+- `app/ui/static/app.js`: labels cross margin and equity buffer explicitly; isolated liquidation price is shown as not calculated.
+
 ## v1.0.34 responsibility update
 
 - `app/grid_math.py`: separates all-initial-order neutral commitment from maximum one-way position exposure.

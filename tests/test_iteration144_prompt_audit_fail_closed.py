@@ -54,7 +54,7 @@ def _base_rec() -> dict:
         "bot_type": "futures_grid",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "score": 0.74,
         "confidence": 0.72,
         "risk_score": 0.24,
@@ -69,7 +69,7 @@ def _base_rec() -> dict:
             "grid_count": 8,
             "grid_type": "arithmetic",
             "leverage": 2,
-            "margin_mode": "isolated",
+            "margin_mode": "cross",
             "risk_report": {"decision": "recommended", "rejection_reasons": []},
             "economics": {"liquidation_buffer_pct": 35.0},
             "trade_plan": {

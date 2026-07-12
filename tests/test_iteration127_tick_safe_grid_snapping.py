@@ -48,7 +48,7 @@ def _rec() -> dict:
         "symbol": "BTCUSDT",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_count": 4,
             "grid_levels": 4,
@@ -147,7 +147,7 @@ def test_strict_bybit_geometry_snap_rebuilds_range_from_grid_count(app_main):
         "symbol": "BTCUSDT",
         "direction": "neutral",
         "account_mode": "unified",
-        "margin_mode": "isolated",
+        "margin_mode": "cross",
         "params": {
             "grid_geometry_model": "bybit_arithmetic_range_width_div_grid_count",
             "actual_grid_step_abs": 0.101,

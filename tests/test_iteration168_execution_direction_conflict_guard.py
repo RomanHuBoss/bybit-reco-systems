@@ -30,7 +30,7 @@ def _running_bot(
     symbol: str = "BTCUSDT",
     bot_type: str = "futures_grid",
 ):
-    mode = {"account_mode": "UNIFIED", "margin_mode": "isolated"}
+    mode = {"account_mode": "UNIFIED", "margin_mode": "cross"}
     if direction is not None:
         mode["direction"] = direction
     return {
