@@ -1,4 +1,14 @@
 # Торговая логика Bybit Linear USDT Futures grid
+
+## Current exact commitment and path-invariance rules (grid_label_v11)
+
+- `grid_count` is the number of arithmetic intervals; price levels are `N+1`.
+- If reference is exactly on a level, the pivot is not an active order and active orders are `N`; between levels, all `N+1` levels are active.
+- LONG/SHORT commitment equals initial directional inventory at reference plus adverse-side opening orders at their actual level prices. NEUTRAL commitment equals all active opening orders.
+- `estimated_total_order_notional_usdt`, margin, worst-case notional, strict preflight and outcome return denominator must use this exact commitment, not `reference × qty × grid_count`.
+- A candle with material high and low excursions is evaluated under both `O→H→L→C` and `O→L→H→C`. The label is available only when both paths produce equivalent cash, inventory, fees, resting orders, stop state and terminal PnL.
+- `grid_label_v11` is incompatible with prior proxy outcomes/calibrators and is reset by the version guard.
+
 ## Bybit Linear USDT product boundary
 
 - Public Bybit REST client принимает только `category=linear`; другой category отклоняется до сетевого запроса.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from . import db
 from .bot_types import GRID_BOT_TYPES, SUPPORTED_BOT_TYPES
-from .grid_math import resolve_integer_aliases, strict_integer
+from .grid_math import arithmetic_grid_commitment, resolve_integer_aliases, strict_integer
 from .settings import load_settings
 from .trading_semantics import normalize_execution_direction
 import logging
@@ -695,51 +695,25 @@ def _grid_outcome(
     exit_f = float(exitp)
     ks_lower_f = float(ks_lower)
     ks_upper_f = float(ks_upper)
-    step_abs = (upper_f - lower_f) / float(grid_count)
-    if not math.isfinite(step_abs) or step_abs <= 0.0:
+    topology = arithmetic_grid_commitment(
+        lower=lower_f,
+        upper=upper_f,
+        grid_count=grid_count,
+        reference_price=entry_f,
+        direction=direction_norm,
+    )
+    if topology is None:
         return None
-    grid_prices = [lower_f + step_abs * index for index in range(grid_count + 1)]
-
-    position_on_grid = (entry_f - lower_f) / step_abs
-    nearest_index = int(round(position_on_grid))
-    exact_grid_line = abs(position_on_grid - nearest_index) <= 1e-9
-    if exact_grid_line:
-        pivot_index = max(0, min(grid_count, nearest_index))
-        buy_indices = set(range(0, pivot_index))
-        sell_indices = set(range(pivot_index + 1, grid_count + 1))
-        if direction_norm == "long":
-            initial_long_slots = grid_count - pivot_index
-            initial_short_slots = 0
-        elif direction_norm == "short":
-            initial_long_slots = 0
-            initial_short_slots = pivot_index
-        else:
-            initial_long_slots = initial_short_slots = 0
-    else:
-        cell_index = max(0, min(grid_count - 1, int(math.floor(position_on_grid))))
-        if direction_norm == "neutral":
-            buy_indices = set(range(0, cell_index + 1))
-            sell_indices = set(range(cell_index + 1, grid_count + 1))
-            initial_long_slots = initial_short_slots = 0
-        elif direction_norm == "long":
-            buy_indices = set(range(0, cell_index + 1))
-            # Every grid level above the market is a take-profit sell, including
-            # the immediately adjacent upper level. The previous +2 offset
-            # dropped that order and its matching initial position slot.
-            sell_indices = set(range(cell_index + 1, grid_count + 1))
-            initial_long_slots = grid_count - cell_index
-            initial_short_slots = 0
-        else:
-            # Every grid level below the market closes one initial short slot,
-            # including the immediately adjacent lower level.
-            buy_indices = set(range(0, cell_index + 1))
-            sell_indices = set(range(cell_index + 1, grid_count + 1))
-            initial_long_slots = 0
-            initial_short_slots = cell_index + 1
+    step_abs = float(topology["step_abs"])
+    grid_prices = [float(value) for value in topology["grid_prices"]]
+    buy_indices = set(int(value) for value in topology["buy_indices"])
+    sell_indices = set(int(value) for value in topology["sell_indices"])
+    initial_long_slots = int(topology["initial_long_slots"])
+    initial_short_slots = int(topology["initial_short_slots"])
 
     orders: dict[int, str] = {index: "buy" for index in buy_indices}
     orders.update({index: "sell" for index in sell_indices})
-    position_slots = int(initial_long_slots) - int(initial_short_slots)
+    position_slots = int(topology["initial_position_slots"])
 
     cash = (-float(initial_long_slots) + float(initial_short_slots)) * entry_f
     execution_cost = float(initial_long_slots + initial_short_slots) * entry_f * half_leg_cost_rate
@@ -835,6 +809,59 @@ def _grid_outcome(
             stop_price = float(terminal)
             stop_ts = int(event_ts)
 
+    def snapshot_ledger() -> dict[str, object]:
+        return {
+            "cash": float(cash),
+            "execution_cost": float(execution_cost),
+            "position_slots": int(position_slots),
+            "previous_price": float(previous_price),
+            "max_adverse_position_value": float(max_adverse_position_value),
+            "stopped": bool(stopped),
+            "stop_price": None if stop_price is None else float(stop_price),
+            "stop_ts": stop_ts,
+            "orders": dict(orders),
+        }
+
+    def restore_ledger(state: dict[str, object]) -> None:
+        nonlocal cash, execution_cost, position_slots, previous_price
+        nonlocal max_adverse_position_value, stopped, stop_price, stop_ts, orders
+        cash = float(state["cash"])
+        execution_cost = float(state["execution_cost"])
+        position_slots = int(state["position_slots"])
+        previous_price = float(state["previous_price"])
+        max_adverse_position_value = float(state["max_adverse_position_value"])
+        stopped = bool(state["stopped"])
+        raw_stop_price = state["stop_price"]
+        stop_price = None if raw_stop_price is None else float(raw_stop_price)
+        raw_stop_ts = state["stop_ts"]
+        stop_ts = None if raw_stop_ts is None else int(raw_stop_ts)
+        orders = dict(state["orders"])  # type: ignore[arg-type]
+
+    def equivalent_ledger(left: dict[str, object], right: dict[str, object]) -> bool:
+        for key in ("cash", "execution_cost", "previous_price", "max_adverse_position_value"):
+            if not math.isclose(
+                float(left[key]), float(right[key]), rel_tol=1e-12, abs_tol=max(1e-10, tolerance)
+            ):
+                return False
+        for key in ("position_slots", "stopped", "stop_ts", "orders"):
+            if left[key] != right[key]:
+                return False
+        left_stop = left["stop_price"]
+        right_stop = right["stop_price"]
+        if left_stop is None or right_stop is None:
+            return left_stop is right_stop
+        return math.isclose(
+            float(left_stop), float(right_stop), rel_tol=1e-12, abs_tol=max(1e-10, tolerance)
+        )
+
+    def simulate_intrabar_path(base: dict[str, object], targets: list[float], *, event_ts: int) -> dict[str, object]:
+        restore_ledger(base)
+        for target in targets:
+            process_segment(float(target), event_ts=event_ts)
+            if stopped:
+                break
+        return snapshot_ledger()
+
     for row in rows:
         row_ts = strict_integer(row["ts"])
         row_open = _finite_positive_or_none(row["open"])
@@ -870,10 +897,26 @@ def _grid_outcome(
             # Any chosen chronology would fabricate a different stopped bot.
             return None
         if upper_breach:
-            process_segment(ks_upper_f, event_ts=row_ts)
+            base_state = snapshot_ledger()
+            stop_first = simulate_intrabar_path(base_state, [ks_upper_f], event_ts=row_ts)
+            opposite_first = simulate_intrabar_path(
+                base_state, [float(row_low), ks_upper_f], event_ts=row_ts
+            )
+            if not equivalent_ledger(stop_first, opposite_first):
+                restore_ledger(base_state)
+                return None
+            restore_ledger(stop_first)
             break
         if lower_breach:
-            process_segment(ks_lower_f, event_ts=row_ts)
+            base_state = snapshot_ledger()
+            stop_first = simulate_intrabar_path(base_state, [ks_lower_f], event_ts=row_ts)
+            opposite_first = simulate_intrabar_path(
+                base_state, [float(row_high), ks_lower_f], event_ts=row_ts
+            )
+            if not equivalent_ledger(stop_first, opposite_first):
+                restore_ledger(base_state)
+                return None
+            restore_ledger(stop_first)
             break
 
         open_f = float(row_open)
@@ -888,9 +931,24 @@ def _grid_outcome(
         elif low_excursion and not high_excursion:
             process_segment(float(row_low), event_ts=row_ts)
             process_segment(close_f, event_ts=row_ts)
+        elif high_excursion and low_excursion:
+            # OHLC exposes both extremes but not their order. Simulate the two
+            # admissible extreme paths and keep the label only when cash, open
+            # inventory, fees, adverse funding exposure and resting orders are
+            # identical. Endpoint-only accounting can otherwise manufacture a
+            # third P&L that no valid intrabar path produces.
+            base_state = snapshot_ledger()
+            high_first = simulate_intrabar_path(
+                base_state, [float(row_high), float(row_low), close_f], event_ts=row_ts
+            )
+            low_first = simulate_intrabar_path(
+                base_state, [float(row_low), float(row_high), close_f], event_ts=row_ts
+            )
+            if not equivalent_ledger(high_first, low_first):
+                restore_ledger(base_state)
+                return None
+            restore_ledger(high_first)
         else:
-            # Two-sided intrabar order is unknowable from OHLC. Count only the
-            # endpoint movement that every possible path must contain.
             process_segment(close_f, event_ts=row_ts)
         if stopped:
             break
@@ -930,8 +988,14 @@ def _grid_outcome(
     open_position_slots = current_position_slots()
     gross_pnl = cash + float(open_position_slots) * liquidation_price
     execution_cost += abs(float(open_position_slots)) * liquidation_price * half_leg_cost_rate
-    capital_reference = entry_f * float(grid_count)
-    if capital_reference <= 0.0:
+    # Normalize by the actual initial grid commitment. Number of Grids is the
+    # interval count, while an off-grid reference has one resting order at every
+    # one of the grid_count + 1 price levels. Directional close-only orders are
+    # backed by the initial position; neutral opening orders on both sides reserve
+    # margin. Dividing by entry * grid_count overstated returns whenever the
+    # reference lay between levels.
+    capital_reference = float(topology["committed_notional_per_qty"])
+    if not math.isfinite(capital_reference) or capital_reference <= 0.0:
         return None
     net_proxy = (gross_pnl - execution_cost - funding_cost) / capital_reference
 

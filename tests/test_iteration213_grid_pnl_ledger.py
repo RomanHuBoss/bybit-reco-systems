@@ -128,9 +128,9 @@ def test_monotonic_long_grid_accounts_for_initial_position_take_profit(tmp_path:
             base_ts, base_ts + 60, "long", _params(),
         )
 
-        # Ten initial long grid units are closed at 101..110. On total reference
-        # notional (20 equal grid slots), gross P&L is (1+...+10)/(100*20)=2.75%.
-        assert ret_proxy == pytest.approx(0.0275)
+        # Ten initial long units close at 101..110 for 55 USDT. Exact
+        # commitment is 10*100 plus buy orders 90..99 = 1945 USDT.
+        assert ret_proxy == pytest.approx(55.0 / 1945.0)
         assert success == 1
     finally:
         conn.close()
@@ -168,8 +168,8 @@ def test_directional_adverse_inventory_uses_weighted_grid_entries(tmp_path: Path
             base_ts, base_ts + 60, "long", _params(),
         )
 
-        # Ten initial units at 100 plus ten added units at 99..90 are marked at 90.
-        assert ret_proxy == pytest.approx(-0.0725)
+        # Monetary loss is 145 USDT; exact Long commitment is 1945 USDT.
+        assert ret_proxy == pytest.approx(-145.0 / 1945.0)
         assert success == 0
     finally:
         conn.close()
@@ -199,5 +199,5 @@ def test_outcome_uses_persisted_range_and_grid_count_not_cost_widened_step(tmp_p
 
 def test_outcome_contract_is_bumped_for_grid_ledger_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v10"' in source
-    assert 'version="1.0.29"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v11"' in source
+    assert 'version="1.0.30"' in source

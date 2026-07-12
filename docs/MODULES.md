@@ -1,5 +1,13 @@
 # Модули и контракты
 
+## v1.0.30 responsibility update
+
+- `app/grid_math.py`: owns arithmetic level topology and exact committed-notional calculation.
+- `app/recommender.py`: publishes sizing/economics from the canonical commitment.
+- `app/main.py`: preserves the same commitment during Bybit snapping, strict preflight and runtime caps.
+- `app/outcomes.py`: normalizes PnL by exact commitment and rejects path-dependent two-sided OHLC candles.
+
+
 ## `app/outcomes.py` — current v9 contract
 
 - chooses the first exact 1m entry open strictly after recommendation publication;

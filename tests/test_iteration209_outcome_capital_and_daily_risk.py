@@ -37,9 +37,11 @@ def test_directional_per_leg_tp_touch_does_not_override_unresolved_whole_grid_lo
         db.init_db(conn)
         base_ts = 1_700_900_000
         candles = [
-            {"open": 100.0, "high": 100.35, "low": 99.95, "close": 100.10},
-            {"open": 100.10, "high": 100.12, "low": 95.00, "close": 95.20},
-            {"open": 95.20, "high": 95.30, "low": 95.00, "close": 95.10},
+            # Each candle has only one excursion beyond its open/close segment,
+            # so the path is labelable under the strict intrabar contract.
+            {"open": 100.0, "high": 100.35, "low": 100.0, "close": 100.10},
+            {"open": 100.10, "high": 100.10, "low": 95.00, "close": 95.20},
+            {"open": 95.20, "high": 95.20, "low": 95.00, "close": 95.10},
         ]
         _seed_1m(conn, base_ts, candles)
         params = {
@@ -227,4 +229,4 @@ def test_execution_preflight_blocks_kill_switch_loss_above_remaining_daily_budge
 
 
 def test_outcome_semantics_bump_label_version_to_avoid_mixing_legacy_calibration(app_main) -> None:
-    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v10"
+    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v11"

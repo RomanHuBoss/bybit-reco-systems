@@ -71,7 +71,9 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
     lower = 0.4681
     upper = 0.5725
     grid_count = 12
-    total_notional = 300.28968
+    total_notional = 318.00924
+    active_orders = 13
+    order_notional = 48.6 * price
     margin = total_notional / max(1, leverage)
     step = (upper - lower) / grid_count
     return {
@@ -122,13 +124,19 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
                 },
                 "sizing": {
                     "qty_per_order": 48.6,
-                    "order_notional_usdt": total_notional / grid_count,
-                    "estimated_total_order_notional_usdt": total_notional,
+                    "order_notional_usdt": order_notional,
+                    "estimated_active_orders": active_orders,
+                    "estimated_active_orders": active_orders,
+                "estimated_active_orders": active_orders,
+            "estimated_total_order_notional_usdt": total_notional,
                     "estimated_margin_required_usdt": margin,
                     "estimated_max_position_notional_usdt": total_notional,
                 },
                 "economics": {
-                    "estimated_total_order_notional_usdt": total_notional,
+                    "estimated_active_orders": active_orders,
+                    "estimated_active_orders": active_orders,
+                "estimated_active_orders": active_orders,
+            "estimated_total_order_notional_usdt": total_notional,
                     "estimated_margin_required_usdt": margin,
                     "estimated_max_position_notional_usdt": total_notional,
                 },
@@ -136,20 +144,27 @@ def _reco(ts: int, *, leverage: int = 1, policy_min: int = 5, policy_max: int = 
             "operator_sheet": {
                 "leverage": leverage,
                 "sizing": {
-                    "estimated_total_order_notional_usdt": total_notional,
+                    "estimated_active_orders": active_orders,
+                    "estimated_active_orders": active_orders,
+                "estimated_active_orders": active_orders,
+            "estimated_total_order_notional_usdt": total_notional,
                     "estimated_margin_required_usdt": margin,
                     "estimated_max_position_notional_usdt": total_notional,
                 },
             },
             "sizing": {
-                "estimated_total_order_notional_usdt": total_notional,
+                "estimated_active_orders": active_orders,
+                "estimated_active_orders": active_orders,
+            "estimated_total_order_notional_usdt": total_notional,
                 "estimated_margin_required_usdt": margin,
                 "estimated_max_position_notional_usdt": total_notional,
             },
             "economics": {
                 "net_profit_bps": 4.0,
                 "gross_profit_bps": 20.0,
-                "estimated_total_order_notional_usdt": total_notional,
+                "estimated_active_orders": active_orders,
+                "estimated_active_orders": active_orders,
+            "estimated_total_order_notional_usdt": total_notional,
                 "estimated_margin_required_usdt": margin,
                 "estimated_max_position_notional_usdt": total_notional,
                 "liquidation_buffer_pct": 100.0,

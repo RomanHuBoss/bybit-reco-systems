@@ -73,7 +73,7 @@ def test_runtime_caps_use_worst_executable_grid_price_not_reference_price(app_ma
 
     assert "POSITION_NOTIONAL_UNDERSTATED_BY_GRID_PRICE" in codes
     assert "MAX_POSITION_NOTIONAL_PER_BOT_AT_EXECUTION" in codes
-    assert any("1500" in block["msg"] for block in blocks if block["code"] == "MAX_POSITION_NOTIONAL_PER_BOT_AT_EXECUTION")
+    assert any("1650" in block["msg"] for block in blocks if block["code"] == "MAX_POSITION_NOTIONAL_PER_BOT_AT_EXECUTION")
 
 
 def test_understated_legacy_estimate_does_not_block_when_worst_case_is_within_cap(app_main) -> None:
@@ -84,8 +84,8 @@ def test_understated_legacy_estimate_does_not_block_when_worst_case_is_within_ca
 
 def test_worst_case_total_notional_field_takes_precedence_over_legacy_reference_estimate(app_main) -> None:
     rec = _grid_rec()
-    rec["params"]["sizing"]["estimated_worst_case_total_order_notional_usdt"] = 1500.0
-    rec["params"]["sizing"]["estimated_worst_case_margin_required_usdt"] = 150.0
+    rec["params"]["sizing"]["estimated_worst_case_total_order_notional_usdt"] = 1650.0
+    rec["params"]["sizing"]["estimated_worst_case_margin_required_usdt"] = 165.0
 
     blocks = app_main._execution_runtime_size_risk_blocks(rec, _risk_limits(max_notional=1200.0, max_margin=140.0))
     codes = {block["code"] for block in blocks}
@@ -144,8 +144,8 @@ def test_auto_snap_publishes_worst_case_grid_notional_and_margin(app_main) -> No
     operator_economics = snapped["params"]["operator_sheet"]["economics"]
 
     assert sizing["estimated_worst_case_order_notional_usdt"] == pytest.approx(150.0)
-    assert sizing["estimated_worst_case_total_order_notional_usdt"] == pytest.approx(1500.0)
-    assert sizing["estimated_worst_case_margin_required_usdt"] == pytest.approx(300.0)
-    assert economics["estimated_max_position_notional_usdt"] == pytest.approx(1500.0)
-    assert operator_economics["capital_required_usdt"] == pytest.approx(300.0)
-    assert operator_economics["estimated_worst_case_margin_required_usdt"] == pytest.approx(300.0)
+    assert sizing["estimated_worst_case_total_order_notional_usdt"] == pytest.approx(1650.0)
+    assert sizing["estimated_worst_case_margin_required_usdt"] == pytest.approx(330.0)
+    assert economics["estimated_max_position_notional_usdt"] == pytest.approx(1650.0)
+    assert operator_economics["capital_required_usdt"] == pytest.approx(330.0)
+    assert operator_economics["estimated_worst_case_margin_required_usdt"] == pytest.approx(330.0)

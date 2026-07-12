@@ -17,6 +17,7 @@ from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
 from .bot_types import SUPPORTED_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
 from .grid_math import (
+    arithmetic_grid_commitment,
     grid_leg_economics,
     margin_required_usdt,
     estimate_linear_liq_price,
@@ -2606,13 +2607,33 @@ def _params(
     # wallet balance, so this is an exchange-preflightable default, not a position
     # sizing promise. Execution preflight revalidates against live minNotional/qtyStep.
     order_qty, order_notional_usdt, sizing_assumption = _fallback_order_qty_for_linear_grid(price, target_notional_usdt=25.0)
-    active_grid_intervals = max(1, int(grid_levels))
-    total_order_notional = order_notional_usdt * active_grid_intervals
-    # Runtime risk caps must account for fixed-qty grid orders at the highest
-    # executable price, not only qty * reference_price.  Otherwise an upper grid
-    # boundary can understate notional/margin for long and neutral/short grids.
+    commitment = arithmetic_grid_commitment(
+        lower=lower,
+        upper=upper,
+        grid_count=grid_levels,
+        reference_price=price,
+        direction=direction,
+    )
+    if commitment is None:
+        # Generated geometry should always resolve. Keep a conservative fail-closed
+        # estimate if defensive clamps ever produce an unexpected topology.
+        active_grid_orders = max(1, int(grid_levels) + 1)
+        committed_notional_per_qty = float(price) * float(active_grid_orders)
+        commitment_model = "fallback_grid_count_plus_one"
+    else:
+        active_grid_orders = int(commitment["active_order_count"])
+        committed_notional_per_qty = float(commitment["committed_notional_per_qty"])
+        commitment_model = (
+            "grid_count_orders_reference_on_level"
+            if commitment.get("exact_grid_line")
+            else "grid_count_plus_one_orders_reference_between_levels"
+        )
+    total_order_notional = float(order_qty) * committed_notional_per_qty
+    # Runtime risk caps must account for every committed order/initial-position
+    # slot at the highest executable price. Number of Grids is an interval count;
+    # between levels the initial topology has grid_count + 1 orders.
     worst_case_order_notional = float(order_qty) * max(float(price), float(lower), float(upper))
-    worst_case_total_notional = worst_case_order_notional * active_grid_intervals
+    worst_case_total_notional = worst_case_order_notional * active_grid_orders
     leverage_used = max(1, int(params.get("leverage") or 1))
     margin_required = float(margin_required_usdt(total_order_notional, leverage_used))
     worst_case_margin_required = float(margin_required_usdt(worst_case_total_notional, leverage_used))
@@ -2655,12 +2676,14 @@ def _params(
             "qty_per_order": _round_price(order_qty, decimals=10),
             "grid_type": "arithmetic",
             "grid_count": int(grid_levels),
-            "estimated_active_orders": int(active_grid_intervals),
+            "estimated_active_orders": int(active_grid_orders),
             "estimated_total_order_notional_usdt": float(total_order_notional),
             "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
             "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
             "estimated_margin_required_usdt": float(margin_required),
             "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
+            "grid_commitment_model": commitment_model,
+            "reference_on_grid_level": bool(commitment.get("exact_grid_line")) if commitment is not None else None,
             "estimated_max_position_notional_usdt": float(max(total_order_notional, worst_case_total_notional)),
             "estimated_liquidation_price_long": long_metrics.get("estimated_liquidation_price"),
             "estimated_liquidation_price_short": short_metrics.get("estimated_liquidation_price"),
@@ -2683,12 +2706,14 @@ def _params(
             "qty_per_order": _round_price(order_qty, decimals=10),
             "grid_type": "arithmetic",
             "grid_count": int(grid_levels),
-            "estimated_active_orders": int(active_grid_intervals),
+            "estimated_active_orders": int(active_grid_orders),
             "estimated_total_order_notional_usdt": float(total_order_notional),
             "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
             "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
             "estimated_margin_required_usdt": float(margin_required),
             "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
+            "grid_commitment_model": commitment_model,
+            "reference_on_grid_level": bool(commitment.get("exact_grid_line")) if commitment is not None else None,
             "estimated_max_position_notional_usdt": float(max(total_order_notional, worst_case_total_notional)),
             "estimated_liquidation_price": metrics.get("estimated_liquidation_price"),
             "liquidation_buffer_pct_reference": metrics.get("liquidation_buffer_pct_reference"),
@@ -2704,12 +2729,14 @@ def _params(
         "qty_per_order": _round_price(order_qty, decimals=10),
         "grid_type": "arithmetic",
         "grid_count": int(grid_levels),
-        "estimated_active_orders": int(active_grid_intervals),
+        "estimated_active_orders": int(active_grid_orders),
         "estimated_total_order_notional_usdt": float(total_order_notional),
         "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
         "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
         "estimated_margin_required_usdt": float(margin_required),
         "estimated_worst_case_margin_required_usdt": float(worst_case_margin_required),
+        "grid_commitment_model": commitment_model,
+        "reference_on_grid_level": bool(commitment.get("exact_grid_line")) if commitment is not None else None,
         "exchange_filter_assumption": sizing_assumption,
         "note": "Размер заявки — provisional ориентир по target notional без повышения qty. Live preflight округляет qty только вниз по фактическому qtyStep и блокирует план ниже minQty/minNotional; оператор должен сверить доступную маржу.",
     }

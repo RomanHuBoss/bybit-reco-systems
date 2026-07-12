@@ -44,6 +44,12 @@ def _meta(**overrides):
 
 
 def _notional_only_rec(order_notional: float, *, lower: float = 80.0) -> dict:
+    qty = order_notional / 100.0
+    step = (120.0 - lower) / 5.0
+    levels = [lower + step * index for index in range(6)]
+    # Reference 100 lies between levels 2 and 3 for the exercised ranges. A
+    # Long bot commits three initial slots plus three adverse-side buy orders.
+    committed_notional = qty * (3 * 100.0 + sum(levels[:3]))
     return {
         "bot_type": "futures_grid",
         "venue": "linear",
@@ -67,9 +73,9 @@ def _notional_only_rec(order_notional: float, *, lower: float = 80.0) -> dict:
                     "gross_profit_bps": 20.0,
                     "execution_cost_bps": 5.0,
                     "funding_cost_bps": 0.0,
-                    "estimated_active_orders": 5,
-                    "estimated_total_order_notional_usdt": order_notional * 5,
-                    "estimated_margin_required_usdt": order_notional * 5 / 2,
+                    "estimated_active_orders": 6,
+                    "estimated_total_order_notional_usdt": committed_notional,
+                    "estimated_margin_required_usdt": committed_notional / 2,
                 },
                 "levels": {
                     "range": {"lower": lower, "upper": 120.0},

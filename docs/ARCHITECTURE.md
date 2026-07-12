@@ -1,5 +1,12 @@
 # Архитектура Bybit Recommender
 
+## Exact commitment/path-invariance boundary (v1.0.30)
+
+`app/grid_math.py::arithmetic_grid_commitment` is the single topology/commitment source for `app/recommender.py`, auto-snap and execution validation in `app/main.py`, and proxy normalization in `app/outcomes.py`. It returns arithmetic levels, buy/sell index sets, initial directional slots, active-order count, maximum position slots and committed notional per unit quantity. Callers may not reconstruct `N × reference` independently.
+
+The outcome engine snapshots the full ledger and executes both admissible high/low orderings when a candle has two material excursions. Non-equivalent snapshots are rejected as unavailable; this preserves temporal uncertainty instead of selecting a favorable or unfavorable path.
+
+
 ## Назначение системы
 
 Проект — это **рекомендательный контур** для операторского запуска grid-ботов на Bybit.

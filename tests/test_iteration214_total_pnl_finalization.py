@@ -207,8 +207,8 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
             direction="long",
             params=params,
         )])
-        # Exact midpoint in a two-grid Long bot creates one initial long slot.
-        # With total capital reference of two slots, a 10 bps funding event costs 5 bps.
+        # One Long slot pays 0.1 USDT. Exact commitment is the initial
+        # 100-USDT slot plus the adverse buy order at 99: 199 USDT.
         _seed_flat_horizon(conn, entry_ts=entry_ts, horizon_sec=horizon_sec, price=100.0)
         monkeypatch.setattr(db, "now_ts", lambda: entry_ts + 12 * 3600 + 600)
 
@@ -218,7 +218,7 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
             ("R-long-half-inventory",),
         ).fetchone()
         assert row is not None
-        assert float(row["ret"]) == pytest.approx(-0.0005)
+        assert float(row["ret"]) == pytest.approx(-0.1 / 199.0)
         assert int(row["success"]) == 0
     finally:
         conn.close()
@@ -226,8 +226,8 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
 
 def test_outcome_contract_is_bumped_for_inventory_aware_finalization() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v10"' in source
-    assert 'version="1.0.29"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v11"' in source
+    assert 'version="1.0.30"' in source
 
 
 def test_short_inventory_pays_negative_funding_at_position_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,7 +263,7 @@ def test_short_inventory_pays_negative_funding_at_position_value(tmp_path: Path,
             ("R-short-half-inventory",),
         ).fetchone()
         assert row is not None
-        assert float(row["ret"]) == pytest.approx(-0.0005)
+        assert float(row["ret"]) == pytest.approx(-0.1 / 201.0)
         assert int(row["success"]) == 0
     finally:
         conn.close()
@@ -305,7 +305,7 @@ def test_unknown_funding_schedule_uses_reached_inventory_not_full_capital(
             ("R-long-unknown-schedule",),
         ).fetchone()
         assert row is not None
-        assert float(row["ret"]) == pytest.approx(-0.0005)
+        assert float(row["ret"]) == pytest.approx(-0.10005 / 199.0)
         assert int(row["success"]) == 0
     finally:
         conn.close()

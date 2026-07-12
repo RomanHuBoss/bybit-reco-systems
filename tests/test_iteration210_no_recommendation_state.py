@@ -15,15 +15,18 @@ def _seed_candles(conn, *, symbol: str, base_ts: int, count: int = 370) -> None:
     for idx in range(count):
         ts = base_ts + idx * 60
         px = 100.0 + ((idx % 8) - 4) * 0.18
+        close = px + (0.08 if idx % 2 == 0 else -0.08)
         rows.append({
             "venue": "linear",
             "symbol": symbol,
             "tf_sec": 60,
             "ts": ts,
             "open": px,
-            "high": px + 0.30,
-            "low": px - 0.30,
-            "close": px + (0.08 if idx % 2 == 0 else -0.08),
+            # Keep the cohort test path endpoint-only; intrabar ambiguity is
+            # covered by iteration218 and should not suppress this sample.
+            "high": max(px, close),
+            "low": min(px, close),
+            "close": close,
             "volume": 1_000.0,
         })
     db.upsert_ohlcv(conn, rows)

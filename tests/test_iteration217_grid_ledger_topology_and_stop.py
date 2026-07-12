@@ -60,9 +60,9 @@ def test_long_entry_between_levels_has_nearest_upper_take_profit_order(tmp_path:
             base_ts, base_ts + 60, "long", _params(),
         )
 
-        # One initial long slot opened at 100.5 is closed at the nearest upper
-        # grid line 101. Capital reference is two equal slots: 100.5 * 2.
-        assert ret_proxy == pytest.approx(0.5 / 201.0)
+        # One initial long slot closes at 101. Off-grid commitment also
+        # reserves buys at 99 and 100: 100.5 + 99 + 100 = 299.5.
+        assert ret_proxy == pytest.approx(0.5 / 299.5)
         assert success == 1
     finally:
         conn.close()
@@ -80,7 +80,8 @@ def test_short_entry_between_levels_has_nearest_lower_take_profit_order(tmp_path
             base_ts, base_ts + 60, "short", _params(),
         )
 
-        assert ret_proxy == pytest.approx(0.5 / 199.0)
+        # Off-grid Short commitment is 99.5 + sells at 100 and 101.
+        assert ret_proxy == pytest.approx(0.5 / 300.5)
         assert success == 1
     finally:
         conn.close()
@@ -203,5 +204,5 @@ def test_missing_kill_switch_is_not_a_labelable_executable_grid(tmp_path: Path) 
 
 def test_outcome_contract_is_bumped_for_topology_and_stop_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v10"' in source
-    assert 'version="1.0.29"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v11"' in source
+    assert 'version="1.0.30"' in source

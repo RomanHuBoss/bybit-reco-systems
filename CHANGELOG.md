@@ -1,3 +1,13 @@
+## 2026-07-12 - v1.0.30 - exact grid commitment and path ambiguity
+
+- Added one canonical arithmetic-grid commitment model for recommender sizing, auto-snap, strict preflight, runtime caps and outcome normalization.
+- Corrected off-grid arithmetic geometry: `grid_count=N` intervals can expose `N+1` active price levels; directional commitment includes initial inventory plus adverse-side opening orders.
+- Corrected `estimated_total_order_notional`, margin and worst-case notional; old `N × reference × qty` payloads are rejected when inconsistent with the persisted range/reference/direction.
+- Replaced fabricated two-sided OHLC sequencing with dual-path simulation. If `O-H-L-C` and `O-L-H-C` produce different ledger/stop/PnL states, the proxy outcome is unavailable.
+- Added `tests/test_iteration218_grid_commitment_and_path_ambiguity.py` (9 RED→GREEN cases) and updated stale tests that encoded the old capital oracle.
+- Bumped FastAPI to `1.0.30` and outcome target to `grid_label_v11`; no route, schema or environment-variable change.
+- Post-check: 945 collected, 945 passed; PostgreSQL dialect/locking and SQLite bootstrap checks passed.
+
 ## 2026-07-12 - v1.0.29 - grid ledger topology and protective-stop finalization
 
 - Fixed non-grid-line LONG/SHORT initialization: the nearest adjacent TP order and its matching initial directional slot are no longer skipped.

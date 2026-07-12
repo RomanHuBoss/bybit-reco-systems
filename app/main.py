@@ -36,6 +36,7 @@ from . import db
 from .db_backend import describe_target
 from .bot_types import sql_in_clause
 from .grid_math import (
+    arithmetic_grid_commitment,
     estimate_linear_liq_price,
     liquidation_buffer_pct,
     quantize_step,
@@ -55,7 +56,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v10"
+OUTCOME_LABEL_VERSION = "grid_label_v11"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -2187,15 +2188,33 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                 worst_notional_price = _grid_max_notional_price(reference_price, lower_price, upper_price)
                 worst_order_notional = float(snapped_qty) * float(worst_notional_price or reference_price)
                 grid_count = int(conservative_grid_count) if conservative_grid_count is not None else 1
+                commitment = arithmetic_grid_commitment(
+                    lower=lower_price,
+                    upper=upper_price,
+                    grid_count=grid_count,
+                    reference_price=reference_price,
+                    direction=str(out.get("direction") or params.get("direction") or ""),
+                )
+                active_orders = (
+                    int(commitment["active_order_count"])
+                    if commitment is not None
+                    else max(1, grid_count + 1)
+                )
+                total_notional = (
+                    float(snapped_qty) * float(commitment["committed_notional_per_qty"])
+                    if commitment is not None
+                    else order_notional * active_orders
+                )
+                worst_total_notional = worst_order_notional * active_orders
                 leverage_used = float(params.get("leverage") or 1.0) or 1.0
-                total_notional = order_notional * max(1, grid_count)
-                worst_total_notional = worst_order_notional * max(1, grid_count)
                 margin_required = total_notional / max(1.0, leverage_used)
                 worst_margin_required = worst_total_notional / max(1.0, leverage_used)
                 for mapping in sizing_maps:
                     for key in ("order_notional_usdt", "order_notional"):
                         if key in mapping or key == "order_notional_usdt":
                             mapping[key] = float(order_notional)
+                    mapping["estimated_active_orders"] = int(active_orders)
+                    mapping["grid_commitment_model"] = "arithmetic_levels_plus_directional_inventory"
                     mapping["estimated_worst_case_order_notional_usdt"] = float(worst_order_notional)
                     mapping["estimated_worst_case_total_order_notional_usdt"] = float(worst_total_notional)
                     mapping["estimated_worst_case_margin_required_usdt"] = float(worst_margin_required)
@@ -2615,10 +2634,22 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
     grid_count_for_worst = grid_count_resolution.get("conservative_max")
     if grid_count_for_worst is None:
         grid_count_for_worst = 1
+    commitment_for_worst = arithmetic_grid_commitment(
+        lower=ctx.get("range_lower"),
+        upper=ctx.get("range_upper"),
+        grid_count=grid_count_for_worst,
+        reference_price=ctx.get("reference_price"),
+        direction=str(rec.get("direction") or ""),
+    )
+    committed_slots_for_worst = (
+        int(commitment_for_worst["active_order_count"])
+        if commitment_for_worst is not None
+        else max(1, int(grid_count_for_worst) + 1)
+    )
     derived_worst_notional = None
     notional_understatement_block: dict[str, Any] | None = None
     if order_qty_for_worst is not None and worst_price is not None and worst_price > 0:
-        derived_worst_notional = float(order_qty_for_worst) * float(worst_price) * max(1, int(grid_count_for_worst))
+        derived_worst_notional = float(order_qty_for_worst) * float(worst_price) * committed_slots_for_worst
         if estimated_notional is None:
             estimated_notional = float(derived_worst_notional)
             notional_key = "order_qty*max_grid_price*grid_count"
@@ -2627,7 +2658,7 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
                 "code": "POSITION_NOTIONAL_UNDERSTATED_BY_GRID_PRICE",
                 "msg": (
                     f"execution {notional_key or 'position_notional'}={estimated_notional:.8g} USDT is below "
-                    f"worst-case grid notional qty*max(range/reference price)*grid_count={derived_worst_notional:.8g} USDT; "
+                    f"worst-case grid notional qty*max(range/reference price)*committed_slots={derived_worst_notional:.8g} USDT; "
                     "runtime risk caps must use the upper executable price for fixed-qty linear futures grids."
                 ),
             }
@@ -3453,6 +3484,21 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     grid_count_resolution = ctx.get("grid_count_resolution") if isinstance(ctx.get("grid_count_resolution"), dict) else {}
     tp_abs = ctx["tp_per_leg_abs"]
     tp_pct = ctx["tp_per_leg_pct"]
+    grid_commitment = None
+    if (
+        bot_type == "futures_grid"
+        and reference_price is not None
+        and lower is not None
+        and upper is not None
+        and grid_levels is not None
+    ):
+        grid_commitment = arithmetic_grid_commitment(
+            lower=lower,
+            upper=upper,
+            grid_count=grid_levels,
+            reference_price=reference_price,
+            direction=direction,
+        )
 
     if require_execution_plan and bot_type == "futures_grid":
         required_plan_fields = (
@@ -3876,10 +3922,14 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                         "code": "ACTIVE_ORDERS_NOT_INTEGER",
                         "msg": f"estimated_active_orders={raw_active_orders!r} не является точным целым числом; оценка маржи неоднозначна.",
                     })
-                elif grid_levels is not None and est_active_orders != int(grid_levels):
+                elif grid_commitment is not None and est_active_orders != int(grid_commitment["active_order_count"]):
                     errors.append({
                         "code": "ACTIVE_ORDERS_GRID_COUNT_MISMATCH",
-                        "msg": f"estimated_active_orders={est_active_orders}, но grid_count={grid_levels}; маржа/ношинал рассчитаны для другого числа ордеров.",
+                        "msg": (
+                            f"estimated_active_orders={est_active_orders}, но исполнимая arithmetic topology требует "
+                            f"{int(grid_commitment['active_order_count'])} ордер(ов) при grid_count={grid_levels}; "
+                            "Number of Grids считает интервалы, а между уровнями существует grid_count+1 resting levels."
+                        ),
                     })
             total_notional_est = _finite_float_or_none(economics.get("estimated_total_order_notional_usdt"))
             margin_est = _finite_float_or_none(economics.get("estimated_margin_required_usdt"))
@@ -3892,14 +3942,28 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                         "code": "MARGIN_NOTIONAL_LEVERAGE_MISMATCH",
                         "msg": f"estimated_margin_required={margin_est:.6g} не соответствует total_notional/leverage={expected_margin:.6g}; риск маржи рассчитан неверно.",
                     })
-            if order_notional is not None and grid_levels is not None and total_notional_est is not None:
-                expected_total_notional = order_notional * max(1, int(grid_levels))
-                tolerance = max(0.05, abs(expected_total_notional) * 0.02)
-                if abs(total_notional_est - expected_total_notional) > tolerance:
-                    errors.append({
-                        "code": "TOTAL_NOTIONAL_GRID_COUNT_MISMATCH",
-                        "msg": f"estimated_total_order_notional={total_notional_est:.6g} не соответствует order_notional*grid_count={expected_total_notional:.6g}.",
-                    })
+            if total_notional_est is not None and grid_commitment is not None:
+                expected_total_notional = None
+                if order_qty is not None:
+                    expected_total_notional = (
+                        float(order_qty) * float(grid_commitment["committed_notional_per_qty"])
+                    )
+                elif order_notional is not None and reference_price is not None and reference_price > 0:
+                    expected_total_notional = (
+                        float(order_notional) / float(reference_price)
+                        * float(grid_commitment["committed_notional_per_qty"])
+                    )
+                if expected_total_notional is not None:
+                    tolerance = max(0.05, abs(expected_total_notional) * 0.02)
+                    if abs(total_notional_est - expected_total_notional) > tolerance:
+                        errors.append({
+                            "code": "TOTAL_NOTIONAL_GRID_COUNT_MISMATCH",
+                            "msg": (
+                                f"estimated_total_order_notional={total_notional_est:.6g} не соответствует "
+                                f"initial grid commitment={expected_total_notional:.6g}; interval count нельзя "
+                                "механически умножать на reference notional, когда reference находится между уровнями."
+                            ),
+                        })
 
     if not size_known:
         warnings.append({
@@ -4565,7 +4629,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.29", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.30", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

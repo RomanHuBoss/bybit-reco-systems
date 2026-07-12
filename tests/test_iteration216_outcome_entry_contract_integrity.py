@@ -242,7 +242,7 @@ def test_identical_funding_aliases_remain_labelable(tmp_path: Path) -> None:
         assert result is not None
         success, ret_proxy = result
         assert success == 0
-        assert ret_proxy == pytest.approx(-0.1 / 200.0)
+        assert ret_proxy == pytest.approx(-0.1 / 199.0)
     finally:
         conn.close()
 
@@ -290,5 +290,5 @@ def test_malformed_explicit_range_alias_does_not_fall_through_to_another_geometr
 
 def test_outcome_contract_is_bumped_for_post_publication_entry_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v10"' in source
-    assert 'version="1.0.29"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v11"' in source
+    assert 'version="1.0.30"' in source

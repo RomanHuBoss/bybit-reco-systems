@@ -6,6 +6,15 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## Exact grid commitment and path-ambiguity integrity (v1.0.30)
+
+Исправлен подтверждённый слой sizing/outcome-математики. `grid_count` в Bybit arithmetic grid означает число ценовых интервалов, поэтому сетка содержит `grid_count + 1` ценовых уровней. Если reference находится точно на уровне, один pivot не является resting order и активных уровней `N`; если reference находится между уровнями, активны все `N+1` уровней. Для directional mode капитальное обязательство состоит из исходной позиции плюс adverse-side opening orders, а не из условного `reference × grid_count`.
+
+Recommender, auto-snap, strict preflight, runtime risk caps и outcome denominator теперь используют один канонический helper. Это устраняет занижение required margin/worst-case notional и завышение proxy return; при двух интервалах ошибка могла достигать 50%. Конфликт старых полей `estimated_active_orders=N` или `estimated_total_order_notional=N×reference×qty` блокируется fail-closed.
+
+Для свечи с верхним и нижним intrabar excursion worker независимо моделирует допустимые пути `O→H→L→C` и `O→L→H→C`. Label создаётся только если cash, inventory, fees, resting orders, stop state и terminal PnL совпадают. Если порядок меняет результат — outcome unavailable, а не произвольно выбранная прибыль/убыток. Текущий `OUTCOME_LABEL_VERSION=grid_label_v11`; первый запуск v1.0.30 очищает только несовместимые proxy outcomes/calibrators, сохраняя recommendations, bot lifecycle, trades, exact execution evidence и risk settings. Исправление не доказывает live edge.
+
+
 ## Grid ledger topology and protective stop finalization (v1.0.29)
 
 Исправлен шестой подтверждённый слой outcome-математики. Если LONG/SHORT входит между двумя arithmetic grid levels, ledger теперь создаёт исходный directional slot и ближайший TP-order на соседнем уровне. Ранее ближайший уровень пропускался: у LONG возле верхней границы и SHORT возле нижней границы могло не оказаться ни исходной позиции, ни первого TP, поэтому реальное направленное движение записывалось как ноль.
@@ -64,7 +73,7 @@ Neutral grid начинается без позиции: если не было 
 
 Proxy-outcome строится только при наличии точной следующей 1m-свечи после `features_ref_ts`, непрерывной минутной последовательности на всём горизонте и свечи ровно на `label_available_ts`. Gap не переносит гипотетический вход или выход на более поздний рынок. Calibration использует только строки с exact `label_available_ts`, который не раньше recommendation timestamp и уже наступил к моменту fit; legacy/malformed/future labels исключаются.
 
-Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, v1.0.26 использовала `grid_label_v7` для inventory-aware funding/finalization, v1.0.27 использовала `grid_label_v8` для sign-consistent success, exact funding-window precedence и fail-closed cost aliases, v1.0.28 использовала `grid_label_v9` для post-publication entry и strict persisted-contract integrity, а текущая v1.0.29 использует `grid_label_v10` для directional order topology, observable endpoint path и terminal kill-switch accounting. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
+Строгий temporal contract был введён в `grid_label_v4`; v1.0.24 использовала `grid_label_v5`, v1.0.25 использовала `grid_label_v6` для явного arithmetic-grid ledger, v1.0.26 использовала `grid_label_v7` для inventory-aware funding/finalization, v1.0.27 использовала `grid_label_v8` для sign-consistent success, exact funding-window precedence и fail-closed cost aliases, v1.0.28 использовала `grid_label_v9` для post-publication entry и strict persisted-contract integrity, v1.0.29 использовала `grid_label_v10` для directional order topology, observable endpoint path и terminal kill-switch accounting, а текущая v1.0.30 использует `grid_label_v11` для exact capital commitment и path-ambiguity integrity. При первом запуске version guard сбросит только несовместимые proxy outcomes и calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Temporal fix и accounting fix не превращают OHLCV proxy в доказательство live edge.
 
 ## No-recommendation state, status semantics and shadow outcomes (v1.0.22)
 

@@ -113,8 +113,8 @@ def test_neutral_grid_without_any_fill_has_zero_proxy_return(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("direction", "exit_price", "expected"),
     [
-        ("long", 102.0, 0.008),
-        ("short", 98.0, 0.008),
+        ("long", 102.0, 19.0 / 1945.0),
+        ("short", 98.0, 19.0 / 2055.0),
     ],
 )
 def test_directional_grid_aligned_move_adds_unrealized_pnl(
@@ -147,10 +147,10 @@ def test_directional_grid_aligned_move_adds_unrealized_pnl(
             params,
         )
 
-        # The ledger includes both the remaining inventory and the profit already
-        # realized while two initial directional slots were closed.
+        # Monetary P&L is 19 USDT. The denominator is the exact committed
+        # directional notional: 1945 for Long and 2055 for Short.
         assert success == 1
-        assert ret_proxy == pytest.approx(0.0095)
+        assert ret_proxy == pytest.approx(expected)
     finally:
         conn.close()
 

@@ -90,6 +90,112 @@ def resolve_integer_aliases(candidates: list[tuple[str, Any]]) -> dict[str, Any]
     }
 
 
+def arithmetic_grid_commitment(
+    *,
+    lower: Any,
+    upper: Any,
+    grid_count: Any,
+    reference_price: Any,
+    direction: str,
+) -> dict[str, Any] | None:
+    """Resolve initial arithmetic-grid orders and committed notional per unit qty.
+
+    Bybit ``Number of Grids`` is the number of price intervals, so there are
+    ``grid_count + 1`` price levels.  When the reference lies exactly on one
+    level, that occupied level has no resting order and the initial topology has
+    ``grid_count`` orders.  Between levels, every level carries an order and the
+    topology has ``grid_count + 1`` orders.
+
+    Directional close-only orders are backed by the initial position; opening
+    orders on the adverse side require additional commitment.  Neutral opening
+    orders on both sides require margin.  ``committed_notional_per_qty`` therefore
+    represents the initial investment/notional commitment for one unit of
+    per-grid quantity without pretending that interval count always equals order
+    count.
+    """
+    lower_d = dec(lower)
+    upper_d = dec(upper)
+    reference_d = dec(reference_price)
+    count = strict_integer(grid_count)
+    direction_norm = normalize_execution_direction(direction)
+    if (
+        count is None
+        or count <= 0
+        or lower_d <= ZERO
+        or upper_d <= lower_d
+        or reference_d < lower_d
+        or reference_d > upper_d
+        or direction_norm not in {"neutral", "long", "short"}
+    ):
+        return None
+
+    step = (upper_d - lower_d) / Decimal(count)
+    if step <= ZERO:
+        return None
+    levels = [+(lower_d + step * Decimal(index)) for index in range(count + 1)]
+    nearest_index = int(((reference_d - lower_d) / step).to_integral_value(rounding=ROUND_HALF_UP))
+    tolerance = max(Decimal("1e-12"), abs(step) * Decimal("1e-10"))
+    exact_grid_line = (
+        0 <= nearest_index <= count
+        and abs(reference_d - levels[nearest_index]) <= tolerance
+    )
+
+    if exact_grid_line:
+        pivot_index = nearest_index
+        buy_indices = list(range(0, pivot_index))
+        sell_indices = list(range(pivot_index + 1, count + 1))
+        initial_long_slots = count - pivot_index if direction_norm == "long" else 0
+        initial_short_slots = pivot_index if direction_norm == "short" else 0
+        cell_index: int | None = None
+    else:
+        raw_cell = int(((reference_d - lower_d) / step).to_integral_value(rounding=ROUND_FLOOR))
+        cell_index = max(0, min(count - 1, raw_cell))
+        buy_indices = list(range(0, cell_index + 1))
+        sell_indices = list(range(cell_index + 1, count + 1))
+        initial_long_slots = count - cell_index if direction_norm == "long" else 0
+        initial_short_slots = cell_index + 1 if direction_norm == "short" else 0
+        pivot_index = None
+
+    active_order_count = len(buy_indices) + len(sell_indices)
+    if direction_norm == "long":
+        committed_price_sum = (
+            reference_d * Decimal(initial_long_slots)
+            + sum((levels[index] for index in buy_indices), ZERO)
+        )
+        max_abs_position_slots = initial_long_slots + len(buy_indices)
+    elif direction_norm == "short":
+        committed_price_sum = (
+            reference_d * Decimal(initial_short_slots)
+            + sum((levels[index] for index in sell_indices), ZERO)
+        )
+        max_abs_position_slots = initial_short_slots + len(sell_indices)
+    else:
+        committed_price_sum = sum(
+            (levels[index] for index in [*buy_indices, *sell_indices]), ZERO
+        )
+        max_abs_position_slots = max(len(buy_indices), len(sell_indices))
+
+    if active_order_count <= 0 or committed_price_sum <= ZERO:
+        return None
+    return {
+        "grid_count": int(count),
+        "step_abs": as_float(step),
+        "grid_prices": [as_float(value) for value in levels],
+        "exact_grid_line": bool(exact_grid_line),
+        "pivot_index": pivot_index,
+        "cell_index": cell_index,
+        "buy_indices": buy_indices,
+        "sell_indices": sell_indices,
+        "initial_long_slots": int(initial_long_slots),
+        "initial_short_slots": int(initial_short_slots),
+        "initial_position_slots": int(initial_long_slots - initial_short_slots),
+        "active_order_count": int(active_order_count),
+        "committed_slot_count": int(active_order_count),
+        "max_abs_position_slots": int(max_abs_position_slots),
+        "committed_notional_per_qty": as_float(committed_price_sum),
+    }
+
+
 def quantize_step(value: Any, step: Any, *, mode: str = "nearest") -> Decimal | None:
     v = dec(value)
     s = dec(step)

@@ -1,5 +1,14 @@
 # Ключевые сценарии
 
+## 0. Exact commitment and ambiguous intrabar path (v1.0.30)
+
+Expected behavior:
+- `grid_count=N` creates `N+1` price levels; active order count is `N` only when reference is exactly on a grid level, otherwise `N+1`;
+- directional capital includes initial inventory plus adverse-side opening orders at actual prices;
+- generated, snapped, validated and outcome payloads agree on active orders, total notional and margin;
+- if `O→H→L→C` and `O→L→H→C` lead to different fills, inventory, stop or PnL, no proxy label is stored.
+
+
 ## 0A. Between-level directional entry and protective stop
 
 Ожидаемое поведение:

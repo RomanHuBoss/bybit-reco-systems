@@ -1,3 +1,20 @@
+## 2026-07-12 exact commitment and intrabar-path audit (v1.0.30)
+
+### CLOSED: interval count was treated as funded slot count
+`grid_count=N` is the number of intervals, not always the number of active price levels or committed slots. For an off-grid reference there are `N+1` active levels. The old model understated margin/worst-case notional and inflated return normalization. v1.0.30 derives commitment from the exact range, reference, direction and level topology.
+
+### CLOSED: auto-snap and runtime caps used different capital models
+Generated recommendations could be corrected by one layer and then rewritten by auto-snap back to `N × reference`. All sizing, snapping, validation and runtime-cap paths now consume the same helper.
+
+### CLOSED: two-sided OHLC could create an impossible third outcome
+When both high and low excursions mattered, endpoint-only processing could return a PnL produced by neither valid ordering. v1.0.30 simulates both admissible paths and labels only path-invariant states.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v11`
+First v1.0.30 startup clears only incompatible proxy outcomes and related calibrators. Recommendations, bot audit rows, trades, exact execution evidence and risk settings remain.
+
+### RESIDUAL LIMITATION
+Even path-invariant OHLCV proxy cannot prove queue priority, partial fills, maker/taker mix, gap slippage or exact execution. Strategy edge remains unproven until `grid_label_v11` is compared chronologically with immutable exact evidence.
+
 ## 2026-07-12 grid-ledger topology and protective-stop audit (v1.0.29)
 
 ### CLOSED HIGH: nearest directional TP omitted for between-level entry

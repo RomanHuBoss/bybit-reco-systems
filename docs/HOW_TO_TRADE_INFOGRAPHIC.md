@@ -37,8 +37,8 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
 - An already-open candle before publication is not a tradeable entry. Conflicting persisted grid/funding aliases are skipped, never collapsed into a different bot or a zero-return loss.
 - Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
-- Current label contract is `grid_label_v10`: entry remains the first exact 1m open strictly after publication; between-level LONG/SHORT includes the nearest adjacent TP and matching initial slot; close->open/open->close movement is processed separately; kill-switch breach terminates the ledger at the boundary.
-- Missing/inside-range kill-switch or a candle touching both outer boundaries is unlabelable; no post-stop recovery is counted.
+- Current label contract is `grid_label_v11`: entry remains the first exact 1m open strictly after publication; exact capital commitment uses N active orders on a grid-level reference and N+1 between levels; directional commitment includes initial inventory plus adverse-side opening orders; kill-switch remains terminal.
+- Missing/inside-range kill-switch is unlabelable. For any candle with material high and low excursions, both O-H-L-C and O-L-H-C paths must produce the same ledger/stop/PnL state; otherwise no proxy label is stored.
 - Outcome headline is actionable-only; all-roots and shadow no_trade metrics are separate research/control cohorts.
 
 ## NO TRADE / BLOCKED checklist
@@ -71,7 +71,7 @@ A complete `params.trade_plan` must include:
 - levels.tp_per_leg.abs or pct; for arithmetic grid it must match the adjacent grid interval, not a 70% haircut;
 - grid_count and arithmetic grid model;
 - explicit leverage and isolated margin mode;
-- sizing/economics sufficient for qtyStep, minNotional, margin, and worst-case exposure validation.
+- sizing/economics sufficient for qtyStep, minNotional, margin, and worst-case exposure validation; `grid_count` is intervals, so off-grid reference normally has N+1 active levels and must not be budgeted as N equal reference slots.
 
 ## Practical sequence
 

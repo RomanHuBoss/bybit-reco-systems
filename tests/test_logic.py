@@ -2628,10 +2628,12 @@ def test_compute_outcomes_requires_completed_llm_verdict_when_llm_mode_enabled(c
                 "symbol": symbol,
                 "tf_sec": 60,
                 "ts": candle_ts,
-                "open": 100.0 if candle_ts < exit_ts else 100.1,
-                "high": 101.0,
-                "low": 99.0,
-                "close": 100.2 if candle_ts < exit_ts else 100.0,
+                # LLM eligibility is the contract under test. Keep market
+                # evolution flat so intrabar path ambiguity cannot suppress it.
+                "open": 100.0,
+                "high": 100.0,
+                "low": 100.0,
+                "close": 100.0,
                 "volume": 10.0,
             }
             for candle_ts in range(entry_ts, exit_ts + 60, 60)

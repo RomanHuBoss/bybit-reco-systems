@@ -170,7 +170,9 @@ def test_recommender_default_sizing_preserves_target_notional_for_expensive_cont
     assert sizing["qty_per_order"] == pytest.approx(0.00025)
     assert sizing["order_notional_usdt"] == pytest.approx(25.0)
     assert sizing["exchange_filter_assumption"]["mode"] == "provisional_target_notional_until_bybit_preflight"
-    assert sizing["estimated_active_orders"] == params["grid_count"]
+    # Number of grids is the number of intervals. Because the generated
+    # reference is between arithmetic levels, all N+1 price levels are active.
+    assert sizing["estimated_active_orders"] == params["grid_count"] + 1
     assert sizing["exchange_filter_assumption"]["actual_bybit_filters_required"] is True
 
 

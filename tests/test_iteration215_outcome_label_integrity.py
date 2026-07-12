@@ -81,9 +81,10 @@ def test_small_positive_directional_total_pnl_is_a_win(
             _params(),
         )
 
-        # Midpoint two-grid directional mode starts with one slot on 200 USDT
-        # reference notional. An 8-cent favorable move therefore earns 0.08/200.
-        assert ret_proxy == pytest.approx(0.08 / 200.0)
+        # The 8-cent P&L is normalized by exact directional commitment:
+        # Long = 100 + 99; Short = 100 + 101.
+        commitment = 199.0 if direction == "long" else 201.0
+        assert ret_proxy == pytest.approx(0.08 / commitment)
         assert success == 1
     finally:
         conn.close()
@@ -193,8 +194,8 @@ def test_exact_funding_event_inside_horizon_still_charges_actual_inventory(tmp_p
             params,
         )
 
-        # One long slot pays 0.1 USDT on 200 USDT reference capital.
-        assert ret_proxy == pytest.approx(-0.1 / 200.0)
+        # One long slot pays 0.1 USDT on exact 199-USDT commitment.
+        assert ret_proxy == pytest.approx(-0.1 / 199.0)
         assert success == 0
     finally:
         conn.close()
@@ -247,5 +248,5 @@ def test_malformed_ohlcv_row_makes_horizon_incomplete(tmp_path: Path) -> None:
 
 def test_outcome_contract_is_bumped_for_label_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v10"' in source
-    assert 'version="1.0.29"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v11"' in source
+    assert 'version="1.0.30"' in source
