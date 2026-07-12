@@ -111,6 +111,15 @@ execution-time validation должна блокировать исполнени
 
 UI обязан показывать этот блок рядом с execution/liquidity details. Если `decision=not_recommended` или есть blocking reasons, оператор не должен запускать grid до пересчёта.
 
+## Temporal contract market data -> features -> outcomes -> calibration
+
+- Ticker freshness uses authoritative Bybit response time when present; local receipt time is not a substitute for exchange event time.
+- Kline start timestamps are exact integers, whole-second and timeframe-aligned. Shifted values are rejected, not floored.
+- Feature timestamps reject JSON booleans, fractions and non-finite/malformed values.
+- Outcome entry is exactly `features_ref_ts + 60`; the 1m window through the horizon must be contiguous; exit is exactly `entry_ts + horizon_sec`. Missing candles mean “label unavailable”.
+- Calibration accepts a row only when exact `label_available_ts` is present, is not earlier than recommendation time, and has matured by fit time.
+- This target contract is `grid_label_v4`; older proxy outcomes/calibrators are reset and must not be mixed with v4.
+
 ## Что outcome labeling умеет и чего не умеет
 
 ### Умеет
@@ -120,7 +129,7 @@ UI обязан показывать этот блок рядом с execution/l
 - применять fail-closed precedence: любой breach нижнего или верхнего `kill_switch` делает proxy outcome неуспешным и не позволяет отдельному `tp_per_leg` touch повысить label;
 - отдельное касание directional `tp_per_leg` не является terminal whole-grid PnL event: без фактической последовательности fills и закрытого inventory оно остаётся диагностикой и не может самостоятельно создать `success=1`;
 - completed-leg gross return и execution cost переводятся в доходность капитала всей сетки через деление на подтверждённый canonical `grid_count`; legacy payload использует независимо выведенное число интервалов, если count отсутствует;
-- смена этой единицы измерения требует нового `OUTCOME_LABEL_VERSION`; v1.0.21 использует `grid_label_v3` и не смешивает прежние proxy labels/calibrators с новой семантикой;
+- любое несовместимое изменение target требует нового `OUTCOME_LABEL_VERSION`; v1.0.23 использует `grid_label_v4` и не смешивает proxy labels/calibrators, построенные до строгого temporal contract;
 - считать `success=1` только по завершённым oscillation cycles с положительным capital-normalized net proxy; `tp_per_leg` используется лишь как диагностический уровень и не является самостоятельным success-path.
 
 ### Не умеет

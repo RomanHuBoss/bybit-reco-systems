@@ -1,3 +1,22 @@
+# Known risks
+
+## 2026-07-12 temporal data-lineage audit (v1.0.23)
+
+### RESOLVED/HIGH: local receipt time could hide stale Bybit ticker data
+Bybit V5 top-level response time is now propagated to ticker rows before collector freshness checks. Missing event time remains unknown; it is not manufactured from local receipt time when the exchange supplied authoritative envelope time.
+
+### RESOLVED/HIGH: shifted candles and sparse horizons could manufacture chronology
+OHLCV starts must be exact integer milliseconds aligned to both one second and the requested timeframe. Outcome entry is the exact next minute, the complete horizon must be contiguous, and exit is the exact boundary candle. Missing minutes now produce no label rather than a later substitute price.
+
+### RESOLVED/HIGH: unavailable labels could enter calibration
+Calibration now requires a valid `label_available_ts <= fit_ts` and `label_available_ts >= recommendation.ts`. Rows with missing, malformed or future maturity are excluded. Dirty persisted mandatory numeric fields are skipped; malformed optional label availability decodes to unknown and therefore remains ineligible for fit.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v4`
+The startup label-version guard clears incompatible `reco_outcomes` and calibrator keys once. Recommendations, bot instances, trades, risk limits and exact execution evidence are preserved. New calibration remains unfitted until enough v4 labels mature.
+
+### Remaining limitation
+A complete OHLCV horizon is still a proxy: it does not prove queue priority, individual fills, partial inventory, live fees or liquidation behavior. Profitability remains unverified.
+
 
 ### RESOLVED/HIGH: built-in risk defaults diverged from shipped small-account profile
 

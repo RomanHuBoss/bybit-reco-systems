@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .grid_math import strict_integer
+
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -73,11 +75,11 @@ def compute_features_from_ohlcv(ohlcv_rows: list[dict[str, Any]] | list[Any], ti
         low = _finite_float(row.get("low"))
         volume = _finite_float(row.get("volume"))
         try:
-            ts = int(row["ts"])
+            ts = strict_integer(row["ts"])
         except Exception:
-            continue
+            ts = None
         if (
-            ts <= 0
+            ts is None or ts <= 0
             or close is None or high is None or low is None or volume is None
             or close <= 0 or high <= 0 or low <= 0 or volume < 0
             or high < low

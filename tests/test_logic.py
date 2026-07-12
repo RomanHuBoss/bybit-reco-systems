@@ -2545,24 +2545,14 @@ def test_compute_outcomes_scans_past_stuck_unprocessable_rows(conn):
                 "venue": "linear",
                 "symbol": "BTCUSDT",
                 "tf_sec": 60,
-                "ts": entry_ts,
-                "open": 100.0,
+                "ts": ts,
+                "open": 100.0 if ts < exit_ts else 100.1,
                 "high": 101.0,
                 "low": 99.5,
-                "close": 100.2,
+                "close": 100.2 if ts < exit_ts else 100.0,
                 "volume": 10.0,
-            },
-            {
-                "venue": "linear",
-                "symbol": "BTCUSDT",
-                "tf_sec": 60,
-                "ts": exit_ts,
-                "open": 100.1,
-                "high": 100.5,
-                "low": 99.8,
-                "close": 100.0,
-                "volume": 8.0,
-            },
+            }
+            for ts in range(entry_ts, exit_ts + 60, 60)
         ],
     )
 
@@ -2617,24 +2607,14 @@ def test_compute_outcomes_requires_completed_llm_verdict_when_llm_mode_enabled(c
                 "venue": "linear",
                 "symbol": symbol,
                 "tf_sec": 60,
-                "ts": entry_ts,
-                "open": 100.0,
+                "ts": candle_ts,
+                "open": 100.0 if candle_ts < exit_ts else 100.1,
                 "high": 101.0,
                 "low": 99.0,
-                "close": 100.2,
+                "close": 100.2 if candle_ts < exit_ts else 100.0,
                 "volume": 10.0,
-            },
-            {
-                "venue": "linear",
-                "symbol": symbol,
-                "tf_sec": 60,
-                "ts": exit_ts,
-                "open": 100.1,
-                "high": 100.6,
-                "low": 99.4,
-                "close": 100.0,
-                "volume": 8.0,
-            },
+            }
+            for candle_ts in range(entry_ts, exit_ts + 60, 60)
         ])
 
     db.insert_recommendations(conn, recs)
@@ -2781,6 +2761,7 @@ def test_fit_logreg_tolerates_malformed_feature_snapshot_values():
             "score": score,
             "success": success,
             "ts": now - idx * 60,
+            "label_available_ts": now - idx * 60,
             "reasons": {"feature_snapshot": snap},
         })
 
@@ -2989,8 +2970,8 @@ def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
 
         def get_kline(self, *, category: str, symbol: str, interval: str, limit: int):
             return [
-                ["1700000060000", "NaN", "101", "99", "100.5", "10", "0"],
-                ["1700000000000", "100", "101", "99", "100.5", "10", "0"],
+                ["1700000100000", "NaN", "101", "99", "100.5", "10", "0"],
+                ["1700000040000", "100", "101", "99", "100.5", "10", "0"],
             ]
 
         def get_funding_rate(self, symbol: str):
@@ -3017,7 +2998,7 @@ def test_collector_skips_nonfinite_market_payload_rows(tmp_path: Path):
     assert ticker is not None
     assert ticker["turnover24h"] is None
     assert len(rows) == 1
-    assert int(rows[0]["ts"]) == 1700000000
+    assert int(rows[0]["ts"]) == 1700000040
     assert len(oi_rows) == 1
     assert funding is None
 

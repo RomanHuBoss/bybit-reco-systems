@@ -606,6 +606,7 @@ def fit_logreg(
     xs_score: list[float] = []
     ys: list[int] = []
     tss: list[int] = []
+    fit_ts = int(time.time())
     for row in rows:
         score = _safe_float(row.get("score"), None)
         success_raw = row.get("success")
@@ -617,7 +618,22 @@ def fit_logreg(
             continue
         if success not in (0, 1):
             continue
-        sanitized_rows.append({**row, "ts": ts, "success": success})
+        raw_available_ts = row.get("label_available_ts")
+        if raw_available_ts is not None:
+            available_ts = strict_integer(raw_available_ts)
+            if available_ts is None or available_ts <= 0 or available_ts < ts or available_ts > fit_ts:
+                continue
+        else:
+            # Legacy rows without a demonstrable label maturity timestamp are
+            # not eligible for time-aware calibration. Treating them as known
+            # at recommendation time would reintroduce label-availability leakage.
+            continue
+        sanitized_rows.append({
+            **row,
+            "ts": ts,
+            "success": success,
+            "label_available_ts": available_ts,
+        })
         xs_score.append(float(score))
         ys.append(success)
         tss.append(ts)

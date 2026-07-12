@@ -6,6 +6,14 @@
 
 Карточка конкретной рекомендации привязана к immutable `rec_id`: кнопка обновления перечитывает именно выбранную audit-row. Новые публикации по тому же символу, включая `no_trade` или смену направления, показываются отдельно в истории и не должны незаметно подменять открытую карточку.
 
+## Temporal data lineage и calibration sample (v1.0.23)
+
+Биржевое время тикера берётся из подтверждённого Bybit V5 response envelope и сохраняется до freshness-gate. Локальное время получения ответа больше не подменяет неизвестное/устаревшее event time. Kline допускается только при exact-integer millisecond timestamp, кратном секунде и запрошенному timeframe; сдвинутые, boolean и fractional timestamps не округляются в допустимую свечу. Feature layer повторно отклоняет boolean/fractional timestamps.
+
+Proxy-outcome строится только при наличии точной следующей 1m-свечи после `features_ref_ts`, непрерывной минутной последовательности на всём горизонте и свечи ровно на `label_available_ts`. Gap не переносит гипотетический вход или выход на более поздний рынок. Calibration использует только строки с exact `label_available_ts`, который не раньше recommendation timestamp и уже наступил к моменту fit; legacy/malformed/future labels исключаются.
+
+Контракт метки несовместим с ранее накопленными proxy outcomes, поэтому `OUTCOME_LABEL_VERSION=grid_label_v4`. При первом запуске сервис штатно сбросит только старые proxy outcomes и связанные calibrators, сохранив recommendations, bot audit lifecycle, trades и exact execution evidence. Это устраняет подтверждённое temporal leakage, но не превращает OHLCV proxy в доказательство live edge.
+
 ## No-recommendation state, status semantics and shadow outcomes (v1.0.22)
 
 Отсутствие `recommended/active` не является ошибкой само по себе. Если текущие кандидаты не подтверждают торговый тезис, сервис обязан показать `no_trade`, а не создавать рекомендацию ради заполнения таблицы. `MEAN_REVERSION_EDGE_UNCONFIRMED` теперь относится именно к `no_trade`: evidence вычислен, но его недостаточно для запуска. `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` остаётся жёстким `blocked`, потому что обязательные данные отсутствуют.

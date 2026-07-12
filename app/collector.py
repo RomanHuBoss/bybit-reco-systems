@@ -240,11 +240,20 @@ def _normalize_symbols(symbols: list[str], disabled: dict[str, int], now_ts: int
 
 
 def _sanitize_ohlcv_row(venue: str, symbol: str, tf_sec: int, row: list[Any]) -> dict[str, Any] | None:
+    tf_value = strict_integer(tf_sec)
     try:
         start_ms = strict_integer(row[0])
     except Exception:
         return None
-    if start_ms is None or start_ms <= 0:
+    if tf_value is None or tf_value <= 0 or start_ms is None or start_ms <= 0:
+        return None
+    # Bybit kline startTime is an exact millisecond timestamp for the start of
+    # the requested interval. Floor division must not manufacture a valid
+    # second or interval bucket from a shifted/malformed upstream timestamp.
+    if start_ms % 1000 != 0:
+        return None
+    start_ts = start_ms // 1000
+    if start_ts % tf_value != 0:
         return None
     open_px = _to_float(row[1], minimum=0.0)
     high_px = _to_float(row[2], minimum=0.0)
@@ -260,8 +269,8 @@ def _sanitize_ohlcv_row(venue: str, symbol: str, tf_sec: int, row: list[Any]) ->
     return {
         "venue": venue,
         "symbol": symbol,
-        "tf_sec": tf_sec,
-        "ts": start_ms // 1000,
+        "tf_sec": tf_value,
+        "ts": start_ts,
         "open": open_px,
         "high": high_px,
         "low": low_px,

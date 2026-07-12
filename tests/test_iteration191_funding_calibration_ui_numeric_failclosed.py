@@ -86,6 +86,7 @@ def _calibration_rows(*, success_value, ts_value, count: int = 100) -> list[dict
             "score": 0.2 if i % 2 else -0.2,
             "success": success,
             "ts": ts,
+            "label_available_ts": ts if not isinstance(ts, bool) else ts,
             "reasons": {},
         })
     return rows

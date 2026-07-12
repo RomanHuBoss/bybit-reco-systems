@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-12 - v1.0.23 - temporal market-data and calibration lineage
+
+- Fixed a HIGH freshness defect: Bybit V5 envelope time is preserved for ticker rows, so stale/cached snapshots cannot be relabelled with local receipt time.
+- Fixed HIGH temporal-integrity defects: OHLCV start times must be exact whole-second boundaries aligned to the requested timeframe; boolean/fractional feature timestamps are rejected instead of truncated.
+- Fixed a HIGH proxy-label defect: outcomes require the exact next 1-minute entry candle, a complete contiguous horizon, and the exact horizon-boundary exit candle; gaps no longer move entry/exit to a later market.
+- Fixed a HIGH calibration leakage defect: rows without a valid, already-matured `label_available_ts` are excluded, and malformed persisted outcome numerics are sanitized/ignored without crashing the cycle.
+- Bumped `OUTCOME_LABEL_VERSION` to `grid_label_v4`; the existing startup reset removes incompatible proxy outcomes/calibrators while preserving recommendations, bot audit rows, trades and exact execution evidence.
+- Added `tests/test_iteration211_temporal_data_lineage.py` with seven red-to-green regressions. Baseline: 877/877 tests passed in exhaustive batches. Post-check counts are recorded in the audit report.
+
 ## 2026-07-11 - v1.0.22 - no-trade semantics and shadow outcome continuity
 
 - Fixed a HIGH lifecycle/status defect: valid-but-weak `MEAN_REVERSION_EDGE_UNCONFIRMED` is now `no_trade`, not a hard technical `blocked`; missing mandatory mean-reversion evidence remains fail-closed `blocked`.

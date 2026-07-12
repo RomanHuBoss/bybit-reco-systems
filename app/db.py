@@ -2408,24 +2408,40 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
             reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
         except Exception:
             reasons = {}
+        ts = strict_integer(row["ts"])
+        horizon_sec = strict_integer(row["horizon_sec"])
+        label_available_ts = strict_integer(row["label_available_ts"])
+        success = strict_integer(row["success"])
+        ret = _finite_float_or_default(row["ret"], float("nan"))
+        score = _finite_float_or_default(row["score"], float("nan"))
+        root_flag = strict_integer(row["is_outcome_label_root"])
+        if (
+            ts is None or ts <= 0
+            or horizon_sec is None or horizon_sec < 0
+            or success not in (0, 1)
+            or not math.isfinite(ret)
+            or not math.isfinite(score)
+            or root_flag not in (0, 1)
+        ):
+            continue
         out.append({
             "rec_id":    row["rec_id"],
-            "ts":        row["ts"],
+            "ts":        ts,
             "venue":     row["venue"],
             "symbol":    row["symbol"],
             "bot_type":  row["bot_type"],
             "direction": row["direction"],
-            "horizon_sec": max(0, int(row["horizon_sec"] or 0)),
+            "horizon_sec": horizon_sec,
             "label_available_ts": (
-                int(row["label_available_ts"]) if row["label_available_ts"] is not None else None
+                label_available_ts if label_available_ts is not None and label_available_ts > 0 else None
             ),
-            "success":   int(row["success"]),
-            "ret":       float(row["ret"]),
-            "score":     float(row["score"]),
+            "success":   success,
+            "ret":       ret,
+            "score":     score,
             "reasons":   reasons,
             "model_version": str(row["model_version"] or ""),
             "publication_root_rec_id": str(row["publication_root_rec_id"] or row["rec_id"]),
-            "is_outcome_label_root": bool(int(row["is_outcome_label_root"] or 0)),
+            "is_outcome_label_root": bool(root_flag),
         })
     return out
 

@@ -108,18 +108,23 @@ def _get_close_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | No
 
 
 def _get_first_tradeable_candle_after(conn, venue: str, symbol: str, ts: int) -> tuple[int, float] | None:
-    """Return the first 1m candle strictly after the signal reference candle.
+    """Return the exact next 1m candle after the signal reference candle.
 
     Recommendation features are computed on the last fully closed candle whose timestamp is
     stored as features_ref_ts (bar start time). Entering at that same candle close is mildly
     look-ahead/optimistic because the signal itself already used that bar's full OHLC. The
-    earliest tradeable point from 1m OHLC data is therefore the NEXT candle open.
+    earliest tradeable point from 1m OHLC data is therefore the NEXT candle open. A gap must
+    remain unavailable rather than silently moving the hypothetical entry to a later market.
     """
+    signal_ts = strict_integer(ts)
+    if signal_ts is None or signal_ts <= 0:
+        return None
+    next_ts = signal_ts + 60
     cur = conn.execute(
         """SELECT ts, open FROM ohlcv
-           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts>?
-           ORDER BY ts ASC LIMIT 1""",
-        (venue, symbol, ts),
+           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts=?
+           LIMIT 1""",
+        (venue, symbol, next_ts),
     )
     r = cur.fetchone()
     if not r:
@@ -127,15 +132,35 @@ def _get_first_tradeable_candle_after(conn, venue: str, symbol: str, ts: int) ->
     return int(r["ts"]), float(r["open"])
 
 
-def _get_open_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | None:
+def _get_open_at_exact(conn, venue: str, symbol: str, ts: int) -> float | None:
+    """Return the open at the exact requested 1m horizon boundary."""
+    target_ts = strict_integer(ts)
+    if target_ts is None or target_ts <= 0:
+        return None
     cur = conn.execute(
         """SELECT open FROM ohlcv
-           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts>=?
-           ORDER BY ts ASC LIMIT 1""",
-        (venue, symbol, ts),
+           WHERE venue=? AND symbol=? AND tf_sec=60 AND ts=?
+           LIMIT 1""",
+        (venue, symbol, target_ts),
     )
     r = cur.fetchone()
     return float(r["open"]) if r else None
+
+
+def _has_complete_1m_window(conn, venue: str, symbol: str, ts_start: int, ts_end_exclusive: int) -> bool:
+    start = strict_integer(ts_start)
+    end = strict_integer(ts_end_exclusive)
+    if start is None or end is None or start <= 0 or end <= start or (end - start) % 60 != 0:
+        return False
+    rows = _iter_1m_candles(conn, venue, symbol, start, end)
+    expected_count = (end - start) // 60
+    if len(rows) != expected_count:
+        return False
+    for index, row in enumerate(rows):
+        row_ts = strict_integer(row["ts"])
+        if row_ts != start + index * 60:
+            return False
+    return True
 
 
 def _get_price_range_in_window(conn, venue: str, symbol: str, ts_start: int, ts_end_exclusive: int) -> tuple[float, float] | None:
@@ -641,6 +666,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         if db.now_ts() < entry_ts + effective_horizon:
             continue
         ts_exit = entry_ts + effective_horizon
+        if not _has_complete_1m_window(conn, venue, symbol, entry_ts, ts_exit):
+            db.log_decision(conn, "OUTCOME_SKIP_INCOMPLETE_HORIZON", rec_id, None, {
+                "venue": venue,
+                "symbol": symbol,
+                "entry_ts": entry_ts,
+                "label_available_ts": ts_exit,
+                "horizon_sec": effective_horizon,
+            })
+            continue
 
         if entry is None or entry == 0:
             continue
@@ -649,7 +683,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         exitp: float
 
         if bot_type in GRID_BOTS:
-            ep = _get_open_at_or_after(conn, venue, symbol, ts_exit)
+            ep = _get_open_at_exact(conn, venue, symbol, ts_exit)
             if ep is None:
                 continue
             exitp = ep

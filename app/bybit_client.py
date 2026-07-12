@@ -256,11 +256,21 @@ class BybitPublicClient:
         if symbol_norm:
             params["symbol"] = symbol_norm
         data = self._get("/v5/market/tickers", params=params)
+        items = _result_list(data)
+        # The V5 response timestamp lives at the response envelope, not inside
+        # every ticker item. Propagate it to rows that do not already expose an
+        # event timestamp so the collector can detect stale/cached snapshots
+        # instead of stamping them with the local receipt time.
+        response_time = strict_integer(data.get("time"))
+        if response_time is not None and response_time > 0:
+            for item in items:
+                if not any(item.get(key) not in (None, "") for key in ("time", "updateTime", "ts", "lastPriceTime")):
+                    item["time"] = response_time
         # Bybit category=linear can include non-USDT linear products when broad
         # filters are used. Product scope here is stricter, and symbol-specific
         # calls must not let a malformed upstream/stub row be relabelled as the
         # requested instrument by the collector.
-        return _filter_exact_symbol(_result_list(data), symbol_norm)
+        return _filter_exact_symbol(items, symbol_norm)
 
     def get_kline(
         self,

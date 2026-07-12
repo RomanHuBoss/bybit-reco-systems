@@ -159,24 +159,14 @@ def test_compute_outcomes_only_labels_publication_root(tmp_path: Path):
                     "venue": "linear",
                     "symbol": "BTCUSDT",
                     "tf_sec": 60,
-                    "ts": entry_ts,
-                    "open": 100.0,
-                    "high": 101.0,
-                    "low": 99.0,
-                    "close": 100.5,
-                    "volume": 10.0,
-                },
-                {
-                    "venue": "linear",
-                    "symbol": "BTCUSDT",
-                    "tf_sec": 60,
-                    "ts": exit_ts,
-                    "open": 100.2,
-                    "high": 100.8,
-                    "low": 99.7,
-                    "close": 100.1,
-                    "volume": 11.0,
-                },
+                    "ts": candle_ts,
+                    "open": 100.0 if candle_ts < exit_ts else 100.2,
+                    "high": 101.0 if candle_ts < exit_ts else 100.8,
+                    "low": 99.0 if candle_ts < exit_ts else 99.7,
+                    "close": 100.5 if candle_ts < exit_ts else 100.1,
+                    "volume": 10.0 if candle_ts < exit_ts else 11.0,
+                }
+                for candle_ts in range(entry_ts, exit_ts + 60, 60)
             ],
         )
 

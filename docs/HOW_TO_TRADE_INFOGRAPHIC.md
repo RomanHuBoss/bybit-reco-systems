@@ -31,6 +31,13 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Neutral grid: no single directional TP; lower and upper outer levels are kill-switch exits.
 - Any backend/UI disagreement in `directional_exit_levels` means no directional TP/SL should be rendered as executable.
 
+## Temporal evidence integrity
+
+- Do not treat a ticker as fresh unless the exchange event timestamp is valid.
+- A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
+- Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
+- Version `grid_label_v4` intentionally starts a new proxy-label sample after the temporal fix.
+
 ## NO TRADE / BLOCKED checklist
 
 Treat the recommendation as NO TRADE when any of the following appears:

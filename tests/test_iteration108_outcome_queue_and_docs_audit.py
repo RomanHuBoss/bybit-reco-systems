@@ -81,24 +81,14 @@ def test_compute_outcomes_llm_sql_prefilter_reaches_newer_matured_row(tmp_path: 
                 'venue': 'linear',
                 'symbol': 'BTCUSDT',
                 'tf_sec': 60,
-                'ts': entry_ts,
-                'open': 100.0,
-                'high': 101.0,
-                'low': 99.5,
-                'close': 100.3,
-                'volume': 10.0,
-            },
-            {
-                'venue': 'linear',
-                'symbol': 'BTCUSDT',
-                'tf_sec': 60,
-                'ts': exit_ts,
-                'open': 100.1,
-                'high': 100.6,
-                'low': 99.7,
-                'close': 100.0,
-                'volume': 8.0,
-            },
+                'ts': candle_ts,
+                'open': 100.0 if candle_ts < exit_ts else 100.1,
+                'high': 101.0 if candle_ts < exit_ts else 100.6,
+                'low': 99.5 if candle_ts < exit_ts else 99.7,
+                'close': 100.3 if candle_ts < exit_ts else 100.0,
+                'volume': 10.0 if candle_ts < exit_ts else 8.0,
+            }
+            for candle_ts in range(entry_ts, exit_ts + 60, 60)
         ],
     )
 
