@@ -1,5 +1,14 @@
 # Ключевые сценарии
 
+## 0. Delayed publication or damaged persisted grid contract
+
+Ожидаемое поведение:
+- если `features_ref_ts + 60` candle уже открылась до публикации, entry переносится на первую точную 1m candle, открывшуюся строго после publication timestamp;
+- если эта exact candle отсутствует, outcome остаётся unavailable;
+- conflicting `grid_count/grid_levels`, разные валидные range aliases, malformed explicit range или конфликтующие funding aliases не превращаются в `ret=0`/loss;
+- worker пишет `OUTCOME_SKIP_INVALID_GRID_CONTRACT`, не вставляет `reco_outcomes` и не обучает calibrator на вымышленной геометрии.
+
+
 ## 1. Холодный старт на пустой БД
 Ожидаемое поведение:
 - collector начинает наполнять 1m/ticker слой;

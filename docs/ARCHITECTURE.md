@@ -13,6 +13,13 @@
 - блокировать очевидно опасные идеи через risk gate / market shock / fast-veto / LLM-review;
 - сохранять audit trail, publication lineage, operator actions и proxy-outcomes.
 
+## Outcome temporal/contract boundary (v1.0.28)
+
+`app/outcomes.py` treats publication time as an availability boundary. A proxy position may start only at the open of the first exact 1m candle strictly after both the signal reference bar and the persisted recommendation publication. Missing exact candles remain unavailable.
+
+Duplicated persisted grid/funding fields are one contract. Valid duplicates must agree; explicit malformed or conflicting aliases do not receive a first-wins or conservative fallback. An invalid contract is skipped before `reco_outcomes` insertion, preserving calibration integrity.
+
+
 ## Границы ответственности
 
 ### Что система делает

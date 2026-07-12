@@ -13,6 +13,26 @@ from app import db
 from app.outcomes import compute_outcomes_once
 
 
+def _valid_outcome_grid_params() -> dict:
+    cost_model = {"execution_cost_bps": 0.0, "expected_funding_bps": 0.0}
+    return {
+        "grid_count": 5,
+        "grid_levels": 5,
+        "grid_spacing_pct": 1.0,
+        "price_range_lower": 95.0,
+        "price_range_upper": 105.0,
+        "cost_model": dict(cost_model),
+        "trade_plan": {
+            "grid_count": 5,
+            "cost_model": dict(cost_model),
+            "levels": {
+                "range": {"lower": 95.0, "upper": 105.0},
+                "kill_switch": {"lower": 94.0, "upper": 106.0},
+            },
+        },
+    }
+
+
 def _legacy_recommendation_sql_payload(*, rec_id: str, ts: int, status: str, reasons: dict) -> tuple:
     return (
         rec_id,
@@ -107,7 +127,7 @@ def test_compute_outcomes_only_labels_publication_root(tmp_path: Path):
                     "confidence": 0.62,
                     "expected_rr": 0.25,
                     "risk_score": 0.20,
-                    "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                    "params": _valid_outcome_grid_params(),
                     "reasons": {},
                     "blocks": [],
                     "status": "recommended",
@@ -130,7 +150,7 @@ def test_compute_outcomes_only_labels_publication_root(tmp_path: Path):
                     "confidence": 0.63,
                     "expected_rr": 0.26,
                     "risk_score": 0.20,
-                    "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                    "params": _valid_outcome_grid_params(),
                     "reasons": {
                         "publication_dedupe": {
                             "previous_rec_id": "R-root",
@@ -224,7 +244,7 @@ def test_status_and_outcome_stats_ignore_historical_active_duplicates(client_and
                 "confidence": 0.62,
                 "expected_rr": 0.25,
                 "risk_score": 0.20,
-                "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                "params": _valid_outcome_grid_params(),
                 "reasons": {},
                 "blocks": [],
                 "status": "recommended",
@@ -247,7 +267,7 @@ def test_status_and_outcome_stats_ignore_historical_active_duplicates(client_and
                 "confidence": 0.63,
                 "expected_rr": 0.26,
                 "risk_score": 0.20,
-                "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                "params": _valid_outcome_grid_params(),
                 "reasons": {
                     "publication_dedupe": {
                         "previous_rec_id": "R-root",

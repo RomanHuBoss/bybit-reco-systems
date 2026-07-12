@@ -1,5 +1,14 @@
 # Модули и контракты
 
+## `app/outcomes.py` — current v9 contract
+
+- chooses the first exact 1m entry open strictly after recommendation publication;
+- never stores invalid/contradictory grid geometry as a flat or losing outcome;
+- requires valid duplicate range, grid-count and funding aliases to describe one identical persisted bot;
+- logs and skips unlabelable contracts instead of manufacturing an alternative geometry;
+- keeps the explicit inventory ledger, per-leg/terminal costs and adverse inventory funding from v6-v8.
+
+
 ## `app/bybit_client.py`
 - fail-closed публичный REST-клиент Bybit с retry/backoff, строгим scope `category=linear` + exact `*USDT` symbol и exact-symbol проверкой `instruments-info`;
 Публичный REST-клиент Bybit.

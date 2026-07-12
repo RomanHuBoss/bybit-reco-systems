@@ -107,7 +107,13 @@ def _get_close_at_or_after(conn, venue: str, symbol: str, ts: int) -> float | No
     return float(r["close"]) if r else None
 
 
-def _get_first_tradeable_candle_after(conn, venue: str, symbol: str, ts: int) -> tuple[int, float] | None:
+def _get_first_tradeable_candle_after(
+    conn,
+    venue: str,
+    symbol: str,
+    ts: int,
+    publication_ts: int | None = None,
+) -> tuple[int, float] | None:
     """Return the exact next 1m candle after the signal reference candle.
 
     Recommendation features are computed on the last fully closed candle whose timestamp is
@@ -120,6 +126,17 @@ def _get_first_tradeable_candle_after(conn, venue: str, symbol: str, ts: int) ->
     if signal_ts is None or signal_ts <= 0:
         return None
     next_ts = signal_ts + 60
+
+    # The next candle after the feature bar is tradeable only when it opens after
+    # the recommendation has actually been published. A delayed recommender cycle
+    # can finish seconds or minutes after that candle opened; using its historical
+    # open would create an impossible pre-publication fill and temporal leakage.
+    published = strict_integer(publication_ts) if publication_ts is not None else None
+    if publication_ts is not None and (published is None or published <= 0):
+        return None
+    if published is not None and published >= next_ts:
+        next_ts += ((published - next_ts) // 60 + 1) * 60
+
     cur = conn.execute(
         """SELECT ts, open FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=60 AND ts=?
@@ -341,89 +358,106 @@ def _funding_cost_bps_for_outcome_label(signed_funding_bps: float) -> float:
     return max(0.0, _finite_or_default(signed_funding_bps, 0.0))
 
 
-def _extract_inventory_funding_model(params: dict | None) -> dict[str, float | int | None]:
-    """Return strict funding inputs used by the historical inventory ledger.
+def _extract_inventory_funding_model(params: dict | None) -> dict[str, object]:
+    """Return one internally consistent funding model from duplicated payload blocks.
 
-    Recommendation economics stores a direction-level funding estimate. Historical
-    outcome labels, however, must charge funding against the position that actually
-    exists at an event. Raw rate/schedule fields are therefore preferred; aggregate
-    expected bps remain a conservative fallback when the exact schedule is absent.
+    Generated recommendations persist the same ``cost_model`` both at the top level
+    and inside ``trade_plan``. These are aliases of one contract, not independent
+    estimates. A first-wins merge can combine a rate from one block with a schedule
+    from another or let a malformed/receipt alias hide an adverse valid value. Such
+    a synthetic model must not produce a calibration label.
     """
     params = params if isinstance(params, dict) else {}
     trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
     blocks = (
-        params.get("cost_model") if isinstance(params.get("cost_model"), dict) else {},
-        trade_plan.get("cost_model") if isinstance(trade_plan.get("cost_model"), dict) else {},
+        ("params.cost_model", params.get("cost_model") if isinstance(params.get("cost_model"), dict) else {}),
+        (
+            "params.trade_plan.cost_model",
+            trade_plan.get("cost_model") if isinstance(trade_plan.get("cost_model"), dict) else {},
+        ),
     )
 
-    raw: dict[str, object] = {}
-    for key in (
+    fields = (
         "funding_rate",
         "next_funding_ts",
         "funding_interval_min",
         "expected_funding_events",
         "directional_funding_bps_per_event",
         "expected_funding_bps",
-    ):
-        for block in blocks:
-            if key in block and block.get(key) is not None:
-                raw[key] = block.get(key)
+    )
+
+    def _parse(field: str, value: object) -> object | None:
+        if value is None or isinstance(value, bool):
+            return None
+        if field == "next_funding_ts":
+            parsed = strict_integer(value)
+            if parsed is None or parsed <= 0:
+                return None
+            if parsed > 100_000_000_000:
+                if parsed % 1000 != 0:
+                    return None
+                parsed //= 1000
+            return int(parsed) if parsed > 0 else None
+        if field == "funding_interval_min":
+            parsed = strict_integer(value)
+            return int(parsed * 60) if parsed is not None and parsed > 0 else None
+        if field == "expected_funding_events":
+            parsed = strict_integer(value)
+            return int(parsed) if parsed is not None and 0 <= parsed <= 1000 else None
+        try:
+            parsed_float = float(value)
+        except Exception:
+            return None
+        return float(parsed_float) if math.isfinite(parsed_float) else None
+
+    resolved: dict[str, object | None] = {}
+    issues: list[dict[str, object]] = []
+    for field in fields:
+        parsed_values: list[tuple[str, object]] = []
+        for source, block in blocks:
+            if field not in block or block.get(field) is None:
+                continue
+            raw = block.get(field)
+            parsed = _parse(field, raw)
+            if parsed is None:
+                issues.append({"field": field, "source": source, "reason": "invalid", "value": raw})
+                continue
+            parsed_values.append((source, parsed))
+
+        if not parsed_values:
+            resolved[field] = None
+            continue
+
+        first_value = parsed_values[0][1]
+        conflict = False
+        for _, candidate in parsed_values[1:]:
+            if isinstance(first_value, float) or isinstance(candidate, float):
+                if not math.isclose(float(first_value), float(candidate), rel_tol=1e-12, abs_tol=1e-12):
+                    conflict = True
+                    break
+            elif first_value != candidate:
+                conflict = True
                 break
-
-    funding_rate = None
-    value = raw.get("funding_rate")
-    if value is not None and not isinstance(value, bool):
-        try:
-            candidate = float(value)
-        except Exception:
-            candidate = math.nan
-        if math.isfinite(candidate):
-            funding_rate = float(candidate)
-
-    next_funding_ts = strict_integer(raw.get("next_funding_ts"))
-    if next_funding_ts is not None and next_funding_ts > 100_000_000_000:
-        # Millisecond timestamps are accepted only on an exact whole-second
-        # boundary; truncation would manufacture a funding schedule.
-        if next_funding_ts % 1000 != 0:
-            next_funding_ts = None
+        if conflict:
+            issues.append({
+                "field": field,
+                "reason": "conflict",
+                "values": [{"source": source, "value": value} for source, value in parsed_values],
+            })
+            resolved[field] = None
         else:
-            next_funding_ts //= 1000
-    if next_funding_ts is not None and next_funding_ts <= 0:
-        next_funding_ts = None
-
-    interval_min = strict_integer(raw.get("funding_interval_min"))
-    interval_sec = int(interval_min * 60) if interval_min is not None and interval_min > 0 else None
-    expected_events = _int_from_params(raw.get("expected_funding_events"), 0, minimum=0, maximum=1000)
-
-    per_event_bps = None
-    value = raw.get("directional_funding_bps_per_event")
-    if value is not None and not isinstance(value, bool):
-        try:
-            candidate = float(value)
-        except Exception:
-            candidate = math.nan
-        if math.isfinite(candidate):
-            per_event_bps = float(candidate)
-
-    expected_bps = None
-    value = raw.get("expected_funding_bps")
-    if value is not None and not isinstance(value, bool):
-        try:
-            candidate = float(value)
-        except Exception:
-            candidate = math.nan
-        if math.isfinite(candidate):
-            expected_bps = float(candidate)
+            resolved[field] = first_value
 
     return {
-        "funding_rate": funding_rate,
-        "next_funding_ts": next_funding_ts,
-        "funding_interval_sec": interval_sec,
-        "expected_funding_events": expected_events,
-        "directional_funding_bps_per_event": per_event_bps,
-        "expected_funding_bps": expected_bps,
+        "valid": not issues,
+        "issues": issues,
+        "funding_rate": resolved.get("funding_rate"),
+        "next_funding_ts": resolved.get("next_funding_ts"),
+        "funding_interval_sec": resolved.get("funding_interval_min"),
+        "expected_funding_events": resolved.get("expected_funding_events") or 0,
+        "directional_funding_bps_per_event": resolved.get("directional_funding_bps_per_event"),
+        "expected_funding_bps": resolved.get("expected_funding_bps"),
     }
-
 
 def _exact_funding_event_times(model: dict[str, float | int | None], ts_start: int, ts_end: int) -> list[int]:
     next_ts = strict_integer(model.get("next_funding_ts"))
@@ -531,6 +565,42 @@ def _grid_tp_hit(min_p: float, max_p: float, entry: float, direction: str, tp_le
     return False
 
 
+
+def _resolve_grid_range(params: dict, trade_plan: dict) -> tuple[float, float] | None:
+    """Resolve duplicated range aliases without silently changing grid geometry.
+
+    A malformed top-level legacy alias may fall back to a valid canonical nested
+    range. Two *valid but different* ranges are a contract conflict and therefore
+    cannot be labeled: choosing either one would simulate a different bot.
+    """
+    levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}
+    nested = levels.get("range") if isinstance(levels.get("range"), dict) else {}
+    candidates: list[tuple[str, float, float]] = []
+
+    for source, lower_raw, upper_raw in (
+        ("params", params.get("price_range_lower"), params.get("price_range_upper")),
+        ("params.trade_plan.levels.range", nested.get("lower"), nested.get("upper")),
+    ):
+        explicit = lower_raw is not None or upper_raw is not None
+        if not explicit:
+            continue
+        lower = _finite_positive_or_none(lower_raw)
+        upper = _finite_positive_or_none(upper_raw)
+        if lower is None or upper is None or upper <= lower:
+            return None
+        candidates.append((source, float(lower), float(upper)))
+
+    if not candidates:
+        return None
+    _, lower, upper = candidates[0]
+    for _, candidate_lower, candidate_upper in candidates[1:]:
+        if not (
+            math.isclose(lower, candidate_lower, rel_tol=1e-12, abs_tol=1e-12)
+            and math.isclose(upper, candidate_upper, rel_tol=1e-12, abs_tol=1e-12)
+        ):
+            return None
+    return float(lower), float(upper)
+
 def _grid_outcome(
     conn,
     venue: str,
@@ -541,7 +611,7 @@ def _grid_outcome(
     ts_end: int,
     direction: str,
     params: dict | None,
-) -> tuple[int, float]:
+) -> tuple[int, float] | None:
     """Estimate arithmetic Futures Grid total P&L from an explicit order ledger.
 
     The previous proxy counted paired index movement and then applied one coarse
@@ -560,11 +630,13 @@ def _grid_outcome(
     params = params if isinstance(params, dict) else {}
     direction_norm = normalize_execution_direction(direction)
     if direction_norm not in {"neutral", "long", "short"}:
-        return 0, 0.0
+        return None
 
     execution_cost_bps, _ = _extract_cost_components(params)
     half_leg_cost_rate = max(0.0, float(execution_cost_bps)) / 20_000.0
     funding_model = _extract_inventory_funding_model(params)
+    if funding_model.get("valid") is not True:
+        return None
     funding_rate_raw = funding_model.get("funding_rate")
     funding_rate = float(funding_rate_raw) if funding_rate_raw is not None else None
     exact_schedule_known = bool(
@@ -587,25 +659,19 @@ def _grid_outcome(
         ("params.trade_plan.sizing.grid_count", plan_sizing.get("grid_count")),
         ("params.trade_plan.economics.grid_count", plan_economics.get("grid_count")),
     ])
-    # Strict generated payloads agree. For legacy conflicting aliases retain the
-    # previous conservative lower-cap policy, but never synthesize a larger grid.
-    grid_count_raw = (
-        grid_count_resolution.get("value")
-        if grid_count_resolution.get("ok")
-        else grid_count_resolution.get("conservative_min")
+    # Outcome labels must represent the exact persisted bot. Conflicting or
+    # malformed aliases describe no single executable grid and therefore cannot
+    # be collapsed to a conservative count without simulating another strategy.
+    if grid_count_resolution.get("ok") is not True:
+        return None
+    grid_count = _int_from_params(
+        grid_count_resolution.get("value"), 0, minimum=0, maximum=1000
     )
-    grid_count = _int_from_params(grid_count_raw, 0, minimum=0, maximum=1000)
 
     levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}
-    range_block = levels.get("range") if isinstance(levels.get("range"), dict) else {}
     kill_switch = levels.get("kill_switch") if isinstance(levels.get("kill_switch"), dict) else {}
-
-    lower = _finite_positive_or_none(params.get("price_range_lower"))
-    upper = _finite_positive_or_none(params.get("price_range_upper"))
-    if lower is None:
-        lower = _finite_positive_or_none(range_block.get("lower"))
-    if upper is None:
-        upper = _finite_positive_or_none(range_block.get("upper"))
+    resolved_range = _resolve_grid_range(params, trade_plan)
+    lower, upper = resolved_range if resolved_range is not None else (None, None)
     ks_lower = _finite_positive_or_none(kill_switch.get("lower")) if kill_switch else None
     ks_upper = _finite_positive_or_none(kill_switch.get("upper")) if kill_switch else None
 
@@ -623,7 +689,7 @@ def _grid_outcome(
         or grid_count <= 0
         or not (float(lower) <= float(entry) <= float(upper))
     ):
-        return 0, 0.0
+        return None
 
     lower_f = float(lower)
     upper_f = float(upper)
@@ -631,7 +697,7 @@ def _grid_outcome(
     exit_f = float(exitp)
     step_abs = (upper_f - lower_f) / float(grid_count)
     if not math.isfinite(step_abs) or step_abs <= 0.0:
-        return 0, 0.0
+        return None
     grid_prices = [lower_f + step_abs * index for index in range(grid_count + 1)]
 
     position_on_grid = (entry_f - lower_f) / step_abs
@@ -790,7 +856,7 @@ def _grid_outcome(
     execution_cost += abs(float(open_position_slots)) * exit_f * half_leg_cost_rate
     capital_reference = entry_f * float(grid_count)
     if capital_reference <= 0.0:
-        return 0, 0.0
+        return None
     net_proxy = (gross_pnl - execution_cost - funding_cost) / capital_reference
 
     min_low = min(float(row["low"]) for row in rows)
@@ -890,7 +956,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             params = json.loads(r["params_json"], parse_constant=lambda _token: None) if r["params_json"] else None
         except Exception:
             params = None
-        tradeable = _get_first_tradeable_candle_after(conn, venue, symbol, signal_ref_ts)
+        tradeable = _get_first_tradeable_candle_after(conn, venue, symbol, signal_ref_ts, ts0)
         if tradeable is None:
             continue
         entry_ts, entry = tradeable
@@ -925,7 +991,17 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             if ep is None:
                 continue
             exitp = ep
-            success, ret_proxy = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, direction, params)
+            grid_result = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, direction, params)
+            if grid_result is None:
+                db.log_decision(conn, "OUTCOME_SKIP_INVALID_GRID_CONTRACT", rec_id, None, {
+                    "venue": venue,
+                    "symbol": symbol,
+                    "entry_ts": entry_ts,
+                    "entry_price": entry,
+                    "label_available_ts": ts_exit,
+                })
+                continue
+            success, ret_proxy = grid_result
 
         else:
             continue

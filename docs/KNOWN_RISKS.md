@@ -1,3 +1,23 @@
+## 2026-07-12 post-publication entry and grid-contract integrity audit (v1.0.28)
+
+### CLOSED/HIGH: outcome could enter before the recommendation existed
+The worker used `features_ref_ts + 60` even when publication occurred after that candle had opened. This created an impossible historical fill and could materially change direction, inventory and PnL. v1.0.28 selects the first exact 1m open strictly after publication.
+
+### CLOSED/HIGH: contradictory grid aliases simulated a different bot
+Valid but different range or grid-count aliases were collapsed by first-wins/conservative-min logic. A damaged primary range could also fall through to another geometry. v1.0.28 treats these contracts as unlabelable instead of fabricating profit or loss.
+
+### CLOSED/HIGH: invalid grid geometry was stored as a zero-return loss
+`_grid_outcome` used `(0, 0.0)` both for a valid flat path and for invalid direction/geometry. v1.0.28 returns unavailable for invalid contracts; the worker logs `OUTCOME_SKIP_INVALID_GRID_CONTRACT` and does not contaminate win rate or calibration.
+
+### CLOSED/HIGH: funding aliases could form a synthetic mixed model
+Field-by-field first-wins resolution could combine a rate from one cost block with a schedule or expected bps from another. v1.0.28 requires duplicate funding fields to be valid and equal; conflicts or explicit malformed values suppress the label.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v9`
+First v1.0.28 startup clears only incompatible `reco_outcomes` and related calibrators. Recommendations, bot audit rows, trades, exact execution evidence and risk settings remain.
+
+### RESIDUAL: OHLCV remains a conservative close-to-close proxy
+The worker still cannot prove intrabar order sequence, queue priority, partial fills, maker/taker truth or future realised funding. Positive proxy performance is not evidence of live edge.
+
 ## 2026-07-12 outcome label integrity audit (v1.0.27)
 
 ### CLOSED: positive net PnL could still be stored as a loss

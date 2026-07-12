@@ -40,6 +40,26 @@ from app.features import compute_features_from_ohlcv
 
 
 
+def _valid_outcome_grid_params() -> dict:
+    cost_model = {"execution_cost_bps": 0.0, "expected_funding_bps": 0.0}
+    return {
+        "grid_count": 5,
+        "grid_levels": 5,
+        "grid_spacing_pct": 1.0,
+        "price_range_lower": 95.0,
+        "price_range_upper": 105.0,
+        "cost_model": dict(cost_model),
+        "trade_plan": {
+            "grid_count": 5,
+            "cost_model": dict(cost_model),
+            "levels": {
+                "range": {"lower": 95.0, "upper": 105.0},
+                "kill_switch": {"lower": 94.0, "upper": 106.0},
+            },
+        },
+    }
+
+
 def _settings_for_tests(**overrides):
     base = dict(
         outcome_horizon_fallback_sec=6 * 3600,
@@ -2525,7 +2545,7 @@ def test_compute_outcomes_scans_past_stuck_unprocessable_rows(conn):
                 "confidence": 0.62,
                 "expected_rr": 1.1,
                 "risk_score": 0.25,
-                "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+                "params": _valid_outcome_grid_params(),
                 "reasons": {},
                 "blocks": [],
                 "status": "recommended",
@@ -2592,7 +2612,7 @@ def test_compute_outcomes_requires_completed_llm_verdict_when_llm_mode_enabled(c
             "confidence": 0.7,
             "expected_rr": 1.2,
             "risk_score": 0.1,
-            "params": {"grid_levels": 5, "grid_spacing_pct": 1.0},
+            "params": _valid_outcome_grid_params(),
             "reasons": reasons,
             "blocks": [],
             "status": status,

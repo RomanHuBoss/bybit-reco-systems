@@ -61,7 +61,22 @@ def test_compute_outcomes_llm_sql_prefilter_reaches_newer_matured_row(tmp_path: 
         'confidence': 0.72,
         'expected_rr': 1.2,
         'risk_score': 0.15,
-        'params': {'grid_levels': 5, 'grid_spacing_pct': 1.0},
+        'params': {
+            'grid_count': 5,
+            'grid_levels': 5,
+            'grid_spacing_pct': 1.0,
+            'price_range_lower': 95.0,
+            'price_range_upper': 105.0,
+            'cost_model': {'execution_cost_bps': 0.0, 'expected_funding_bps': 0.0},
+            'trade_plan': {
+                'grid_count': 5,
+                'cost_model': {'execution_cost_bps': 0.0, 'expected_funding_bps': 0.0},
+                'levels': {
+                    'range': {'lower': 95.0, 'upper': 105.0},
+                    'kill_switch': {'lower': 94.0, 'upper': 106.0},
+                },
+            },
+        },
         'reasons': {'llm_review': {'status': 'ok', 'mode': 'advisory', 'gate_decision': 'pass'}},
         'blocks': [],
         'status': 'recommended',

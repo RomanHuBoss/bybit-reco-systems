@@ -87,14 +87,11 @@ def test_compute_outcomes_once_survives_nonfinite_grid_params(tmp_path, monkeypa
         ("R-bad-grid-params",),
     ).fetchone()
 
-    assert processed == 1
-    assert row is not None
-    assert row["horizon_sec"] == 12 * 3600
-    assert row["label_available_ts"] == base_ts + 60 + 12 * 3600
-    joined = db.get_outcomes_with_recs(conn, limit=10)
-    assert joined[0]["label_available_ts"] == row["label_available_ts"]
-    assert row["success"] in (0, 1)
-    assert math.isfinite(float(row["ret"]))
+    # A malformed grid count has no defensible trade geometry. It must be
+    # unavailable rather than stored as an artificial flat/loss outcome.
+    assert processed == 0
+    assert row is None
+    assert db.get_outcomes_with_recs(conn, limit=10) == []
 
     conn.close()
 

@@ -164,7 +164,7 @@ def test_grid_outcome_ignores_poisoned_top_level_range_bounds_and_uses_trade_pla
             "neutral",
             good_params,
         )
-        poisoned_success, poisoned_ret = _grid_outcome(
+        poisoned_result = _grid_outcome(
             conn,
             "linear",
             "BTCUSDT",
@@ -179,7 +179,8 @@ def test_grid_outcome_ignores_poisoned_top_level_range_bounds_and_uses_trade_pla
         assert good_success == 1
         assert good_ret > 0.0
         assert math.isfinite(good_ret)
-        assert poisoned_success == good_success
-        assert poisoned_ret == pytest.approx(good_ret)
+        # Explicit malformed aliases are evidence of a damaged persisted
+        # contract; silently falling through would simulate another grid.
+        assert poisoned_result is None
     finally:
         conn.close()

@@ -199,5 +199,5 @@ def test_outcome_uses_persisted_range_and_grid_count_not_cost_widened_step(tmp_p
 
 def test_outcome_contract_is_bumped_for_grid_ledger_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v8"' in source
-    assert 'version="1.0.27"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v9"' in source
+    assert 'version="1.0.28"' in source

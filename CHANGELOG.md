@@ -1,3 +1,12 @@
+## 2026-07-12 - v1.0.28 - post-publication entry and grid-contract integrity
+
+- Outcome entry now uses the first exact 1m candle open strictly after recommendation publication, preventing historical pre-publication fills when the recommender cycle is delayed.
+- Invalid or contradictory grid contracts are no longer persisted as flat/loss outcomes: conflicting grid-count aliases, conflicting ranges and malformed explicit range fields are unlabelable.
+- Duplicated funding blocks must form one internally consistent model; invalid or conflicting aliases cannot be merged field-by-field into synthetic carry.
+- Bumped `OUTCOME_LABEL_VERSION` to `grid_label_v9` and FastAPI version to `1.0.28`; no schema, route, frontend or environment-variable change.
+- Added `tests/test_iteration216_outcome_entry_contract_integrity.py` with 10 RED-to-GREEN regressions; post-check: 927 tests passed.
+- Updated operator Markdown, DOCX/PDF and PNG artifacts. Live PostgreSQL integration was not run without a confirmed disposable DSN; dialect/locking tests remain green.
+
 ## 2026-07-12 - v1.0.27 - outcome label integrity and funding-window precedence
 
 - Fixed a HIGH label-integrity defect: every finite positive liquidation-equivalent total net PnL is now a win unless the kill-switch was breached. The residual mode-activity/0.1% drift gate no longer converts positive LONG, SHORT or NEUTRAL outcomes into losses.
