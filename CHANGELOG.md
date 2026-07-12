@@ -1,3 +1,12 @@
+## 2026-07-12 - v1.0.37 - Settled funding outcome integrity
+
+- Added public Bybit funding-history parsing and a paginated 35-day settlement backfill.
+- Added additive SQLite/PostgreSQL `funding_settlement` persistence and range queries.
+- Historical grid outcomes now use signed settled funding cashflows; ticker forecasts remain approval-only.
+- Missing settlement data blocks a non-flat outcome instead of fabricating P&L from a forecast.
+- Bumped FastAPI to `1.0.37` and outcome target to `grid_label_v18`.
+- Added `test_iteration225_settled_funding_outcomes.py`; post-check: 1001/1001 tests passed.
+
 ## 2026-07-12 - v1.0.36 - Grid cost-layer separation
 
 - Fixed a HIGH economics/outcome defect: spread, slippage and full-horizon funding are no longer charged to every completed grid pair.

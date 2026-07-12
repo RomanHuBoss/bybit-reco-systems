@@ -361,6 +361,61 @@ class BybitPublicClient:
             "funding_interval_min": funding_interval_min,
         }
 
+    def get_funding_rate_history(
+        self,
+        symbol: str,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return settled historical funding rates for one Linear USDT perpetual.
+
+        The ticker ``fundingRate`` is a forecast for the next settlement and can
+        change until the funding timestamp. Historical outcome labels must use the
+        settled rate returned by ``/v5/market/funding/history`` instead.
+        """
+        target = _normalize_linear_usdt_symbol(symbol)
+        if not target:
+            raise ValueError("symbol is required for Bybit linear USDT funding-history requests")
+        limit_value = _request_integer(limit, field_name="limit")
+        start_value, end_value = _request_time_window(
+            start_ms,
+            end_ms,
+            start_field_name="start_ms",
+            end_field_name="end_ms",
+        )
+        params: dict[str, str] = {
+            "category": "linear",
+            "symbol": target,
+            "limit": str(max(1, min(limit_value, 200))),
+        }
+        if start_value is not None:
+            params["startTime"] = str(start_value)
+        if end_value is not None:
+            params["endTime"] = str(end_value)
+        data = self._get("/v5/market/funding/history", params=params)
+        out: list[dict[str, Any]] = []
+        seen_ts: set[int] = set()
+        for item in _result_list(data):
+            item_symbol = str(item.get("symbol") or "").strip().upper()
+            if item_symbol != target:
+                continue
+            raw_ts = strict_integer(item.get("fundingRateTimestamp"))
+            rate = _safe_float(item.get("fundingRate"))
+            if raw_ts is None or raw_ts <= 0 or rate is None:
+                continue
+            if raw_ts > 100_000_000_000:
+                if raw_ts % 1000 != 0:
+                    continue
+                raw_ts //= 1000
+            if raw_ts <= 0 or raw_ts in seen_ts:
+                continue
+            seen_ts.add(int(raw_ts))
+            out.append({"symbol": target, "ts": int(raw_ts), "funding_rate": float(rate)})
+        out.sort(key=lambda row: int(row["ts"]))
+        return out
+
     def get_open_interest_page(
         self,
         symbol: str,

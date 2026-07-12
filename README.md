@@ -1,3 +1,9 @@
+## Settled funding outcome integrity (v1.0.37)
+
+Исправлена HIGH-ошибка исторической статистики: `fundingRate` из ticker является изменяющимся прогнозом следующего funding settlement, но прежний outcome worker использовал его задним числом как фактическую ставку и учитывал только неблагоприятные списания. Это систематически искажало Total P&L, win rate и calibration: SHORT не получал положительный funding, LONG не получал отрицательный funding, а позднее изменившаяся ставка не отражалась в label.
+
+Теперь collector backfill-ит immutable settlement rows из публичного `/v5/market/funding/history` в таблицу `funding_settlement`. Исторический outcome использует только фактически рассчитанную signed rate и реальный inventory на timestamp события. Платежи уменьшают P&L, получения увеличивают P&L. Если schedule указывает funding event, позиция была ненулевой, но settlement row отсутствует, label не создаётся fail-closed. Forecast funding остаётся только approval/risk input. `OUTCOME_LABEL_VERSION=grid_label_v18`; первый запуск v1.0.37 очищает несовместимые proxy outcomes/calibrators, сохраняя recommendations, bot lifecycle, trades и exact execution evidence.
+
 # Bybit Recommender — Bybit Linear USDT Futures grid-only build
 
 ## Grid cost-layer separation (v1.0.36)

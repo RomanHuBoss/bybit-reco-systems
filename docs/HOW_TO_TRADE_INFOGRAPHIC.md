@@ -1,3 +1,11 @@
+## Settled funding labels - v1.0.37 / grid_label_v18
+
+- Approval uses forecast funding conservatively; it never credits a possible receipt as guaranteed edge.
+- Historical statistics use actual Bybit funding settlements, not the earlier ticker forecast.
+- Settled payments and receipts are both included with the sign implied by LONG/SHORT inventory.
+- Missing settlement data blocks a non-flat historical label.
+- The settlement rate is exact; modeled inventory/price remain OHLCV proxy limitations.
+
 ## Grid cost layers - v1.0.36 / grid_label_v17
 
 - Per completed grid pair: full adjacent interval minus the two resting-fill fees.

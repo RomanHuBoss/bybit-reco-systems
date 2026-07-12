@@ -258,5 +258,5 @@ def test_preflight_rejects_legacy_max_side_neutral_commitment(tmp_path: Path, mo
 
 def test_release_contract_is_bumped_for_neutral_margin_reservation() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v17"' in source
-    assert 'version="1.0.36"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
+    assert 'version="1.0.37"' in source

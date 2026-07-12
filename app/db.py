@@ -2799,6 +2799,82 @@ def get_latest_funding_rate(conn: sqlite3.Connection, symbol: str) -> dict | Non
             return normalized
     return None
 
+
+def _normalize_funding_settlement_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    payload = dict(row)
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    ts = strict_integer(payload.get("ts"))
+    raw_rate = payload.get("funding_rate")
+    if not symbol or ts is None or isinstance(raw_rate, bool):
+        return None
+    try:
+        rate = float(raw_rate)
+    except Exception:
+        return None
+    if not _is_plausible_market_ts(ts) or not math.isfinite(rate):
+        return None
+    return {"symbol": symbol, "ts": int(ts), "funding_rate": float(rate)}
+
+
+def upsert_funding_settlements(conn: sqlite3.Connection, rows: list[dict], *, commit: bool = True) -> None:
+    valid_rows: list[dict[str, Any]] = []
+    for row in rows:
+        normalized = _normalize_funding_settlement_row(row)
+        if normalized is not None:
+            valid_rows.append(normalized)
+    if not valid_rows:
+        return
+    conn.executemany(
+        """INSERT OR REPLACE INTO funding_settlement(symbol, ts, funding_rate)
+           VALUES(?,?,?)""",
+        [(row["symbol"], row["ts"], row["funding_rate"]) for row in valid_rows],
+    )
+    if commit:
+        conn.commit()
+
+
+def get_funding_settlements(
+    conn: sqlite3.Connection,
+    symbol: str,
+    ts_start: int,
+    ts_end: int,
+) -> list[dict[str, Any]]:
+    start = strict_integer(ts_start)
+    end = strict_integer(ts_end)
+    target = str(symbol or "").strip().upper()
+    if not target or start is None or end is None or start <= 0 or end < start:
+        return []
+    cur = conn.execute(
+        """SELECT symbol, ts, funding_rate
+           FROM funding_settlement
+           WHERE symbol=? AND ts>=? AND ts<=?
+           ORDER BY ts ASC""",
+        (target, int(start), int(end)),
+    )
+    out: list[dict[str, Any]] = []
+    for row in cur.fetchall():
+        normalized = _normalize_funding_settlement_row(row)
+        if normalized is not None:
+            out.append(normalized)
+    return out
+
+
+def get_latest_funding_settlement_ts(conn: sqlite3.Connection, symbol: str) -> int | None:
+    target = str(symbol or "").strip().upper()
+    if not target:
+        return None
+    cur = conn.execute(
+        "SELECT ts FROM funding_settlement WHERE symbol=? ORDER BY ts DESC LIMIT 1",
+        (target,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    ts = strict_integer(row["ts"])
+    return int(ts) if ts is not None and ts > 0 else None
+
 # ── open interest ─────────────────────────────────────────────────────────────
 
 def _normalize_open_interest_row(symbol: str, row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:

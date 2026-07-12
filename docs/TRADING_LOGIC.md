@@ -1,3 +1,11 @@
+## Settled funding in historical outcomes - v1.0.37 / grid_label_v18
+
+- Ticker `fundingRate` is a forecast for the next settlement and is used only by recommendation approval/risk logic.
+- Proxy outcomes read immutable rates collected from `/v5/market/funding/history`.
+- Historical funding P&L is signed: `funding_pnl = -position_qty × price_at_event × settled_rate`; positive rate makes LONG pay and SHORT receive, negative rate reverses the cashflow.
+- A missing settled rate is harmless only when inventory at that timestamp is exactly zero. Otherwise the label is unavailable.
+- Forecast receipts are never credited to approval edge, but actually settled receipts are part of historical Total P&L and therefore must be included in outcome/calibration.
+
 ## Cost-layer separation - v1.0.36 / grid_label_v17
 
 Bybit Grid Profit одной завершённой arithmetic-пары равен полному соседнему интервалу минус комиссии двух resting fills. `spread + slippage` являются разовой market setup/terminal friction, а funding является signed position-time Total P&L. Эти слои нельзя вычитать из каждой пары: при K циклах это умножает разовые/горизонтные расходы на K.

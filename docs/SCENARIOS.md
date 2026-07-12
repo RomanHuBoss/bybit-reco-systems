@@ -1,3 +1,12 @@
+## 0. Settled funding outcome scenarios - v1.0.37
+
+- Positive settled rate + LONG inventory -> payment; positive rate + SHORT inventory -> receipt.
+- Negative settled rate reverses those cashflows.
+- Recommendation-time forecast may differ from settlement without changing the historical result.
+- Expected event + non-zero inventory + missing settlement -> outcome unavailable.
+- Expected event + zero inventory + missing settlement -> zero funding impact is safe.
+- Old `grid_label_v17` outcomes are not mixed with `grid_label_v18`.
+
 ## 0. Grid cost-layer separation - v1.0.36
 
 Expected behavior:

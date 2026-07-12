@@ -15,6 +15,9 @@ _DISABLED_SYMBOLS: dict[str, dict[str, int]] = {"linear": {}}
 DISABLED_SYMBOL_RETRY_TTL_SEC = 6 * 60 * 60
 MISSING_TICKER_LOG_TTL_SEC = 60 * 60
 _MISSING_TICKER_LOG_TS: dict[tuple[str, str], int] = {}
+_FUNDING_SETTLEMENT_LOOKBACK_SEC = 35 * 24 * 60 * 60
+_FUNDING_SETTLEMENT_REFRESH_SEC = 60 * 60
+_LAST_FUNDING_SETTLEMENT_FETCH_TS: dict[tuple[str, str], int] = {}
 
 VENUE_TO_CATEGORY = {
     "linear": "linear",
@@ -385,6 +388,59 @@ def _ensure_funding_interval_from_instrument_info(
         funding_row = dict(funding_row)
         funding_row["funding_interval_min"] = int(interval_min)
     return funding_row
+
+
+def _fetch_funding_settlements_for_symbol(
+    conn,
+    client: BybitPublicClient,
+    venue: str,
+    symbol: str,
+    now_ts: int,
+) -> list[dict[str, Any]]:
+    """Backfill immutable settled funding rates used by historical outcomes.
+
+    Ticker ``fundingRate`` is only the current forecast for the next settlement.
+    This path queries the official historical endpoint and paginates backwards so
+    up to 35 days of hourly settlements are covered without exceeding Bybit's
+    200-row page limit.
+    """
+    if venue != "linear" or not hasattr(client, "get_funding_rate_history"):
+        return []
+    key = (venue, symbol)
+    last_attempt = int(_LAST_FUNDING_SETTLEMENT_FETCH_TS.get(key, 0) or 0)
+    if last_attempt > 0 and int(now_ts) - last_attempt < _FUNDING_SETTLEMENT_REFRESH_SEC:
+        return []
+    _LAST_FUNDING_SETTLEMENT_FETCH_TS[key] = int(now_ts)
+
+    latest = db.get_latest_funding_settlement_ts(conn, symbol)
+    start_sec = max(1, int(now_ts) - _FUNDING_SETTLEMENT_LOOKBACK_SEC)
+    if latest is not None:
+        start_sec = max(start_sec, int(latest) + 1)
+    end_ms = int(now_ts) * 1000
+    start_ms = int(start_sec) * 1000
+    out_by_ts: dict[int, dict[str, Any]] = {}
+    pages = 0
+    while end_ms >= start_ms and pages < 16:
+        pages += 1
+        rows = client.get_funding_rate_history(
+            symbol, start_ms=start_ms, end_ms=end_ms, limit=200
+        )
+        if not rows:
+            break
+        min_ts: int | None = None
+        for row in rows:
+            ts = strict_integer(row.get("ts")) if isinstance(row, dict) else None
+            if ts is None or ts <= 0:
+                continue
+            out_by_ts[int(ts)] = dict(row)
+            min_ts = int(ts) if min_ts is None else min(min_ts, int(ts))
+        if min_ts is None or len(rows) < 200:
+            break
+        next_end_ms = int(min_ts) * 1000 - 1
+        if next_end_ms >= end_ms:
+            break
+        end_ms = next_end_ms
+    return [out_by_ts[ts] for ts in sorted(out_by_ts)]
 
 
 def _client_get_tickers_batch(client: BybitPublicClient, category: str) -> tuple[list[dict[str, Any]] | None, Exception | None]:
@@ -824,6 +880,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         "symbols_total": len(symbols2),
         "tickers_written": 0,
         "funding_written": 0,
+        "funding_settlements_written": 0,
         "ohlcv_written": 0,
         "api_tf_fetches": {},
         "derived_tf_bootstrap_fetches": {},
@@ -848,6 +905,28 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     if funding_rows:
         db.upsert_funding_rate(conn, funding_rows, commit=False)
         stats["funding_written"] = len(funding_rows)
+
+    settlement_rows: list[dict[str, Any]] = []
+    settlement_tasks = list(active_symbols)
+    for _task, result, err in _run_tasks_bounded(
+        settlement_tasks,
+        lambda sym: _fetch_funding_settlements_for_symbol(conn, client, venue, sym, now_ts),
+        1,
+    ):
+        if err is not None:
+            db.log_decision(
+                conn,
+                "COLLECT_ERROR",
+                None,
+                None,
+                {"venue": venue, "symbol": str(_task), "field": "funding_history", "err": str(err)},
+                commit=False,
+            )
+            continue
+        settlement_rows.extend(result or [])
+    if settlement_rows:
+        db.upsert_funding_settlements(conn, settlement_rows, commit=False)
+        stats["funding_settlements_written"] = len(settlement_rows)
     for sym in missing_symbols:
         if _should_log_missing_ticker(venue, sym, now_ts):
             db.log_decision(
@@ -857,7 +936,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                 {"venue": venue, "symbol": sym, "field": "ticker_missing", "err": "ticker payload empty"},
                 commit=False,
             )
-    if ticker_rows or funding_rows or missing_symbols:
+    if ticker_rows or funding_rows or settlement_rows or missing_symbols:
         conn.commit()
     _heartbeat(heartbeat)
 

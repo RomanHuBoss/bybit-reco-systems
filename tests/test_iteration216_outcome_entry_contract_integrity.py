@@ -234,6 +234,9 @@ def test_identical_funding_aliases_remain_labelable(tmp_path: Path) -> None:
             "directional_funding_bps_per_event": 10.0,
             "expected_funding_bps": 10.0,
         })
+        db.upsert_funding_settlements(conn, [{
+            "symbol": "BTCUSDT", "ts": base_ts + 60, "funding_rate": 0.001,
+        }])
 
         result = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.0, 100.0,
@@ -290,5 +293,5 @@ def test_malformed_explicit_range_alias_does_not_fall_through_to_another_geometr
 
 def test_outcome_contract_is_bumped_for_post_publication_entry_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v17"' in source
-    assert 'version="1.0.36"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
+    assert 'version="1.0.37"' in source

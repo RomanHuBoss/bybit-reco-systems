@@ -181,6 +181,9 @@ def test_exact_funding_event_inside_horizon_still_charges_actual_inventory(tmp_p
             "directional_funding_bps_per_event": 10.0,
             "expected_funding_bps": 10.0,
         })
+        db.upsert_funding_settlements(conn, [{
+            "symbol": "BTCUSDT", "ts": base_ts + 60, "funding_rate": 0.001,
+        }])
 
         success, ret_proxy = _grid_outcome(
             conn,
@@ -248,5 +251,5 @@ def test_malformed_ohlcv_row_makes_horizon_incomplete(tmp_path: Path) -> None:
 
 def test_outcome_contract_is_bumped_for_label_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v17"' in source
-    assert 'version="1.0.36"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
+    assert 'version="1.0.37"' in source

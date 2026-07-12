@@ -23,6 +23,7 @@ _POSTGRES_UPSERT_KEYS: dict[str, tuple[str, ...]] = {
     "app_config": ("key",),
     "features": ("venue", "symbol", "ts"),
     "funding_rate": ("symbol", "ts"),
+    "funding_settlement": ("symbol", "ts"),
     "market_regime": ("ts",),
     "ohlcv": ("venue", "symbol", "tf_sec", "ts"),
     "open_interest": ("symbol", "ts"),

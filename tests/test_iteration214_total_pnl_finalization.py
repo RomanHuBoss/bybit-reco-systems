@@ -211,6 +211,9 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
         # One Long slot pays 0.1 USDT. Exact commitment is the initial
         # 100-USDT slot plus the adverse buy order at 99: 199 USDT.
         _seed_flat_horizon(conn, entry_ts=entry_ts, horizon_sec=horizon_sec, price=100.0)
+        db.upsert_funding_settlements(conn, [{
+            "symbol": "BTCUSDT", "ts": entry_ts + 3600, "funding_rate": 0.001,
+        }])
         monkeypatch.setattr(db, "now_ts", lambda: entry_ts + 12 * 3600 + 600)
 
         assert compute_outcomes_once(conn, max_to_process=10) == 1
@@ -227,8 +230,8 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
 
 def test_outcome_contract_is_bumped_for_inventory_aware_finalization() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v17"' in source
-    assert 'version="1.0.36"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
+    assert 'version="1.0.37"' in source
 
 
 def test_short_inventory_pays_negative_funding_at_position_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -256,6 +259,9 @@ def test_short_inventory_pays_negative_funding_at_position_value(tmp_path: Path,
             params=params,
         )])
         _seed_flat_horizon(conn, entry_ts=entry_ts, horizon_sec=horizon_sec, price=100.0)
+        db.upsert_funding_settlements(conn, [{
+            "symbol": "BTCUSDT", "ts": entry_ts + 3600, "funding_rate": -0.001,
+        }])
         monkeypatch.setattr(db, "now_ts", lambda: entry_ts + 12 * 3600 + 600)
 
         assert compute_outcomes_once(conn, max_to_process=10) == 1
@@ -298,6 +304,9 @@ def test_unknown_funding_schedule_uses_reached_inventory_not_full_capital(
             params=params,
         )])
         _seed_flat_horizon(conn, entry_ts=entry_ts, horizon_sec=horizon_sec, price=100.0)
+        db.upsert_funding_settlements(conn, [{
+            "symbol": "BTCUSDT", "ts": entry_ts + 3600, "funding_rate": 0.001,
+        }])
         monkeypatch.setattr(db, "now_ts", lambda: entry_ts + 12 * 3600 + 600)
 
         assert compute_outcomes_once(conn, max_to_process=10) == 1
@@ -306,7 +315,7 @@ def test_unknown_funding_schedule_uses_reached_inventory_not_full_capital(
             ("R-long-unknown-schedule",),
         ).fetchone()
         assert row is not None
-        assert float(row["ret"]) == pytest.approx(-0.10005 / 199.0)
+        assert float(row["ret"]) == pytest.approx(-0.1 / 199.0)
         assert int(row["success"]) == 0
     finally:
         conn.close()

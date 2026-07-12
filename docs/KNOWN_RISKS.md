@@ -1,3 +1,9 @@
+## Settled funding history - v1.0.37
+
+**Resolved HIGH:** historical outcomes previously reused the recommendation-time ticker funding forecast and discarded receipts. Since the rate can change until settlement, this could create both wrong funding amounts and systematic pessimistic bias. v1.0.37 stores actual public settlements and applies their signed cashflow to modeled inventory.
+
+**Residual risk:** the public settlement rate is exact, but proxy position quantity and price at the funding timestamp still come from the OHLCV ledger, not private account evidence. Missing settlements make a non-flat label unavailable; exact execution evidence remains authoritative for live P&L.
+
 ## Grid cost layers and repeated-cycle bias - v1.0.36
 
 До v1.0.36 `execution_cost_bps + expected_funding_bps` вычитались из каждой завершённой grid-пары. Это создавало систематический pessimistic bias, пропорциональный числу циклов, и могло ошибочно блокировать плотные сетки. Теперь recurring grid fees, one-time market friction и position-time funding разделены. Остаточный риск: OHLCV proxy не знает maker/taker truth, partial fills и фактический fee tier; exact execution evidence остаётся обязательным для вывода о live edge.

@@ -513,13 +513,28 @@ def _fallback_adverse_rate_per_event(model: dict[str, float | int | None]) -> fl
 
 
 def _adverse_funding_cashflow(position_slots: int, price: float, funding_rate: float | None) -> float:
-    """Return only adverse funding cashflow; potential receipts never create alpha."""
+    """Return only adverse funding cashflow; retained for approval-side helpers/tests."""
     if position_slots == 0 or funding_rate is None or not math.isfinite(float(funding_rate)):
         return 0.0
     # Positive rate: longs pay. Negative rate: shorts pay.
     if float(position_slots) * float(funding_rate) <= 0.0:
         return 0.0
     return abs(float(position_slots)) * float(price) * abs(float(funding_rate))
+
+
+def _signed_settled_funding_pnl(position_slots: int, price: float, funding_rate: float) -> float:
+    """Signed historical funding P&L for Linear USDT perpetual inventory.
+
+    Positive funding means longs pay shorts; negative funding means shorts pay
+    longs. Historical labels must include both payments and receipts because they
+    describe realised Total P&L, not conservative approval edge.
+    """
+    if position_slots == 0:
+        return 0.0
+    values = (float(price), float(funding_rate))
+    if not all(math.isfinite(value) for value in values) or float(price) <= 0.0:
+        return 0.0
+    return -float(position_slots) * float(price) * float(funding_rate)
 
 
 def _signed_return(entry: float, exitp: float, direction: str) -> float:
@@ -670,13 +685,41 @@ def _grid_outcome(
     funding_model = _extract_inventory_funding_model(params)
     if funding_model.get("valid") is not True:
         return None
-    funding_rate_raw = funding_model.get("funding_rate")
-    funding_rate = float(funding_rate_raw) if funding_rate_raw is not None else None
+
+    # The recommendation-time ticker fundingRate is a forecast for the next
+    # settlement and can change until the funding timestamp. Historical labels
+    # therefore use only immutable settled rates collected from Bybit's funding
+    # history endpoint. If the persisted schedule says an event belongs to this
+    # horizon but the settlement row is missing, the label is unavailable rather
+    # than fabricated from the old forecast.
     exact_schedule_known = bool(
         strict_integer(funding_model.get("next_funding_ts")) is not None
         and strict_integer(funding_model.get("funding_interval_sec")) is not None
     )
-    exact_funding_events = _exact_funding_event_times(funding_model, ts_start, ts_end)
+    expected_event_times = (
+        _exact_funding_event_times(funding_model, ts_start, ts_end)
+        if exact_schedule_known
+        else []
+    )
+    settlement_rows = db.get_funding_settlements(conn, symbol, ts_start, ts_end)
+    settled_by_ts = {
+        int(row["ts"]): float(row["funding_rate"]) for row in settlement_rows
+    }
+    if exact_schedule_known:
+        event_timestamps = sorted(set(expected_event_times) | set(settled_by_ts))
+        funding_events: list[tuple[int, float | None]] = [
+            (event_ts, settled_by_ts.get(event_ts)) for event_ts in event_timestamps
+        ]
+    else:
+        expected_event_count = _int_from_params(
+            funding_model.get("expected_funding_events"), 0, minimum=0, maximum=1000
+        )
+        if expected_event_count > 0 and not settled_by_ts:
+            # Without a confirmed schedule or historical settlement rows, neither
+            # event timing nor signed rate is known. A forecast-only charge is not
+            # a historical outcome.
+            return None
+        funding_events = sorted(settled_by_ts.items())
 
     trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
     params_sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
@@ -764,7 +807,7 @@ def _grid_outcome(
     )
     previous_price = entry_f
     tolerance = max(1e-10, step_abs * 1e-10)
-    funding_cost = 0.0
+    funding_pnl = 0.0
     event_index = 0
     stopped = False
     stop_price: float | None = None
@@ -774,21 +817,21 @@ def _grid_outcome(
     def current_position_slots() -> int:
         return int(position_slots)
 
+    def apply_funding_event(settled_rate: float | None, price: float) -> None:
+        nonlocal funding_pnl, ledger_invalid
+        slots = current_position_slots()
+        if settled_rate is None:
+            # Missing settled rate is harmless only when no position was held at
+            # the funding timestamp. Otherwise the historical P&L is unknowable.
+            if slots != 0:
+                ledger_invalid = True
+            return
+        funding_pnl += _signed_settled_funding_pnl(slots, price, float(settled_rate))
+
     def adverse_exposure_value(price: float) -> float:
-        current_slots = current_position_slots()
-        if current_slots == 0:
-            return 0.0
-        if funding_rate is not None:
-            return (
-                abs(float(current_slots)) * float(price)
-                if float(current_slots) * float(funding_rate) > 0.0
-                else 0.0
-            )
-        per_event = funding_model.get("directional_funding_bps_per_event")
-        expected = funding_model.get("expected_funding_bps")
-        if (per_event is not None and float(per_event) > 0.0) or (expected is not None and float(expected) > 0.0):
-            return abs(float(current_slots)) * float(price)
-        return 0.0
+        # Retained only as a path-equivalence state component. Historical funding
+        # P&L itself is computed from exact settlement rows below.
+        return abs(float(current_position_slots())) * float(price)
 
     max_adverse_position_value = adverse_exposure_value(entry_f)
 
@@ -951,16 +994,12 @@ def _grid_outcome(
 
         # Funding at the minute boundary is charged against inventory already
         # held before the first trade of that minute.
-        while event_index < len(exact_funding_events) and exact_funding_events[event_index] <= row_ts:
-            if funding_rate is not None:
-                funding_cost += _adverse_funding_cashflow(current_position_slots(), float(row_open), funding_rate)
-            else:
-                funding_cost += (
-                    abs(float(current_position_slots()))
-                    * float(row_open)
-                    * _fallback_adverse_rate_per_event(funding_model)
-                )
+        while event_index < len(funding_events) and funding_events[event_index][0] <= row_ts:
+            _event_ts, settled_rate = funding_events[event_index]
+            apply_funding_event(settled_rate, float(row_open))
             event_index += 1
+            if ledger_invalid:
+                return None
 
         # A close->open jump beyond a protective boundary has no observable
         # execution path between the prior close and the new market. Limit fills,
@@ -1043,16 +1082,12 @@ def _grid_outcome(
             break
 
     if not stopped:
-        while event_index < len(exact_funding_events):
-            if funding_rate is not None:
-                funding_cost += _adverse_funding_cashflow(current_position_slots(), exit_f, funding_rate)
-            else:
-                funding_cost += (
-                    abs(float(current_position_slots()))
-                    * exit_f
-                    * _fallback_adverse_rate_per_event(funding_model)
-                )
+        while event_index < len(funding_events):
+            _event_ts, settled_rate = funding_events[event_index]
+            apply_funding_event(settled_rate, exit_f)
             event_index += 1
+            if ledger_invalid:
+                return None
 
         # The exact horizon open is the next observable price after the final
         # in-window close. A gap through the kill-switch is path-ambiguous and
@@ -1062,20 +1097,6 @@ def _grid_outcome(
         process_segment(exit_f, event_ts=ts_end)
         if ledger_invalid:
             return None
-
-    if not exact_schedule_known:
-        expected_events = _int_from_params(funding_model.get("expected_funding_events"), 0, minimum=0, maximum=1000)
-        interval_sec = strict_integer(funding_model.get("funding_interval_sec"))
-        if stopped and stop_ts is not None and interval_sec is not None and interval_sec > 0:
-            active_duration = max(0, int(stop_ts) - int(ts_start))
-            possible_events = max(1, int(math.ceil(float(active_duration) / float(interval_sec))))
-            expected_events = min(expected_events, possible_events)
-        if expected_events > 0 and max_adverse_position_value > 0.0:
-            if funding_rate is not None:
-                adverse_rate_per_event = abs(float(funding_rate))
-            else:
-                adverse_rate_per_event = _fallback_adverse_rate_per_event(funding_model)
-            funding_cost += max_adverse_position_value * adverse_rate_per_event * float(expected_events)
 
     liquidation_price = float(stop_price) if stopped and stop_price is not None else exit_f
     open_position_slots = current_position_slots()
@@ -1095,7 +1116,7 @@ def _grid_outcome(
     capital_reference = float(topology["committed_notional_per_qty"])
     if not math.isfinite(capital_reference) or capital_reference <= 0.0:
         return None
-    net_proxy = (gross_pnl - execution_cost - funding_cost) / capital_reference
+    net_proxy = (gross_pnl - execution_cost + funding_pnl) / capital_reference
 
     positive_pnl_epsilon = 1e-12
     success = int(

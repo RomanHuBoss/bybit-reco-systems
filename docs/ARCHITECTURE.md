@@ -1,3 +1,7 @@
+## v1.0.37 settled-funding data flow
+
+`BybitPublicClient.get_funding_rate_history` -> collector 35-day paginated backfill -> `funding_settlement(symbol, ts, funding_rate)` -> outcome inventory ledger. Forecast snapshots remain in `funding_rate` for recommendation-time risk; immutable settlements are a separate source of truth for historical labels.
+
 ## v1.0.36 cost-layer ownership
 
 - `app/recommender.py` публикует recurring grid fee, one-time market friction и funding как разные поля/слои.

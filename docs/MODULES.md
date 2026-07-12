@@ -1,3 +1,10 @@
+## v1.0.37 funding responsibilities
+
+- `app/bybit_client.py`: validates and parses settled funding-history rows.
+- `app/collector.py`: bounded 35-day backfill with hourly refresh throttling.
+- `app/db.py`: dual-backend persistence/query of immutable settlements.
+- `app/outcomes.py`: applies signed settled funding to inventory; never substitutes a ticker forecast for historical P&L.
+
 ## v1.0.36 grid-cost responsibilities
 
 - `recommender._estimate_cost_model`: формирует `grid_round_trip_fee_bps`, `one_time_market_friction_bps`, `market_round_trip_cost_bps`.

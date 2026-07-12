@@ -207,6 +207,17 @@ CREATE TABLE IF NOT EXISTS funding_rate (
 );
 CREATE INDEX IF NOT EXISTS idx_funding_ts ON funding_rate(ts DESC);
 
+-- Settled funding rates from Bybit /v5/market/funding/history.
+-- Unlike ticker fundingRate forecasts, these rows are immutable historical
+-- settlements and are the only funding source allowed in proxy outcome labels.
+CREATE TABLE IF NOT EXISTS funding_settlement (
+  symbol TEXT NOT NULL,
+  ts BIGINT NOT NULL,
+  funding_rate DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY (symbol, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_funding_settlement_ts ON funding_settlement(symbol, ts);
+
 CREATE TABLE IF NOT EXISTS open_interest (
   symbol TEXT NOT NULL,
   ts BIGINT NOT NULL,

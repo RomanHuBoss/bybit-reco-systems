@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v17"
+OUTCOME_LABEL_VERSION = "grid_label_v18"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -4618,7 +4618,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.36", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.37", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
