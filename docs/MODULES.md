@@ -1,3 +1,10 @@
+## v1.0.38 outcome diagnostic responsibilities
+
+- `app/outcomes.py`: returns optional structured failure diagnostics while preserving the existing `None` compatibility contract.
+- `compute_outcomes_once`: maps transient funding-history gaps to `OUTCOME_WAIT_FUNDING_SETTLEMENT`; permanent contract failures remain `OUTCOME_SKIP_INVALID_GRID_CONTRACT` with a concrete reason.
+- decision log cooldown prevents one recommendation from emitting the same unavailable-state row every minute.
+- `grid_label_v18` mathematics and database schema are unchanged.
+
 ## v1.0.37 funding responsibilities
 
 - `app/bybit_client.py`: validates and parses settled funding-history rows.

@@ -1,3 +1,9 @@
+## Outcome dependency diagnostics (v1.0.38)
+
+Исправлена MEDIUM-ошибка диагностики outcome worker. В v1.0.37 отсутствие ещё не загруженной settled funding row возвращало тот же `None`, что и действительно повреждённая grid-геометрия, поэтому журнал ошибочно показывал `OUTCOME_SKIP_INVALID_GRID_CONTRACT`. Теперь transient-зависимость записывается как `OUTCOME_WAIT_FUNDING_SETTLEMENT` с точным funding timestamp и текущим inventory; worker автоматически повторит расчёт после backfill. Настоящие конфликты funding/grid contract содержат машинно-читаемый `reason` и подробности. Повтор одинакового сообщения ограничен cooldown, чтобы decision log не заполнялся каждую минуту.
+
+FastAPI version: `1.0.38`. Outcome math не менялась, поэтому `OUTCOME_LABEL_VERSION` остаётся `grid_label_v18`: обновление с v1.0.37 не удаляет уже рассчитанные v18 outcomes или calibrators.
+
 ## Settled funding outcome integrity (v1.0.37)
 
 Исправлена HIGH-ошибка исторической статистики: `fundingRate` из ticker является изменяющимся прогнозом следующего funding settlement, но прежний outcome worker использовал его задним числом как фактическую ставку и учитывал только неблагоприятные списания. Это систематически искажало Total P&L, win rate и calibration: SHORT не получал положительный funding, LONG не получал отрицательный funding, а позднее изменившаяся ставка не отражалась в label.

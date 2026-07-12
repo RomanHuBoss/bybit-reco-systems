@@ -1,3 +1,7 @@
+## v1.0.38 unavailable-outcome state flow
+
+`recommendation + OHLCV + settled funding` -> outcome ledger. A missing settlement is a retryable dependency state, not a malformed recommendation. The worker writes a rate-limited `OUTCOME_WAIT_FUNDING_SETTLEMENT` event and leaves the recommendation unlabeled. Permanent persisted-contract failures use structured `OUTCOME_SKIP_INVALID_GRID_CONTRACT` reasons. No new database table or API contract is introduced.
+
 ## v1.0.37 settled-funding data flow
 
 `BybitPublicClient.get_funding_rate_history` -> collector 35-day paginated backfill -> `funding_settlement(symbol, ts, funding_rate)` -> outcome inventory ledger. Forecast snapshots remain in `funding_rate` for recommendation-time risk; immutable settlements are a separate source of truth for historical labels.

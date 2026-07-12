@@ -1,3 +1,9 @@
+## Outcome wait diagnostics - v1.0.38
+
+**Resolved MEDIUM:** v1.0.37 reported a missing historical funding settlement as `OUTCOME_SKIP_INVALID_GRID_CONTRACT`. This did not insert a bad label, but it made a transient collector dependency look like corrupt trading mathematics and repeated the same warning every outcome cycle. v1.0.38 emits `OUTCOME_WAIT_FUNDING_SETTLEMENT`, records the exact missing timestamp/inventory, retries automatically, and rate-limits repeated log entries.
+
+**Residual limitation:** a recommendation remains unlabeled until the public settled-funding row is available. That is fail-closed and intentional. Collector/network errors should be inspected through `COLLECT_ERROR field=funding_history`.
+
 ## Settled funding history - v1.0.37
 
 **Resolved HIGH:** historical outcomes previously reused the recommendation-time ticker funding forecast and discarded receipts. Since the rate can change until settlement, this could create both wrong funding amounts and systematic pessimistic bias. v1.0.37 stores actual public settlements and applies their signed cashflow to modeled inventory.

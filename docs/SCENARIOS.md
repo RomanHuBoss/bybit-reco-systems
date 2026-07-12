@@ -1,3 +1,12 @@
+## 0. Outcome dependency diagnostics - v1.0.38
+
+Expected behavior:
+- missing required funding settlement + non-zero inventory -> no label, `OUTCOME_WAIT_FUNDING_SETTLEMENT`, automatic retry;
+- identical retry inside one hour -> no duplicate wait row;
+- conflicting duplicated funding aliases -> no label, `OUTCOME_SKIP_INVALID_GRID_CONTRACT`, reason `invalid_funding_contract`;
+- invalid grid count/range/kill-switch -> no label with a specific reason;
+- upgrading v1.0.37 -> v1.0.38 keeps `grid_label_v18`, so existing v18 outcomes are not reset.
+
 ## 0. Settled funding outcome scenarios - v1.0.37
 
 - Positive settled rate + LONG inventory -> payment; positive rate + SHORT inventory -> receipt.

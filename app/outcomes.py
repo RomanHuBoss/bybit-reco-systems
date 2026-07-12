@@ -644,6 +644,47 @@ def _resolve_grid_range(params: dict, trade_plan: dict) -> tuple[float, float] |
             return None
     return float(lower), float(upper)
 
+
+
+def _record_outcome_failure(
+    diagnostics: dict[str, object] | None,
+    reason: str,
+    *,
+    transient: bool = False,
+    **details: object,
+) -> None:
+    """Store a machine-readable reason for an unavailable outcome.
+
+    ``None`` remains the public return contract for compatibility, but callers can
+    now distinguish a permanently invalid recommendation from a transient missing
+    dependency such as funding settlement history.
+    """
+    if diagnostics is None:
+        return
+    diagnostics.clear()
+    diagnostics.update({"reason": str(reason), "transient": bool(transient)})
+    diagnostics.update(details)
+
+
+def _log_outcome_decision_once(
+    conn,
+    action: str,
+    rec_id: str,
+    details: dict[str, object],
+    *,
+    cooldown_sec: int = 3600,
+) -> None:
+    """Avoid repeating the same unavailable-outcome diagnostic every cycle."""
+    cutoff = db.now_ts() - max(1, int(cooldown_sec))
+    row = conn.execute(
+        """SELECT 1 FROM decision_log
+           WHERE action=? AND rec_id=? AND ts>=?
+           ORDER BY ts DESC LIMIT 1""",
+        (action, rec_id, cutoff),
+    ).fetchone()
+    if row is None:
+        db.log_decision(conn, action, rec_id, None, details)
+
 def _grid_outcome(
     conn,
     venue: str,
@@ -654,6 +695,8 @@ def _grid_outcome(
     ts_end: int,
     direction: str,
     params: dict | None,
+    *,
+    diagnostics: dict[str, object] | None = None,
 ) -> tuple[int, float] | None:
     """Estimate arithmetic Futures Grid total P&L from a conservative order ledger.
 
@@ -674,6 +717,7 @@ def _grid_outcome(
     params = params if isinstance(params, dict) else {}
     direction_norm = normalize_execution_direction(direction)
     if direction_norm not in {"neutral", "long", "short"}:
+        _record_outcome_failure(diagnostics, "invalid_direction", direction=direction_norm)
         return None
 
     market_execution_cost_bps, _ = _extract_cost_components(params)
@@ -684,6 +728,11 @@ def _grid_outcome(
     grid_half_leg_fee_rate = max(0.0, float(grid_round_trip_fee_bps)) / 20_000.0
     funding_model = _extract_inventory_funding_model(params)
     if funding_model.get("valid") is not True:
+        _record_outcome_failure(
+            diagnostics,
+            "invalid_funding_contract",
+            issues=list(funding_model.get("issues") or []),
+        )
         return None
 
     # The recommendation-time ticker fundingRate is a forecast for the next
@@ -717,7 +766,14 @@ def _grid_outcome(
         if expected_event_count > 0 and not settled_by_ts:
             # Without a confirmed schedule or historical settlement rows, neither
             # event timing nor signed rate is known. A forecast-only charge is not
-            # a historical outcome.
+            # a historical outcome. This is transient while the collector backfills
+            # public settlement history and must not be reported as bad geometry.
+            _record_outcome_failure(
+                diagnostics,
+                "funding_settlement_history_unavailable",
+                transient=True,
+                expected_funding_events=int(expected_event_count),
+            )
             return None
         funding_events = sorted(settled_by_ts.items())
 
@@ -736,6 +792,11 @@ def _grid_outcome(
         ("params.trade_plan.economics.grid_count", plan_economics.get("grid_count")),
     ])
     if grid_count_resolution.get("ok") is not True:
+        _record_outcome_failure(
+            diagnostics,
+            "invalid_grid_count_contract",
+            issues=list(grid_count_resolution.get("issues") or []),
+        )
         return None
     grid_count = _int_from_params(
         grid_count_resolution.get("value"), 0, minimum=0, maximum=1000
@@ -749,22 +810,49 @@ def _grid_outcome(
     ks_upper = _finite_positive_or_none(kill_switch.get("upper")) if kill_switch else None
 
     rows = _iter_1m_candles(conn, venue, symbol, ts_start, ts_end)
+    if not rows or any(not _is_valid_outcome_candle(row) for row in rows):
+        _record_outcome_failure(diagnostics, "invalid_or_missing_ohlcv_window")
+        return None
     if (
-        not rows
-        or any(not _is_valid_outcome_candle(row) for row in rows)
-        or not math.isfinite(float(entry))
+        not math.isfinite(float(entry))
         or not math.isfinite(float(exitp))
         or float(entry) <= 0.0
         or float(exitp) <= 0.0
-        or lower is None
-        or upper is None
-        or float(upper) <= float(lower)
-        or grid_count <= 0
-        or not (float(lower) <= float(entry) <= float(upper))
-        or ks_lower is None
-        or ks_upper is None
-        or not (float(ks_lower) < float(lower) < float(upper) < float(ks_upper))
     ):
+        _record_outcome_failure(
+            diagnostics,
+            "invalid_entry_or_exit_price",
+            entry=entry,
+            exit=exitp,
+        )
+        return None
+    if lower is None or upper is None or float(upper) <= float(lower):
+        _record_outcome_failure(diagnostics, "invalid_grid_range_contract")
+        return None
+    if grid_count <= 0:
+        _record_outcome_failure(diagnostics, "invalid_grid_count", grid_count=grid_count)
+        return None
+    if not (float(lower) <= float(entry) <= float(upper)):
+        _record_outcome_failure(
+            diagnostics,
+            "entry_outside_grid_range",
+            lower=float(lower),
+            upper=float(upper),
+            entry=float(entry),
+        )
+        return None
+    if ks_lower is None or ks_upper is None:
+        _record_outcome_failure(diagnostics, "missing_kill_switch")
+        return None
+    if not (float(ks_lower) < float(lower) < float(upper) < float(ks_upper)):
+        _record_outcome_failure(
+            diagnostics,
+            "invalid_kill_switch_geometry",
+            kill_switch_lower=ks_lower,
+            grid_lower=lower,
+            grid_upper=upper,
+            kill_switch_upper=ks_upper,
+        )
         return None
 
     lower_f = float(lower)
@@ -781,6 +869,7 @@ def _grid_outcome(
         direction=direction_norm,
     )
     if topology is None:
+        _record_outcome_failure(diagnostics, "invalid_grid_topology")
         return None
     step_abs = float(topology["step_abs"])
     grid_prices = [float(value) for value in topology["grid_prices"]]
@@ -817,13 +906,20 @@ def _grid_outcome(
     def current_position_slots() -> int:
         return int(position_slots)
 
-    def apply_funding_event(settled_rate: float | None, price: float) -> None:
+    def apply_funding_event(settled_rate: float | None, price: float, event_ts: int | None = None) -> None:
         nonlocal funding_pnl, ledger_invalid
         slots = current_position_slots()
         if settled_rate is None:
             # Missing settled rate is harmless only when no position was held at
             # the funding timestamp. Otherwise the historical P&L is unknowable.
             if slots != 0:
+                _record_outcome_failure(
+                    diagnostics,
+                    "missing_funding_settlement",
+                    transient=True,
+                    missing_funding_ts=int(event_ts) if event_ts is not None else None,
+                    position_slots=int(slots),
+                )
                 ledger_invalid = True
             return
         funding_pnl += _signed_settled_funding_pnl(slots, price, float(settled_rate))
@@ -996,7 +1092,7 @@ def _grid_outcome(
         # held before the first trade of that minute.
         while event_index < len(funding_events) and funding_events[event_index][0] <= row_ts:
             _event_ts, settled_rate = funding_events[event_index]
-            apply_funding_event(settled_rate, float(row_open))
+            apply_funding_event(settled_rate, float(row_open), _event_ts)
             event_index += 1
             if ledger_invalid:
                 return None
@@ -1084,7 +1180,7 @@ def _grid_outcome(
     if not stopped:
         while event_index < len(funding_events):
             _event_ts, settled_rate = funding_events[event_index]
-            apply_funding_event(settled_rate, exit_f)
+            apply_funding_event(settled_rate, exit_f, _event_ts)
             event_index += 1
             if ledger_invalid:
                 return None
@@ -1238,15 +1334,50 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             if ep is None:
                 continue
             exitp = ep
-            grid_result = _grid_outcome(conn, venue, symbol, entry, exitp, entry_ts, ts_exit, direction, params)
+            diagnostics: dict[str, object] = {}
+            grid_result = _grid_outcome(
+                conn,
+                venue,
+                symbol,
+                entry,
+                exitp,
+                entry_ts,
+                ts_exit,
+                direction,
+                params,
+                diagnostics=diagnostics,
+            )
             if grid_result is None:
-                db.log_decision(conn, "OUTCOME_SKIP_INVALID_GRID_CONTRACT", rec_id, None, {
+                reason = str(diagnostics.get("reason") or "unknown_grid_outcome_failure")
+                transient = diagnostics.get("transient") is True
+                details: dict[str, object] = {
                     "venue": venue,
                     "symbol": symbol,
                     "entry_ts": entry_ts,
                     "entry_price": entry,
                     "label_available_ts": ts_exit,
+                    "reason": reason,
+                    "transient": transient,
+                }
+                details.update({
+                    key: value for key, value in diagnostics.items()
+                    if key not in {"reason", "transient"}
                 })
+                action = (
+                    "OUTCOME_WAIT_FUNDING_SETTLEMENT"
+                    if transient and reason in {
+                        "missing_funding_settlement",
+                        "funding_settlement_history_unavailable",
+                    }
+                    else "OUTCOME_SKIP_INVALID_GRID_CONTRACT"
+                )
+                _log_outcome_decision_once(
+                    conn,
+                    action,
+                    rec_id,
+                    details,
+                    cooldown_sec=3600 if action == "OUTCOME_WAIT_FUNDING_SETTLEMENT" else 21600,
+                )
                 continue
             success, ret_proxy = grid_result
 

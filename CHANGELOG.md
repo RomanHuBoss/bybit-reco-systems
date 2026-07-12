@@ -1,3 +1,14 @@
+## 2026-07-12 - v1.0.38 - Outcome dependency diagnostics
+
+- Distinguished transient missing funding settlements from permanently invalid grid contracts.
+- Added `OUTCOME_WAIT_FUNDING_SETTLEMENT` with `reason`, missing settlement timestamp and position slots.
+- Added structured reasons for invalid funding aliases, grid-count conflicts, range/kill-switch geometry and entry/range mismatch.
+- Added per-recommendation cooldown for unavailable-outcome diagnostics.
+- Kept `OUTCOME_LABEL_VERSION=grid_label_v18`; no outcome/calibrator reset is required for this patch.
+- Added `tests/test_iteration226_outcome_wait_diagnostics.py` (4 regression tests).
+- Post-check: 1005/1005 tests passed through four non-overlapping batches; PostgreSQL/dialect/write-retry subset 20/20 passed.
+- `ruff` unavailable; global `pip check` retains the pre-existing MoviePy/Pillow conflict.
+
 ## 2026-07-12 - v1.0.37 - Settled funding outcome integrity
 
 - Added public Bybit funding-history parsing and a paginated 35-day settlement backfill.
