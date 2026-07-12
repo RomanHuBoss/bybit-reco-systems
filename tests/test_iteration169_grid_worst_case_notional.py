@@ -144,8 +144,8 @@ def test_auto_snap_publishes_worst_case_grid_notional_and_margin(app_main) -> No
     operator_economics = snapped["params"]["operator_sheet"]["economics"]
 
     assert sizing["estimated_worst_case_order_notional_usdt"] == pytest.approx(150.0)
-    assert sizing["estimated_worst_case_total_order_notional_usdt"] == pytest.approx(1650.0)
-    assert sizing["estimated_worst_case_margin_required_usdt"] == pytest.approx(330.0)
-    assert economics["estimated_max_position_notional_usdt"] == pytest.approx(1650.0)
-    assert operator_economics["capital_required_usdt"] == pytest.approx(330.0)
-    assert operator_economics["estimated_worst_case_margin_required_usdt"] == pytest.approx(330.0)
+    assert sizing["estimated_worst_case_total_order_notional_usdt"] == pytest.approx(1350.0)
+    assert sizing["estimated_worst_case_margin_required_usdt"] == pytest.approx(270.0)
+    assert economics["estimated_max_position_notional_usdt"] == pytest.approx(1350.0)
+    assert operator_economics["capital_required_usdt"] == pytest.approx(270.0)
+    assert operator_economics["estimated_worst_case_margin_required_usdt"] == pytest.approx(270.0)

@@ -1,3 +1,10 @@
+## v1.0.32 responsibility update
+
+- `app/grid_math.py`: resolves active resting topology, one-way committed slots/notional and maximum directional position.
+- `app/recommender.py`: publishes active-order count separately from committed/max-position slots and sizes neutral margin from the larger directional stack.
+- `app/main.py`: preserves those fields through Bybit snapping and validates/uses them in preflight, runtime caps and daily-loss calculations.
+- `app/outcomes.py`: normalizes neutral total PnL by one-way committed investment through the canonical helper.
+
 # Модули и контракты
 
 ## v1.0.31 responsibility update

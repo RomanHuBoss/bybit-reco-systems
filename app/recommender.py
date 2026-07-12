@@ -2618,22 +2618,28 @@ def _params(
         # Generated geometry should always resolve. Keep a conservative fail-closed
         # estimate if defensive clamps ever produce an unexpected topology.
         active_grid_orders = max(1, int(grid_levels) + 1)
+        committed_grid_slots = active_grid_orders
+        max_position_slots = active_grid_orders
         committed_notional_per_qty = float(price) * float(active_grid_orders)
         commitment_model = "fallback_grid_count_plus_one"
     else:
         active_grid_orders = int(commitment["active_order_count"])
+        committed_grid_slots = int(commitment["committed_slot_count"])
+        max_position_slots = int(commitment["max_abs_position_slots"])
         committed_notional_per_qty = float(commitment["committed_notional_per_qty"])
-        commitment_model = (
-            "grid_count_orders_reference_on_level"
-            if commitment.get("exact_grid_line")
-            else "grid_count_plus_one_orders_reference_between_levels"
-        )
+        if direction == "neutral":
+            commitment_model = "one_way_max_directional_opening_stack"
+        else:
+            commitment_model = (
+                "grid_count_orders_reference_on_level"
+                if commitment.get("exact_grid_line")
+                else "grid_count_plus_one_orders_reference_between_levels"
+            )
     total_order_notional = float(order_qty) * committed_notional_per_qty
-    # Runtime risk caps must account for every committed order/initial-position
-    # slot at the highest executable price. Number of Grids is an interval count;
-    # between levels the initial topology has grid_count + 1 orders.
+    # Runtime risk caps use the largest position that can exist in one-way mode,
+    # not the total count of simultaneous opposite-side resting orders.
     worst_case_order_notional = float(order_qty) * max(float(price), float(lower), float(upper))
-    worst_case_total_notional = worst_case_order_notional * active_grid_orders
+    worst_case_total_notional = worst_case_order_notional * max_position_slots
     leverage_used = max(1, int(params.get("leverage") or 1))
     margin_required = float(margin_required_usdt(total_order_notional, leverage_used))
     worst_case_margin_required = float(margin_required_usdt(worst_case_total_notional, leverage_used))
@@ -2677,6 +2683,8 @@ def _params(
             "grid_type": "arithmetic",
             "grid_count": int(grid_levels),
             "estimated_active_orders": int(active_grid_orders),
+            "estimated_committed_slots": int(committed_grid_slots),
+            "estimated_max_position_slots": int(max_position_slots),
             "estimated_total_order_notional_usdt": float(total_order_notional),
             "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
             "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
@@ -2707,6 +2715,8 @@ def _params(
             "grid_type": "arithmetic",
             "grid_count": int(grid_levels),
             "estimated_active_orders": int(active_grid_orders),
+            "estimated_committed_slots": int(committed_grid_slots),
+            "estimated_max_position_slots": int(max_position_slots),
             "estimated_total_order_notional_usdt": float(total_order_notional),
             "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
             "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),
@@ -2730,6 +2740,8 @@ def _params(
         "grid_type": "arithmetic",
         "grid_count": int(grid_levels),
         "estimated_active_orders": int(active_grid_orders),
+        "estimated_committed_slots": int(committed_grid_slots),
+        "estimated_max_position_slots": int(max_position_slots),
         "estimated_total_order_notional_usdt": float(total_order_notional),
         "estimated_worst_case_order_notional_usdt": float(worst_case_order_notional),
         "estimated_worst_case_total_order_notional_usdt": float(worst_case_total_notional),

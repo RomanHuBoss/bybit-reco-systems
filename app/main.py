@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v12"
+OUTCOME_LABEL_VERSION = "grid_label_v13"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -2200,12 +2200,22 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                     if commitment is not None
                     else max(1, grid_count + 1)
                 )
+                committed_slots = (
+                    int(commitment["committed_slot_count"])
+                    if commitment is not None
+                    else active_orders
+                )
+                max_position_slots = (
+                    int(commitment["max_abs_position_slots"])
+                    if commitment is not None
+                    else committed_slots
+                )
                 total_notional = (
                     float(snapped_qty) * float(commitment["committed_notional_per_qty"])
                     if commitment is not None
                     else order_notional * active_orders
                 )
-                worst_total_notional = worst_order_notional * active_orders
+                worst_total_notional = worst_order_notional * max_position_slots
                 leverage_used = float(params.get("leverage") or 1.0) or 1.0
                 margin_required = total_notional / max(1.0, leverage_used)
                 worst_margin_required = worst_total_notional / max(1.0, leverage_used)
@@ -2214,7 +2224,13 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                         if key in mapping or key == "order_notional_usdt":
                             mapping[key] = float(order_notional)
                     mapping["estimated_active_orders"] = int(active_orders)
-                    mapping["grid_commitment_model"] = "arithmetic_levels_plus_directional_inventory"
+                    mapping["estimated_committed_slots"] = int(committed_slots)
+                    mapping["estimated_max_position_slots"] = int(max_position_slots)
+                    mapping["grid_commitment_model"] = (
+                        "one_way_max_directional_opening_stack"
+                        if normalize_execution_direction(out.get("direction") or params.get("direction")) == "neutral"
+                        else "arithmetic_levels_plus_directional_inventory"
+                    )
                     mapping["estimated_worst_case_order_notional_usdt"] = float(worst_order_notional)
                     mapping["estimated_worst_case_total_order_notional_usdt"] = float(worst_total_notional)
                     mapping["estimated_worst_case_margin_required_usdt"] = float(worst_margin_required)
@@ -2641,18 +2657,18 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
         reference_price=ctx.get("reference_price"),
         direction=str(rec.get("direction") or ""),
     )
-    committed_slots_for_worst = (
-        int(commitment_for_worst["active_order_count"])
+    max_position_slots_for_worst = (
+        int(commitment_for_worst["max_abs_position_slots"])
         if commitment_for_worst is not None
         else max(1, int(grid_count_for_worst) + 1)
     )
     derived_worst_notional = None
     notional_understatement_block: dict[str, Any] | None = None
     if order_qty_for_worst is not None and worst_price is not None and worst_price > 0:
-        derived_worst_notional = float(order_qty_for_worst) * float(worst_price) * committed_slots_for_worst
+        derived_worst_notional = float(order_qty_for_worst) * float(worst_price) * max_position_slots_for_worst
         if estimated_notional is None:
             estimated_notional = float(derived_worst_notional)
-            notional_key = "order_qty*max_grid_price*grid_count"
+            notional_key = "order_qty*max_grid_price*max_position_slots"
         elif derived_worst_notional > float(estimated_notional) * 1.005:
             notional_understatement_block = {
                 "code": "POSITION_NOTIONAL_UNDERSTATED_BY_GRID_PRICE",
@@ -2663,7 +2679,7 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
                 ),
             }
             estimated_notional = float(derived_worst_notional)
-            notional_key = "order_qty*max_grid_price*grid_count"
+            notional_key = "order_qty*max_grid_price*max_position_slots"
 
     if estimated_margin is None and estimated_notional is not None and leverage is not None and leverage > 0:
         estimated_margin = float(estimated_notional) / max(1.0, float(leverage))
@@ -2823,7 +2839,7 @@ def _execution_daily_loss_budget_guard(
     range_lower = _finite_float_or_none(ctx.get("range_lower"))
     range_upper = _finite_float_or_none(ctx.get("range_upper"))
     direction = normalize_execution_direction(rec.get("direction"))
-    active_orders = max(1, int(grid_count))
+    committed_slots = max(1, int(grid_count))
     if reference is not None and range_lower is not None and range_upper is not None and direction is not None:
         commitment = arithmetic_grid_commitment(
             lower=range_lower,
@@ -2833,12 +2849,12 @@ def _execution_daily_loss_budget_guard(
             direction=direction,
         )
         if commitment is not None:
-            active_orders = max(1, int(commitment["active_order_count"]))
+            committed_slots = max(1, int(commitment["max_abs_position_slots"]))
     if order_qty is not None and worst_price is not None and worst_price > 0.0:
-        derived_notional = float(order_qty) * float(worst_price) * float(active_orders)
+        derived_notional = float(order_qty) * float(worst_price) * float(committed_slots)
         if estimated_notional is None or derived_notional > float(estimated_notional):
             estimated_notional = derived_notional
-            notional_key = "qty*max_grid_price*active_orders"
+            notional_key = "qty*max_grid_price*committed_slots"
 
     kill_lower = _finite_float_or_none(ctx.get("kill_switch_lower"))
     kill_upper = _finite_float_or_none(ctx.get("kill_switch_upper"))
@@ -3944,6 +3960,39 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
                             "Number of Grids считает интервалы, а между уровнями существует grid_count+1 resting levels."
                         ),
                     })
+            raw_committed_slots = economics.get("estimated_committed_slots")
+            if raw_committed_slots is not None and not (isinstance(raw_committed_slots, str) and not raw_committed_slots.strip()):
+                est_committed_slots = strict_integer(raw_committed_slots)
+                if est_committed_slots is None:
+                    errors.append({
+                        "code": "COMMITTED_SLOTS_NOT_INTEGER",
+                        "msg": f"estimated_committed_slots={raw_committed_slots!r} не является точным целым числом; оценка one-way commitment неоднозначна.",
+                    })
+                elif grid_commitment is not None and est_committed_slots != int(grid_commitment["committed_slot_count"]):
+                    errors.append({
+                        "code": "COMMITTED_SLOTS_TOPOLOGY_MISMATCH",
+                        "msg": (
+                            f"estimated_committed_slots={est_committed_slots}, но one-way arithmetic topology требует "
+                            f"{int(grid_commitment['committed_slot_count'])}; active resting orders и одновременно "
+                            "резервируемые directional slots не являются одним показателем."
+                        ),
+                    })
+            raw_max_position_slots = economics.get("estimated_max_position_slots")
+            if raw_max_position_slots is not None and not (isinstance(raw_max_position_slots, str) and not raw_max_position_slots.strip()):
+                est_max_position_slots = strict_integer(raw_max_position_slots)
+                if est_max_position_slots is None:
+                    errors.append({
+                        "code": "MAX_POSITION_SLOTS_NOT_INTEGER",
+                        "msg": f"estimated_max_position_slots={raw_max_position_slots!r} не является точным целым числом.",
+                    })
+                elif grid_commitment is not None and est_max_position_slots != int(grid_commitment["max_abs_position_slots"]):
+                    errors.append({
+                        "code": "MAX_POSITION_SLOTS_TOPOLOGY_MISMATCH",
+                        "msg": (
+                            f"estimated_max_position_slots={est_max_position_slots}, но arithmetic topology допускает "
+                            f"максимум {int(grid_commitment['max_abs_position_slots'])} однонаправленных slot(ов)."
+                        ),
+                    })
             total_notional_est = _finite_float_or_none(economics.get("estimated_total_order_notional_usdt"))
             margin_est = _finite_float_or_none(economics.get("estimated_margin_required_usdt"))
             leverage_for_margin = leverage if leverage is not None and leverage > 0 else 1.0
@@ -4642,7 +4691,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.31", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.32", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

@@ -70,8 +70,9 @@ def test_repeated_grid_trades_are_not_capped_by_number_of_grids(tmp_path: Path) 
         )
 
         # Bybit arithmetic grid profit is interval * quantity per completed trade
-        # minus trading costs. On total grid capital: 3 * (1% - 0.10%) / 2.
-        assert ret_proxy == pytest.approx(0.0134925)
+        # minus trading costs. One-way neutral commitment is the more expensive
+        # opening stack: the sell order at 101 USDT, not both opposite orders.
+        assert ret_proxy == pytest.approx((3.0 * (1.0 - 0.0005 * (101.0 + 100.0))) / 101.0)
         assert success == 1
     finally:
         conn.close()
@@ -181,9 +182,10 @@ def test_first_candle_move_from_entry_participates_in_grid_cycle(tmp_path: Path)
         )
 
         # The grid starts at the entry/open, not at the first candle close. The
-        # path 100 -> 101 -> 100 completes one trade: (1% - 0.10%) / 2.
+        # path 100 -> 101 -> 100 completes one trade. One-way neutral
+        # commitment is the higher opening stack, here 101 USDT.
         assert success == 1
-        assert ret_proxy == pytest.approx(0.0044975)
+        assert ret_proxy == pytest.approx((1.0 - 0.0005 * (101.0 + 100.0)) / 101.0)
     finally:
         conn.close()
 

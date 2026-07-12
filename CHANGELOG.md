@@ -1,3 +1,13 @@
+## 2026-07-12 - v1.0.32 - neutral one-way commitment integrity
+
+- Fixed neutral arithmetic-grid commitment: opposite resting Buy/Sell stacks remain active, but one-way capital reservation uses the more expensive directional opening stack instead of summing mutually exclusive sides.
+- Separated `estimated_active_orders`, `estimated_committed_slots`, and `estimated_max_position_slots` across generated sizing/economics, auto-snap, strict preflight, runtime caps and daily-loss fallback.
+- Corrected neutral proxy-return denominator from both-side notional to one-way committed investment; LONG/SHORT commitment is unchanged.
+- Added fail-closed preflight checks for malformed or topology-inconsistent committed/max-position slot fields.
+- Bumped FastAPI to `1.0.32` and outcome target to `grid_label_v13`; no route, database-schema or environment-variable change.
+- Added `tests/test_iteration220_neutral_one_way_commitment.py`: 8 RED-to-GREEN regressions.
+- Baseline: 953/953 passed. Post-check: 961/961 passed; PostgreSQL dialect/locking 18/18; SQLite fresh/repeated bootstrap 16/16.
+
 ## 2026-07-12 - v1.0.31 - grid order quantity and gap-stop integrity
 
 - Fixed a CRITICAL directional-ledger defect: multiple equal-quantity lots resting at the same grid price are now aggregated instead of collapsed into one side-only order.

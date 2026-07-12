@@ -1,3 +1,7 @@
+## Neutral one-way commitment boundary (v1.0.32)
+
+`app/grid_math.py::arithmetic_grid_commitment` is the single topology/commitment source. It returns all resting orders separately from one-way committed slots and maximum directional exposure. For NEUTRAL, `committed_notional_per_qty` is the larger of the Buy-opening and Sell-opening price sums; for LONG/SHORT it remains initial inventory plus adverse-side openings. Recommender, snap, preflight, runtime risk and outcomes consume this contract and may not reconstruct commitment from `grid_count` or total active orders.
+
 # Архитектура Bybit Recommender
 
 ## Quantity-aware ledger and discontinuous-stop boundary (v1.0.31)

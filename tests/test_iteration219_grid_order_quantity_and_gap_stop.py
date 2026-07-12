@@ -215,10 +215,10 @@ def test_daily_loss_fallback_uses_off_grid_active_order_count() -> None:
     )
 
     assert result["estimated_position_notional_usdt"] == pytest.approx(303.0)
-    assert result["estimated_position_notional_source"] == "qty*max_grid_price*active_orders"
+    assert result["estimated_position_notional_source"] == "qty*max_grid_price*committed_slots"
 
 
 def test_outcome_contract_is_bumped_for_order_quantity_and_gap_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v12"' in source
-    assert 'version="1.0.31"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
+    assert 'version="1.0.32"' in source

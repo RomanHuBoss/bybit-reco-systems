@@ -107,9 +107,11 @@ def arithmetic_grid_commitment(
     topology has ``grid_count + 1`` orders.
 
     Directional close-only orders are backed by the initial position; opening
-    orders on the adverse side require additional commitment.  Neutral opening
-    orders on both sides require margin.  ``committed_notional_per_qty`` therefore
-    represents the initial investment/notional commitment for one unit of
+    orders on the adverse side require additional commitment. In one-way mode,
+    neutral opening orders may rest on both sides, while reserved order cost is
+    governed by the more expensive directional opening stack rather than their
+    sum. ``committed_notional_per_qty`` therefore represents the initial
+    investment/notional commitment for one unit of
     per-grid quantity without pretending that interval count always equals order
     count.
     """
@@ -157,22 +159,30 @@ def arithmetic_grid_commitment(
         pivot_index = None
 
     active_order_count = len(buy_indices) + len(sell_indices)
+    buy_opening_price_sum = sum((levels[index] for index in buy_indices), ZERO)
+    sell_opening_price_sum = sum((levels[index] for index in sell_indices), ZERO)
     if direction_norm == "long":
         committed_price_sum = (
             reference_d * Decimal(initial_long_slots)
-            + sum((levels[index] for index in buy_indices), ZERO)
+            + buy_opening_price_sum
         )
+        committed_slot_count = initial_long_slots + len(buy_indices)
         max_abs_position_slots = initial_long_slots + len(buy_indices)
     elif direction_norm == "short":
         committed_price_sum = (
             reference_d * Decimal(initial_short_slots)
-            + sum((levels[index] for index in sell_indices), ZERO)
+            + sell_opening_price_sum
         )
+        committed_slot_count = initial_short_slots + len(sell_indices)
         max_abs_position_slots = initial_short_slots + len(sell_indices)
     else:
-        committed_price_sum = sum(
-            (levels[index] for index in [*buy_indices, *sell_indices]), ZERO
-        )
+        # The project deliberately uses one-way position semantics. Bybit may keep
+        # opening orders on both sides active, but order cost is reserved against
+        # the more expensive direction rather than the sum of mutually exclusive
+        # long and short stacks. Summing both sides almost doubles neutral-grid
+        # investment, margin and the denominator of outcome returns.
+        committed_price_sum = max(buy_opening_price_sum, sell_opening_price_sum)
+        committed_slot_count = max(len(buy_indices), len(sell_indices))
         max_abs_position_slots = max(len(buy_indices), len(sell_indices))
 
     if active_order_count <= 0 or committed_price_sum <= ZERO:
@@ -190,8 +200,10 @@ def arithmetic_grid_commitment(
         "initial_short_slots": int(initial_short_slots),
         "initial_position_slots": int(initial_long_slots - initial_short_slots),
         "active_order_count": int(active_order_count),
-        "committed_slot_count": int(active_order_count),
+        "committed_slot_count": int(committed_slot_count),
         "max_abs_position_slots": int(max_abs_position_slots),
+        "buy_opening_notional_per_qty": as_float(buy_opening_price_sum),
+        "sell_opening_notional_per_qty": as_float(sell_opening_price_sum),
         "committed_notional_per_qty": as_float(committed_price_sum),
     }
 

@@ -49,8 +49,10 @@ def _rec(economics: dict | None = None, sizing: dict | None = None) -> dict:
         "funding_cost_bps": 0.0,
         "net_profit_bps": 15.0,
         "estimated_active_orders": 8,
-        "estimated_total_order_notional_usdt": 48.0,
-        "estimated_margin_required_usdt": 24.0,
+        "estimated_committed_slots": 4,
+        "estimated_max_position_slots": 4,
+        "estimated_total_order_notional_usdt": 24.3,
+        "estimated_margin_required_usdt": 12.15,
         "liquidation_buffer_pct": 35.0,
     }
     if economics:

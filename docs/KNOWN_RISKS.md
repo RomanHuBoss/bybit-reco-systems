@@ -1,3 +1,17 @@
+## 2026-07-12 neutral one-way commitment audit (v1.0.32)
+
+### CLOSED CRITICAL: neutral capital summed mutually exclusive sides
+The v1.0.31 topology counted every resting order correctly but also used the sum of both neutral opening stacks as committed capital. In one-way mode only the more expensive directional opening stack governs reserved order cost. The old denominator could nearly double neutral required margin and halve reported return. v1.0.32 uses the maximum side price sum and keeps active-order count separate.
+
+### CLOSED HIGH: risk and preflight reused total resting-order count
+Auto-snap, runtime caps and daily-loss fallback could multiply worst price by all opposite orders. v1.0.32 uses `max_abs_position_slots`, while strict preflight validates independent active, committed and maximum-position counts.
+
+### DATA ACTION: proxy outcomes/calibrators reset to `grid_label_v13`
+First v1.0.32 startup clears only incompatible proxy outcomes and related calibrators. Recommendations, bot instances, trades, exact execution evidence and risk settings remain.
+
+### RESIDUAL LIMITATION
+One-way commitment is a deterministic order-cost model, not private-account truth. Actual Bybit reservation may differ with existing positions, other orders, fee tier, leverage and exchange state; the external executor must re-check live available balance and order cost. Strategy edge remains unproven.
+
 ## 2026-07-12 order-quantity/gap-stop audit (v1.0.31)
 
 ### RESOLVED/CRITICAL: same-level directional lots were collapsed

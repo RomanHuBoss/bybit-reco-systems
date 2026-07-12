@@ -117,9 +117,9 @@ def test_positive_neutral_residual_total_pnl_is_a_win(tmp_path: Path) -> None:
         )
 
         # The sell at 101 leaves one short slot marked/closed at 100.5:
-        # +0.5 USDT on 200 USDT reference capital. It is positive total P&L
-        # even though a full adjacent pair has not yet completed.
-        assert ret_proxy == pytest.approx(0.5 / 200.0)
+        # +0.5 USDT on 101 USDT one-way neutral commitment. It is positive
+        # total P&L even though a full adjacent pair has not yet completed.
+        assert ret_proxy == pytest.approx(0.5 / 101.0)
         assert success == 1
     finally:
         conn.close()
@@ -248,5 +248,5 @@ def test_malformed_ohlcv_row_makes_horizon_incomplete(tmp_path: Path) -> None:
 
 def test_outcome_contract_is_bumped_for_label_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v12"' in source
-    assert 'version="1.0.31"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
+    assert 'version="1.0.32"' in source

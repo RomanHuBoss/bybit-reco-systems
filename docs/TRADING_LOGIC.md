@@ -1,16 +1,17 @@
+## Current neutral one-way commitment rules (grid_label_v13)
+
+- `grid_count` remains the number of arithmetic price intervals; `active_order_count` remains all resting Buy and Sell orders (`N` on a grid-line reference, `N+1` between levels).
+- In one-way position mode, opposite neutral opening stacks are mutually exclusive capital paths. Initial neutral commitment is `max(sum(buy opening prices), sum(sell opening prices)) × qty`, not their sum.
+- `committed_slot_count=max(number of Buy opening slots, number of Sell opening slots)`; `max_abs_position_slots` uses the same one-way maximum. These fields must not be replaced by total active-order count.
+- Recommender, Bybit snap, execution preflight, runtime notional/margin caps, daily-loss guard and outcome return denominator consume the same `arithmetic_grid_commitment` result.
+- LONG/SHORT commitment remains initial directional inventory plus adverse-side opening orders.
+- `grid_label_v13` is incompatible with prior proxy outcomes/calibrators and is reset by the version guard; exact execution evidence and audit lifecycle are preserved.
+
 # Торговая логика Bybit Linear USDT Futures grid
 
-## Current quantity-aware commitment and gap-stop rules (grid_label_v12)
+## Historical quantity-aware ledger rules (grid_label_v12, superseded)
 
-- `grid_count` is the number of arithmetic intervals; price levels are `N+1`.
-- If reference is exactly on a level, the pivot is not an active order and active orders are `N`; between levels, all `N+1` levels are active.
-- LONG/SHORT commitment equals initial directional inventory at reference plus adverse-side opening orders at their actual level prices. NEUTRAL commitment equals all active opening orders.
-- `estimated_total_order_notional_usdt`, margin, worst-case notional, strict preflight and outcome return denominator must use this exact commitment, not `reference × qty × grid_count`.
-- Resting orders are quantity-aware. Multiple same-side lots at one price are aggregated; an initial directional TP and an adjacent replacement TP must not collapse into one lot.
-- A candle with material high and low excursions is evaluated under both `O→H→L→C` and `O→L→H→C`. The label is available only when both paths produce equivalent cash, inventory, fees, resting order quantities, stop state and terminal PnL.
-- A close→open or final-horizon gap beyond the external kill-switch is unavailable. The proxy must not assume a fill at a price skipped by the market or invent stop-vs-grid execution chronology.
-- Daily-loss fallback derives worst-case notional from the canonical active-order topology, not unconditional `qty × max_price × grid_count`.
-- `grid_label_v12` is incompatible with prior proxy outcomes/calibrators and is reset by the version guard.
+`grid_label_v12` introduced quantity-aware same-level lots and gap-stop exclusions, but still summed both opposite neutral opening stacks as committed capital. That neutral commitment rule is superseded by the current `grid_label_v13` one-way maximum-side model above. Its valid retained rules are: `grid_count` denotes intervals; active levels are `N` or `N+1`; directional commitment includes initial inventory plus adverse-side openings; same-price lots retain quantities; path-dependent OHLC and gap-through stops remain unavailable.
 
 ## Bybit Linear USDT product boundary
 

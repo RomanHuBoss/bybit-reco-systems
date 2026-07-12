@@ -1,3 +1,7 @@
+## 0. Neutral one-way capital reservation (v1.0.32)
+
+For a neutral arithmetic grid with levels 99/100/101 and reference 100, two opposite orders are active, but one-way committed investment is the more expensive opening side: `max(99, 101)=101` per unit qty. At reference 100.5, Buy openings total `99+100=199`, the Sell opening totals `101`, so three orders remain active while committed slots are two and committed notional is 199. Preflight must accept this separation; summing both sides or requiring committed slots to equal active orders is a defect.
+
 # Ключевые сценарии
 
 ## 0. Same-level order quantity and gap-through protection (v1.0.31)

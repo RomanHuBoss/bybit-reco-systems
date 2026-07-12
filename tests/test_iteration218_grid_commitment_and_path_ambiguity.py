@@ -233,8 +233,8 @@ def test_stop_candle_with_opposite_grid_excursion_is_unlabelable(tmp_path: Path)
 
 def test_outcome_contract_is_bumped_for_commitment_and_path_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v12"' in source
-    assert 'version="1.0.31"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v13"' in source
+    assert 'version="1.0.32"' in source
 
 
 def test_auto_snap_preserves_off_grid_n_plus_one_commitment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
