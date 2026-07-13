@@ -1,3 +1,9 @@
+## Shadow outcome independence — v1.0.41
+
+`no_trade` может быть включён в исследовательский контур только с явным `outcome_policy.sample_role=shadow_no_trade`. Такая строка моделирует одну counterfactual grid-позицию на полном label horizon, поэтому повторный recommender cycle по тому же venue/symbol/bot/direction/model не является новым статистическим наблюдением.
+
+Пока предыдущий shadow root не созрел, новые audit rows связываются с ним через `publication_root_rec_id` и получают `is_outcome_label_root=false`. После horizon или сохранённого outcome следующий сигнал может открыть новый root. Calibration принимает только model version `bybit-taxonomy-v4-independent-shadow-roots`; keys v6/v5 предотвращают загрузку моделей, обученных на перекрывающихся v3 roots.
+
 ## Monetary-expectancy calibration semantics - v1.0.40
 
 Calibration estimates `P(success)` only after the same matured outcome cohort passes a monetary eligibility gate. Eligible rows must contain finite `score`, strict binary `success`, strict timestamps, a matured `label_available_ts`, and finite normalized `ret`.

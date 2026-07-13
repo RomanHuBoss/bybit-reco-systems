@@ -38,8 +38,8 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v3-mean-reversion"
-DIRECTION_CALIBRATION_KEY = "platt_direction_v4"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v4-independent-shadow-roots"
+DIRECTION_CALIBRATION_KEY = "platt_direction_v5"
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
 LLM_REVIEWER_DEFAULT_CANDLES_PER_TF = 32
@@ -3348,6 +3348,105 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
     return None
 
 
+def _is_shadow_no_trade_outcome_candidate(rec: Any) -> bool:
+    """Return True only for explicit counterfactual no-trade sampling rows.
+
+    These rows are research observations, not actionable publications, but their
+    label horizons still represent one pseudo-position.  Treating every recommender
+    cycle as an independent root creates dozens of overlapping labels from the same
+    market path and invalidates calibration sample counts.
+    """
+    if not isinstance(rec, dict) or str(rec.get("status") or "").strip().lower() != "no_trade":
+        return False
+    reasons = rec.get("reasons") or {}
+    if not isinstance(reasons, dict):
+        return False
+    policy = reasons.get("outcome_policy") or {}
+    return bool(
+        isinstance(policy, dict)
+        and policy.get("eligible") is True
+        and str(policy.get("sample_role") or "").strip().lower() == "shadow_no_trade"
+    )
+
+
+def _stored_row_is_shadow_no_trade_outcome_root(row: Any) -> bool:
+    status = row.get("status") if isinstance(row, dict) else row["status"]
+    if str(status or "").strip().lower() != "no_trade":
+        return False
+    reasons_json = row.get("reasons_json") if isinstance(row, dict) else row["reasons_json"]
+    reasons = db._json_loads_mapping_or_default(reasons_json, {})
+    policy = reasons.get("outcome_policy") if isinstance(reasons, dict) else {}
+    return bool(
+        isinstance(policy, dict)
+        and policy.get("eligible") is True
+        and str(policy.get("sample_role") or "").strip().lower() == "shadow_no_trade"
+    )
+
+
+def _find_open_shadow_outcome_root(
+    conn, rec: dict[str, Any], ts_now: int, fallback_horizon_sec: int
+) -> dict[str, Any] | None:
+    """Find the one still-open counterfactual root for this exact shadow cohort.
+
+    Recommendation TTL is intentionally irrelevant here: the research observation
+    remains open until its label horizon ends.  A new root is allowed after the
+    horizon or after the previous root already has an outcome.
+    """
+    cur = conn.execute(
+        """SELECT r.rec_id, r.ts, r.features_ref_ts, r.bot_type, r.status,
+                  r.params_json, r.reasons_json, r.model_version,
+                  r.publication_root_rec_id, r.is_outcome_label_root
+           FROM recommendations r
+           LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
+           WHERE r.venue=? AND r.symbol=? AND r.bot_type=? AND r.direction=?
+             AND r.model_version=?
+             AND COALESCE(r.is_outcome_label_root, 1) = 1
+             AND o.rec_id IS NULL
+             AND r.status='no_trade'
+             AND r.ts < ?
+           ORDER BY r.ts DESC LIMIT 16""",
+        (
+            str(rec.get("venue") or ""),
+            str(rec.get("symbol") or ""),
+            str(rec.get("bot_type") or ""),
+            str(rec.get("direction") or "neutral"),
+            str(rec.get("model_version") or ""),
+            int(ts_now),
+        ),
+    )
+    for row in cur.fetchall():
+        if not _stored_row_is_shadow_no_trade_outcome_root(row):
+            continue
+        params = db._json_loads_or_default(row["params_json"], {})
+        effective_horizon_sec, _ = _resolve_effective_horizon(
+            str(row["bot_type"] or rec.get("bot_type") or ""),
+            params if isinstance(params, dict) else {},
+            int(fallback_horizon_sec),
+        )
+        signal_ref_ts = max(
+            _safe_int_or_none(row["ts"]) or 0,
+            _safe_int_or_none(row["features_ref_ts"]) or 0,
+        )
+        tradeable_ts = _first_tradeable_1m_candle_ts(
+            conn,
+            str(rec.get("venue") or ""),
+            str(rec.get("symbol") or ""),
+            int(signal_ref_ts),
+        )
+        pseudo_entry_ts = int(tradeable_ts) if tradeable_ts is not None else int(signal_ref_ts) + 60
+        lock_until_ts = int(pseudo_entry_ts) + int(effective_horizon_sec)
+        if int(ts_now) >= lock_until_ts:
+            continue
+        root_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
+        return {
+            "rec_id": row["rec_id"],
+            "publication_root_rec_id": root_id,
+            "effective_horizon_sec": int(effective_horizon_sec),
+            "lock_until_ts": int(lock_until_ts),
+        }
+    return None
+
+
 def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fallback_horizon_sec: int) -> dict[str, Any] | None:
     """Находит незавершённую псевдо-сделку по той же execution-chain.
 
@@ -3447,6 +3546,35 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
         int(getattr(settings, "outcome_horizon_fallback_sec", min(BOT_HORIZONS.values())) or min(BOT_HORIZONS.values())),
     )
     for rec in recs:
+        if _is_shadow_no_trade_outcome_candidate(rec):
+            prev_shadow_root = _find_open_shadow_outcome_root(
+                conn, rec, ts_now, fallback_horizon_sec
+            )
+            if prev_shadow_root is not None:
+                reasons = rec.setdefault("reasons", {})
+                previous_root_rec_id = str(
+                    prev_shadow_root.get("publication_root_rec_id")
+                    or prev_shadow_root.get("rec_id")
+                    or ""
+                ).strip()
+                reasons["publication_dedupe"] = {
+                    "previous_rec_id": prev_shadow_root.get("rec_id"),
+                    "previous_root_rec_id": previous_root_rec_id,
+                    "decision": "reuse_shadow_root",
+                    "active_reuse": False,
+                    "shadow_reuse": True,
+                    "suppressed": False,
+                    "material_upgrade": False,
+                    "open_position_lock": True,
+                    "lock_reason": "existing_shadow_pseudo_position",
+                    "effective_horizon_sec": int(prev_shadow_root.get("effective_horizon_sec") or 0),
+                    "lock_until_ts": int(prev_shadow_root.get("lock_until_ts") or 0),
+                }
+                rec["status"] = "no_trade"
+                rec["publication_root_rec_id"] = previous_root_rec_id
+                rec["is_outcome_label_root"] = False
+            continue
+
         if not _is_llm_review_eligible_status(rec.get("status")):
             continue
 

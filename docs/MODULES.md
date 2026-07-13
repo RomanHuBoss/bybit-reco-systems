@@ -1,3 +1,9 @@
+## v1.0.41 module responsibility update
+
+- `app/recommender.py`: определяет explicit shadow-no-trade eligibility, ищет открытый shadow root на label horizon и назначает lineage без изменения operator status.
+- `app/calibration.py`: v6 keys отделяют новую независимую sample policy от ранее сохранённых calibrators.
+- `app/outcomes.py`: без изменений; как и раньше, размечает только `is_outcome_label_root=1`, теперь получая корректно дедуплицированный shadow stream.
+
 ## v1.0.40 monetary-expectancy responsibilities
 
 - `app/calibration.py`: validates finite proxy returns, computes weighted mean/expected shortfall, stores expectancy state, and prevents LogReg/Platt fitting on non-positive monetary cohorts.

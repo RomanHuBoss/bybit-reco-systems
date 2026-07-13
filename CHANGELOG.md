@@ -1,3 +1,11 @@
+## 2026-07-13 — 1.0.41 — independent shadow-outcome roots
+
+- Исправлена HIGH-ошибка model validation: повторные `shadow_no_trade` публикации внутри одного label horizon больше не создают независимые outcome roots.
+- Добавлена horizon-aware lineage для counterfactual no-trade rows: audit history сохраняется, но только первый root размечается outcome worker.
+- Model identity обновлена до `bybit-taxonomy-v4-independent-shadow-roots`; bot/global calibrator keys — v6, direction key — v5, чтобы исключить ранее перекрывающуюся выборку.
+- Новый regression suite `tests/test_iteration229_shadow_outcome_independence.py`: 6 tests; reproducer показывает 80 roots до fix и 1 root + 79 audit children после fix.
+- Post-check: 1022 tests passed; compileall и JavaScript syntax check passed. DB schema, migrations, API и env не менялись. Live PostgreSQL integration не выполнялся без явно disposable DSN.
+
 ## 2026-07-13 - v1.0.40 - Monetary-expectancy calibration gate
 
 - Confirmed a HIGH model/risk fail-open defect: LogReg/Platt optimized binary `success` while ignoring the magnitude stored in `reco_outcomes.ret`. An 80% hit-rate cohort with 160 x `+0.1%` and 40 x `-5%` had mean return `-0.92%`, yet v1.0.39 fitted an actionable probability model.

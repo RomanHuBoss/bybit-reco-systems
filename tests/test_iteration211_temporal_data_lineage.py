@@ -50,7 +50,7 @@ def _recommendation(rec_id: str, ts: int) -> dict:
         "blocks": [],
         "status": "recommended",
         "ttl_sec": 900,
-        "model_version": "bybit-taxonomy-v3-mean-reversion",
+        "model_version": "bybit-taxonomy-v4-independent-shadow-roots",
         "features_ref_ts": ts,
     }
 

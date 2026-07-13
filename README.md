@@ -1,3 +1,11 @@
+## Independent shadow-outcome roots (v1.0.41)
+
+Исправлена **HIGH model-validation ошибка псевдорепликации**. Явные `no_trade`-кандидаты используются как `shadow_no_trade` counterfactual outcomes, но до v1.0.41 каждый recommender cycle создавал новый `is_outcome_label_root=1` даже внутри уже открытого 12-часового horizon. Поэтому 80 минутных циклов могли дать 80 почти одинаковых перекрывающихся labels по одному ценовому пути и ошибочно выполнить `CALIB_MIN_SAMPLES=80`.
+
+Теперь для одного `(venue, symbol, bot_type, direction, model_version)` в пределах label horizon существует только один независимый shadow root. Последующие `no_trade` audit-строки сохраняются, но получают `is_outcome_label_root=false` и ссылку на исходный root. После завершения horizon или появления outcome разрешается новый root. Model identity обновлена до `bybit-taxonomy-v4-independent-shadow-roots`, confidence calibrators — до v6, direction calibrator — до v5; старые перекрывающиеся v3 rows не участвуют в новом fit.
+
+FastAPI version: `1.0.41`. Схема БД, API, env и `OUTCOME_LABEL_VERSION=grid_label_v18` не изменены. Калибровка начнёт накапливать новую независимую выборку и временно может оставаться unfitted/raw. Исправление устраняет ложное количество наблюдений, но не доказывает live profitability.
+
 ## Monetary-expectancy calibration gate (v1.0.40)
 
 Исправлена **HIGH model/risk fail-open ошибка**: confidence-calibration обучалась на бинарном `success`, хотя monetary proxy return уже сохранялся в `reco_outcomes.ret`, но не участвовал в eligibility gate. Поэтому cohort из множества малых выигрышей и меньшего числа крупных убытков мог получить высокую calibrated `P(success)` при отрицательном совокупном денежном ожидании.

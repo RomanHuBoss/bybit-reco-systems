@@ -1,3 +1,7 @@
+## v1.0.41: shadow publication lineage
+
+Publication-chain теперь имеет отдельный horizon-aware путь для counterfactual `shadow_no_trade`. Он не меняет operator status (`no_trade` остаётся `no_trade`) и не превращает shadow row в active recommendation. Путь отвечает только за statistical identity: один открытый pseudo-position соответствует одному outcome root, а повторные UI/audit publications становятся children. Это устраняет псевдорепликацию без удаления истории.
+
 ## v1.0.40 monetary-expectancy calibration flow
 
 `db.get_outcomes_with_recs()` supplies matured proxy rows including `ret`. `calibration.fit_logreg()` sanitizes timestamps, binary labels and returns, computes recency weights, weighted mean return and 20% lower-tail expected shortfall, then either fits the probability model or returns a persisted negative expectancy state.

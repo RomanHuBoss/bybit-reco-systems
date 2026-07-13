@@ -1,3 +1,7 @@
+## Статистика shadow/no-trade после v1.0.41
+
+Повторяющиеся `NO TRADE` строки в истории не означают множество независимых тестов стратегии. В пределах одного label horizon система сохраняет их для аудита, но outcome и calibration используют только первый shadow root. После обновления calibrator может временно показывать недостаточную выборку — это ожидаемое следствие удаления ложной псевдорепликации.
+
 ## v1.0.40 monetary-expectancy safety update
 
 A high win rate is not evidence of profit. If the matured bot-specific proxy cohort has non-positive recency-weighted mean return after the matured-return sample floor, the system must show `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE` and `NO_TRADE`. Do not bypass this because calibrated confidence, median outcome, or most individual labels look positive. The proxy gate is conservative; real fills and exact net PnL remain authoritative.

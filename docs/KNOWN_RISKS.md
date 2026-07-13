@@ -1,3 +1,9 @@
+## Closed in v1.0.41 — overlapping shadow outcome pseudo-samples
+
+До v1.0.41 `shadow_no_trade` rows не участвовали в publication dedupe. Recommender мог публиковать новый outcome root каждую минуту, хотя все roots использовали перекрывающийся 12-часовой market path. Это завышало effective sample size, ускоряло fit confidence-calibration и могло создавать статистически убедительный, но не независимый proxy edge.
+
+Текущий контракт разрешает один shadow outcome root на точный `(venue, symbol, bot_type, direction, model_version)` до конца horizon. Последующие rows остаются в audit history как non-root children. Старые rows исключены новой model/calibrator identity. Остаточный риск: даже неперекрывающиеся OHLCV proxy outcomes не заменяют реальные fills, queue priority и live PnL.
+
 ## Monetary expectancy and confidence calibration - v1.0.40
 
 ### Closed: binary hit rate could approve a losing monetary cohort

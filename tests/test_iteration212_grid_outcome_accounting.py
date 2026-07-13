@@ -213,7 +213,7 @@ def _recommendation(*, rec_id: str, status: str, shadow: bool) -> dict:
         "blocks": [],
         "status": status,
         "ttl_sec": 900,
-        "model_version": "bybit-taxonomy-v3-mean-reversion",
+        "model_version": "bybit-taxonomy-v4-independent-shadow-roots",
         "features_ref_ts": 1_702_300_000,
     }
 

@@ -95,7 +95,7 @@ def _no_trade_recommendation(*, rec_id: str, symbol: str, ts: int, shadow_eligib
         "blocks": [],
         "status": "no_trade",
         "ttl_sec": 900,
-        "model_version": "bybit-taxonomy-v3-mean-reversion",
+        "model_version": "bybit-taxonomy-v4-independent-shadow-roots",
         "features_ref_ts": ts,
     }
 

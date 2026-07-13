@@ -1,3 +1,11 @@
+## Scenario: repeated no-trade signal during an open shadow horizon (v1.0.41)
+
+1. Первый полный `no_trade` без hard blocks получает `sample_role=shadow_no_trade` и становится outcome root.
+2. Повторные циклы с тем же venue/symbol/bot/direction/model сохраняются как новые audit rows.
+3. Пока pseudo-entry + label horizon не завершены и outcome отсутствует, эти rows ссылаются на первый root и не размечаются отдельно.
+4. После завершённого horizon или сохранённого outcome следующая строка может стать новым независимым root.
+5. Смена direction или model version открывает отдельную статистическую chain.
+
 ## 0. Negative monetary expectancy despite high hit rate - v1.0.40
 
 1. A matured cohort contains 160 proxy wins of `+0.1%` and 40 proxy losses of `-5%`.

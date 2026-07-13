@@ -49,7 +49,7 @@ def _recommendation(rec_id: str, *, published_ts: int, features_ref_ts: int, par
         "blocks": [],
         "status": "recommended",
         "ttl_sec": 900,
-        "model_version": "bybit-taxonomy-v3-mean-reversion",
+        "model_version": "bybit-taxonomy-v4-independent-shadow-roots",
         "features_ref_ts": features_ref_ts,
     }
 
@@ -294,4 +294,4 @@ def test_malformed_explicit_range_alias_does_not_fall_through_to_another_geometr
 def test_outcome_contract_is_bumped_for_post_publication_entry_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.40"' in source
+    assert 'version="1.0.41"' in source

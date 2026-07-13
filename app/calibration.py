@@ -995,13 +995,13 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
-# v5: calibration additionally requires positive recency-weighted monetary
-#     proxy expectancy. New keys prevent loading v4 hit-rate-only models.
+# v6: calibration sample roots are horizon-independent for shadow no-trade
+#     observations. New keys prevent loading v5 models trained on overlapping roots.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v5",
+    "futures_grid": "logreg_futures_grid_v6",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v5"
+GLOBAL_LOGREG_KEY = "logreg_global_v6"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600
