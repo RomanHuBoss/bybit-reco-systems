@@ -1,3 +1,11 @@
+## Monetary-expectancy calibration gate (v1.0.40)
+
+Исправлена **HIGH model/risk fail-open ошибка**: confidence-calibration обучалась на бинарном `success`, хотя monetary proxy return уже сохранялся в `reco_outcomes.ret`, но не участвовал в eligibility gate. Поэтому cohort из множества малых выигрышей и меньшего числа крупных убытков мог получить высокую calibrated `P(success)` при отрицательном совокупном денежном ожидании.
+
+Теперь bot-specific calibration v5 использует только matured outcomes с finite `ret`, рассчитывает recency-weighted mean return и lower-tail expected shortfall. При достаточной выборке и `weighted_mean_return <= 0` модель не обучается, состояние `expectancy_status=negative` сохраняется, а новые рекомендации этого `bot_type` получают явный `no_trade` с кодом `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE`. Бинарный win rate больше не может сделать отрицательный monetary cohort actionable.
+
+FastAPI version: `1.0.40`. Ключи calibrator обновлены с v4 до v5; схема БД, API, env и `OUTCOME_LABEL_VERSION=grid_label_v18` не менялись. Это защитный proxy gate, а не доказательство live profitability: OHLCV outcome не воспроизводит queue priority, exact fills, partial fills и account-level execution truth.
+
 ## Tail-loss exact-evidence stop gate (v1.0.39)
 
 Исправлена **HIGH/P0 fail-open ошибка** операционного stop gate. До v1.0.39 отрицательный cumulative exact net PnL блокировал новый `executed` только если одновременно были отрицательны median PnL и доля прибыльных ботов была ниже 50%. Для arithmetic grid это пропускало характерный tail-loss профиль: много небольших прибыльных циклов и один крупный выход из диапазона могли оставить median и win rate положительными, хотя независимый cohort уже был убыточен в сумме.

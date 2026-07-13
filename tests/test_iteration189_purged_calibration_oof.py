@@ -50,6 +50,7 @@ def test_fit_logreg_passes_exact_label_availability_into_walk_forward_oof(monkey
         {
             "score": -0.8 + i * 0.2,
             "success": i % 2,
+            "ret": 0.02 if i % 2 else -0.01,
             "ts": 1_000 + i * 60,
             "horizon_sec": 180,
             "label_available_ts": 1_000 + i * 60 + 240,

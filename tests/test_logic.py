@@ -2782,6 +2782,7 @@ def test_fit_logreg_tolerates_malformed_feature_snapshot_values():
         rows.append({
             "score": score,
             "success": success,
+            "ret": 0.02 if success else -0.01,
             "ts": now - idx * 60,
             "label_available_ts": now - idx * 60,
             "reasons": {"feature_snapshot": snap},

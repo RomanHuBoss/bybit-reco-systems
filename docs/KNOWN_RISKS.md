@@ -1,3 +1,15 @@
+## Monetary expectancy and confidence calibration - v1.0.40
+
+### Closed: binary hit rate could approve a losing monetary cohort
+
+Before v1.0.40 the calibrator used `success` as the target and ignored `reco_outcomes.ret`. A strategy with frequent tiny wins and infrequent large losses could therefore receive high calibrated confidence despite negative mean return. This was a confirmed model/risk fail-open defect.
+
+The v5 calibrator now requires finite matured returns and records recency-weighted mean return plus lower-tail expected shortfall. A sufficient cohort with non-positive weighted mean is persisted as `expectancy_status=negative`, remains unfitted, and forces `no_trade` for that bot type.
+
+### Residual limitation
+
+`ret` is still an OHLCV/grid-ledger proxy, not exchange execution truth. The gate is deliberately conservative but cannot prove positive live alpha, fill quality, queue position, partial fills, account-level liquidation behavior, or future regime stability. Exact execution evidence and the v1.0.39 live-validation stop remain the authoritative operational layer once real stopped-bot evidence exists.
+
 ## Tail-loss exact-evidence stop gate - v1.0.39
 
 **Resolved HIGH/P0:** v1.0.38 required negative total PnL, negative median PnL **and** positive-bot rate below 50% before the sample-based `LIVE_VALIDATION_*_NEGATIVE_EXPECTANCY` block fired. A grid cohort with seven `+1 USDT` bots and one `-100 USDT` range-break bot therefore remained executable: total `-93`, median `+1`, win rate `87.5%`. This is a fail-open mismatch with the principal tail-risk shape of grid trading.

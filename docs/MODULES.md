@@ -1,3 +1,11 @@
+## v1.0.40 monetary-expectancy responsibilities
+
+- `app/calibration.py`: validates finite proxy returns, computes weighted mean/expected shortfall, stores expectancy state, and prevents LogReg/Platt fitting on non-positive monetary cohorts.
+- `app/recommender.py`: persists/loads negative expectancy cache states, emits `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE`, and exposes expectancy diagnostics in `reasons.confidence_model`.
+- `app/outcomes.py`: remains the producer of normalized net proxy `ret` and binary `success`; its OHLCV limitations remain explicit.
+- `app/db.py`: unchanged schema; existing `app_config.value_json` stores v5 calibrator metadata.
+- `tests/test_iteration228_monetary_expectancy_calibration.py`: independent many-small-wins/few-large-losses oracle, persistence, cache and strict numeric regressions.
+
 ## v1.0.39 tail-loss gate responsibilities
 
 - `app/main.py::_live_validation_scope_summary`: derives independent-bot cumulative, mean, median, win-rate and consecutive-loss diagnostics from exact evidence.

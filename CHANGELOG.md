@@ -1,3 +1,13 @@
+## 2026-07-13 - v1.0.40 - Monetary-expectancy calibration gate
+
+- Confirmed a HIGH model/risk fail-open defect: LogReg/Platt optimized binary `success` while ignoring the magnitude stored in `reco_outcomes.ret`. An 80% hit-rate cohort with 160 x `+0.1%` and 40 x `-5%` had mean return `-0.92%`, yet v1.0.39 fitted an actionable probability model.
+- Calibration now requires finite matured proxy returns, computes recency-weighted mean return plus 20% lower-tail expected shortfall, and refuses to fit when monetary expectancy is non-positive after the matured-return sample floor; class balance is checked separately for probability fitting.
+- A persisted negative expectancy state is retained even though `fitted=false`; fresh cache loading cannot silently discard it.
+- The recommender converts confirmed negative bot-specific proxy expectancy into `no_trade` code `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE`; deterministic hard blocks still take precedence.
+- Bumped LogReg cache keys from v4 to v5 to prevent reuse of hit-rate-only coefficients. No DB schema, API, env, or outcome-label migration is required.
+- Added `tests/test_iteration228_monetary_expectancy_calibration.py` and updated calibration fixtures to include explicit monetary returns.
+- Post-check: `1016/1016` tests passed; compileall and Node syntax passed. Ruff was unavailable in the installed environment; `pip check` retained the unrelated MoviePy/Pillow environment conflict.
+
 ## 2026-07-12 - v1.0.39 - Tail-loss exact-evidence stop gate
 
 - Fixed a HIGH/P0 fail-open defect in the exact-evidence execution stop gate.

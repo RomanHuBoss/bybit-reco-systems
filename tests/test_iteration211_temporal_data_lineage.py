@@ -181,6 +181,7 @@ def test_calibration_excludes_labels_not_demonstrably_available(monkeypatch: pyt
         rows.append({
             "score": 0.2 + (idx % 10) * 0.05,
             "success": idx % 2,
+            "ret": 0.02 if idx % 2 else -0.01,
             "ts": as_of - 20_000 + idx * 60,
             # Half have no maturity proof; half claim maturity in the future.
             "label_available_ts": None if idx % 2 == 0 else as_of + 60 + idx,

@@ -330,13 +330,23 @@ def _extract_factor_value(reasons: dict, feature: str) -> float | None:
 
 @dataclass
 class LogRegScaler:
-    """Deterministic in-repo logistic regression wrapper with optional Platt on top."""
+    """Deterministic in-repo logistic regression wrapper with optional Platt on top.
+
+    ``P(success)`` is not sufficient evidence for a trading recommendation: a
+    cohort can contain many tiny wins and a few much larger losses.  The
+    expectancy fields retain the monetary proxy diagnostics used by the fit gate
+    so persistence and the recommendation layer cannot silently forget them.
+    """
     coef: list[float] = field(default_factory=list)
     intercept: float = 0.0
     platt: PlattScaler = field(default_factory=PlattScaler)
     fitted: bool = False
     saved_ts: int = 0
     n_samples: int = 0
+    return_samples: int = 0
+    expectancy_status: str = "unknown"
+    weighted_mean_return: float | None = None
+    weighted_expected_shortfall: float | None = None
 
     def predict(self, features: list[float]) -> float:
         """Return calibrated P(success) given a feature vector."""
@@ -384,6 +394,55 @@ def _sigmoid(z: float) -> float:
         return 1.0 / (1.0 + e)
     e = math.exp(z)
     return e / (1.0 + e)
+
+
+def _weighted_return_diagnostics(
+    returns: list[float],
+    weights: list[float],
+    *,
+    tail_fraction: float = 0.20,
+) -> tuple[float | None, float | None]:
+    """Return recency-weighted mean and lower-tail expected shortfall.
+
+    The tail statistic consumes the worst ``tail_fraction`` of total observation
+    weight, including a fractional boundary observation.  It is descriptive
+    proxy evidence, not a claim about exchange fill truth or future alpha.
+    """
+    cleaned: list[tuple[float, float]] = []
+    for raw_ret, raw_weight in zip(returns, weights):
+        ret = _finite_float(raw_ret)
+        weight = _finite_float(raw_weight)
+        if ret is None or weight is None or weight <= 0.0:
+            continue
+        cleaned.append((ret, weight))
+    if not cleaned:
+        return None, None
+
+    total_weight = sum(weight for _ret, weight in cleaned)
+    if not math.isfinite(total_weight) or total_weight <= 0.0:
+        return None, None
+    weighted_mean = sum(ret * weight for ret, weight in cleaned) / total_weight
+
+    fraction = _finite_float(tail_fraction)
+    if fraction is None or fraction <= 0.0 or fraction > 1.0:
+        fraction = 0.20
+    target_weight = total_weight * fraction
+    consumed = 0.0
+    tail_sum = 0.0
+    for ret, weight in sorted(cleaned, key=lambda item: item[0]):
+        take = min(weight, target_weight - consumed)
+        if take <= 0.0:
+            break
+        tail_sum += ret * take
+        consumed += take
+        if consumed >= target_weight - 1e-12:
+            break
+    expected_shortfall = tail_sum / consumed if consumed > 0.0 else None
+    if not math.isfinite(weighted_mean):
+        weighted_mean = None
+    if expected_shortfall is not None and not math.isfinite(expected_shortfall):
+        expected_shortfall = None
+    return weighted_mean, expected_shortfall
 
 
 def _weighted_mean_std(X: list[list[float]], ws: list[float]) -> tuple[list[float], list[float]]:
@@ -599,19 +658,22 @@ def fit_logreg(
     - If n < min_samples or degenerate WR: unfitted.
 
     The historical joins used for calibration should be robust to dirty rows in SQLite.
-    A single malformed `score`, `success` or timestamp must not crash the whole fit and
-    silently disable recalibration for every symbol/bot in the current cycle.
+    A single malformed `score`, `success`, `ret` or timestamp must not crash the whole
+    fit.  Crucially, binary hit-rate calibration is allowed only when the same matured
+    cohort has positive recency-weighted monetary proxy expectancy.
     """
     sanitized_rows: list[dict[str, Any]] = []
     xs_score: list[float] = []
     ys: list[int] = []
     tss: list[int] = []
+    returns: list[float] = []
     fit_ts = int(time.time())
     for row in rows:
         score = _safe_float(row.get("score"), None)
         success_raw = row.get("success")
+        ret = _finite_float(row.get("ret"))
         ts = strict_integer(row.get("ts"))
-        if score is None:
+        if score is None or ret is None:
             continue
         success = strict_integer(success_raw)
         if ts is None or ts <= 0 or success is None:
@@ -632,25 +694,77 @@ def fit_logreg(
             **row,
             "ts": ts,
             "success": success,
+            "ret": ret,
             "label_available_ts": available_ts,
         })
         xs_score.append(float(score))
         ys.append(success)
         tss.append(ts)
+        returns.append(ret)
 
     n = len(sanitized_rows)
     balance = label_balance_stats(ys)
 
-    if int(balance["effective_samples"]) < int(min_samples):
-        return LogRegScaler(fitted=False)
-
-    # Guard: degenerate class balance. A 90%+ hit-rate on proxy labels is not a
-    # trustworthy basis for probability calibration; keep confidence heuristic.
-    win_rate = float(balance["win_rate"] or 0.0)
-    if win_rate < 0.15 or win_rate > 0.85:
-        return LogRegScaler(fitted=False)
+    # Monetary expectancy uses the raw matured-return sample floor.  Class
+    # balance is a probability-calibration concern, not permission to ignore a
+    # rare but economically dominant loss.
+    if n < int(min_samples):
+        return LogRegScaler(
+            fitted=False,
+            saved_ts=fit_ts,
+            n_samples=n,
+            return_samples=n,
+            expectancy_status="insufficient",
+        )
 
     ws = _recency_weights(tss, half_life_days=half_life_days)
+    weighted_mean_return, weighted_expected_shortfall = _weighted_return_diagnostics(returns, ws)
+    if weighted_mean_return is None:
+        return LogRegScaler(
+            fitted=False,
+            saved_ts=fit_ts,
+            n_samples=n,
+            return_samples=n,
+            expectancy_status="insufficient",
+        )
+    if weighted_mean_return <= 0.0:
+        return LogRegScaler(
+            fitted=False,
+            saved_ts=fit_ts,
+            n_samples=n,
+            return_samples=n,
+            expectancy_status="negative",
+            weighted_mean_return=weighted_mean_return,
+            weighted_expected_shortfall=weighted_expected_shortfall,
+        )
+
+    # Probability calibration still requires the balanced effective sample;
+    # monetary evidence above was intentionally evaluated first.
+    if int(balance["effective_samples"]) < int(min_samples):
+        return LogRegScaler(
+            fitted=False,
+            saved_ts=fit_ts,
+            n_samples=n,
+            return_samples=n,
+            expectancy_status="positive",
+            weighted_mean_return=weighted_mean_return,
+            weighted_expected_shortfall=weighted_expected_shortfall,
+        )
+
+    # Guard: degenerate class balance. A 90%+ hit-rate on proxy labels is not a
+    # trustworthy basis for probability calibration; keep confidence heuristic,
+    # while retaining the positive monetary-expectancy diagnostic.
+    win_rate = float(balance["win_rate"] or 0.0)
+    if win_rate < 0.15 or win_rate > 0.85:
+        return LogRegScaler(
+            fitted=False,
+            saved_ts=fit_ts,
+            n_samples=n,
+            return_samples=n,
+            expectancy_status="positive",
+            weighted_mean_return=weighted_mean_return,
+            weighted_expected_shortfall=weighted_expected_shortfall,
+        )
 
     # Platt on score (fallback/baseline)
     platt = fit_platt(xs_score, ys, min_samples=min_samples, ws=ws)
@@ -658,7 +772,10 @@ def fit_logreg(
     if n < logreg_min_samples:
         return LogRegScaler(
             coef=[], intercept=0.0, platt=platt,
-            fitted=True, saved_ts=int(time.time()), n_samples=n,
+            fitted=True, saved_ts=fit_ts, n_samples=n,
+            return_samples=n, expectancy_status="positive",
+            weighted_mean_return=weighted_mean_return,
+            weighted_expected_shortfall=weighted_expected_shortfall,
         )
 
     # Build feature matrix
@@ -681,7 +798,10 @@ def fit_logreg(
     if len(X) < logreg_min_samples:
         return LogRegScaler(
             coef=[], intercept=0.0, platt=platt,
-            fitted=True, saved_ts=int(time.time()), n_samples=n,
+            fitted=True, saved_ts=fit_ts, n_samples=n,
+            return_samples=n, expectancy_status="positive",
+            weighted_mean_return=weighted_mean_return,
+            weighted_expected_shortfall=weighted_expected_shortfall,
         )
 
     try:
@@ -713,13 +833,19 @@ def fit_logreg(
 
         return LogRegScaler(
             coef=coef_raw, intercept=intercept_raw, platt=platt_top,
-            fitted=True, saved_ts=int(time.time()), n_samples=len(X),
+            fitted=True, saved_ts=fit_ts, n_samples=len(X),
+            return_samples=n, expectancy_status="positive",
+            weighted_mean_return=weighted_mean_return,
+            weighted_expected_shortfall=weighted_expected_shortfall,
         )
 
     except Exception:
         return LogRegScaler(
             coef=[], intercept=0.0, platt=platt,
-            fitted=True, saved_ts=int(time.time()), n_samples=n,
+            fitted=True, saved_ts=fit_ts, n_samples=n,
+            return_samples=n, expectancy_status="positive",
+            weighted_mean_return=weighted_mean_return,
+            weighted_expected_shortfall=weighted_expected_shortfall,
         )
 
 
@@ -733,6 +859,12 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
         "fitted":    model.fitted,
         "n_samples": model.n_samples,
         "ts":        model.saved_ts or int(time.time()),
+        "expectancy": {
+            "status": model.expectancy_status,
+            "return_samples": model.return_samples,
+            "weighted_mean_return": model.weighted_mean_return,
+            "weighted_expected_shortfall": model.weighted_expected_shortfall,
+        },
         "platt": {
             "a":      model.platt.a,
             "b":      model.platt.b,
@@ -773,6 +905,26 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         if intercept is None:
             return None
 
+        expectancy_obj = obj.get("expectancy") or {}
+        if not isinstance(expectancy_obj, dict):
+            return None
+        expectancy_status = str(expectancy_obj.get("status") or "unknown").strip().lower()
+        if expectancy_status not in {"unknown", "insufficient", "negative", "positive"}:
+            return None
+        return_samples = max(0, _finite_int(expectancy_obj.get("return_samples", 0), 0))
+        mean_raw = expectancy_obj.get("weighted_mean_return")
+        es_raw = expectancy_obj.get("weighted_expected_shortfall")
+        weighted_mean_return = None if mean_raw is None else _finite_float(mean_raw)
+        weighted_expected_shortfall = None if es_raw is None else _finite_float(es_raw)
+        if mean_raw is not None and weighted_mean_return is None:
+            return None
+        if es_raw is not None and weighted_expected_shortfall is None:
+            return None
+        if expectancy_status in {"negative", "positive"} and (
+            return_samples <= 0 or weighted_mean_return is None
+        ):
+            return None
+
         platt_obj = obj.get("platt") or {}
         if not isinstance(platt_obj, dict):
             return None
@@ -794,6 +946,10 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             fitted=fitted,
             saved_ts=_finite_int(obj.get("ts", 0), 0),
             n_samples=max(0, _finite_int(obj.get("n_samples", 0), 0)),
+            return_samples=return_samples,
+            expectancy_status=expectancy_status,
+            weighted_mean_return=weighted_mean_return,
+            weighted_expected_shortfall=weighted_expected_shortfall,
         )
     except Exception:
         return None
@@ -839,14 +995,13 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
-# v4: range_score semantics now require independent mean-reversion evidence.
-#     New keys deliberately prevent loading coefficients fitted on the former
-#     tautology ``range_score = 1 - trend_strength``.
+# v5: calibration additionally requires positive recency-weighted monetary
+#     proxy expectancy. New keys prevent loading v4 hit-rate-only models.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v4",
+    "futures_grid": "logreg_futures_grid_v5",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v4"
+GLOBAL_LOGREG_KEY = "logreg_global_v5"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

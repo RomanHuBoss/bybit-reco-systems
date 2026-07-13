@@ -109,8 +109,8 @@ def test_new_model_identity_and_calibrators_do_not_reuse_legacy_range_semantics(
     import app.recommender as recommender
 
     assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v3-mean-reversion"
-    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v4")
-    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v4")
+    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v5")
+    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v5")
     assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v4"
 
 

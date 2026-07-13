@@ -1,3 +1,11 @@
+## v1.0.40 monetary-expectancy calibration flow
+
+`db.get_outcomes_with_recs()` supplies matured proxy rows including `ret`. `calibration.fit_logreg()` sanitizes timestamps, binary labels and returns, computes recency weights, weighted mean return and 20% lower-tail expected shortfall, then either fits the probability model or returns a persisted negative expectancy state.
+
+`_load_or_fit_bot_logregs()` treats both a fitted positive model and an unfitted negative expectancy state as persistable cache states. In the recommendation loop, `_calibration_expectancy_no_trade_reason()` converts the latter into an explicit strategy `no_trade` before publication. Confidence falls back to capped raw heuristic and cannot use the rejected model. Hard feasibility/risk blocks retain precedence over `no_trade`.
+
+The change is additive JSON inside `app_config`; SQLite/PostgreSQL schemas and public API fields are unchanged. Cache keys move to v5 so v4 coefficients cannot cross the new eligibility boundary.
+
 ## v1.0.39 exact-evidence tail-loss control flow
 
 `_execution_preflight()` calls `_compute_live_validation_strategy_health()` before bot audit materialization. The latter reads immutable stopped-bot execution evidence, filters by venue/bot/model version, deduplicates publication roots, builds direction/symbol/portfolio summaries, and applies the sample floors. In v1.0.39 a negative cumulative exact net PnL is the sample-based stop predicate; median and win rate are emitted only as distribution diagnostics. Any resulting `LIVE_VALIDATION_*` block prevents `executed` and bot-instance creation.

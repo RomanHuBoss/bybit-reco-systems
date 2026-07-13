@@ -93,14 +93,14 @@ def test_fit_logreg_skips_malformed_rows_instead_of_crashing() -> None:
         "top_positive_factors": [{"feature": "atr_pct", "value": 0.012}],
     }
     good_rows = [
-        {"score": 0.85, "success": 1, "ts": 1_700_000_000, "label_available_ts": 1_700_000_001, "reasons": base_reasons},
-        {"score": 0.65, "success": 1, "ts": 1_700_000_100, "label_available_ts": 1_700_000_101, "reasons": base_reasons},
-        {"score": -0.55, "success": 0, "ts": 1_700_000_200, "label_available_ts": 1_700_000_201, "reasons": base_reasons},
-        {"score": -0.75, "success": 0, "ts": 1_700_000_300, "label_available_ts": 1_700_000_301, "reasons": base_reasons},
+        {"score": 0.85, "success": 1, "ret": 0.02, "ts": 1_700_000_000, "label_available_ts": 1_700_000_001, "reasons": base_reasons},
+        {"score": 0.65, "success": 1, "ret": 0.02, "ts": 1_700_000_100, "label_available_ts": 1_700_000_101, "reasons": base_reasons},
+        {"score": -0.55, "success": 0, "ret": -0.01, "ts": 1_700_000_200, "label_available_ts": 1_700_000_201, "reasons": base_reasons},
+        {"score": -0.75, "success": 0, "ret": -0.01, "ts": 1_700_000_300, "label_available_ts": 1_700_000_301, "reasons": base_reasons},
     ]
     dirty_rows = [
-        {"score": "broken", "success": 1, "ts": 1_700_000_400, "reasons": base_reasons},
-        {"score": 0.1, "success": "NaN", "ts": "oops", "reasons": base_reasons},
+        {"score": "broken", "success": 1, "ret": 0.02, "ts": 1_700_000_400, "reasons": base_reasons},
+        {"score": 0.1, "success": "NaN", "ret": "broken", "ts": "oops", "reasons": base_reasons},
     ]
 
     model = fit_logreg(good_rows + dirty_rows, min_samples=4, logreg_min_samples=4)

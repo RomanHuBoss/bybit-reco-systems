@@ -1,3 +1,12 @@
+## 0. Negative monetary expectancy despite high hit rate - v1.0.40
+
+1. A matured cohort contains 160 proxy wins of `+0.1%` and 40 proxy losses of `-5%`.
+2. Binary hit rate is 80%, but arithmetic mean return is `-0.92%`; recency-weighted mean is also negative.
+3. The v5 calibrator records `expectancy_status=negative`, weighted mean and lower-tail expected shortfall, and does not fit LogReg/Platt.
+4. A fresh persisted negative state is loaded even though `fitted=false`.
+5. New `futures_grid` rows receive `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE` and status `no_trade`; a hard execution/data block, if present, still produces `blocked`.
+6. Positive proxy mean only permits the remaining calibration checks; it does not prove live profitability.
+
 ## 0. Tail-loss exact-evidence stop - v1.0.39
 
 1. Eight independent stopped bots of one symbol/direction contain seven `+1` exact-net outcomes and one `-100` range-break outcome.

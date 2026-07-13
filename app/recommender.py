@@ -3078,6 +3078,48 @@ def _current_range_edge_calibration_rows(rows: list[dict[str, Any]]) -> list[dic
     return accepted
 
 
+def _calibration_expectancy_no_trade_reason(model: LogRegScaler | None) -> dict[str, str] | None:
+    """Translate confirmed negative proxy expectancy into an explicit no-trade policy.
+
+    The calibration target is still a proxy outcome rather than live exchange PnL,
+    but a mature cohort that loses money in aggregate cannot be used to justify a
+    higher success probability.  This is a soft ``no_trade`` thesis veto, not a
+    technical execution failure and not a claim that future expectancy is known.
+    """
+    if model is None or str(getattr(model, "expectancy_status", "unknown")) != "negative":
+        return None
+    mean_return = _finite_or_none(getattr(model, "weighted_mean_return", None))
+    return_samples = _safe_int_or_none(getattr(model, "return_samples", 0)) or 0
+    if mean_return is None or return_samples <= 0:
+        return {
+            "code": "PROXY_MONETARY_EXPECTANCY_NON_POSITIVE",
+            "msg": "matured proxy cohort has non-positive monetary expectancy; recommendation remains no-trade",
+        }
+    expected_shortfall = _finite_or_none(getattr(model, "weighted_expected_shortfall", None))
+    tail_note = (
+        f", lower-tail expected shortfall={expected_shortfall:.4%}"
+        if expected_shortfall is not None
+        else ""
+    )
+    return {
+        "code": "PROXY_MONETARY_EXPECTANCY_NON_POSITIVE",
+        "msg": (
+            f"matured proxy cohort has recency-weighted mean return={mean_return:.4%} "
+            f"across n={return_samples}{tail_note}; binary hit rate cannot make this strategy actionable"
+        ),
+    }
+
+
+def _calibration_state_persistable(model: LogRegScaler | None) -> bool:
+    return bool(
+        model is not None
+        and (
+            model.fitted
+            or str(getattr(model, "expectancy_status", "unknown")) in {"negative", "positive"}
+        )
+    )
+
+
 def _fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
     """Fit global LogReg+Platt only on the current range-edge feature schema."""
     rows = db.get_outcomes_with_recs(conn, limit=6000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
@@ -3099,24 +3141,24 @@ def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
             result[bt] = LogRegScaler(fitted=False)
             continue
         model = fit_logreg(bt_rows, min_samples=min_samples)
-        if model.fitted:
+        if _calibration_state_persistable(model):
             save_logreg_to_db(conn, BOT_CALIB_KEYS.get(bt, f"logreg_{bt}_v1"), model)
         result[bt] = model
     return result
 
 
 def _load_or_fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
-    """Load global calibrator; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
+    """Load global calibrator/expectancy state; re-fit stale or missing evidence."""
     import time as _time
     saved = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
-    if saved and saved.fitted:
-        if int(_time.time()) - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
+    if _calibration_state_persistable(saved):
+        if int(_time.time()) - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
             return saved
     model = _fit_global_logreg(conn, min_samples=min_samples)
-    if model.fitted:
+    if _calibration_state_persistable(model):
         save_logreg_to_db(conn, GLOBAL_LOGREG_KEY, model)
-    elif saved and saved.fitted:
-        return saved  # keep stale if not enough data yet
+    elif _calibration_state_persistable(saved):
+        return saved  # do not erase established evidence on a transient sparse fit
     return model
 
 
@@ -3132,18 +3174,19 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
             calibrators[bt] = LogRegScaler(fitted=False)
             continue
         saved = load_logreg_from_db(conn, key)
-        if saved and saved.fitted:
-            if now - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
+        if _calibration_state_persistable(saved):
+            if now - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
                 calibrators[bt] = saved
                 continue
-        calibrators[bt] = saved if (saved and saved.fitted) else LogRegScaler(fitted=False)
+        calibrators[bt] = saved if _calibration_state_persistable(saved) else LogRegScaler(fitted=False)
         needs_refit.append(bt)
 
     if needs_refit:
         fitted = _fit_bot_logregs(conn, min_samples)
         for bt in needs_refit:
-            if bt in fitted and fitted[bt].fitted:
-                calibrators[bt] = fitted[bt]
+            candidate = fitted.get(bt)
+            if _calibration_state_persistable(candidate):
+                calibrators[bt] = candidate
 
     return calibrators
 
@@ -3858,6 +3901,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             _fv = extract_features(_row_for_cal)
 
             bot_cal = bot_calibrators.get(bot_type)
+            _expectancy_no_trade = _calibration_expectancy_no_trade_reason(bot_cal)
+            if _expectancy_no_trade is not None:
+                thesis_no_trade_reasons.append(_expectancy_no_trade)
             if bot_cal and bot_cal.fitted and len(bot_cal.coef) > 0 and _fv is not None:
                 conf_cal = float(bot_cal.predict(_fv))
                 _cal_source = "bot_logreg"
@@ -4180,6 +4226,10 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 ),
                 "fitted": _active_cal.fitted if _active_cal is not None else False,
                 "n_samples": _active_cal.n_samples if _active_cal is not None and _active_cal.fitted else 0,
+                "expectancy_status": str(getattr(bot_cal, "expectancy_status", "unknown")) if bot_cal is not None else "unknown",
+                "return_samples": int(getattr(bot_cal, "return_samples", 0) or 0) if bot_cal is not None else 0,
+                "weighted_mean_return": _finite_or_none(getattr(bot_cal, "weighted_mean_return", None)) if bot_cal is not None else None,
+                "weighted_expected_shortfall": _finite_or_none(getattr(bot_cal, "weighted_expected_shortfall", None)) if bot_cal is not None else None,
                 "logreg_active": _cal_source in ("bot_logreg", "global_logreg"),
                 "a": getattr(getattr(_active_cal, "platt", None), "a", None) if _active_cal else None,
                 "b": getattr(getattr(_active_cal, "platt", None), "b", None) if _active_cal else None,

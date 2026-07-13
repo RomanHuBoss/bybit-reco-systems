@@ -1,3 +1,15 @@
+## Monetary-expectancy calibration semantics - v1.0.40
+
+Calibration estimates `P(success)` only after the same matured outcome cohort passes a monetary eligibility gate. Eligible rows must contain finite `score`, strict binary `success`, strict timestamps, a matured `label_available_ts`, and finite normalized `ret`.
+
+The gate applies the existing recency weights to `ret` and computes:
+- weighted mean proxy return;
+- weighted expected shortfall over the worst 20% of observation weight.
+
+After the existing effective-sample floor, `weighted_mean_return <= 0` produces `expectancy_status=negative`, leaves LogReg/Platt unfitted, and adds `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE` to strategy `no_trade` reasons. A positive mean is necessary but not sufficient: class-balance, temporal and feature-schema checks still apply. Funding receipts or a high binary win rate cannot override a negative monetary cohort.
+
+Calibrator keys are `logreg_futures_grid_v5` and `logreg_global_v5`. The version bump prevents loading coefficients trained under v4 hit-rate-only eligibility. No outcome-label or schema migration is needed.
+
 ## Tail-loss stop semantics - v1.0.39
 
 Exact execution evidence is evaluated as an operational capital-protection gate. Once an independent cohort reaches its predefined sample floor, `total_realized_pnl_net < 0` is sufficient for the corresponding negative-expectancy block. Median PnL and positive-bot rate are diagnostics, not vetoes over cumulative loss. This intentionally catches the grid-specific profile of frequent small wins offset by a rare large range-break loss.

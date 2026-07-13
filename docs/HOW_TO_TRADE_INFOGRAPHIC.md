@@ -1,3 +1,7 @@
+## v1.0.40 monetary-expectancy safety update
+
+A high win rate is not evidence of profit. If the matured bot-specific proxy cohort has non-positive recency-weighted mean return after the matured-return sample floor, the system must show `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE` and `NO_TRADE`. Do not bypass this because calibrated confidence, median outcome, or most individual labels look positive. The proxy gate is conservative; real fills and exact net PnL remain authoritative.
+
 ## v1.0.39 operator safety update
 
 After 8 independent stopped bots for one direction, 12 for one symbol, or 20 portfolio-wide, a negative cumulative exact net PnL blocks a new launch even when most bots were profitable. This catches the grid tail-loss pattern in which one large range-break loss outweighs many small gains. Do not treat a high win rate or a positive median as permission to bypass `LIVE_VALIDATION_*`.
