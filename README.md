@@ -1,3 +1,11 @@
+## Stale positive calibrator fail-closed (v1.0.42)
+
+Исправлена **HIGH model/risk fail-open ошибка**: после истечения часового cache interval положительный bot/global/direction calibrator продолжал использоваться бессрочно, если текущая 14-дневная outcome-выборка стала недостаточной или была очищена. Сохранённые коэффициенты оставались `fitted` и влияли на confidence, хотя поддерживающих строк в активном контуре данных уже не было.
+
+Теперь stale positive/fitted calibration обязана быть воспроизведена из текущих retained outcomes. Если refit возвращает `insufficient`, активная модель деактивируется и это состояние сохраняется в `app_config`, поэтому restart не воскрешает старые коэффициенты. Устаревший `expectancy_status=negative` сохраняется консервативно как NO_TRADE veto до появления новой подтверждённой положительной выборки. Ключи bot/global обновлены до v7, direction key — до v6, чтобы upgrade немедленно выполнил current-evidence refit.
+
+FastAPI version: `1.0.42`. Схема БД, API, env, model identity и `OUTCOME_LABEL_VERSION=grid_label_v18` не изменены. Исправление удаляет ложную статистическую уверенность, но не доказывает live profitability.
+
 ## Independent shadow-outcome roots (v1.0.41)
 
 Исправлена **HIGH model-validation ошибка псевдорепликации**. Явные `no_trade`-кандидаты используются как `shadow_no_trade` counterfactual outcomes, но до v1.0.41 каждый recommender cycle создавал новый `is_outcome_label_root=1` даже внутри уже открытого 12-часового horizon. Поэтому 80 минутных циклов могли дать 80 почти одинаковых перекрывающихся labels по одному ценовому пути и ошибочно выполнить `CALIB_MIN_SAMPLES=80`.

@@ -1,3 +1,7 @@
+## v1.0.42: calibration cache lifecycle
+
+Calibration persistence in `app_config` is now a bounded cache, not an independent source of model truth. `app/recommender.py` revalidates stale positive bot/global/direction models against the retained joined outcome dataset; sparse current evidence produces a persisted unfitted state. Negative monetary expectancy remains an asymmetric safety veto. New cache keys force this lifecycle on first startup without deleting outcomes or changing schema.
+
 ## v1.0.41: shadow publication lineage
 
 Publication-chain теперь имеет отдельный horizon-aware путь для counterfactual `shadow_no_trade`. Он не меняет operator status (`no_trade` остаётся `no_trade`) и не превращает shadow row в active recommendation. Путь отвечает только за statistical identity: один открытый pseudo-position соответствует одному outcome root, а повторные UI/audit publications становятся children. Это устраняет псевдорепликацию без удаления истории.

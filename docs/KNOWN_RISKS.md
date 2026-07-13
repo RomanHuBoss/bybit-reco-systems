@@ -1,3 +1,9 @@
+## Closed in v1.0.42 — stale positive calibrator without supporting rows
+
+До v1.0.42 положительный fitted calibrator после истечения `CALIB_REFIT_INTERVAL_SEC` сохранялся, если refit не набирал `CALIB_MIN_SAMPLES`. Поскольку recommendations/outcomes очищаются по 14-дневному retention, модель могла пережить собственную доказательную выборку и продолжать влиять на confidence неограниченно долго.
+
+Текущая семантика асимметрична fail-closed: positive/fitted evidence должно воспроизводиться из текущего retained window, иначе cache становится `insufficient` и деактивируется; negative monetary expectancy может сохраняться как консервативный veto. Keys v7/v6 гарантируют немедленный refit после upgrade. Остаточный риск: даже свежая proxy calibration не доказывает live alpha и зависит от OHLCV proxy assumptions.
+
 ## Closed in v1.0.41 — overlapping shadow outcome pseudo-samples
 
 До v1.0.41 `shadow_no_trade` rows не участвовали в publication dedupe. Recommender мог публиковать новый outcome root каждую минуту, хотя все roots использовали перекрывающийся 12-часовой market path. Это завышало effective sample size, ускоряло fit confidence-calibration и могло создавать статистически убедительный, но не независимый proxy edge.

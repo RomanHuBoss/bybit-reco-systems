@@ -1,3 +1,11 @@
+## Calibration evidence lifetime — v1.0.42
+
+- `CALIB_REFIT_INTERVAL_SEC` является только cache interval, а не бессрочной лицензией на использование коэффициентов.
+- После истечения interval положительный bot/global/direction calibrator должен быть воспроизведён из текущей retained outcome-выборки.
+- Если current fit возвращает `insufficient`, positive/fitted model деактивируется и insufficient-state сохраняется, чтобы restart не воскресил stale coefficients.
+- `expectancy_status=negative` сохраняется консервативно до новой подтверждённой positive evidence-выборки: отсутствие новых данных не превращает ранее наблюдавшийся убыток в разрешение на запуск.
+- Bot/global keys v7 и direction key v6 отделяют этот cache-lifetime contract от прежней fail-open семантики. `OUTCOME_LABEL_VERSION` не меняется, потому что target/outcome math не изменялась.
+
 ## Shadow outcome independence — v1.0.41
 
 `no_trade` может быть включён в исследовательский контур только с явным `outcome_policy.sample_role=shadow_no_trade`. Такая строка моделирует одну counterfactual grid-позицию на полном label horizon, поэтому повторный recommender cycle по тому же venue/symbol/bot/direction/model не является новым статистическим наблюдением.

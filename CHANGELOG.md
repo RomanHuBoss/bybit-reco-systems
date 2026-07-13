@@ -1,3 +1,12 @@
+## 2026-07-13 — 1.0.42 — stale calibrator fail-closed
+
+- Исправлена HIGH model/risk fail-open ошибка: stale positive bot/global/direction calibrators больше не сохраняются бессрочно после исчезновения текущей retained outcome-выборки.
+- После hourly refit состояние `insufficient` деактивирует положительные коэффициенты и перезаписывает cache, поэтому restart не восстанавливает unsupported calibrated confidence.
+- Stale negative monetary expectancy остаётся консервативным `NO_TRADE` veto до появления новой положительной evidence-выборки.
+- Calibrator keys обновлены до bot/global v7 и direction v6 для немедленной проверки текущих данных при upgrade; outcome labels не сбрасываются.
+- Добавлен `tests/test_iteration230_stale_calibrator_fail_closed.py`: 3 red→green tests для bot, global и direction cache.
+- Post-check: 1025 tests passed исчерпывающими непересекающимися batches; compileall и JavaScript syntax check passed. DB schema, migrations, API и env не менялись. Ruff отсутствовал; `pip check` сохранил внешний MoviePy/Pillow conflict.
+
 ## 2026-07-13 — 1.0.41 — independent shadow-outcome roots
 
 - Исправлена HIGH-ошибка model validation: повторные `shadow_no_trade` публикации внутри одного label horizon больше не создают независимые outcome roots.

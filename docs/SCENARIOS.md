@@ -1,3 +1,11 @@
+## Scenario: positive calibrator outlives its retained evidence (v1.0.42)
+
+1. A bot calibrator was fitted on a positive 320-row proxy cohort and saved in `app_config`.
+2. More than one refit interval passes; the underlying 14-day recommendation/outcome rows are pruned or no longer meet the current model filter.
+3. Current refit returns `insufficient` with 12 or zero usable rows.
+4. The positive model is deactivated and the insufficient state overwrites the cache; after restart it remains unfitted/raw rather than resurrecting old coefficients.
+5. If the saved state was `expectancy_status=negative`, it remains a conservative NO_TRADE veto until a new positive cohort replaces it.
+
 ## Scenario: repeated no-trade signal during an open shadow horizon (v1.0.41)
 
 1. Первый полный `no_trade` без hard blocks получает `sample_role=shadow_no_trade` и становится outcome root.

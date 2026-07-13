@@ -995,13 +995,13 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
-# v6: calibration sample roots are horizon-independent for shadow no-trade
-#     observations. New keys prevent loading v5 models trained on overlapping roots.
+# v7: stale positive calibrators are not allowed to outlive the retained
+#     evidence window. New keys force an immediate current-evidence refit on upgrade.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v6",
+    "futures_grid": "logreg_futures_grid_v7",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v6"
+GLOBAL_LOGREG_KEY = "logreg_global_v7"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

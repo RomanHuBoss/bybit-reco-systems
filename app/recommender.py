@@ -39,7 +39,7 @@ MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
 RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v4-independent-shadow-roots"
-DIRECTION_CALIBRATION_KEY = "platt_direction_v5"
+DIRECTION_CALIBRATION_KEY = "platt_direction_v6"
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
 LLM_REVIEWER_DEFAULT_CANDLES_PER_TF = 32
@@ -3148,25 +3148,44 @@ def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
 
 
 def _load_or_fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
-    """Load global calibrator/expectancy state; re-fit stale or missing evidence."""
+    """Load global diagnostics, but never keep stale positive evidence fail-open.
+
+    A negative monetary-expectancy state is a conservative veto and may survive a
+    temporarily sparse refit until current positive evidence replaces it.  A
+    positive/fitted calibrator is different: once its hourly refresh cannot
+    reconstruct the required sample, it must become unavailable rather than
+    continuing indefinitely after the underlying 14-day rows were pruned.
+    """
     import time as _time
     saved = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
-    if _calibration_state_persistable(saved):
-        if int(_time.time()) - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
+    now = int(_time.time())
+    if saved is not None and int(saved.saved_ts) > 0:
+        if now - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
             return saved
     model = _fit_global_logreg(conn, min_samples=min_samples)
     if _calibration_state_persistable(model):
         save_logreg_to_db(conn, GLOBAL_LOGREG_KEY, model)
-    elif _calibration_state_persistable(saved):
-        return saved  # do not erase established evidence on a transient sparse fit
+        return model
+    if saved is not None and str(getattr(saved, "expectancy_status", "unknown")) == "negative":
+        return saved
+    # Persist the current insufficient state so a restart cannot resurrect the
+    # stale positive coefficients from app_config before the next refit.
+    save_logreg_to_db(conn, GLOBAL_LOGREG_KEY, model)
     return model
 
 
 def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
-    """Load per-bot calibrators; re-fit stale or missing ones."""
+    """Load per-bot calibrators and expire unreconstructable positive evidence.
+
+    Stale negative expectancy remains a conservative no-trade veto.  Stale
+    positive/fitted evidence may not survive when the current retained outcome
+    window is insufficient, because doing so turns a bounded cache into an
+    immortal probability model detached from its supporting rows.
+    """
     import time as _time
     now = int(_time.time())
     calibrators: dict[str, LogRegScaler] = {}
+    saved_by_bot: dict[str, LogRegScaler | None] = {}
     needs_refit: list[str] = []
 
     for bt, key in BOT_CALIB_KEYS.items():
@@ -3174,19 +3193,35 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
             calibrators[bt] = LogRegScaler(fitted=False)
             continue
         saved = load_logreg_from_db(conn, key)
-        if _calibration_state_persistable(saved):
+        saved_by_bot[bt] = saved
+        if saved is not None and int(saved.saved_ts) > 0:
             if now - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
                 calibrators[bt] = saved
                 continue
-        calibrators[bt] = saved if _calibration_state_persistable(saved) else LogRegScaler(fitted=False)
+        calibrators[bt] = LogRegScaler(
+            fitted=False,
+            saved_ts=now,
+            expectancy_status="insufficient",
+        )
         needs_refit.append(bt)
 
     if needs_refit:
         fitted = _fit_bot_logregs(conn, min_samples)
         for bt in needs_refit:
-            candidate = fitted.get(bt)
+            candidate = fitted.get(bt) or LogRegScaler(
+                fitted=False,
+                saved_ts=now,
+                expectancy_status="insufficient",
+            )
+            saved = saved_by_bot.get(bt)
             if _calibration_state_persistable(candidate):
                 calibrators[bt] = candidate
+                continue
+            if saved is not None and str(getattr(saved, "expectancy_status", "unknown")) == "negative":
+                calibrators[bt] = saved
+                continue
+            calibrators[bt] = candidate
+            save_logreg_to_db(conn, BOT_CALIB_KEYS[bt], candidate)
 
     return calibrators
 
@@ -3227,18 +3262,17 @@ def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
 
 
 def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
-    """Load direction calibrator; re-fit if missing or older than CALIB_REFIT_INTERVAL_SEC."""
+    """Load direction calibration without resurrecting stale fitted coefficients."""
     import time as _time
     key = DIRECTION_CALIBRATION_KEY
     saved = load_platt_from_db(conn, key)
-    if saved and saved.fitted:
-        if int(_time.time()) - saved.saved_ts < CALIB_REFIT_INTERVAL_SEC:
+    if saved is not None and int(saved.saved_ts) > 0:
+        if int(_time.time()) - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
             return saved
     scaler = _fit_direction_calibrator(conn, min_samples=min_samples)
-    if scaler.fitted:
-        save_platt_to_db(conn, key, scaler)
-    elif saved and saved.fitted:
-        return saved
+    # Persist both fitted and current unfitted states.  Otherwise a restart can
+    # reload the old fitted payload even though the latest evidence was sparse.
+    save_platt_to_db(conn, key, scaler)
     return scaler
 
 

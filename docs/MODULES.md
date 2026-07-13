@@ -1,3 +1,10 @@
+## v1.0.42 module responsibility update
+
+- `app/recommender.py`: expires stale positive bot/global/direction calibrators when current retained evidence is insufficient; preserves stale negative monetary veto only.
+- `app/calibration.py`: bot/global cache identity v7; existing strict persistence format is reused for fitted and insufficient states.
+- `app/db.py`: unchanged schema; `app_config` remains the calibrator cache store and outcome retention remains 14 days.
+- `tests/test_iteration230_stale_calibrator_fail_closed.py`: proves stale positive cache eviction and restart-safe persistence for all three calibration paths.
+
 ## v1.0.41 module responsibility update
 
 - `app/recommender.py`: определяет explicit shadow-no-trade eligibility, ищет открытый shadow root на label horizon и назначает lineage без изменения operator status.
