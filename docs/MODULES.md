@@ -1,3 +1,11 @@
+## v1.0.56 module responsibility update
+
+- `app/recommender.py`: v7 model identity and shared calibration-lineage diagnostics.
+- `app/calibration.py`: v18 bot/global cache keys.
+- `app/main.py`: FastAPI 1.0.56 and separated calibration dataset counts.
+- `app/ui/static/app.js`: explicit archive/current/eligible/fit/temporal wording.
+- `tests/test_iteration244_calibration_lineage_reset.py`: lineage, API and executed frontend regression coverage.
+
 ## v1.0.55 module responsibility update
 
 - `app/settings.py`: validates `MEAN_REVERSION_MIN_SCORE` in `[0,1]`, default `0.25`.

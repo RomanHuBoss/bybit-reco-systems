@@ -38,8 +38,8 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v6-historical-proxy-shadow-roots"
-DIRECTION_CALIBRATION_KEY = "platt_direction_v12"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v7-mr-floor-temporal-cohorts"
+DIRECTION_CALIBRATION_KEY = "platt_direction_v13"
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
 LLM_REVIEWER_DEFAULT_CANDLES_PER_TF = 32
@@ -3084,30 +3084,63 @@ def _stabilize_direction_agg(
     return stable, state_out
 
 
-def _current_range_edge_calibration_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep only outcomes produced by the current independently validated range model.
+def _matches_current_recommender_model(model_version: Any) -> bool:
+    normalized = str(model_version or "").strip()
+    return bool(
+        normalized == RECOMMENDER_MODEL_VERSION
+        or normalized.startswith(RECOMMENDER_MODEL_VERSION + "+")
+    )
 
-    Old scores and feature snapshots encoded ``range = 1 - trend``.  Mixing them
-    with the new anti-persistence feature would create train/inference skew and
-    could resurrect the exact false edge this release blocks.
+
+def calibration_lineage_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Separate immutable outcome history from the current calibration dataset.
+
+    A recommendation/outcome remains part of the audit archive after a model-policy
+    change, but it must not train a new calibrator unless its recommendation lineage
+    and feature evidence match the current contract.  Returning the row subsets keeps
+    API diagnostics and fit-time filtering on the same source of truth.
     """
-    accepted: list[dict[str, Any]] = []
-    for row in rows or []:
-        model_version = str(row.get("model_version") or "").strip()
-        if not (model_version == RECOMMENDER_MODEL_VERSION or model_version.startswith(RECOMMENDER_MODEL_VERSION + "+")):
+    historical_rows = list(rows or [])
+    current_model_rows: list[dict[str, Any]] = []
+    feature_eligible_rows: list[dict[str, Any]] = []
+    dropped_old_model = 0
+    dropped_invalid_feature_evidence = 0
+
+    for row in historical_rows:
+        if not _matches_current_recommender_model(row.get("model_version")):
+            dropped_old_model += 1
             continue
+        current_model_rows.append(row)
         reasons = row.get("reasons") or {}
         if not isinstance(reasons, dict):
+            dropped_invalid_feature_evidence += 1
             continue
         snapshot = reasons.get("feature_snapshot") or {}
         if not isinstance(snapshot, dict):
+            dropped_invalid_feature_evidence += 1
             continue
         evidence_flag = _safe_int_or_none(snapshot.get("mean_reversion_evidence_valid"))
         score = _finite_or_none(snapshot.get("mean_reversion_score"))
         if evidence_flag != 1 or score is None or not (0.0 <= score <= 1.0):
+            dropped_invalid_feature_evidence += 1
             continue
-        accepted.append(row)
-    return accepted
+        feature_eligible_rows.append(row)
+
+    return {
+        "calibration_model_version": RECOMMENDER_MODEL_VERSION,
+        "historical_total": len(historical_rows),
+        "current_model_total": len(current_model_rows),
+        "feature_eligible_total": len(feature_eligible_rows),
+        "dropped_old_model": dropped_old_model,
+        "dropped_invalid_feature_evidence": dropped_invalid_feature_evidence,
+        "current_model_rows": current_model_rows,
+        "feature_eligible_rows": feature_eligible_rows,
+    }
+
+
+def _current_range_edge_calibration_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only outcomes eligible for the current model lineage and feature schema."""
+    return list(calibration_lineage_diagnostics(rows)["feature_eligible_rows"])
 
 
 def _calibration_expectancy_no_trade_reason(model: LogRegScaler | None) -> dict[str, str] | None:

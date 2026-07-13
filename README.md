@@ -1,3 +1,7 @@
+## Calibration lineage reset and transparent dataset counts (v1.0.56)
+
+The recommendation model identity is now `bybit-taxonomy-v7-mr-floor-temporal-cohorts`. Bot/global calibrator keys are v18 and direction calibration is v13. Existing `reco_outcomes` remain immutable audit history, but v6 outcomes are excluded from v7 fitting. `/api/v1/status` and the UI now separate historical archive, current-model outcomes, feature-eligible outcomes, fit rows and temporal cohorts. A fresh v7 deployment therefore begins with zero eligible calibration rows even when the audit archive is non-empty. No schema migration is required.
+
 ## Mean-reversion and temporal-evidence recovery (v1.0.55)
 
 The fixed `mean_reversion_score >= 0.55` publication rule was not calibrated to the runtime distribution. In the supplied PostgreSQL export of 10,000 recommendations, the maximum was `0.3510`, the 95th percentile was `0.2926`, and no row reached `0.55`. The gate is now an explicit candidate-screen setting, `MEAN_REVERSION_MIN_SCORE` (default `0.25`). It remains fail-closed below the floor, but it no longer claims that a weak score proves negative expectancy. Profitability remains a separate retained-outcome requirement: `PROXY_MONETARY_EXPECTANCY_UNPROVEN/NON_POSITIVE` still keeps the recommendation in shadow `no_trade` until uncertainty-bounded monetary evidence is positive.

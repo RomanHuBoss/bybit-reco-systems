@@ -8,7 +8,7 @@ from app import db
 from app import main as app_main
 from app.outcomes import compute_outcomes_once
 
-CURRENT_MODEL_VERSION = "bybit-taxonomy-v6-historical-proxy-shadow-roots"
+CURRENT_MODEL_VERSION = "bybit-taxonomy-v7-mr-floor-temporal-cohorts"
 
 
 def _raw_recommendation() -> dict:

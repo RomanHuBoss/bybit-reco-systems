@@ -32,6 +32,8 @@ from .outcomes import compute_outcomes_once
 from .recommender import (
     DIRECTION_CALIBRATION_KEY,
     LLM_REVIEW_ASYNC_STATUS_APP_KEY,
+    RECOMMENDER_MODEL_VERSION,
+    calibration_lineage_diagnostics,
     run_llm_review_sweep_once,
     run_recommender_once,
 )
@@ -4635,7 +4637,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.55", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.56", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6394,54 +6396,70 @@ def api_status() -> dict[str, Any]:
         _supported_sql, _supported_params = sql_in_clause("bot_type")
         require_llm_outcome_verdict = bool(getattr(settings, "llm_reviewer_enabled", False))
         cur = conn.execute(
-            f"""SELECT o.bot_type, o.success, o.ts, r.status, r.reasons_json, r.is_outcome_label_root
+            f"""SELECT o.bot_type, o.success, o.ts, r.status, r.reasons_json,
+                       r.model_version, r.is_outcome_label_root
                    FROM reco_outcomes o
                    JOIN recommendations r ON r.rec_id = o.rec_id
                    WHERE {_supported_sql.replace('bot_type', 'o.bot_type')}""",
             _supported_params,
         )
-        outcome_stats_by_bot: dict[str, dict[str, Any]] = {}
-        outcome_stats_7d_by_bot: dict[str, dict[str, int]] = {}
-        outcome_count = 0
+
+        historical_rows: list[dict[str, Any]] = []
         for row in cur.fetchall():
             if row["is_outcome_label_root"] is not None and not bool(int(row["is_outcome_label_root"] or 0)):
                 continue
             if require_llm_outcome_verdict and not db.is_outcome_eligible_under_llm_mode(row["status"], row["reasons_json"]):
                 continue
-            bot_type = str(row["bot_type"])
-            success = int(row["success"] or 0)
-            stat = outcome_stats_by_bot.setdefault(bot_type, {"total": 0, "wins": 0})
-            stat["total"] += 1
-            stat["wins"] += success
-            outcome_count += 1
-            if int(row["ts"] or 0) >= db.now_ts() - 7 * 86400:
-                recent = outcome_stats_7d_by_bot.setdefault(bot_type, {"total": 0, "wins": 0, "losses": 0})
-                recent["total"] += 1
-                recent["wins"] += success
-
-        for stat in outcome_stats_by_bot.values():
-            total = int(stat["total"])
-            wins = int(stat["wins"])
-            losses = max(0, total - wins)
-            minority_class_count = min(wins, losses)
-            effective_samples = max(0, 2 * minority_class_count)
-            win_rate = float(wins / total) if total else None
-            if win_rate is None or win_rate <= 0.0 or win_rate >= 1.0:
-                class_entropy_bits = 0.0
-            else:
-                class_entropy_bits = float(-(win_rate * math.log2(win_rate) + (1.0 - win_rate) * math.log2(1.0 - win_rate)))
-            stat.update({
-                "losses": losses,
-                "minority_class_count": minority_class_count,
-                "effective_samples": effective_samples,
-                "win_rate": round(win_rate, 4) if win_rate is not None else None,
-                "class_entropy_bits": round(class_entropy_bits, 4),
+            historical_rows.append({
+                "bot_type": str(row["bot_type"]),
+                "success": int(row["success"] or 0),
+                "ts": int(row["ts"] or 0),
+                "model_version": str(row["model_version"] or ""),
+                "reasons": _json_loads_or_default(row["reasons_json"], {}),
             })
 
-        for stat in outcome_stats_7d_by_bot.values():
-            total = int(stat["total"])
-            wins = int(stat["wins"])
-            stat["losses"] = max(0, total - wins)
+        lineage = calibration_lineage_diagnostics(historical_rows)
+        current_model_rows = list(lineage["current_model_rows"])
+        feature_eligible_rows = list(lineage["feature_eligible_rows"])
+
+        def _stats_by_bot(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+            stats_by_bot: dict[str, dict[str, Any]] = {}
+            for item in rows:
+                bot_type = str(item.get("bot_type") or "")
+                if not bot_type:
+                    continue
+                success = int(item.get("success") or 0)
+                stat = stats_by_bot.setdefault(bot_type, {"total": 0, "wins": 0})
+                stat["total"] += 1
+                stat["wins"] += success
+            for stat in stats_by_bot.values():
+                total = int(stat["total"])
+                wins = int(stat["wins"])
+                losses = max(0, total - wins)
+                minority_class_count = min(wins, losses)
+                effective_samples = max(0, 2 * minority_class_count)
+                win_rate = float(wins / total) if total else None
+                if win_rate is None or win_rate <= 0.0 or win_rate >= 1.0:
+                    class_entropy_bits = 0.0
+                else:
+                    class_entropy_bits = float(-(win_rate * math.log2(win_rate) + (1.0 - win_rate) * math.log2(1.0 - win_rate)))
+                stat.update({
+                    "losses": losses,
+                    "minority_class_count": minority_class_count,
+                    "effective_samples": effective_samples,
+                    "win_rate": round(win_rate, 4) if win_rate is not None else None,
+                    "class_entropy_bits": round(class_entropy_bits, 4),
+                })
+            return stats_by_bot
+
+        historical_stats_by_bot = _stats_by_bot(historical_rows)
+        current_model_stats_by_bot = _stats_by_bot(current_model_rows)
+        outcome_stats_by_bot = _stats_by_bot(feature_eligible_rows)
+        outcome_stats_7d_by_bot = _stats_by_bot([
+            item for item in feature_eligible_rows
+            if int(item.get("ts") or 0) >= db.now_ts() - 7 * 86400
+        ])
+        outcome_count = int(lineage["historical_total"])
 
         def _bot_gate(total: int, wins: int, losses: int, fitted: bool) -> tuple[bool, str | None]:
             if fitted:
@@ -6462,7 +6480,12 @@ def api_status() -> dict[str, Any]:
             m = load_logreg_from_db(conn, key)
             fitted = bool(m and m.fitted)
             logreg_active = bool(m and m.fitted and len(m.coef) > 0)
-            stats = outcome_stats_by_bot.get(bt, {"total": 0, "wins": 0, "win_rate": None})
+            stats = outcome_stats_by_bot.get(bt, {
+                "total": 0, "wins": 0, "losses": 0, "win_rate": None,
+                "minority_class_count": 0, "effective_samples": 0, "class_entropy_bits": 0.0,
+            })
+            historical_stats = historical_stats_by_bot.get(bt, {"total": 0})
+            current_stats = current_model_stats_by_bot.get(bt, {"total": 0})
             eligible, unfitted_reason = _bot_gate(
                 int(stats["total"]),
                 int(stats["wins"]),
@@ -6475,13 +6498,23 @@ def api_status() -> dict[str, Any]:
                 confidence_mode = "bot_logreg"
             elif fitted:
                 confidence_mode = "bot_platt"
+            fit_rows = int(m.n_samples) if m is not None else 0
             bot_status[bt] = {
                 "fitted": fitted,
                 "logreg_active": logreg_active,
-                "n_samples": int(m.n_samples) if m and m.fitted else 0,
-                "rows_dropped_for_fit": max(0, int(stats["total"]) - int(m.n_samples)) if m and m.fitted and logreg_active else 0,
-                "last_fit_ts": int(m.saved_ts) if m and m.fitted else 0,
+                "n_samples": fit_rows,
+                "return_samples": int(getattr(m, "return_samples", 0) or 0) if m is not None else 0,
+                "rows_dropped_for_fit": max(0, int(stats["total"]) - fit_rows),
+                "last_fit_ts": int(m.saved_ts) if m is not None else 0,
                 "confidence_mode": confidence_mode,
+                "calibrator_key": key,
+                "calibration_model_version": RECOMMENDER_MODEL_VERSION,
+                "expectancy_status": str(getattr(m, "expectancy_status", "insufficient")) if m is not None else "insufficient",
+                "temporal_cluster_count": int(getattr(m, "temporal_cluster_count", 0) or 0) if m is not None else 0,
+                "minimum_temporal_clusters": int(getattr(m, "minimum_temporal_clusters", 0) or 0) if m is not None else 0,
+                "historical_outcomes_total": int(historical_stats.get("total", 0)),
+                "current_model_outcomes_total": int(current_stats.get("total", 0)),
+                "feature_eligible_outcomes_total": int(stats["total"]),
                 "outcomes_total": int(stats["total"]),
                 "wins": int(stats["wins"]),
                 "losses": int(stats.get("losses", max(0, int(stats["total"]) - int(stats["wins"])))),
@@ -6521,6 +6554,15 @@ def api_status() -> dict[str, Any]:
             "inference_calibration_mode": confidence_mode_in_use,
             "confidence_mode_in_use": confidence_mode_in_use,
             "outcome_label_version": OUTCOME_LABEL_VERSION,
+            "calibration_model_version": RECOMMENDER_MODEL_VERSION,
+            "global_calibrator_key": GLOBAL_LOGREG_KEY,
+            "historical_outcome_count": int(lineage["historical_total"]),
+            "current_model_outcome_count": int(lineage["current_model_total"]),
+            "calibration_eligible_outcome_count": int(lineage["feature_eligible_total"]),
+            "calibration_lineage_drops": {
+                "old_model": int(lineage["dropped_old_model"]),
+                "invalid_feature_evidence": int(lineage["dropped_invalid_feature_evidence"]),
+            },
             "inference_ready_bot_count": inference_ready_bot_count,
             "inference_supported_bot_count": inference_supported_bot_count,
             "calibrator_params": {

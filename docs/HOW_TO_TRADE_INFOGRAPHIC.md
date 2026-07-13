@@ -1,3 +1,10 @@
+## v1.0.56 calibration-lineage rule
+
+- Application `1.0.56`; outcome target remains `grid_label_v26`.
+- Recommendation lineage: `bybit-taxonomy-v7-mr-floor-temporal-cohorts`.
+- Bot/global calibrators v18; direction calibrator v13.
+- A non-empty historical archive is not current evidence. Operator progress is based only on current-model feature-eligible rows and independent matured cohorts.
+
 ## v1.0.55 mean-reversion and temporal-evidence rule
 
 - Current contracts: application `1.0.55`, outcome `grid_label_v26`, bot/global calibrators v17, direction calibrator v12.

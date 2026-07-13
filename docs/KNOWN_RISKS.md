@@ -1,3 +1,7 @@
+## Resolved in v1.0.56: archived outcomes were presented as current calibration evidence
+
+A model-policy change previously advanced only calibrator cache keys while retaining the same recommendation lineage. Old outcomes could therefore be reconsidered as current evidence, and the UI displayed the whole archive as calibration progress. v1.0.56 introduces a new model lineage and separates immutable audit history from current-model and feature-eligible rows. Residual risk: a new lineage necessarily starts with no empirical evidence and remains shadow `NO_TRADE` until enough matured independent v7 cohorts exist.
+
 ## Resolved in v1.0.55: unreachable mean-reversion gate and temporal-cluster percolation
 
 The fixed publication cutoff `0.55` was a synthetic false-positive filter, not a runtime-calibrated candidate threshold. The supplied 10,000-row PostgreSQL export had maximum `0.3510`, p95 `0.2926`, and zero passes, so the rule could suppress every recommendation regardless of separately positive grid economics. The message also incorrectly stated that commissions *gave* negative expectancy although that conclusion was not established by the score.

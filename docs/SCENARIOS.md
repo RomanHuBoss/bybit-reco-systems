@@ -1,3 +1,11 @@
+## Scenario: non-empty audit archive after v7 deployment (v1.0.56)
+
+1. PostgreSQL contains v6 outcomes.
+2. v1.0.56 starts with model lineage v7 and calibrator keys v18/v13.
+3. Historical archive count remains non-zero for audit.
+4. Current-model and feature-eligible counts are zero until new v7 recommendations mature.
+5. The calibrator remains `insufficient` and recommendations remain shadow `NO_TRADE`; old rows cannot accelerate the new model.
+
 ## Scenario: high-tail candidate was impossible under the fixed 0.55 gate (v1.0.55)
 
 1. Valid evidence exists on five timeframes and aggregate `mean_reversion_score=0.351`.

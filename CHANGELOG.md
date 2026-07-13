@@ -1,3 +1,12 @@
+## 2026-07-14 - v1.0.56 - calibration lineage reset and dataset transparency
+
+- Advanced recommendation lineage to `bybit-taxonomy-v7-mr-floor-temporal-cohorts`.
+- Advanced bot/global calibrators to v18 and direction calibrator to v13.
+- Preserved historical outcomes for audit while excluding old-model rows from current fitting.
+- Split status/UI counts into historical, current-model, feature-eligible, fit-row and temporal-cohort layers.
+- Added `test_iteration244_calibration_lineage_reset.py` with RED -> GREEN coverage.
+- Database schema unchanged; no SQL migration required.
+
 ## 2026-07-13 - v1.0.55 - mean-reversion and temporal-evidence recovery
 
 - Fixed a HIGH model-policy shutdown defect: the hard-coded `mean_reversion_score >= 0.55` screen had zero passes in the supplied 10,000-row PostgreSQL recommendation export (maximum `0.3510`, p95 `0.2926`). The screen is now explicit as `MEAN_REVERSION_MIN_SCORE`, default `0.25`.

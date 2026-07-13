@@ -1337,14 +1337,15 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
+# v18: retains the v17 purged-OOF/temporal rule and starts a new model-lineage dataset;
 # v17: retains the v16 purged-OOF activation rule and replaces transitive
 #      overlap components with deterministic non-overlapping decision cohorts.
 #      Existing outcomes remain valid, but cached v16 diagnostics must refit.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v17",
+    "futures_grid": "logreg_futures_grid_v18",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v17"
+GLOBAL_LOGREG_KEY = "logreg_global_v18"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

@@ -1,3 +1,7 @@
+## v1.0.56 calibration lineage boundary
+
+`app/recommender.py::calibration_lineage_diagnostics()` is the shared source of truth for archive/current/eligible partitioning. Fit paths and `/api/v1/status` use the same filter. `app/calibration.py` uses v18 cache identities and `app/recommender.py` uses direction key v13, so stale v17/v12 objects cannot be loaded as current. PostgreSQL and SQLite schemas are unchanged.
+
 ## v1.0.55 candidate-screen and temporal-thinning flow
 
 `app/settings.py` owns the bounded `MEAN_REVERSION_MIN_SCORE` candidate floor. `app/recommender.py::_mean_reversion_grid_blocks()` distinguishes missing evidence (hard block) from a valid score below that floor (strategy `no_trade`) and deliberately makes no PnL claim. The independent `app/calibration.py` monetary gate remains mandatory for actionability.

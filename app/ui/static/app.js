@@ -1383,36 +1383,46 @@ function summariseCalibState(items) {
 }
 
 function buildBotCalibText(botType, info, totalOutcomeCount) {
-  const total = Number(info?.outcomes_total || 0);
+  const archiveTotal = Number(info?.historical_outcomes_total ?? totalOutcomeCount ?? 0);
+  const currentModelTotal = Number(info?.current_model_outcomes_total || 0);
+  const eligibleTotal = Number(info?.feature_eligible_outcomes_total ?? info?.outcomes_total ?? 0);
+  const total = eligibleTotal;
   const wins = Number(info?.wins || 0);
   const losses = Number(info?.losses || Math.max(0, total - wins));
   const effective = Number(info?.effective_samples || (2 * Math.min(wins, losses)) || 0);
   const needed = Number(info?.min_samples || statusPayload?.calib_min_samples || 80);
   const winRate = info?.win_rate;
   const winRateText = (winRate === null || winRate === undefined) ? "—" : Number(winRate).toFixed(2);
-  const allText = Number(totalOutcomeCount || 0);
+  const calibratorKey = String(info?.calibrator_key || "unknown-calibrator");
+  const expectancyStatus = String(info?.expectancy_status || "insufficient");
+  const temporalClusters = Number(info?.temporal_cluster_count || 0);
+  const minimumTemporalClusters = Number(info?.minimum_temporal_clusters || 0);
+  const lineageText = `lineage ${calibratorKey}: архив=${archiveTotal}, текущая модель=${currentModelTotal}, eligible=${eligibleTotal}`;
+  const temporalText = minimumTemporalClusters > 0
+    ? `; time_clusters=${temporalClusters}/${minimumTemporalClusters}`
+    : "";
 
   if (info?.fitted) {
     if (info?.logreg_active) {
       const fitRows = Number(info?.n_samples || 0);
       const dropped = Number(info?.rows_dropped_for_fit || Math.max(0, total - fitRows) || 0);
       const droppedText = dropped > 0 ? `; не вошло в feature-fit=${dropped}` : "";
-      return `${botType}: калибратор активен (LogReg + Platt, fit_rows=${fitRows}/${total}; побед=${wins}, поражений=${losses}${droppedText}).`;
+      return `${botType}: калибратор активен (LogReg + Platt, fit_rows=${fitRows}/${total}; побед=${wins}, поражений=${losses}${droppedText}; ${lineageText}${temporalText}).`;
     }
-    return `${botType}: включён Platt-only (fit_rows=${Number(info.n_samples || 0)} / ${total}; побед=${wins}, поражений=${losses}).`;
+    return `${botType}: включён Platt-only (fit_rows=${Number(info.n_samples || 0)} / ${total}; побед=${wins}, поражений=${losses}; ${lineageText}${temporalText}).`;
   }
 
   if ((info?.unfitted_reason || "") === "degenerate_win_rate") {
     const minority = Number(info?.minority_class_count || Math.min(wins, losses) || 0);
     const recent7d = Number(info?.outcomes_7d || 0) > 0
-      ? ` За 7д: побед=${Number(info?.wins_7d || 0)}, поражений=${Number(info?.losses_7d || 0)}.`
+      ? ` За 7д eligible: побед=${Number(info?.wins_7d || 0)}, поражений=${Number(info?.losses_7d || 0)}.`
       : "";
-    return `${botType}: raw-only, калибровка отключена из-за вырожденных меток (minority=${minority}, effective=${effective} / ${needed}, win-rate=${winRateText}, entropy=${fmt(info?.class_entropy_bits, 3)}). Всего исходов в базе: ${allText}.${recent7d}`;
+    return `${botType}: raw-only, вырожденные eligible-метки (minority=${minority}, effective=${effective}/${needed}, win-rate=${winRateText}, entropy=${fmt(info?.class_entropy_bits, 3)}, expectancy=${expectancyStatus}; ${lineageText}${temporalText}).${recent7d}`;
   }
   if ((info?.unfitted_reason || "") === "pending_refit") {
-    return `${botType}: исходов уже достаточно (effective=${effective} / ${needed}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}). Модель ещё не обновлена в текущем цикле.`;
+    return `${botType}: eligible-исходов достаточно (effective=${effective}/${needed}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}; ${lineageText}${temporalText}). Refit ещё не завершён.`;
   }
-  return `${botType}: effective для fit ${effective} / ${needed} (всего=${total}, побед=${wins}, поражений=${losses}). Всего исходов в базе: ${allText}.`;
+  return `${botType}: effective для fit ${effective}/${needed} (eligible=${total}, побед=${wins}, поражений=${losses}, expectancy=${expectancyStatus}; ${lineageText}${temporalText}).`;
 }
 
 function updateCalibrationUi(items) {
@@ -1437,13 +1447,15 @@ function updateCalibrationUi(items) {
         ? `Калибровка готова частично (${fittedBots.length}/${botCalibs.length}); глобальная модель считается диагностической и не используется как fallback.`
         : "Калибровка продукта ещё не готова.";
       banner.classList.remove("hidden");
-      const count = Number(statusPayload?.outcome_count || 0);
+      const archiveCount = Number(statusPayload?.historical_outcome_count ?? statusPayload?.outcome_count ?? 0);
+      const currentModelCount = Number(statusPayload?.current_model_outcome_count || 0);
+      const eligibleCount = Number(statusPayload?.calibration_eligible_outcome_count || 0);
       const needed = Number(statusPayload?.calib_min_samples || 80);
-      const pct = needed > 0 ? Math.min(100, Math.round(count / needed * 100)) : 0;
+      const pct = needed > 0 ? Math.min(100, Math.round(eligibleCount / needed * 100)) : 0;
       const readiness = botCalibs.length > 0
         ? `Готово: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (LogReg: ${logregBots.length})` : ""}. `
         : "";
-      $("calibProgress").textContent = `${readiness}Всего исходов: ${count}. Глобальная калибровка отображается только как диагностика; inference опирается на продуктовую модель. Калибратор сам по себе не блокирует публикацию: до fit используется raw-confidence.`;
+      $("calibProgress").textContent = `${readiness}Исторический архив=${archiveCount}; текущая model lineage=${currentModelCount}; feature-eligible=${eligibleCount}. Прогресс считается только по текущей lineage, старые outcomes сохранены исключительно для аудита.`;
       $("calibBarFill").style.width = `${pct}%`;
     }
     return;

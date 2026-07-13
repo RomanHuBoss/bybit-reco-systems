@@ -1,3 +1,7 @@
+## Calibration lineage and evidence reset contract (v1.0.56)
+
+`RECOMMENDER_MODEL_VERSION=bybit-taxonomy-v7-mr-floor-temporal-cohorts`. Only outcomes whose recommendation model version matches this lineage (or an explicit `+` derivative) and whose feature snapshot has valid finite mean-reversion evidence may enter calibration. Old v6 outcomes remain queryable audit history but contribute zero rows to v18 bot/global and v13 direction calibration. Status diagnostics distinguish historical archive, current-model rows, feature-eligible rows, sanitized fit rows and selected non-overlapping temporal cohorts.
+
 ## Mean-reversion candidate and temporal-independence contract (v1.0.55)
 
 `mean_reversion_score` is a continuous candidate-quality feature, not a direct estimate of net PnL. Publication requires valid evidence on at least three closed timeframes and compares the aggregate score with `MEAN_REVERSION_MIN_SCORE` (default `0.25`). Below the floor the row is strategy `no_trade`; absent/invalid evidence is hard `blocked`. Neither branch may be overridden by LLM review. The score gate does not assert negative expectancy: only matured retained proxy returns and their uncertainty bounds may produce `positive`, `negative`, `uncertain` or `insufficient` monetary states.
