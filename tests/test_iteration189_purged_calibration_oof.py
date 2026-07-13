@@ -51,9 +51,11 @@ def test_fit_logreg_passes_exact_label_availability_into_walk_forward_oof(monkey
             "score": -0.8 + i * 0.2,
             "success": i % 2,
             "ret": 0.08 if i % 2 else -0.01,
-            "ts": 1_000 + i * 60,
+            # This test isolates OOF timestamp forwarding, so its monetary
+            # fixtures must be temporally independent rather than an overlap chain.
+            "ts": 1_000 + i * 300,
             "horizon_sec": 180,
-            "label_available_ts": 1_000 + i * 60 + 240,
+            "label_available_ts": 1_000 + i * 300 + 240,
             "reasons": {},
         }
         for i in range(8)

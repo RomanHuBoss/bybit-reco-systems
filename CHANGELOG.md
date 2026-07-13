@@ -1,3 +1,16 @@
+## 2026-07-13 - v1.0.55 - mean-reversion and temporal-evidence recovery
+
+- Fixed a HIGH model-policy shutdown defect: the hard-coded `mean_reversion_score >= 0.55` screen had zero passes in the supplied 10,000-row PostgreSQL recommendation export (maximum `0.3510`, p95 `0.2926`). The screen is now explicit as `MEAN_REVERSION_MIN_SCORE`, default `0.25`.
+- Preserved fail-closed semantics: missing/invalid multi-timeframe evidence remains `blocked`; a valid score below the candidate floor remains `no_trade`; positive monetary expectancy must still be proven separately from matured retained proxy outcomes.
+- Fixed a MEDIUM diagnostic defect: a weak mean-reversion score no longer claims that commissions have proven negative expectancy.
+- Fixed a HIGH temporal-evidence liveness defect: same-timestamp cross-sectional rows are collapsed to one decision cohort, then earliest-finish interval scheduling selects a maximum-cardinality pairwise non-overlapping cohort set. Transitive overlap chains can no longer freeze `temporal_cluster_count` at one indefinitely.
+- Bumped bot/global calibrator identities from v16 to v17 so retained outcomes are refitted under the corrected temporal contract. Outcome contract remains `grid_label_v26`; direction calibration remains v12; model identity is unchanged.
+- Removed packaged SQLite bootstrap/runtime-lock database files from the release. SQLite support and schema bootstrap code remain unchanged.
+- Added `tests/test_iteration243_mean_reversion_temporal_recovery.py` with six red-to-green regressions; corrected one legacy OOF fixture whose overlapping timestamps unintentionally tested the superseded cluster contract; synchronized version/calibrator assertions.
+- Updated README, trading/architecture/risk/scenario/module documentation, operator DOCX/PDF and `how_to_trade.png`.
+- Baseline: 1072/1072 unique test nodes passed in six exhaustive non-overlapping batches; monolithic pytest timed out at 73% and was not counted. Post-check: 1078/1078 unique test nodes passed in six exhaustive non-overlapping batches; targeted regression 6/6 twice, PostgreSQL offline subset 24/24, SQLite fresh schema/re-init, compileall, Node syntax, release and document checks passed.
+- No relational schema, migration, public API route, outcome-label or execution-boundary change. Live PostgreSQL integration was not run because no disposable test DSN was provided. Ruff remained unavailable; `pip check` retained the unrelated environment MoviePy/Pillow conflict.
+
 ## 2026-07-13 - v1.0.54 - purged OOF feature-calibration activation gate
 
 - Fixed a HIGH model-validation fail-open defect: full-sample feature LogReg coefficients were exposed as calibrated confidence even when purged chronological OOF produced too few or zero validation predictions.

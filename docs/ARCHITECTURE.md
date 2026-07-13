@@ -1,3 +1,9 @@
+## v1.0.55 candidate-screen and temporal-thinning flow
+
+`app/settings.py` owns the bounded `MEAN_REVERSION_MIN_SCORE` candidate floor. `app/recommender.py::_mean_reversion_grid_blocks()` distinguishes missing evidence (hard block) from a valid score below that floor (strategy `no_trade`) and deliberately makes no PnL claim. The independent `app/calibration.py` monetary gate remains mandatory for actionability.
+
+`app/calibration.py::_temporal_cluster_return_diagnostics()` now forms one cohort per recommendation timestamp, computes a cross-sectional weighted mean without symbol-count credit, and applies earliest-finish interval scheduling. The selected cohort intervals are pairwise non-overlapping and maximal in count. v17 bot/global keys force recomputation from retained outcomes without deleting rows or changing relational schema.
+
 ## v1.0.54 calibration activation flow
 
 `matured historical outcomes` -> `monetary/temporal gates` -> `score-only Platt baseline` -> `feature extraction` -> `purged chronological OOF logits` -> `OOF Platt-on-top` -> `feature LogReg activation`.

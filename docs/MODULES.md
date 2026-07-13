@@ -1,3 +1,11 @@
+## v1.0.55 module responsibility update
+
+- `app/settings.py`: validates `MEAN_REVERSION_MIN_SCORE` in `[0,1]`, default `0.25`.
+- `app/recommender.py`: uses the configured floor as a candidate screen and no longer describes a weak score as proven negative expectancy.
+- `app/calibration.py`: collapses same-timestamp cross-sectional outcomes and selects a maximal pairwise non-overlapping temporal cohort set; bot/global identities move to v17.
+- `app/main.py`: publishes FastAPI `1.0.55`; outcome/model/direction identities and schema remain unchanged.
+- `tests/test_iteration243_mean_reversion_temporal_recovery.py`: covers runtime-observed score reachability, truthful diagnostics, transitive overlap recovery, cross-sectional deduplication, deterministic thinning and env configuration.
+
 ## v1.0.54 module responsibility update
 
 - `app/calibration.py`: requires sufficient purged chronological OOF predictions and a fitted Platt-on-top before exposing feature LogReg coefficients; persists OOF activation diagnostics.

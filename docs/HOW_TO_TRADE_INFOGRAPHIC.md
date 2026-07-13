@@ -1,3 +1,11 @@
+## v1.0.55 mean-reversion and temporal-evidence rule
+
+- Current contracts: application `1.0.55`, outcome `grid_label_v26`, bot/global calibrators v17, direction calibrator v12.
+- `MEAN_REVERSION_MIN_SCORE=0.25` is a candidate-screen default, not a promise of profit and not proof of negative expectancy below the floor.
+- `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` is hard blocked; `MEAN_REVERSION_EDGE_UNCONFIRMED` is strategy `NO TRADE`.
+- Same-timestamp symbols count as one decision cohort. Temporal diagnostics use a maximal pairwise non-overlapping cohort set, so overlap chains cannot freeze `time_clusters` at one forever.
+- Monetary lower bounds, purged OOF activation, economics, risk and operator-profile gates remain mandatory.
+
 ## v1.0.54 purged OOF confidence rule
 
 - `bot_logreg` is permitted only when `purged_oof_status=sufficient`.
@@ -126,7 +134,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 ## Independent range-edge check
 
 - Low trend is not a trade signal. A driftless random walk can also have a flat MA slope and still lose after costs.
-- Actionable grid requires independent anti-persistence evidence on at least three closed timeframes and aggregate `mean_reversion_score >= 0.55`.
+- Grid screening requires independent anti-persistence evidence on at least three closed timeframes and aggregate `mean_reversion_score >= MEAN_REVERSION_MIN_SCORE` (default `0.25`). Passing this screen does not establish positive expectancy.
 - `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` is hard `blocked`; `MEAN_REVERSION_EDGE_UNCONFIRMED` is strategy `no_trade`. Both mean do not launch.
 - The UI field formerly perceived as R/R is a heuristic **capture/risk proxy**, not an actual profit/loss ratio.
 

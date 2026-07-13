@@ -178,6 +178,7 @@ class Settings:
     db_engine: str = SQLITE
 
     require_conf_gate: bool = False
+    mean_reversion_min_score: float = 0.25
     llm_reviewer_enabled: bool = False
     llm_reviewer_mode: str = "advisory"
     llm_reviewer_provider: str = "ollama"
@@ -301,6 +302,7 @@ def load_settings() -> Settings:
         risk_limits=risk_limits,
         min_score_to_recommend=_env_float("MIN_SCORE_TO_RECOMMEND", 0.08, minimum=-1.0, maximum=1.0),
         min_conf_to_recommend=_env_float("MIN_CONF_TO_RECOMMEND", 0.52, minimum=0.0, maximum=1.0),
+        mean_reversion_min_score=_env_float("MEAN_REVERSION_MIN_SCORE", 0.25, minimum=0.0, maximum=1.0),
         taker_fee_bps_linear=_env_float("TAKER_FEE_BPS_LINEAR", 6.0, minimum=0.0, maximum=500.0),
         master_key=master_key,
         admin_api_key=admin_api_key,

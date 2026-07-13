@@ -109,8 +109,8 @@ def test_new_model_identity_and_calibrators_do_not_reuse_legacy_range_semantics(
     import app.recommender as recommender
 
     assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v6-historical-proxy-shadow-roots"
-    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v16")
-    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v16")
+    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v17")
+    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v17")
     assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v12"
 
 

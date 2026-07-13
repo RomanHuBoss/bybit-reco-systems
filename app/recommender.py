@@ -1848,15 +1848,28 @@ def _stable_range_score(f: dict[str, Any], agg: dict[str, Any]) -> tuple[float, 
     }
 
 
-def _mean_reversion_grid_blocks(range_meta: dict[str, Any]) -> list[dict[str, str]]:
+MEAN_REVERSION_MIN_SCORE_DEFAULT = 0.25
+
+
+def _mean_reversion_grid_blocks(
+    range_meta: dict[str, Any],
+    min_score: float = MEAN_REVERSION_MIN_SCORE_DEFAULT,
+) -> list[dict[str, str]]:
     """Classify independent oscillation evidence for the grid publication gate.
 
-    Missing evidence is a hard data-quality block. A valid but weak edge is a
-    strategy decision (``no_trade``), not a Bybit/risk/preflight failure.
+    Missing evidence is a hard data-quality block. A valid but weak score is a
+    strategy ``no_trade`` decision, not proof of negative expectancy. The score
+    floor is only a selective candidate screen; the separate retained-outcome
+    monetary gate remains the authority for positive/negative proxy expectancy.
     """
     meta = dict(range_meta or {})
     valid = bool(meta.get("mean_reversion_evidence_valid") is True)
     score = _clamp(_finite_float(meta.get("mean_reversion_score"), 0.0), 0.0, 1.0)
+    threshold = _clamp(
+        _finite_float(min_score, MEAN_REVERSION_MIN_SCORE_DEFAULT),
+        0.0,
+        1.0,
+    )
     tf_count = int(_safe_int_or_none(meta.get("mean_reversion_tf_count")) or 0)
     if not valid or tf_count < 3:
         return [{
@@ -1867,13 +1880,14 @@ def _mean_reversion_grid_blocks(range_meta: dict[str, Any]) -> list[dict[str, st
                 "отсутствие тренда не считается самостоятельным grid edge"
             ),
         }]
-    if score < 0.55:
+    if score < threshold:
         return [{
             "code": "MEAN_REVERSION_EDGE_UNCONFIRMED",
             "decision": "no_trade",
             "msg": (
-                f"mean_reversion_score={score:.2f} < 0.55; рынок может быть driftless/random-walk, "
-                "а не повторяемым диапазоном, поэтому комиссии дают отрицательное ожидание"
+                f"mean_reversion_score={score:.2f} < configured candidate floor={threshold:.2f}; "
+                "повторяемая anti-persistence недостаточно выражена, а положительное monetary "
+                "expectancy не доказано до отдельной проверки matured proxy outcomes"
             ),
         }]
     return []
@@ -4026,7 +4040,10 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                         "code": "INSUFFICIENT_MTF_HISTORY_FOR_GRID",
                         "msg": f"использовано только {len(_tf_used_now)} timeframes для direction/regime; futures grid не публикуется без минимум 3 закрытых TF-историй",
                     })
-                for _mr_decision in _mean_reversion_grid_blocks(_range_meta_now):
+                for _mr_decision in _mean_reversion_grid_blocks(
+                    _range_meta_now,
+                    min_score=settings.mean_reversion_min_score,
+                ):
                     if _mr_decision.get("decision") == "no_trade":
                         thesis_no_trade_reasons.append(dict(_mr_decision))
                     else:

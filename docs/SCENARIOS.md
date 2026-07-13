@@ -1,3 +1,19 @@
+## Scenario: high-tail candidate was impossible under the fixed 0.55 gate (v1.0.55)
+
+1. Valid evidence exists on five timeframes and aggregate `mean_reversion_score=0.351`.
+2. The old fixed `0.55` rule converted the candidate to `no_trade`, although `0.351` was the maximum in the supplied 10,000-row export.
+3. With the default `MEAN_REVERSION_MIN_SCORE=0.25`, this candidate passes only the mean-reversion screen.
+4. It is still `no_trade` when monetary expectancy, confidence, economics, leverage profile or risk gates are unproven.
+5. A score below `0.25` receives `MEAN_REVERSION_EDGE_UNCONFIRMED` without claiming proven negative expectancy.
+
+## Scenario: continuous overlap chain still yields independent temporal evidence (v1.0.55)
+
+1. Forty-two recommendation cohorts begin six hours apart and each matures after twelve hours.
+2. Every interval overlaps the next, so connected-component merging produced one cluster indefinitely.
+3. Same-timestamp symbols are first collapsed into one decision cohort.
+4. Earliest-finish interval scheduling selects cohorts 1, 3, 5, ...: 21 pairwise non-overlapping observations.
+5. The temporal lower bound is evaluated on those 21 means; same-time symbol count cannot inflate it.
+
 ## Scenario: many rows but no usable purged OOF validation (v1.0.54)
 
 1. The retained cohort contains 320 valid rows and positive monetary/temporal lower bounds.
@@ -357,7 +373,7 @@ Expected behavior:
 ## 19. Низкий тренд без подтверждённой возвратности
 
 1. Multi-timeframe trendiness низкий, поэтому legacy `1 - trend_strength` выглядел бы как сильный range score.
-2. Independent lag-1 autocorrelation / variance-ratio / sign-reversal aggregate отсутствует, недостаточен либо даёт `mean_reversion_score < 0.55`.
+2. Independent lag-1 autocorrelation / variance-ratio / sign-reversal aggregate отсутствует, недостаточен либо ниже configured `MEAN_REVERSION_MIN_SCORE` (default `0.25`).
 3. Recommendation остаётся audit-visible, но получает `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` или `MEAN_REVERSION_EDGE_UNCONFIRMED`; actionable `executed` path не создаётся.
 4. Высокий raw score, LLM verdict или старый calibrator не отменяют блок. Оператор ждёт нового подтверждённого режима либо пересматривает стратегию.
 

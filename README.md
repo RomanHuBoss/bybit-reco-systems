@@ -1,3 +1,11 @@
+## Mean-reversion and temporal-evidence recovery (v1.0.55)
+
+The fixed `mean_reversion_score >= 0.55` publication rule was not calibrated to the runtime distribution. In the supplied PostgreSQL export of 10,000 recommendations, the maximum was `0.3510`, the 95th percentile was `0.2926`, and no row reached `0.55`. The gate is now an explicit candidate-screen setting, `MEAN_REVERSION_MIN_SCORE` (default `0.25`). It remains fail-closed below the floor, but it no longer claims that a weak score proves negative expectancy. Profitability remains a separate retained-outcome requirement: `PROXY_MONETARY_EXPECTANCY_UNPROVEN/NON_POSITIVE` still keeps the recommendation in shadow `no_trade` until uncertainty-bounded monetary evidence is positive.
+
+Temporal validation no longer merges an indefinitely chained sequence of partially overlapping horizons into one permanent connected component. Rows published at the same recommendation timestamp are collapsed to one cross-sectional decision cohort, then the standard earliest-finish interval-scheduling rule selects a maximum-cardinality set of pairwise non-overlapping cohorts. Many symbols in one decision still count once, but continuous operation can now accumulate genuinely non-overlapping time evidence.
+
+FastAPI version is `1.0.55`; bot/global calibration identities are v17. Outcome contract remains `grid_label_v26`, direction calibration remains v12, and model identity is unchanged. Existing outcomes are retained and re-evaluated under the v17 temporal contract. DB schema and public routes are unchanged; existing deployments may omit the new env variable and receive the default `0.25`.
+
 ## Purged OOF activation gate for feature calibration (v1.0.54)
 
 Bot-specific feature LogReg is no longer exposed as calibrated confidence merely because a full-sample fit produced coefficients. The feature model now requires at least `CALIB_MIN_SAMPLES` genuinely out-of-fold predictions from the existing purged chronological validation path, followed by a fitted Platt-on-top calibrator. If temporal concentration or label-availability purging leaves fewer validation predictions, the feature coefficients are withheld and confidence degrades to the simpler score-only Platt baseline (or raw capped confidence if that baseline is also unavailable).
@@ -56,7 +64,7 @@ A settled funding receipt is real account cashflow, but it is not treated as dur
 
 Исправлена **HIGH model-validation fail-open ошибка**: до v1.0.45 bot/global calibration считала outcomes разных символов независимыми строками, даже если все они использовали один и тот же перекрывающийся 12-часовой рыночный интервал. Поэтому 80 коррелированных монет могли выполнить `CALIB_MIN_SAMPLES=80`, дать положительную row-level lower bound и включить fitted calibration после фактически одного временного эксперимента.
 
-Теперь matured returns объединяются по связным компонентам пересекающихся интервалов `[publication/entry ts, label_available_ts]`. Каждый компонент даёт только одно временное наблюдение: средний return внутри компонента и один recency weight. Для штатного `CALIB_MIN_SAMPLES=80` требуется не менее 20 эффективных неперекрывающихся temporal clusters, а односторонняя 95% нижняя граница должна быть положительной как по строкам, так и по cluster means. Большое число коррелированных символов больше не создаёт искусственные степени свободы.
+В v1.0.55 matured returns сначала объединяются в один cross-sectional decision cohort по одинаковому recommendation `ts`, после чего earliest-finish scheduling выбирает максимальный набор попарно неперекрывающихся интервалов `[ts, label_available_ts]`. Один cohort даёт одно временное наблюдение и один recency weight. Для штатного `CALIB_MIN_SAMPLES=80` требуется не менее 20 эффективных selected cohorts, а односторонняя 95% нижняя граница должна быть положительной как по строкам, так и по cohort means. Большое число коррелированных символов и транзитивная overlap-цепочка не создают ложные степени свободы и не замораживают count на единице.
 
 FastAPI version: `1.0.45`. Bot/global calibrator identities обновлены до `logreg_futures_grid_v9` и `logreg_global_v9`, поэтому прежние v8 coefficients не используются под новым контрактом. Схема БД, routes, env и `grid_label_v18` не менялись. Это устраняет псевдорепликацию, но не доказывает live profitability; cross-cluster dependence и proxy-to-fill gap остаются предметом walk-forward/bootstrap validation.
 
@@ -262,7 +270,7 @@ Execution preflight дополнительно оценивает консерв
 - повышенной частоты смены знака доходности;
 - валидного evidence минимум на трёх закрытых timeframes с достаточным весовым покрытием.
 
-Если данных недостаточно, публикуется `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`. Если агрегированный `mean_reversion_score < 0.55`, публикуется `MEAN_REVERSION_EDGE_UNCONFIRMED`. Низкий trend score сам по себе больше не является grid edge. Порог является консервативным safety gate, а не доказательством прибыльности: microstructure bounce, regime shift и execution costs всё ещё должны проверяться walk-forward/shadow статистикой по фактическим fills.
+Если данных недостаточно, публикуется `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`. Если агрегированный `mean_reversion_score` ниже `MEAN_REVERSION_MIN_SCORE` (default `0.25`), публикуется `MEAN_REVERSION_EDGE_UNCONFIRMED`. Низкий trend score сам по себе не является grid edge. Порог является candidate screen, а не доказательством прибыльности или убытка: microstructure bounce, regime shift и execution costs проверяются отдельной walk-forward/shadow статистикой.
 
 Модель имеет новую audit identity `bybit-taxonomy-v3-mean-reversion`. Старые calibration coefficients и outcome features с семантикой `range = 1 - trend` не смешиваются с новой выборкой. Поле `expected_rr` сохранено для API-совместимости, но в UI отображается как **прокси capture/risk**: это эвристика ранжирования, не фактическое отношение прибыли к убытку.
 

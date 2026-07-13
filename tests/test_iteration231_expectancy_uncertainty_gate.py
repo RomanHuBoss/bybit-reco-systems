@@ -114,8 +114,8 @@ def test_uncertainty_diagnostics_survive_persistence() -> None:
 
 
 def test_calibrator_identity_changes_for_new_expectancy_contract() -> None:
-    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v16")
-    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v16")
+    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v17")
+    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v17")
 
 
 def test_recommender_keeps_raw_high_confidence_shadow_only_without_positive_expectancy(tmp_path, monkeypatch) -> None:

@@ -1,3 +1,11 @@
+## Resolved in v1.0.55: unreachable mean-reversion gate and temporal-cluster percolation
+
+The fixed publication cutoff `0.55` was a synthetic false-positive filter, not a runtime-calibrated candidate threshold. The supplied 10,000-row PostgreSQL export had maximum `0.3510`, p95 `0.2926`, and zero passes, so the rule could suppress every recommendation regardless of separately positive grid economics. The message also incorrectly stated that commissions *gave* negative expectancy although that conclusion was not established by the score.
+
+`MEAN_REVERSION_MIN_SCORE` is now explicit and defaults to `0.25`, which is only a selective candidate floor. Missing multi-timeframe evidence remains hard blocked. Weak valid evidence remains `no_trade`, but positive/negative expectancy is asserted only by the retained monetary-outcome gate. The default is not claimed to be optimal and should be reviewed against longer chronological outcomes; `0.25` was chosen to restore a non-empty high-tail candidate set without bypassing monetary, confidence, economics or risk gates.
+
+The previous connected-component temporal algorithm could also merge a continuous chain of 12-hour intervals forever when each new cohort started before the prior horizon ended. Same-timestamp cross-sectional rows are now collapsed to one decision cohort and an earliest-finish greedy schedule selects pairwise non-overlapping cohorts. This prevents symbol-count inflation and transitive percolation. Residual risk remains: non-overlapping windows can still share a persistent market regime, so block bootstrap, regime-aware walk-forward and exact execution evidence remain necessary.
+
 ## Resolved in v1.0.54: feature LogReg activated without purged OOF evidence
 
 Before v1.0.54 `fit_logreg()` trained feature coefficients on the full retained sample and returned `fitted=true` even when chronological purging left fewer than the required OOF predictions. A temporally concentrated 320-row sample could therefore expose 13 in-sample coefficients while OOF validation contained zero rows. Recommender diagnostics labelled that source `bot_logreg`, overstating probability calibration and model readiness.
@@ -50,7 +58,7 @@ The fix persists a verified `bybit_linear_filters_v1` snapshot and the snapped t
 
 До v1.0.45 денежная calibration считала каждую matured outcome row отдельным статистическим наблюдением. Даже после same-symbol shadow-root dedupe 80 монет, размеченных на одном перекрывающемся 12-часовом рынке, могли дать `n=80`, положительную row-level lower bound и `fitted=true`, хотя независимый временной эксперимент был один. Корреляция криптоактивов и общий market regime делали такую уверенность ложной.
 
-Исправление: строки объединяются по связным компонентам пересекающихся `[ts, label_available_ts]` интервалов. Один overlap component даёт одну cluster mean и один recency weight. При `CALIB_MIN_SAMPLES=80` требуется минимум 20 эффективных временных кластеров; положительными должны быть обе односторонние 95% lower bounds - row-level и cluster-level. Остаточный риск: неперекрывающиеся горизонты всё ещё могут быть зависимы из-за длительного режима, поэтому этот gate не заменяет block bootstrap, purged walk-forward и exact-fill validation.
+Текущая реализация v1.0.55 объединяет одинаковый recommendation `ts` в один cross-sectional cohort и выбирает earliest-finish максимальный набор попарно неперекрывающихся `[ts, label_available_ts]` интервалов. Один selected cohort даёт одну mean и один recency weight. При `CALIB_MIN_SAMPLES=80` требуется минимум 20 эффективных временных наблюдений; положительными должны быть обе односторонние 95% lower bounds - row-level и cohort-level. Остаточный риск: неперекрывающиеся горизонты всё ещё могут быть зависимы из-за длительного режима, поэтому gate не заменяет block bootstrap, purged walk-forward и exact-fill validation.
 
 ## Closed in v1.0.44 — partial execution ledger treated as final exact PnL
 
@@ -379,7 +387,7 @@ Legacy `range_score` почти полностью равнялся `1 - trend_s
 
 ### HIGH/RESIDUAL: положительное mean-reversion evidence не доказывает net alpha
 
-Negative autocorrelation может отражать bid/ask bounce, stale marks или краткоживущий microstructure effect, который нельзя исполнить после spread, fees, slippage, funding и latency. Порог 0.55 является conservative false-positive filter, а не оценкой expected net PnL. До достаточной независимой walk-forward/shadow выборки по exact fills проект остаётся генератором гипотез.
+Negative autocorrelation может отражать bid/ask bounce, stale marks или краткоживущий microstructure effect, который нельзя исполнить после spread, fees, slippage, funding и latency. `MEAN_REVERSION_MIN_SCORE` является configurable candidate filter, а не оценкой expected net PnL. До достаточной независимой walk-forward/shadow выборки по exact fills проект остаётся генератором гипотез.
 
 ### MEDIUM/RESIDUAL: новые calibrators временно будут unfitted
 

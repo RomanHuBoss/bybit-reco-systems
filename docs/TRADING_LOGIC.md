@@ -1,3 +1,9 @@
+## Mean-reversion candidate and temporal-independence contract (v1.0.55)
+
+`mean_reversion_score` is a continuous candidate-quality feature, not a direct estimate of net PnL. Publication requires valid evidence on at least three closed timeframes and compares the aggregate score with `MEAN_REVERSION_MIN_SCORE` (default `0.25`). Below the floor the row is strategy `no_trade`; absent/invalid evidence is hard `blocked`. Neither branch may be overridden by LLM review. The score gate does not assert negative expectancy: only matured retained proxy returns and their uncertainty bounds may produce `positive`, `negative`, `uncertain` or `insufficient` monetary states.
+
+Temporal evidence is computed from decision cohorts. All rows with the same recommendation `ts` are collapsed to one cross-sectional weighted return and the longest maturity boundary. Cohorts are ordered by end time and greedily thinned to the maximum-cardinality pairwise non-overlapping set. At `CALIB_MIN_SAMPLES=80`, at least 20 effective selected cohorts and positive one-sided 95% lower bounds at row and cohort levels remain required.
+
 ## Purged OOF feature-calibration contract (v1.0.54)
 
 A full-sample feature LogReg fit is not itself out-of-sample probability evidence. Feature coefficients may influence `confidence` only when chronological OOF predictions are generated after label-availability purging, their count is at least `CALIB_MIN_SAMPLES`, and Platt-on-top is fitted on those OOF logits.
@@ -362,7 +368,7 @@ UI обязан показывать этот блок рядом с execution/l
 - variance ratio для четырёхшаговой доходности;
 - долю последовательных доходностей с противоположным знаком.
 
-Multi-timeframe aggregate считается валидным при минимум трёх TF и весовом покрытии не менее 40%. В publication gate требуется `mean_reversion_score >= 0.55`. Валидный, но слабый evidence получает `MEAN_REVERSION_EDGE_UNCONFIRMED` и статус `no_trade`: это отрицательное решение торгового тезиса, а не техническая ошибка Bybit/preflight. При недостатке обязательной истории применяется hard block `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`. Ни `no_trade`, ни hard block не могут быть отменены высоким legacy range score, LLM verdict или raw confidence.
+Multi-timeframe aggregate считается валидным при минимум трёх TF и весовом покрытии не менее 40%. В publication gate используется `MEAN_REVERSION_MIN_SCORE` (по умолчанию `0.25`). Валидный, но более слабый evidence получает `MEAN_REVERSION_EDGE_UNCONFIRMED` и статус `no_trade`: это отрицательное решение candidate-screen, а не доказательство отрицательного PnL и не техническая ошибка Bybit/preflight. При недостатке обязательной истории применяется hard block `MEAN_REVERSION_EVIDENCE_INSUFFICIENT`. Ни `no_trade`, ни hard block не могут быть отменены высоким legacy range score, LLM verdict или raw confidence; monetary expectancy проверяется отдельно по matured outcomes.
 
 Threshold был sanity-checked на детерминированной Monte-Carlo выборке: среди 200 IID paths gate пропускает не более одного, тогда как для материально anti-persistent AR(1), `phi=-0.35`, пропускается не менее 150. Это unit-level discriminative check, а не оценка live profitability. Bid/ask bounce и transient anti-persistence могут быть неисполняемыми после costs, поэтому положительный score остаётся только предварительным evidence.
 

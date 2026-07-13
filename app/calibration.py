@@ -531,14 +531,15 @@ def _temporal_cluster_return_diagnostics(
     *,
     confidence_level: float = 0.95,
 ) -> dict[str, float | int | None]:
-    """Estimate monetary uncertainty on non-overlapping market intervals.
+    """Estimate monetary uncertainty from pairwise non-overlapping decisions.
 
-    Cross-sectional crypto outcomes whose observation windows overlap share market
-    information and are not independent evidence.  Rows are therefore converted to
-    intervals ``[ts, label_available_ts]`` and merged into connected overlap
-    components.  Each component contributes one weighted mean return and one recency
-    weight, so neither symbol count nor an arbitrary wall-clock bucket boundary can
-    manufacture statistical degrees of freedom.
+    Cross-sectional rows published at the same recommendation timestamp are one
+    market decision and are first collapsed to one weighted cohort mean. Cohorts
+    are then thinned with the standard earliest-finish interval-scheduling rule.
+    The selected intervals are pairwise non-overlapping, while a long transitive
+    chain of partially overlapping horizons cannot percolate into one permanent
+    connected component. Row count and symbol count therefore still cannot
+    manufacture temporal degrees of freedom.
     """
     observations: list[tuple[int, int, float, float]] = []
     horizon_candidates: list[int] = []
@@ -569,36 +570,37 @@ def _temporal_cluster_return_diagnostics(
             "weighted_temporal_mean_return_lower_bound": None,
         }
 
-    observations.sort(key=lambda item: (item[0], item[1]))
-    clusters: list[list[tuple[float, float]]] = []
-    current_end: int | None = None
-    current_observations: list[tuple[float, float]] = []
+    # One recommender publication timestamp represents one decision across the
+    # symbol universe. Use the longest maturity boundary conservatively and one
+    # cross-sectional weighted mean; do not reward the number of symbols.
+    by_decision_ts: dict[int, list[tuple[int, float, float]]] = {}
     for start_ts, end_ts, ret, weight in observations:
-        # Touching intervals are consecutive and may form separate evidence;
-        # any strict overlap, including transitive overlap, remains one cluster.
-        if current_end is None or start_ts >= current_end:
-            if current_observations:
-                clusters.append(current_observations)
-            current_observations = [(ret, weight)]
-            current_end = end_ts
-        else:
-            current_observations.append((ret, weight))
-            current_end = max(current_end, end_ts)
-    if current_observations:
-        clusters.append(current_observations)
+        by_decision_ts.setdefault(start_ts, []).append((end_ts, ret, weight))
 
-    cluster_returns: list[float] = []
-    cluster_weights: list[float] = []
-    for cluster in clusters:
-        total_weight = sum(weight for _ret, weight in cluster)
+    decision_cohorts: list[tuple[int, int, float, float]] = []
+    for start_ts, items in by_decision_ts.items():
+        total_weight = sum(weight for _end, _ret, weight in items)
         if total_weight <= 0.0:
             continue
-        cluster_returns.append(
-            sum(ret * weight for ret, weight in cluster) / total_weight
-        )
-        # One overlap component contributes one statistical observation.  The
-        # maximum recency weight preserves time decay without rewarding row count.
-        cluster_weights.append(max(weight for _ret, weight in cluster))
+        decision_cohorts.append((
+            int(start_ts),
+            max(int(end) for end, _ret, _weight in items),
+            sum(ret * weight for _end, ret, weight in items) / total_weight,
+            max(weight for _end, _ret, weight in items),
+        ))
+
+    # Earliest-finish greedy selection is the maximum-cardinality set of
+    # pairwise non-overlapping intervals. Touching half-open horizons are allowed.
+    decision_cohorts.sort(key=lambda item: (item[1], item[0], item[2], item[3]))
+    cluster_returns: list[float] = []
+    cluster_weights: list[float] = []
+    last_end: int | None = None
+    for start_ts, end_ts, ret, weight in decision_cohorts:
+        if last_end is not None and start_ts < last_end:
+            continue
+        cluster_returns.append(ret)
+        cluster_weights.append(weight)
+        last_end = end_ts
 
     temporal = _weighted_return_diagnostics(
         cluster_returns,
@@ -1335,14 +1337,14 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
-# v16: full feature LogReg requires sufficient purged chronological OOF
-#      predictions and a fitted Platt-on-top.  Otherwise confidence degrades to
-#      the score-only baseline instead of exposing in-sample feature coefficients.
+# v17: retains the v16 purged-OOF activation rule and replaces transitive
+#      overlap components with deterministic non-overlapping decision cohorts.
+#      Existing outcomes remain valid, but cached v16 diagnostics must refit.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v16",
+    "futures_grid": "logreg_futures_grid_v17",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v16"
+GLOBAL_LOGREG_KEY = "logreg_global_v17"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600
