@@ -87,7 +87,8 @@ def _calibration_rows(*, success_value, ts_value, count: int = 100) -> list[dict
             "success": success,
             "ret": 0.02 if i % 2 else -0.01,
             "ts": ts,
-            "label_available_ts": ts if not isinstance(ts, bool) else ts,
+            "label_available_ts": ts + 60 if not isinstance(ts, bool) else ts,
+            "horizon_sec": 60,
             "reasons": {},
         })
     return rows
@@ -96,7 +97,7 @@ def _calibration_rows(*, success_value, ts_value, count: int = 100) -> list[dict
 def test_calibration_rejects_boolean_labels_and_boolean_timestamps() -> None:
     boolean_labels = _calibration_rows(
         success_value=lambda i: i % 2 == 0,
-        ts_value=lambda i, now: now - i * 60,
+        ts_value=lambda i, now: now - (i + 1) * 60,
     )
     model = calibration.fit_logreg(boolean_labels, min_samples=20, logreg_min_samples=300)
     assert model.fitted is False
@@ -112,7 +113,7 @@ def test_calibration_rejects_boolean_labels_and_boolean_timestamps() -> None:
 
     valid_rows = _calibration_rows(
         success_value=lambda i: i % 2,
-        ts_value=lambda i, now: now - i * 60,
+        ts_value=lambda i, now: now - (i + 1) * 60,
     )
     model = calibration.fit_logreg(valid_rows, min_samples=20, logreg_min_samples=300)
     assert model.fitted is True

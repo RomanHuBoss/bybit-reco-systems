@@ -55,9 +55,9 @@ def test_long_same_level_replacement_order_keeps_full_quantity(tmp_path: Path) -
         db.init_db(conn)
         base_ts = 1_710_000_000
         _seed(conn, base_ts=base_ts, candles=[
-            (100.5, 100.5, 100.0, 100.0),
-            (100.0, 102.0, 100.0, 102.0),
-            (102.0, 102.0, 100.0, 100.0),
+            (100.5, 100.5, 99.9, 99.9),
+            (99.9, 102.1, 99.9, 102.1),
+            (102.1, 102.1, 99.9, 99.9),
         ])
 
         success, ret_proxy = _grid_outcome(
@@ -79,9 +79,9 @@ def test_short_same_level_replacement_order_keeps_full_quantity(tmp_path: Path) 
         db.init_db(conn)
         base_ts = 1_710_100_000
         _seed(conn, base_ts=base_ts, candles=[
-            (100.5, 101.0, 100.5, 101.0),
-            (101.0, 101.0, 99.0, 99.0),
-            (99.0, 101.0, 99.0, 101.0),
+            (100.5, 101.1, 100.5, 101.1),
+            (101.1, 101.1, 98.9, 98.9),
+            (98.9, 101.1, 98.9, 101.1),
         ])
 
         success, ret_proxy = _grid_outcome(
@@ -101,9 +101,9 @@ def test_duplicate_level_quantity_charges_every_execution_leg(tmp_path: Path) ->
         db.init_db(conn)
         base_ts = 1_710_200_000
         _seed(conn, base_ts=base_ts, candles=[
-            (100.5, 100.5, 100.0, 100.0),
-            (100.0, 102.0, 100.0, 102.0),
-            (102.0, 102.0, 100.0, 100.0),
+            (100.5, 100.5, 99.9, 99.9),
+            (99.9, 102.1, 99.9, 102.1),
+            (102.1, 102.1, 99.9, 99.9),
         ])
 
         success, ret_proxy = _grid_outcome(
@@ -126,9 +126,9 @@ def test_same_level_quantity_does_not_leave_phantom_inventory_at_funding(tmp_pat
         db.init_db(conn)
         base_ts = 1_710_300_000
         _seed(conn, base_ts=base_ts, candles=[
-            (100.5, 100.5, 100.0, 100.0),
-            (100.0, 102.0, 100.0, 102.0),
-            (102.0, 102.0, 102.0, 102.0),
+            (100.5, 100.5, 99.9, 99.9),
+            (99.9, 102.1, 99.9, 102.1),
+            (102.1, 102.1, 102.1, 102.1),
         ])
         funding = {
             "funding_rate": 0.001,
@@ -220,5 +220,5 @@ def test_daily_loss_fallback_uses_off_grid_active_order_count() -> None:
 
 def test_outcome_contract_is_bumped_for_order_quantity_and_gap_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source

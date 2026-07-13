@@ -2783,8 +2783,9 @@ def test_fit_logreg_tolerates_malformed_feature_snapshot_values():
             "score": score,
             "success": success,
             "ret": 0.02 if success else -0.001,
-            "ts": now - idx * 60,
-            "label_available_ts": now - idx * 60,
+            "ts": now - (idx + 2) * 60,
+            "label_available_ts": now - (idx + 1) * 60,
+            "horizon_sec": 60,
             "reasons": {"feature_snapshot": snap},
         })
 

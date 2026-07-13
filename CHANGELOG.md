@@ -1,3 +1,103 @@
+## 2026-07-13 - v1.0.54 - purged OOF feature-calibration activation gate
+
+- Fixed a HIGH model-validation fail-open defect: full-sample feature LogReg coefficients were exposed as calibrated confidence even when purged chronological OOF produced too few or zero validation predictions.
+- Full feature LogReg now activates only after at least `CALIB_MIN_SAMPLES` purged OOF logits and a fitted Platt-on-top calibrator.
+- Insufficient OOF evidence withholds feature coefficients and degrades to score-only Platt or conservative raw confidence; it does not bypass monetary or temporal expectancy gates.
+- Added persisted/API diagnostics: `purged_oof_status`, `purged_oof_samples`, and `purged_oof_required_samples`.
+- Bumped application to `1.0.54` and bot/global calibrator identities to v16. Outcome contract remains `grid_label_v26`; direction calibration remains v12; no outcome reset, DB schema, route or env change.
+- Added `tests/test_iteration242_purged_oof_activation_gate.py` with concentrated-history, distributed-history and persistence red-to-green cases.
+- Baseline: 1069/1069 unique test nodes passed in exhaustive deterministic batches. Post-check: 1072/1072 unique test nodes passed in 12 exhaustive non-overlapping batches.
+
+## 2026-07-13 - v1.0.53 - horizon-boundary liquidation volume integrity
+
+- Fixed a HIGH proxy-liquidity fail-open defect: the horizon-open segment reused the preceding minute's remaining candle-volume budget.
+- Gap-crossed orders at the exact horizon open now consume the boundary candle's own volume, not historical liquidity from the prior minute.
+- Terminal residual liquidation consumes the same boundary-minute budget; kill-switch liquidation consumes the remaining breach-candle budget.
+- Outcomes wait until the boundary candle is complete and store `label_available_ts = horizon_end_ts + 60`; the configured strategy horizon itself is unchanged.
+- Added `tests/test_iteration241_horizon_boundary_liquidity.py` with four red-to-green cases.
+- Bumped application to `1.0.53`, outcome contract to `grid_label_v26`, bot/global calibrators to v15 and direction calibrator to v12; model identity, DB schema, routes and env are unchanged.
+- Baseline: 1065/1065 test nodes passed in exhaustive batches. Post-check: 1069/1069 test nodes passed.
+
+## 2026-07-13 - v1.0.52 - conservative kill-switch liquidation bound
+
+- Fixed a HIGH proxy-PnL fail-open defect: an intrabar kill-switch breach liquidated residual inventory exactly at the trigger boundary even when the same candle proved continued adverse movement.
+- After processing resting fills up to the boundary, residual short inventory on an upper breach is closed at the observed candle high; residual long inventory on a lower breach is closed at the observed candle low. Favorable continuation does not receive extra credit and keeps the boundary price.
+- Added `kill_switch_fill_confirmation=adverse_observed_extreme_v1` plus boundary, observed-extreme and liquidation-price diagnostics. Gap-through-stop paths remain unavailable.
+- Bumped application to `1.0.52`, outcome contract to `grid_label_v25`, bot/global calibrators to v14 and direction calibrator to v11; model identity, DB schema, routes and env are unchanged.
+- Added `tests/test_iteration240_kill_switch_slippage_bound.py` and updated legacy stop fixtures that encoded perfect boundary execution.
+- Baseline: 1062/1062 tests passed. Post-check: 1065/1065 tests passed.
+
+## 2026-07-13 - v1.0.51 - historical simulation boundary
+
+- Removed the runtime Bybit instrument-metadata dependency from recommendation publication and historical outcome labeling.
+- Missing current `tickSize`, `qtyStep`, `minOrderQty`, `minNotional` or instrument metadata no longer blocks a recommendation or excludes a matured proxy outcome.
+- Removed `exchange_normalizer` from `run_recommender_once` and removed recommendation-thread metadata prefetch/normalization.
+- Added explicit `historical_proxy_only` metadata: no order submission, no runtime execution validation and no exchange fill attestation.
+- Preserved explicit preflight snapping as a separate optional operator diagnostic; it cannot mutate persisted recommendation geometry or calibration evidence.
+- Bumped application to `1.0.51`, model identity to `bybit-taxonomy-v6-historical-proxy-shadow-roots`, outcome contract to `grid_label_v24`, bot/global calibrators to v13 and direction calibrator to v10.
+- Added `tests/test_iteration239_historical_simulation_boundary.py` and rewrote iteration236 to enforce the corrected architecture.
+- DB schema, migrations, public routes and env contract are unchanged.
+- Baseline: 1059/1059 unique nodes passed in exhaustive non-overlapping batches; monolithic run timed out without summary and was not counted.
+- Post-check: 1062/1062 unique nodes passed in six 177-node batches; SQLite fresh/re-init/upgrade, PostgreSQL offline subset, DOCX/PDF/PNG render checks passed.
+
+## 2026-07-13 - v1.0.50 - intrabar replacement-order timing fail-closed
+
+- Fixed a HIGH proxy-execution fail-open defect: a replacement order created after a modeled parent fill could be filled again later in the same one-minute candle, implicitly assuming zero bot latency and known order-placement timing.
+- Replacement orders are now pending until the next candle. If the current candle would cross a newly created replacement, the outcome is unavailable with `intrabar_replacement_fill_timing_unobservable` rather than choosing the optimistic immediate-placement path.
+- Preserved confirmed grid cycles when the parent fill and replacement fill occur in separate candles; completed-cycle PnL, costs, funding and volume-capacity formulas are unchanged.
+- Bumped outcome contract to `grid_label_v23`, bot/global calibrators to v12 and direction calibrator to v9; schema, routes, model identity and env remain unchanged.
+- Added `tests/test_iteration238_intrabar_replacement_latency.py` and corrected three legacy fixtures that encoded zero-latency same-candle replacement fills while preserving their topology/capital assertions.
+- Baseline: 1056/1056 unique test nodes passed through exhaustive non-overlapping batches; one 176-node harness batch required four deterministic 44-node sub-batches.
+- Post-check: 1059/1059 unique test nodes passed in six exhaustive non-overlapping batches; targeted regression 3/3, PostgreSQL offline subset 24/24 and release-artifact subset 16/16 passed.
+- SQLite fresh/re-init and v1.0.49→v1.0.50 upgrade passed with sentinel preservation and legacy calibrator reset. Ruff was unavailable; `pip check` retained the external MoviePy/Pillow conflict.
+
+## 2026-07-13 - v1.0.49 - aggregate candle-volume fill capacity
+
+- Fixed a HIGH proxy-execution fail-open defect: a crossed limit order was assumed fully filled even when its requested base quantity exceeded the entire observed one-minute Bybit kline volume.
+- Added a cumulative per-candle volume budget for initial directional inventory and every simulated grid fill; impossible full-fill paths are now outcome-unavailable instead of profitable/losing labels.
+- Preserve valid trade-through outcomes when observed aggregate volume is sufficient; this check remains a necessary capacity bound and does not claim queue or price-level liquidity.
+- Bumped outcome contract to `grid_label_v22`, bot/global calibrators to v11 and direction calibrator to v8; model identity, DB schema, routes and env remain unchanged.
+- Added `tests/test_iteration237_proxy_fill_volume_capacity.py` with five red-to-green regressions, including wildcard cleanup of all legacy `logreg_*` and `platt_direction_*` state on a label-contract reset.
+- Baseline: 1051/1051 test nodes passed in exhaustive batches. Post-check: 1056/1056 test nodes passed in six exhaustive non-overlapping batches; monolithic pytest did not return a final summary within the harness.
+
+## 2026-07-13 - v1.0.48 - exchange-normalized proxy execution
+
+- Persist the Bybit-normalized arithmetic grid before recommendation publication, using public instrument filters already required by execution preflight.
+- Block and exclude Linear futures-grid recommendations when tick/quantity/minimum-order geometry cannot be proven.
+- Require strict side-aware trade-through instead of exact OHLC touch when reconstructing resting-limit fills.
+- Bump model identity to `bybit-taxonomy-v5-exchange-normalized-shadow-roots`, bot/global calibrators to v10, direction calibrator to v7 and outcome contract to `grid_label_v21`.
+- Add iteration235/236 red-to-green regression coverage and preserve old economic/topology tests with executable price paths.
+- Baseline: 1045 tests passed in exhaustive batches. Post-check: 1051/1051 test nodes passed in exhaustive batches; monolithic pytest did not return a final summary within the harness.
+- No DB schema, migration, API route or environment-variable change.
+
+## 2026-07-13 - v1.0.46 - funding receipt is not canonical alpha
+
+- Fixed a HIGH model/economics fail-open defect: positive settled funding receipts could turn a flat or losing grid proxy into `success=1` and positive calibration return.
+- Canonical proxy `ret` now charges every adverse settled funding cashflow but excludes positive receipts from monetary expectancy and win-rate labels; signed settled funding remains diagnostic only.
+- Bumped `OUTCOME_LABEL_VERSION` to `grid_label_v19` and reset incompatible proxy outcomes plus bot/global/direction calibrators on startup.
+- Fixed the reset path to delete the current `DIRECTION_CALIBRATION_KEY`; the previous hard-coded legacy v4 key could leave a direction calibrator trained on superseded labels.
+- Added `tests/test_iteration234_funding_receipt_not_alpha.py` with four red-to-green checks and corrected the old settled-funding fixture that encoded receipt-as-alpha behavior.
+- No relational schema, public route or environment-variable change.
+
+## 2026-07-13 - v1.0.45 - cross-symbol temporal independence
+
+- Fixed a HIGH model-validation fail-open defect: contemporaneous outcomes from many correlated symbols were counted as independent monetary evidence.
+- Replaced row-count-only monetary proof with overlap-component temporal clustering over `[ts, label_available_ts]`; overlapping and transitively overlapping horizons contribute one cluster mean.
+- Required at least 20 effective non-overlapping temporal clusters for the default `CALIB_MIN_SAMPLES=80`, plus positive one-sided 95% lower bounds at both row and temporal-cluster levels.
+- Bumped bot/global calibrator identities to `logreg_futures_grid_v9` and `logreg_global_v9` so v8 coefficients cannot bypass the new evidence contract.
+- Added `tests/test_iteration233_cross_symbol_temporal_dependence.py` with four red-to-green regressions, including clock-boundary overlap and persistence.
+- Baseline: 1037/1037 unique test nodes passed in exhaustive deterministic batches. Post-check: 1041/1041 unique test nodes passed in exhaustive deterministic batches.
+- No DB schema, migration, public route, environment-variable or outcome-label-version change. Removed an accidentally packaged runtime-lock SQLite file from the release.
+
+## 2026-07-13 — 1.0.44 — terminal execution-evidence finalization
+
+- Fixed a HIGH live-validation fail-open defect: a stopped bot with any single execution event no longer counts as finalized exact PnL.
+- Exact execution summaries now reconcile signed Buy/Sell quantities, expose `buy_qty`, `sell_qty`, `net_position_qty`, `position_flat`, `execution_ledger_complete`, and `total_pnl_finalized`.
+- Live-validation and the `LIVE_VALIDATION_*` stop gate accept only stopped bots whose complete execution ledger is flat within a strict numeric tolerance.
+- Partial/unmatched fills remain visible for audit but are excluded with machine-readable reasons such as `residual_position` or `execution_ledger_incomplete`.
+- Added `tests/test_iteration232_execution_evidence_finalization.py` with three red-to-green checks and updated exact-evidence fixtures to use balanced opening/closing fills.
+- No relational schema, migration, environment variable, public route removal, proxy outcome label, or calibrator identity changed.
+
 ## 2026-07-13 — 1.0.43 — uncertainty-bounded monetary expectancy gate
 
 - Actionable `futures_grid` now requires a strictly positive one-sided 95% lower confidence bound for recency-weighted proxy return, not merely a positive sample mean.

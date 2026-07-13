@@ -204,7 +204,7 @@ def test_two_sided_intrabar_path_with_different_valid_pnl_is_unlabelable(tmp_pat
     try:
         db.init_db(conn)
         base_ts = 1_709_200_000
-        _seed(conn, base_ts=base_ts, candle=(99.0, 99.5, 98.0, 98.5))
+        _seed(conn, base_ts=base_ts, candle=(99.0, 99.5, 97.9, 98.5))
         result = _grid_outcome(
             conn, "linear", "BTCUSDT", 99.0, 98.5,
             base_ts, base_ts + 60, "neutral",
@@ -222,7 +222,7 @@ def test_stop_candle_with_opposite_grid_excursion_is_unlabelable(tmp_path: Path)
     try:
         db.init_db(conn)
         base_ts = 1_709_300_000
-        _seed(conn, base_ts=base_ts, candle=(100.0, 102.5, 99.0, 101.0))
+        _seed(conn, base_ts=base_ts, candle=(100.0, 102.5, 98.9, 101.0))
         result = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.0, 101.0,
             base_ts, base_ts + 60, "neutral",
@@ -237,8 +237,8 @@ def test_stop_candle_with_opposite_grid_excursion_is_unlabelable(tmp_path: Path)
 
 def test_outcome_contract_is_bumped_for_commitment_and_path_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source
 
 
 def test_auto_snap_preserves_off_grid_dynamic_bridge_commitment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

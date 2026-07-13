@@ -147,11 +147,12 @@ def test_neutral_outcome_return_uses_full_initial_order_denominator(tmp_path: Pa
         base_ts = 1_711_000_000
         _seed(conn, base_ts=base_ts, candles=[
             (100.0, 100.0, 100.0, 100.0),
-            (101.0, 101.0, 100.0, 100.0),
+            (101.1, 101.1, 101.1, 101.1),
+            (101.1, 101.1, 99.9, 99.9),
         ])
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 100.0, 100.0,
-            base_ts, base_ts + 120, "neutral", _outcome_params(),
+            conn, "linear", "BTCUSDT", 100.0, 99.9,
+            base_ts, base_ts + 180, "neutral", _outcome_params(),
         )
         assert ret_proxy == pytest.approx(1.0 / 200.0)
         assert success == 1
@@ -260,5 +261,5 @@ def test_neutral_preflight_accepts_full_initial_opening_commitment(tmp_path: Pat
 
 def test_contract_bumped_for_neutral_one_way_commitment() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source

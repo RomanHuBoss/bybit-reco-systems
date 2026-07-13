@@ -15,15 +15,17 @@ from tests.test_logic import _seed_ohlcv_wave
 def _rows(returns: list[float]) -> list[dict]:
     now = int(time.time())
     rows: list[dict] = []
+    horizon = 12 * 3600
     for index, ret in enumerate(returns):
-        ts = now - 10_000 + index
+        ts = now - (len(returns) - index + 1) * horizon
         rows.append(
             {
                 "score": 0.45 if ret > 0 else -0.15,
                 "success": int(ret > 0),
                 "ret": ret,
                 "ts": ts,
-                "label_available_ts": ts + 100,
+                "label_available_ts": ts + horizon,
+                "horizon_sec": horizon,
                 "reasons": {},
             }
         )
@@ -112,8 +114,8 @@ def test_uncertainty_diagnostics_survive_persistence() -> None:
 
 
 def test_calibrator_identity_changes_for_new_expectancy_contract() -> None:
-    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v8")
-    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v8")
+    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v16")
+    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v16")
 
 
 def test_recommender_keeps_raw_high_confidence_shadow_only_without_positive_expectancy(tmp_path, monkeypatch) -> None:

@@ -54,7 +54,7 @@ def test_repeated_grid_trades_are_not_capped_by_number_of_grids(tmp_path: Path) 
         db.init_db(conn)
         base_ts = 1_702_000_000
         # Three complete 100 -> 101 -> 100 grid trades using a two-grid range.
-        closes = [100.0, 101.0, 100.0, 101.0, 100.0, 101.0, 100.0]
+        closes = [100.0, 101.1, 99.9, 101.1, 99.9, 101.1, 99.9]
         _seed_closes(conn, base_ts=base_ts, closes=closes)
 
         success, ret_proxy = _grid_outcome(
@@ -165,13 +165,13 @@ def test_first_candle_move_from_entry_participates_in_grid_cycle(tmp_path: Path)
         db.upsert_ohlcv(conn, [
             {
                 "venue": "linear", "symbol": "BTCUSDT", "tf_sec": 60,
-                "ts": base_ts, "open": 100.0, "high": 101.0, "low": 100.0,
-                "close": 101.0, "volume": 1_000.0,
+                "ts": base_ts, "open": 100.0, "high": 101.1, "low": 100.0,
+                "close": 101.1, "volume": 1_000.0,
             },
             {
                 "venue": "linear", "symbol": "BTCUSDT", "tf_sec": 60,
-                "ts": base_ts + 60, "open": 101.0, "high": 101.0, "low": 100.0,
-                "close": 100.0, "volume": 1_000.0,
+                "ts": base_ts + 60, "open": 101.1, "high": 101.1, "low": 99.9,
+                "close": 99.9, "volume": 1_000.0,
             },
         ])
 

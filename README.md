@@ -1,3 +1,73 @@
+## Purged OOF activation gate for feature calibration (v1.0.54)
+
+Bot-specific feature LogReg is no longer exposed as calibrated confidence merely because a full-sample fit produced coefficients. The feature model now requires at least `CALIB_MIN_SAMPLES` genuinely out-of-fold predictions from the existing purged chronological validation path, followed by a fitted Platt-on-top calibrator. If temporal concentration or label-availability purging leaves fewer validation predictions, the feature coefficients are withheld and confidence degrades to the simpler score-only Platt baseline (or raw capped confidence if that baseline is also unavailable).
+
+`confidence_model` now reports `purged_oof_status`, `purged_oof_samples` and `purged_oof_required_samples`. FastAPI version is `1.0.54`; bot/global calibration identities are v16. Outcome contract remains `grid_label_v26`, direction calibration remains v12, and historical outcomes are retained because the label target did not change. DB schema, routes, model identity and env are unchanged.
+
+## Horizon-boundary and liquidation volume integrity (v1.0.53)
+
+`grid_label_v26` closes a HIGH historical-proxy liquidity defect. The exact horizon open belongs to a new one-minute candle, but older code reused the previous candle's remaining volume budget for gap-crossed grid orders. Residual inventory at the label horizon and at a kill-switch was then liquidation-equivalent at full size without consuming observed volume. A model could therefore buy, sell or close more quantity than the relevant minute traded.
+
+The ledger now resets its path-local volume budget at the exact horizon candle, makes horizon gap fills and terminal residual liquidation share that candle's completed volume, and makes kill-switch residual liquidation share the breach candle's remaining volume. Insufficient capacity makes the outcome unavailable rather than profitable or losing. Because the boundary candle volume is known only after that minute closes, `label_available_ts` is now `horizon_end_ts + 60` while `horizon_sec` remains unchanged.
+
+This is historical-only proxy validation, not runtime execution checking. FastAPI version is `1.0.53`; outcome contract is `grid_label_v26`; bot/global calibrators are v15 and direction calibration is v12. Model identity, schema, routes and env are unchanged. Existing proxy outcomes/calibrators are reset because prior labels could contain impossible boundary or liquidation fills.
+
+## Conservative kill-switch fill bound (v1.0.52)
+
+`grid_label_v25` removes another optimistic OHLCV assumption. When an observed intrabar move crosses a kill-switch, the proxy ledger still processes resting grid orders only up to the protective boundary, but it no longer assumes that the residual market-close executed perfectly at the trigger price. If continued movement is adverse to the remaining inventory, the liquidation price uses the adverse observed candle extreme: upper `high` for residual short inventory and lower `low` for residual long inventory. For inventory helped by the continuation, the boundary remains the conservative price. Close-to-open and horizon gaps that skip the boundary remain outcome-unavailable.
+
+This changes only historical proxy labeling; the service still does not submit orders or claim runtime execution truth. FastAPI version is `1.0.52`; outcome contract is `grid_label_v25`; bot/global calibrators are v14 and direction calibration is v11. Model identity remains `bybit-taxonomy-v6-historical-proxy-shadow-roots`. Existing proxy outcomes/calibrators are reset because prior labels systematically understated some kill-switch tail losses. DB schema, routes and env remain unchanged.
+
+## Historical-only simulation boundary (v1.0.51)
+
+Bybit Recommender is a historical recommendation/audit simulator, not an order-placement or runtime execution-validation system. Recommendation publication and proxy-outcome labeling no longer depend on current Bybit `tickSize`, `qtyStep`, `minOrderQty`, `minNotional`, instrument status, or `params.exchange_execution_snapshot`. Missing current instrument metadata does not change a recommendation to `blocked` and does not suppress a matured historical outcome.
+
+Every persisted recommendation now declares `reasons.simulation_scope.mode=historical_proxy_only`, `runtime_order_submission=false`, `runtime_execution_validation=not_performed`, and `exchange_fill_attestation=not_available`. Conservative OHLCV assumptions remain in force: strict trade-through, aggregate candle-volume capacity, next-candle replacement activation, costs, adverse funding, temporal independence, and uncertainty-bounded monetary gates. Explicit Bybit snapping/preflight helpers remain separate optional operator diagnostics and never mutate publication or calibration evidence.
+
+FastAPI version is `1.0.51`; model identity is `bybit-taxonomy-v6-historical-proxy-shadow-roots`; outcome contract is `grid_label_v24`; bot/global calibrators are v13 and direction calibration is v10. Existing proxy outcomes/calibrators are reset because v1.0.48-v1.0.50 labels were coupled to current exchange metadata. DB schema, routes and env remain unchanged.
+
+## Intrabar replacement-order timing (v1.0.50)
+
+`grid_label_v23` no longer assumes that a replacement grid order is available immediately after its parent fill inside the same one-minute candle. OHLCV reveals candle extremes but not the parent fill timestamp, bot reaction latency, or the moment the replacement reached the exchange queue. If a later segment of the same candle would cross a newly created replacement, the outcome is unavailable with `intrabar_replacement_fill_timing_unobservable`. The replacement becomes eligible at the next candle boundary.
+
+This removes a systematic optimistic path in which one candle could manufacture a completed cycle and positive `ret` under an unobservable zero-latency assumption. FastAPI version is `1.0.50`; bot/global calibrators are v12 and direction calibration is v9. Existing proxy outcomes/calibrators are reset; DB schema, routes, model identity and env are unchanged.
+
+## Aggregate candle-volume capacity for proxy fills (v1.0.49)
+
+`grid_label_v22` adds a necessary physical-capacity check to OHLCV proxy execution. A strict trade-through proves only that the market traded beyond a resting limit; it does not prove that an order larger than the entire one-minute traded volume was fully filled. When persisted model geometry contains `qty_per_order`, every simulated initial directional position and resting-grid fill consumes that quantity against that candle's Bybit base-quantity `volume`. If one fill or the cumulative fills of the minute exceed total observed volume, the outcome is unavailable with `insufficient_candle_volume_for_full_fill` or `insufficient_candle_volume_for_initial_inventory`.
+
+This is still conservative proxy evidence, not queue reconstruction: sufficient total volume is necessary but does not prove price-level liquidity, queue priority or absence of market impact. FastAPI version is `1.0.49`; outcome contract is `grid_label_v22`; bot/global calibrators are v11 and direction calibration is v8. Schema, routes, model identity and env are unchanged. Existing proxy outcomes/calibrators are reset because prior labels could contain mathematically impossible full fills.
+
+## Exchange-normalized proxy execution evidence (v1.0.48, superseded by v1.0.51)
+
+> Historical note: the mandatory current-metadata publication/outcome coupling described below was removed in v1.0.51.
+
+In v1.0.48-v1.0.50 the project temporarily snapped recommendations against current public Bybit filters before publication and required an exchange snapshot for outcome labeling. That coupling was removed in v1.0.51 because the service models historical outcomes and does not establish runtime executability. The paragraph is retained only to explain why v5/v10/v7 evidence was reset.
+
+`grid_label_v21` also requires strict side-aware trade-through for OHLCV proxy fills: a resting Buy is confirmed only after price trades below the limit, and a resting Sell only after price trades above it. Exact candle equality is not proof of queue execution. The app version is `1.0.48`; model/calibrator identities are v5/v10/v7. Schema, routes and env remain unchanged. Historical proxy outcomes/calibrators are reset because both the geometry and fill-label contracts changed.
+
+## Funding receipt is not strategy alpha (v1.0.46)
+
+A settled funding receipt is real account cashflow, but it is not treated as durable grid edge. Before v1.0.46 the OHLCV proxy added positive receipts to `reco_outcomes.ret`; a flat directional grid could therefore become `success=1`, raise monetary expectancy and unlock calibration solely because one historical funding settlement paid its inventory side.
+
+`grid_label_v19` keeps adverse settled funding as a cost and excludes positive receipts from canonical proxy return. This is deliberately conservative: exact execution reports may still show signed funding in realised total PnL, but proxy calibration, win rate and publication readiness cannot be manufactured by temporary carry. Upgrade resets old proxy outcomes and every current calibrator, including direction calibration. FastAPI version: `1.0.46`; DB schema, routes and env are unchanged.
+
+## Cross-symbol temporal-independence gate (v1.0.45)
+
+Исправлена **HIGH model-validation fail-open ошибка**: до v1.0.45 bot/global calibration считала outcomes разных символов независимыми строками, даже если все они использовали один и тот же перекрывающийся 12-часовой рыночный интервал. Поэтому 80 коррелированных монет могли выполнить `CALIB_MIN_SAMPLES=80`, дать положительную row-level lower bound и включить fitted calibration после фактически одного временного эксперимента.
+
+Теперь matured returns объединяются по связным компонентам пересекающихся интервалов `[publication/entry ts, label_available_ts]`. Каждый компонент даёт только одно временное наблюдение: средний return внутри компонента и один recency weight. Для штатного `CALIB_MIN_SAMPLES=80` требуется не менее 20 эффективных неперекрывающихся temporal clusters, а односторонняя 95% нижняя граница должна быть положительной как по строкам, так и по cluster means. Большое число коррелированных символов больше не создаёт искусственные степени свободы.
+
+FastAPI version: `1.0.45`. Bot/global calibrator identities обновлены до `logreg_futures_grid_v9` и `logreg_global_v9`, поэтому прежние v8 coefficients не используются под новым контрактом. Схема БД, routes, env и `grid_label_v18` не менялись. Это устраняет псевдорепликацию, но не доказывает live profitability; cross-cluster dependence и proxy-to-fill gap остаются предметом walk-forward/bootstrap validation.
+
+## Terminal exact-PnL finalization gate (v1.0.44)
+
+Исправлена **HIGH live-validation fail-open ошибка**. До v1.0.44 остановленный bot становился `validation_eligible` после любого одного `execution` event. Система суммировала realized gross PnL, funding и fee, но не проверяла, что полный Buy/Sell ledger передан и остаточная позиция равна нулю. Поэтому частично реализованная прибыль могла выглядеть как окончательный exact net PnL, а открытый inventory и его хвостовой убыток оставались вне stop-gate статистики.
+
+Теперь execution summary отдельно рассчитывает `buy_qty`, `sell_qty`, `net_position_qty`, `position_flat`, `execution_ledger_complete` и `total_pnl_finalized`. В live-validation входят только stopped bots с ненулевым execution stream, полным side/qty ledger и нулевой terminal position в строгом числовом tolerance. Неполные события не удаляются: они остаются audit-visible, но получают `validation_eligible=false` и причины `residual_position`, `execution_ledger_incomplete`, `no_execution_events` или `bot_not_stopped`.
+
+FastAPI version: `1.0.44`. Схема БД и API routes не менялись; новые summary fields additive. Proxy-calibration contract v8 и `grid_label_v18` остаются прежними. Исправление делает exact stop evidence terminally comparable, но не доказывает прибыльность стратегии.
+
 ## Uncertainty-bounded monetary evidence gate (v1.0.43)
 
 Actionable `futures_grid` recommendations now require more than a positive observed proxy-return mean. The bot-specific retained cohort must reach the effective weighted sample floor and its one-sided 95% lower confidence bound for recency-weighted mean return must be strictly positive. `unknown`, `insufficient`, and `uncertain` evidence remains shadow `no_trade` with `PROXY_MONETARY_EXPECTANCY_UNPROVEN`; confirmed non-positive mean remains `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE`. Raw heuristic confidence is still recorded for audit and shadow labeling, but it cannot make an unproven strategy actionable.
@@ -32,7 +102,7 @@ FastAPI version: `1.0.40`. Ключи calibrator обновлены с v4 до v
 
 Исправлена **HIGH/P0 fail-open ошибка** операционного stop gate. До v1.0.39 отрицательный cumulative exact net PnL блокировал новый `executed` только если одновременно были отрицательны median PnL и доля прибыльных ботов была ниже 50%. Для arithmetic grid это пропускало характерный tail-loss профиль: много небольших прибыльных циклов и один крупный выход из диапазона могли оставить median и win rate положительными, хотя независимый cohort уже был убыточен в сумме.
 
-Теперь после прежнего минимального числа независимых stopped bots отрицательный cumulative `realized_pnl_net` сам по себе блокирует соответствующий direction (8), symbol (12) или portfolio (20). Пятиботовый consecutive-loss gate сохранён. Median и positive rate остаются диагностикой, но не могут отменить накопленный убыток. Gate по-прежнему использует только exact execution evidence, дедуплицирует `publication_root_rec_id` и изолирует explicit `model_version`.
+Теперь после прежнего минимального числа независимых stopped bots отрицательный cumulative `realized_pnl_net` сам по себе блокирует соответствующий direction (8), symbol (12) или portfolio (20). Пятиботовый consecutive-loss gate сохранён. Median и positive rate остаются диагностикой, но не могут отменить накопленный убыток. Gate использует только terminally finalized exact execution evidence: stopped bot, complete signed Buy/Sell ledger и нулевая остаточная позиция; затем дедуплицирует `publication_root_rec_id` и изолирует explicit `model_version`.
 
 FastAPI version: `1.0.39`. Схема БД, API, env и `OUTCOME_LABEL_VERSION=grid_label_v18` не менялись. Исправление предотвращает продолжение уже подтверждённо убыточного режима, но не доказывает прибыльность оставшихся режимов.
 
@@ -46,7 +116,7 @@ FastAPI version: `1.0.38`. Outcome math не менялась, поэтому `O
 
 Исправлена HIGH-ошибка исторической статистики: `fundingRate` из ticker является изменяющимся прогнозом следующего funding settlement, но прежний outcome worker использовал его задним числом как фактическую ставку и учитывал только неблагоприятные списания. Это систематически искажало Total P&L, win rate и calibration: SHORT не получал положительный funding, LONG не получал отрицательный funding, а позднее изменившаяся ставка не отражалась в label.
 
-Теперь collector backfill-ит immutable settlement rows из публичного `/v5/market/funding/history` в таблицу `funding_settlement`. Исторический outcome использует только фактически рассчитанную signed rate и реальный inventory на timestamp события. Платежи уменьшают P&L, получения увеличивают P&L. Если schedule указывает funding event, позиция была ненулевой, но settlement row отсутствует, label не создаётся fail-closed. Forecast funding остаётся только approval/risk input. `OUTCOME_LABEL_VERSION=grid_label_v18`; первый запуск v1.0.37 очищает несовместимые proxy outcomes/calibrators, сохраняя recommendations, bot lifecycle, trades и exact execution evidence.
+Теперь collector backfill-ит immutable settlement rows из публичного `/v5/market/funding/history` в таблицу `funding_settlement`. Исторический outcome использует только фактически рассчитанную signed rate и реальный inventory на timestamp события. В legacy `grid_label_v18` платежи уменьшали proxy P&L, а получения увеличивали его. Начиная с v1.0.46 / `grid_label_v19` положительные receipts исключаются из canonical proxy edge, хотя сохраняются как signed account-cashflow diagnostics; adverse payments по-прежнему уменьшают `ret`. Если schedule указывает funding event, позиция была ненулевой, но settlement row отсутствует, label не создаётся fail-closed. Forecast funding остаётся только approval/risk input.
 
 # Bybit Recommender — Bybit Linear USDT Futures grid-only build
 

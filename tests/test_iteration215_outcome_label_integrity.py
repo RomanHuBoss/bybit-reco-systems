@@ -99,7 +99,7 @@ def test_positive_neutral_residual_total_pnl_is_a_win(tmp_path: Path) -> None:
             conn,
             base_ts=base_ts,
             candles=[
-                (100.0, 101.0, 100.0, 101.0),
+                (100.0, 101.1, 100.0, 101.0),
                 (101.0, 101.0, 100.5, 100.5),
             ],
         )
@@ -251,5 +251,5 @@ def test_malformed_ohlcv_row_makes_horizon_incomplete(tmp_path: Path) -> None:
 
 def test_outcome_contract_is_bumped_for_label_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source

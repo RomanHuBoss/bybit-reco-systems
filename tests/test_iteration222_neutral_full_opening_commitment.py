@@ -101,9 +101,20 @@ def _seed(conn, *, base_ts: int) -> None:
                 "tf_sec": 60,
                 "ts": base_ts,
                 "open": 100.0,
-                "high": 101.0,
+                "high": 101.1,
                 "low": 100.0,
-                "close": 100.0,
+                "close": 101.1,
+                "volume": 1_000.0,
+            },
+            {
+                "venue": "linear",
+                "symbol": "BTCUSDT",
+                "tf_sec": 60,
+                "ts": base_ts + 60,
+                "open": 101.1,
+                "high": 101.1,
+                "low": 99.9,
+                "close": 99.9,
                 "volume": 1_000.0,
             }
         ],
@@ -171,7 +182,7 @@ def test_neutral_outcome_return_uses_full_initial_investment_floor(tmp_path: Pat
             100.0,
             100.0,
             base_ts,
-            base_ts + 60,
+            base_ts + 120,
             "neutral",
             _outcome_params(),
         )
@@ -258,5 +269,5 @@ def test_preflight_rejects_legacy_max_side_neutral_commitment(tmp_path: Path, mo
 
 def test_release_contract_is_bumped_for_neutral_margin_reservation() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source

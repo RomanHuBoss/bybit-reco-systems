@@ -75,19 +75,49 @@ def _seed_stopped_evidence_bot(
             "publication_root_rec_id": rec_id,
         },
     )
+    # Exact live-validation evidence must represent a terminally flat execution
+    # ledger. Record the opening Buy and matching closing Sell; only the close
+    # carries the realised PnL used by the test.
+    db.insert_execution_event(
+        conn,
+        {
+            "event_id": f"EV-205-{symbol}-{index}-open",
+            "bot_id": bot_id,
+            "origin_rec_id": rec_id,
+            "ts": started_ts + 10,
+            "symbol": symbol,
+            "event_type": "execution",
+            "source": "bybit_execution",
+            "external_event_id": f"exec-205-{symbol}-{index}-open",
+            "external_order_id": f"order-205-{symbol}-{index}-open",
+            "side": "Buy",
+            "qty": 0.1,
+            "price": 100.0,
+            "order_price": 100.0,
+            "benchmark_price": 99.0,
+            "benchmark_ts": started_ts + 9,
+            "benchmark_source": "pre_submit_mid",
+            "gross_pnl": 0.0,
+            "fee": 0.0,
+            "funding": 0.0,
+            "slippage": 0.1,
+            "currency": "USDT",
+            "meta": {},
+        },
+    )
     gross_pnl = float(net_pnl) + 0.1
     db.insert_execution_event(
         conn,
         {
-            "event_id": f"EV-205-{symbol}-{index}",
+            "event_id": f"EV-205-{symbol}-{index}-close",
             "bot_id": bot_id,
             "origin_rec_id": rec_id,
             "ts": started_ts + 20,
             "symbol": symbol,
             "event_type": "execution",
             "source": "bybit_execution",
-            "external_event_id": f"exec-205-{symbol}-{index}",
-            "external_order_id": f"order-205-{symbol}-{index}",
+            "external_event_id": f"exec-205-{symbol}-{index}-close",
+            "external_order_id": f"order-205-{symbol}-{index}-close",
             "side": "Sell",
             "qty": 0.1,
             "price": 100.0,

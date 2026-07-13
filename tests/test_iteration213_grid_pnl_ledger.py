@@ -105,7 +105,7 @@ def test_one_profitable_neutral_grid_pair_is_a_success(tmp_path: Path) -> None:
     try:
         db.init_db(conn)
         base_ts = 1_703_000_000
-        _seed_path(conn, base_ts=base_ts, closes=[101.0, 100.0])
+        _seed_path(conn, base_ts=base_ts, closes=[101.1, 99.9])
 
         success, ret_proxy = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.0, 100.0,
@@ -183,7 +183,7 @@ def test_outcome_uses_persisted_range_and_grid_count_not_cost_widened_step(tmp_p
     try:
         db.init_db(conn)
         base_ts = 1_703_400_000
-        _seed_path(conn, base_ts=base_ts, closes=[101.0, 100.0])
+        _seed_path(conn, base_ts=base_ts, closes=[101.1, 99.9])
         params = _params(grid_count=2, cost_bps=80.0)
         params["grid_spacing_pct"] = 0.1  # stale alias; canonical range/count step is 1%.
 
@@ -202,5 +202,5 @@ def test_outcome_uses_persisted_range_and_grid_count_not_cost_widened_step(tmp_p
 
 def test_outcome_contract_is_bumped_for_grid_ledger_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source

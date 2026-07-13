@@ -1,3 +1,77 @@
+## Purged OOF feature-calibration contract (v1.0.54)
+
+A full-sample feature LogReg fit is not itself out-of-sample probability evidence. Feature coefficients may influence `confidence` only when chronological OOF predictions are generated after label-availability purging, their count is at least `CALIB_MIN_SAMPLES`, and Platt-on-top is fitted on those OOF logits.
+
+If OOF evidence is insufficient or invalid, `coef=[]`, `confidence_model.logreg_active=false`, and the service uses score-only Platt when available; otherwise it uses capped raw confidence. Monetary expectancy, temporal-cluster lower bounds and no-trade gates remain prerequisites and are not weakened by this fallback. Operator diagnostics expose OOF status, actual sample count and required count.
+
+## Horizon-boundary liquidity contract (v1.0.53)
+
+The configured `horizon_sec` still ends at the exact boundary candle open. However, a liquidation-equivalent outcome that uses quantity evidence must wait until that boundary minute closes, so `label_available_ts = horizon_end_ts + 60`.
+
+At the boundary the prior candle's fill budget is discarded. Gap-crossed resting orders and terminal residual liquidation consume one shared budget equal to the boundary candle's observed base/contract volume. At a kill-switch, prior grid fills and residual liquidation consume one shared breach-candle budget. Any required full quantity above the remaining capacity returns outcome-unavailable (`insufficient_candle_volume_for_full_fill`, `insufficient_candle_volume_for_terminal_liquidation`, or `insufficient_candle_volume_for_kill_switch_liquidation`). This remains a conservative historical proxy and not an assertion of runtime execution.
+
+## Kill-switch liquidation bound (v1.0.52 / grid_label_v25)
+
+A one-minute candle that trades through a kill-switch proves that the trigger region was crossed, but not that a market close filled perfectly at the trigger price. The historical proxy first processes resting grid orders only up to the protective boundary. It then prices the residual close conservatively within the observed candle:
+
+- upper breach with residual short inventory: liquidation at candle `high`;
+- lower breach with residual long inventory: liquidation at candle `low`;
+- continuation favorable to the residual position: liquidation remains at the kill-switch boundary, so favorable slippage is not credited;
+- close-open or horizon gap that skips the boundary: outcome unavailable.
+
+Diagnostics expose `kill_switch_fill_confirmation=adverse_observed_extreme_v1`, the trigger boundary, observed extreme and proxy liquidation price. This is a conservative historical loss bound, not a reconstruction of a real stop order or runtime execution.
+
+## Historical proxy contract (`grid_label_v24`)
+
+The system models outcomes from historical market data only. It does not submit orders and does not establish runtime executability. Current Bybit filters are not a publication gate and are not required for outcome maturity. Persisted recommendation geometry is the simulation input; when historically contemporaneous instrument constraints are unavailable, the label remains a model result rather than an exchange-executable claim.
+
+Every recommendation exposes `simulation_scope=historical_proxy_only`. Fill rules remain deliberately conservative: price must trade through a resting level, total simulated quantity cannot exceed candle volume, replacements activate no earlier than the next candle, positive funding receipts do not manufacture alpha, and ambiguous paths produce no label.
+
+Optional explicit preflight may show current snapping/minimum-order diagnostics to an operator, but it is outside the scoring, publication, outcome and calibration contracts.
+
+## Intrabar replacement-order activation (`grid_label_v23`)
+
+A replacement Buy/Sell is created only after its parent grid order fills. One-minute OHLCV cannot prove when that parent fill occurred or whether the replacement reached Bybit before a reversal later in the same candle. New replacement quantities therefore remain pending for the rest of their creation candle and become active at the next candle boundary. If the current candle crosses a pending replacement, `_grid_outcome` returns unavailable with `intrabar_replacement_fill_timing_unobservable`. Existing orders that were active before the candle continue to use strict trade-through and the shared candle-volume capacity check.
+
+## Proxy fill-volume capacity contract (v1.0.49)
+
+For Bybit Linear klines, `volume` is base/contract quantity. Current-model proxy execution therefore applies the following necessary condition per one-minute candle:
+
+`initial market qty + sum(simulated resting fill qty) <= observed candle volume`.
+
+Each simulated slot consumes `qty_per_order`. The budget resets for each candle and is preserved across alternative intrabar path simulation. If an individual fill or cumulative fills exceed the candle volume, `_grid_outcome` returns unavailable and records `insufficient_candle_volume_for_full_fill`; an oversized initial directional position records `insufficient_candle_volume_for_initial_inventory`. Sufficient volume does not prove a fill; strict side-aware trade-through and all other geometry/path gates still apply.
+
+## Canonical proxy execution contract (v1.0.48)
+
+A current-model proxy outcome is eligible only when the persisted recommendation contains an immutable verified Bybit Linear USDT instrument snapshot and its actual trade plan is aligned to the snapshot. Arithmetic range, reference, kill switches and step must be tick-aligned; quantity must be qty-step aligned and satisfy minimum quantity/notional at the adverse lower price. Recommendation-time normalization uses the same snapping and validation helpers as execution preflight. Missing metadata is fail-closed.
+
+OHLCV does not establish queue execution at equality. A resting Buy requires an observable price segment strictly below its limit; a resting Sell requires a segment strictly above. A prior exact touch can be confirmed by later continuation through the level. Completed-cycle PnL, fees, funding and committed-capital formulas are unchanged once fills are confirmed. Outcome contract: `grid_label_v23`.
+
+## Canonical funding treatment for proxy outcomes (v1.0.46)
+
+Historical settlement rows are still required whenever modeled inventory is non-flat at a funding timestamp. Their sign is computed correctly for LONG/SHORT. However, the canonical proxy return used by `success`, monetary expectancy and calibration is asymmetric: adverse settled funding is charged; positive settled funding is excluded from edge. A receipt may be displayed as signed diagnostic cashflow, but it cannot turn a flat/negative grid path into a positive label.
+
+This differs intentionally from exact account PnL. Exact terminal execution evidence sums realised execution PnL, signed funding and fees. Proxy labels are a conservative strategy-validation contract and must not promote a strategy because a temporary funding regime paid the held side. Outcome contract: `grid_label_v19`.
+
+## Cross-symbol temporal-independence contract - v1.0.45
+
+Monetary evidence is not counted by symbol rows alone. Each valid matured outcome contributes an interval `[ts, label_available_ts]`. Intervals with any direct or transitive overlap are merged into one temporal component, because they share future market information. The component contributes one recency-weighted mean return and one recency weight, independent of how many symbols were present.
+
+The default `CALIB_MIN_SAMPLES=80` implies `minimum_temporal_clusters=20` (`min(20, ceil(min_samples/4))`). Eligibility requires both the ordinary Kish effective row sample floor and the effective temporal-cluster floor. The one-sided 95% lower bound must be strictly positive for row returns and for temporal cluster means. Otherwise expectancy remains `insufficient` or `uncertain`, LogReg stays unfitted, and the recommendation remains shadow `no_trade` with `PROXY_MONETARY_EXPECTANCY_UNPROVEN`.
+
+This is a conservative dependence correction, not a proof of independent markets. Non-overlapping clusters can still share a long regime; final validation requires purged/block walk-forward and exact execution PnL.
+
+## Terminal execution-evidence contract — v1.0.44
+
+`LIVE_VALIDATION_*` использует только terminally finalized exact evidence. Для каждого bot execution ledger строится по immutable `bybit_execution` rows: Buy quantity имеет положительный знак, Sell quantity — отрицательный. Stopped bot допускается в статистику только если:
+
+1. есть хотя бы один execution event;
+2. каждый execution содержит валидные `side` и `qty`;
+3. signed net position равна нулю в tolerance `max(1e-12, total_executed_qty * 1e-9)`;
+4. bot имеет terminal status `stopped` и `stopped_ts`.
+
+Realized formula остаётся `gross_pnl + funding - fee`; benchmark slippage не вычитается повторно, потому что фактические fill prices уже входят в gross PnL. Но ненулевой `net_position_qty` означает, что эта realised сумма ещё не является total bot PnL. Такая строка audit-visible, получает `validation_eligible=false` и не влияет на stop gate.
+
 ## Monetary expectancy uncertainty contract — v1.0.43
 
 For `futures_grid`, probability calibration and raw heuristic confidence are subordinate to a monetary-evidence gate. Matured finite proxy returns are recency weighted; the system records the weighted mean, unbiased weighted standard deviation, Kish effective sample size, worst-20% expected shortfall, and a one-sided 95% lower confidence bound.

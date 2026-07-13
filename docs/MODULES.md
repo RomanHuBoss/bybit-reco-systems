@@ -1,3 +1,70 @@
+## v1.0.54 module responsibility update
+
+- `app/calibration.py`: requires sufficient purged chronological OOF predictions and a fitted Platt-on-top before exposing feature LogReg coefficients; persists OOF activation diagnostics.
+- `app/recommender.py`: exposes purged OOF status/counts and clearly distinguishes feature LogReg from score-only Platt fallback.
+- `app/main.py`: publishes FastAPI `1.0.54`.
+- `tests/test_iteration242_purged_oof_activation_gate.py`: proves concentrated history cannot activate feature LogReg, distributed independent history can, and diagnostics survive persistence.
+
+## v1.0.53 module responsibility update
+
+- `app/outcomes.py`: owns boundary-candle evidence timing, resets volume capacity across minute boundaries, and applies capacity to gap fills, terminal residual closes and kill-switch liquidation.
+- `app/main.py`: publishes FastAPI `1.0.53` and resets incompatible `grid_label_v26` outcomes/calibrators.
+- `app/calibration.py`: v15 bot/global keys isolate labels built under the corrected liquidation-capacity target.
+- `app/recommender.py`: direction calibration v12 isolates the same target change.
+- `tests/test_iteration241_horizon_boundary_liquidity.py`: proves wrong-minute budget reuse, terminal-close capacity, kill-switch-close capacity and boundary-candle availability timing.
+
+## v1.0.52 outcome responsibility update
+
+- `app/outcomes.py`: models kill-switch exits with separate trigger-boundary and liquidation-bound semantics. Residual short inventory after an upper breach uses the observed candle high; residual long inventory after a lower breach uses the observed candle low. Favorable continuation is not credited, and gap-through-stop paths remain unavailable.
+- `tests/test_iteration240_kill_switch_slippage_bound.py`: proves symmetric adverse-tail pricing and the `grid_label_v25` identity reset.
+
+## v1.0.51 historical-only simulation responsibilities
+
+- `app/recommender.py`: publishes model recommendations with explicit `historical_proxy_only` scope; no runtime instrument-normalization callback.
+- `app/outcomes.py`: labels persisted historical geometry using conservative OHLCV assumptions; no mandatory exchange snapshot.
+- `app/main.py`: application `1.0.51`, outcome contract `grid_label_v24`; background recommendation loop has no current-metadata publication dependency.
+- Explicit Bybit preflight helpers remain separate operator diagnostics and do not feed recommendation status or calibration.
+
+## v1.0.50 module delta
+
+- `app/outcomes.py`: tracks active and intrabar-pending replacement quantities separately; rejects same-candle replacement crossings with a machine-readable timing reason; activates surviving replacements on the next candle.
+- `app/main.py`: outcome contract `grid_label_v23`, application `1.0.50`, startup reset of incompatible proxy outcomes/calibrators.
+- `app/calibration.py` / `app/recommender.py`: bot/global/direction calibration identities v12/v9.
+
+## v1.0.49 module responsibility update
+
+- `app/outcomes.py`: validates candle volume, tracks cumulative simulated base quantity per minute, blocks impossible full fills and initial directional inventory, and exposes `fill_volume_confirmation=aggregate_candle_volume_cap_v1`.
+- `app/main.py`: publishes FastAPI v1.0.49 and resets incompatible `grid_label_v22` outcomes/calibration.
+- `app/calibration.py` / `app/recommender.py`: use v11/v8 calibration identities so v21 labels cannot remain actionable.
+- `tests/test_iteration237_proxy_fill_volume_capacity.py`: proves single-fill, cumulative-fill, initial-inventory and sufficient-volume behavior.
+
+## v1.0.48 module responsibility update
+
+- `app/main.py`: recommendation-time Bybit metadata acquisition, exchange normalization, immutable filter snapshot and release/label reset.
+- `app/recommender.py`: fail-closed publication policy for missing or invalid exchange-normalized geometry; model/direction identities v5/v7.
+- `app/outcomes.py`: independent snapshot verification and strict side-aware trade-through fill reconstruction.
+- `app/calibration.py`: v10 identities prevent loading coefficients trained on theoretical/touch-filled outcomes.
+
+## v1.0.46 module responsibility update
+
+- `app/outcomes.py`: exclude positive settled funding receipts from canonical proxy `ret` while preserving adverse payments and diagnostic signed totals.
+- `app/main.py`: reset `grid_label_v19` outcomes and every current calibrator identity, including `DIRECTION_CALIBRATION_KEY`.
+- `tests/test_iteration234_funding_receipt_not_alpha.py`: prove that LONG/SHORT receipts cannot create proxy edge and adverse funding remains charged.
+
+## v1.0.45 cross-symbol temporal evidence responsibilities
+
+- `app/calibration.py`: merges directly or transitively overlapping outcome intervals into temporal components; calculates cluster count, Kish effective cluster count, cluster return dispersion and one-sided lower bound; requires both row and cluster evidence before fitting.
+- `app/recommender.py`: reports row and temporal lower bounds plus `time_clusters=current/min` when monetary evidence is unproven.
+- `app/main.py`: exposes FastAPI version `1.0.45`.
+- `tests/test_iteration233_cross_symbol_temporal_dependence.py`: proves that 80 contemporaneous symbols equal one temporal experiment, that 21 non-overlapping horizons can qualify, that clock-boundary overlap remains one component, and that diagnostics persist.
+- Persistence remains additive JSON in `app_config`; SQLite/PostgreSQL schemas are unchanged.
+
+## v1.0.44 module responsibility update
+
+- `app/db.py`: execution summary now reconciles signed fill quantity and distinguishes an event stream from terminal total-PnL evidence. Live-validation records include `validation_ineligible_reasons`.
+- `app/main.py`: live-validation aggregation and API summary require `total_pnl_finalized=True`; bot state mirrors reconciliation diagnostics after each evidence event.
+- External execution/reconciliation adapter: must deliver every bot fill and funding transaction. A partial stream remains auditable but cannot authorize or statistically validate the strategy.
+
 ## v1.0.43 module responsibility update
 
 - `app/calibration.py`: computes monetary proxy mean, expected shortfall, unbiased weighted dispersion, Kish effective sample size, and one-sided 95% lower confidence bound; returns `unknown/insufficient/negative/uncertain/positive`; persists v8 diagnostics.

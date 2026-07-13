@@ -116,7 +116,7 @@ def test_reco_thread_skips_followup_work_after_runtime_lock_loss(tmp_path: Path,
         )
         post_calls = {"expire": 0, "prune": 0}
 
-        def fake_run_recommender_once(conn, settings, heartbeat=None):
+        def fake_run_recommender_once(conn, settings, heartbeat=None, exchange_normalizer=None):
             raise app_main.RuntimeLockLostError("reco heartbeat lost")
 
         def fake_expire(conn):

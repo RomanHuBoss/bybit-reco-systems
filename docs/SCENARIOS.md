@@ -1,3 +1,105 @@
+## Scenario: many rows but no usable purged OOF validation (v1.0.54)
+
+1. The retained cohort contains 320 valid rows and positive monetary/temporal lower bounds.
+2. 280 rows belong to one early temporal cluster, so every fixed chronological validation boundary falls inside that cluster.
+3. Label-availability purging removes all candidate training rows before those validation timestamps; OOF prediction count is zero.
+4. The service does not expose full-sample feature coefficients: `purged_oof_status=insufficient`, `logreg_active=false`, and inference falls back to score-only Platt or capped raw confidence.
+5. When independent history later produces at least `CALIB_MIN_SAMPLES` purged OOF logits and Platt-on-top fits successfully, feature LogReg may activate.
+
+## Scenario: horizon boundary has insufficient volume (v1.0.53)
+
+1. The final in-window candle has high volume, but that budget ends with the candle.
+2. The exact horizon candle opens through a resting level or requires closing residual inventory.
+3. The boundary candle's total volume is smaller than the required modeled quantity.
+4. The worker does not reuse the prior minute's volume and does not create a partial fictional ledger.
+5. No outcome is stored; diagnostics identify the failed gap fill or terminal liquidation.
+6. The label can be evaluated only after the boundary minute closes, so availability is one minute after the configured horizon.
+
+## Scenario: kill-switch candle cannot both fill and liquidate full size (v1.0.53)
+
+1. A grid fill consumes part of the breach candle's observed volume.
+2. The external kill-switch is crossed with residual inventory still open.
+3. The remaining candle volume is insufficient to close that inventory at full modeled quantity.
+4. The outcome is unavailable with `insufficient_candle_volume_for_kill_switch_liquidation`; the earlier fill is not stored as a completed label.
+
+## Scenario: intrabar kill-switch breach with adverse continuation (v1.0.52)
+
+1. The historical candle crosses the external kill-switch without a close-open gap.
+2. The proxy processes only resting grid orders crossed before the protective boundary.
+3. If the remaining position is short and the upper boundary is breached, the conservative close price is the candle high.
+4. If the remaining position is long and the lower boundary is breached, the conservative close price is the candle low.
+5. If continuation helps the remaining position, no favorable slippage is credited; the boundary price is retained.
+6. The ledger stops permanently and later recovery is ignored.
+7. A gap that skips the boundary remains unlabelable.
+
+Expected diagnostics: `kill_switch_fill_confirmation=adverse_observed_extreme_v1`, boundary, observed extreme and liquidation price.
+
+## Scenario: current Bybit metadata is unavailable (v1.0.51)
+
+1. The recommender produces a historical-model futures-grid signal.
+2. Current public instrument metadata is unavailable or has changed since the modeled timestamp.
+3. The recommendation is not changed to `blocked` for that reason.
+4. The record declares `simulation_scope.mode=historical_proxy_only` and `runtime_execution_validation=not_performed`.
+5. After the historical horizon matures, outcome labeling uses the persisted model geometry and conservative OHLCV fill assumptions.
+6. Any explicit current-market preflight is a separate operator diagnostic and cannot rewrite the historical recommendation or calibration evidence.
+
+## Scenario: replacement crossed inside its creation candle (v1.0.50)
+
+1. An initial resting Sell is confirmed by strict trade-through.
+2. The ledger creates the adjacent replacement Buy.
+3. The same one-minute candle later trades below that Buy level.
+4. OHLCV cannot prove whether the Sell filled early enough and the replacement was acknowledged before the reversal.
+5. The outcome is unavailable with `intrabar_replacement_fill_timing_unobservable`; it is not a win or loss.
+6. If the replacement is crossed in the next candle, the cycle may be labeled subject to all price, volume, funding and geometry checks.
+
+## Scenario: price crosses the grid but observed volume cannot fill it (v1.0.49)
+
+1. A neutral grid has `qty_per_order=10` and a resting Buy at 99.
+2. The next candle trades below 99, but its entire Bybit kline volume is only 1 base unit.
+3. Price trade-through is present, yet a full 10-unit fill is physically impossible within the observed market history.
+4. The worker records `insufficient_candle_volume_for_full_fill` and creates no outcome label.
+5. If several 1-unit orders cross in one candle with volume 1.5, the first may consume capacity but the second makes the whole path unavailable; partial fabricated ledgers are not stored.
+6. When total observed volume is sufficient, normal strict-trade-through, path-equivalence, fee, funding and terminal-PnL rules continue.
+7. Sufficient aggregate volume remains proxy evidence only; queue priority and price-level liquidity require exact exchange fills.
+
+## Historical scenario: current-filter normalization (v1.0.48, superseded by v1.0.51)
+
+The blocking behavior below is release history and is not the v1.0.51 contract.
+
+1. Recommender generates lower `99.1`, upper `100.9`, step `0.9`, qty `0.26`.
+2. Bybit metadata says tick `0.5` and qty step `0.1`.
+3. In v1.0.48-v1.0.50 the system normalized to lower `99.0`, upper `101.0`, step `1.0`, qty `0.2` and made that snapshot mandatory.
+4. Version 1.0.51 removed this behavior: persisted historical model geometry remains the simulation input, and missing current metadata does not block or suppress an outcome.
+5. Optional explicit preflight may still show current snapping diagnostics, but it is outside publication and calibration.
+6. During labeling, exact OHLC equality with a limit is not a fill. Buy requires trade below; Sell requires trade above.
+7. Only the new `grid_label_v21` evidence may train v10 calibration.
+
+## Scenario: funding receipt without grid profit (v1.0.46)
+
+1. A directional grid holds inventory through a settlement while price and grid cash PnL remain flat.
+2. The settlement pays the held side, so signed account funding cashflow is positive.
+3. The cashflow remains a diagnostic/exact-PnL item, but canonical proxy funding contribution is zero.
+4. `ret` remains zero or negative after execution costs; `success=0` and the receipt cannot improve monetary lower bounds or calibration readiness.
+5. If the settlement charges the held side, the adverse cashflow is included and reduces `ret`.
+6. Upgrade to `grid_label_v19` clears prior receipt-inflated proxy outcomes and all current calibrators.
+
+## Scenario: many correlated symbols in one market horizon (v1.0.45)
+
+1. Eighty symbols mature against the same 12-hour market interval; 40 return `+3%` and 40 return `-1%`.
+2. Row-level statistics show `n=80`, mean `+1%`, and a positive one-sided lower bound.
+3. The interval-overlap algorithm merges all 80 rows into one temporal component, including transitive overlaps and overlaps crossing a wall-clock bucket boundary.
+4. `temporal_cluster_count=1` is below the default minimum of 20, so `expectancy_status=insufficient`, `fitted=false`, and the strategy remains shadow `no_trade`.
+5. A later cohort may qualify only after enough non-overlapping temporal components accumulate and both row-level and cluster-level lower bounds are positive.
+6. Even then, the result remains proxy evidence and must be confirmed by purged walk-forward and exact execution PnL.
+
+## Scenario: stopped bot with residual execution inventory (v1.0.44)
+
+1. External adapter records one profitable Sell fill for a bot and the audit bot is marked stopped.
+2. The event remains immutable and visible; realised gross/fee/funding totals are still reported.
+3. Because the matching Buy ledger is absent, `net_position_qty != 0`, `position_flat=false`, and `total_pnl_finalized=false`.
+4. `/api/v1/validation/live-evidence` returns the row with `validation_eligible=false` and `residual_position`; it is excluded from all `LIVE_VALIDATION_*` metrics.
+5. After the missing matching fills are ingested and signed quantity returns to zero, a stopped bot becomes eligible without rewriting prior events.
+
 ## Scenario: positive mean without demonstrated positive edge (v1.0.43)
 
 1. The current independent matured cohort reaches the raw row count but has a small positive recency-weighted mean relative to dispersion.

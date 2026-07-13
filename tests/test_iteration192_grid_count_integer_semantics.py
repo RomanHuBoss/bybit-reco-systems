@@ -181,7 +181,7 @@ def test_execution_preflight_rejects_fractional_estimated_active_orders(app_main
 
 
 def _seed_oscillating_1m_rows(conn, *, base_ts: int) -> int:
-    closes = [100.0, 101.0, 100.0, 101.0, 100.0]
+    closes = [100.0, 101.1, 99.9, 101.1, 99.9]
     rows = []
     for idx, close in enumerate(closes):
         open_price = 100.0 if idx == 0 else closes[idx - 1]

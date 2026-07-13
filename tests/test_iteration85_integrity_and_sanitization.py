@@ -107,7 +107,11 @@ def test_fit_logreg_skips_malformed_rows_instead_of_crashing() -> None:
 
     assert model.fitted is True
     assert model.n_samples == 4
-    assert len(model.coef) > 0
+    # Sanitization remains successful, but four concentrated timestamps do not
+    # provide enough purged OOF validation for the full feature model.
+    assert model.coef == []
+    assert model.platt.fitted is True
+    assert model.oof_status == "insufficient"
 
 
 def test_fetch_reddit_sentiment_sanitizes_non_finite_upvote_ratio(monkeypatch) -> None:

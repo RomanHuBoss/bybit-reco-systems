@@ -1,3 +1,63 @@
+## Resolved in v1.0.54: feature LogReg activated without purged OOF evidence
+
+Before v1.0.54 `fit_logreg()` trained feature coefficients on the full retained sample and returned `fitted=true` even when chronological purging left fewer than the required OOF predictions. A temporally concentrated 320-row sample could therefore expose 13 in-sample coefficients while OOF validation contained zero rows. Recommender diagnostics labelled that source `bot_logreg`, overstating probability calibration and model readiness.
+
+The feature model now requires sufficient purged OOF logits plus a fitted Platt-on-top. Otherwise coefficients are withheld and inference degrades to score-only Platt or raw capped confidence. The residual limitation is explicit: score-only Platt is a simpler calibration fallback, not proof of feature-model generalisation or live edge. Purged OOF reduces leakage but does not replace regime-aware walk-forward, block bootstrap or exact-fill validation.
+
+## Resolved in v1.0.53: horizon and stop liquidation could exceed observed volume
+
+Before `grid_label_v26`, the horizon-open segment inherited the volume budget of the last in-window candle. A gap through a resting level could therefore be filled using liquidity from the wrong minute. The terminal close of residual inventory and the market-equivalent close at a kill-switch did not consume candle volume at all. The proxy could consequently close more quantity than the entire relevant minute traded.
+
+The current ledger resets the volume budget at the exact horizon candle, requires its full OHLCV row, and shares that budget between gap fills and residual liquidation. Kill-switch liquidation shares the already-consumed breach-candle budget. Insufficient capacity makes the label unavailable. `label_available_ts` is one minute after the strategy horizon so the boundary volume is historically observable. Residual risk remains: total candle volume is only a necessary capacity bound and does not prove price-level depth, queue priority, partial fills or market impact.
+
+## Resolved in v1.0.52: perfect kill-switch boundary execution understated tail loss
+
+Before `grid_label_v25`, an intrabar breach stopped the proxy ledger at the configured kill-switch and liquidated residual inventory exactly at that price. If the candle continued adversely beyond the trigger, this assumed a perfect market-stop fill and systematically reduced the modeled tail loss. Example: a neutral grid sells at 101, upper kill-switch is 102, and the candle trades to 102.5; the old proxy closed the short at 102 rather than using the observable adverse bound 102.5.
+
+The current model processes grid fills only to the boundary, then uses the candle extreme only when continuation is adverse to the remaining inventory. Favorable continuation is not credited. Gaps that skip the trigger remain unlabelable. This is conservative proxy evidence; exact stop latency, depth and slippage still require external execution data.
+
+## v1.0.51 - historical simulation is not runtime executability
+
+The system deliberately does not verify whether a real order could be submitted or filled at runtime. Current tick/quantity/minimum-order rules, queue position, partial fills, latency, account state and available margin are outside the historical outcome contract. Therefore `recommended` means a model signal, not an executable order.
+
+The corrected architecture avoids a temporal error introduced in v1.0.48-v1.0.50: current instrument filters are no longer imposed on past recommendations. Residual risk remains substantial because OHLCV proxy fills cannot reconstruct order-book liquidity or actual exchange fills. Use outputs for paper/shadow analysis only.
+
+## Intrabar replacement-order timing - v1.0.50
+
+Before v1.0.50, the endpoint ledger immediately activated a replacement order after a modeled parent fill. A single one-minute candle could therefore fill the parent on one excursion and the newly created replacement on the reversal, even though OHLCV does not expose the parent fill time, submission latency, acknowledgement time or queue entry of the replacement. This zero-latency assumption could manufacture completed cycles, positive proxy return and calibration evidence.
+
+`grid_label_v23` keeps replacements pending until the next candle. If the same candle would cross a pending replacement, the label is unavailable with `intrabar_replacement_fill_timing_unobservable`. Residual risk remains: next-candle activation is still a proxy and does not prove queue priority, partial fills, network latency or exchange acknowledgement; exact fills remain authoritative.
+
+## Closed in v1.0.49 - proxy full fills could exceed total candle volume
+
+Before v1.0.49, strict price trade-through still converted every crossed order into a full fill without comparing `qty_per_order` with the Bybit one-minute kline `volume`. A 10-unit order could therefore be marked fully bought and sold in candles whose total traded volume was only 1 unit. The same defect allowed several crossed orders to consume more quantity than the entire candle and allowed oversized initial LONG/SHORT inventory to appear at the entry open. This could manufacture completed cycles, positive `ret`, win rate and calibration evidence.
+
+`grid_label_v22` uses aggregate candle volume as a hard necessary capacity bound for current exchange-normalized recommendations. Insufficient volume makes the label unavailable. Residual risk remains: aggregate volume does not reveal queue priority, volume at the exact level, partial fills or market impact; only exchange-attested fills can prove those.
+
+## Closed in v1.0.48 - theoretical grid and exact-touch fills contaminated proxy calibration
+
+Before v1.0.48, shadow outcomes could be calculated from the pre-snap ATR grid even though Bybit execution preflight later changed its prices and quantity or rejected it under `tickSize`, `qtyStep`, `minOrderQty` or `minNotional`. Separately, an OHLC high/low equal to a resting limit was treated as a confirmed fill. Both mechanisms biased proxy return upward and allowed calibration to learn from trades or geometry that were not proven executable.
+
+The fix persists a verified `bybit_linear_filters_v1` snapshot and the snapped trade plan before publication. Current-model outcomes reject missing, mismatched or non-aligned snapshots. Resting Buy/Sell fills require trade-through below/above the level. Residual risk remains: OHLC trade-through is still a conservative proxy and cannot prove queue priority, available volume or partial fills. Final profitability requires exchange-attested fills and reconciliation.
+
+## Closed in v1.0.46 - settled funding receipt used as canonical alpha
+
+До v1.0.46 `_grid_outcome()` прибавляла положительный signed settled funding к `reco_outcomes.ret`. Плоский SHORT при положительной ставке или плоский LONG при отрицательной ставке мог получить `success=1` без grid profit. Поскольку `ret` используется monetary calibration и publication gate, временный carry мог выдать себя за устойчивый strategy edge, несмотря на отдельное задокументированное правило не кредитовать funding receipt.
+
+Исправление: `grid_label_v19` включает в canonical proxy return только adverse funding cashflows; положительные receipts остаются диагностическим signed cashflow и не увеличивают proxy win rate/expectancy. Startup очищает старые outcomes и текущие bot/global/direction calibrators. Остаточный риск: exact realised PnL обязан включать фактический signed funding, но это не делает carry устойчивым alpha и не заменяет проверку price/grid edge.
+
+## Closed in v1.0.45 - cross-symbol temporal pseudoreplication
+
+До v1.0.45 денежная calibration считала каждую matured outcome row отдельным статистическим наблюдением. Даже после same-symbol shadow-root dedupe 80 монет, размеченных на одном перекрывающемся 12-часовом рынке, могли дать `n=80`, положительную row-level lower bound и `fitted=true`, хотя независимый временной эксперимент был один. Корреляция криптоактивов и общий market regime делали такую уверенность ложной.
+
+Исправление: строки объединяются по связным компонентам пересекающихся `[ts, label_available_ts]` интервалов. Один overlap component даёт одну cluster mean и один recency weight. При `CALIB_MIN_SAMPLES=80` требуется минимум 20 эффективных временных кластеров; положительными должны быть обе односторонние 95% lower bounds - row-level и cluster-level. Остаточный риск: неперекрывающиеся горизонты всё ещё могут быть зависимы из-за длительного режима, поэтому этот gate не заменяет block bootstrap, purged walk-forward и exact-fill validation.
+
+## Closed in v1.0.44 — partial execution ledger treated as final exact PnL
+
+До v1.0.44 `list_live_validation_records()` считала stopped bot пригодным для live-validation, если существовал хотя бы один execution event. Суммарный realized PnL мог относиться только к закрытой части grid, тогда как unmatched Buy/Sell quantity и открытый inventory не проверялись. Это позволяло частично реализованной прибыли попадать в exact-evidence statistics без terminal total-PnL reconciliation.
+
+Исправление: validation eligibility теперь требует complete signed fill ledger и `abs(sum(Buy qty) - sum(Sell qty))` в строгом tolerance, а также stopped bot state. Partial/unmatched events остаются в audit API, но не участвуют в direction/symbol/portfolio stop metrics. Остаточный риск: сервис не подключается к private Bybit position endpoint; полнота внешнего read-only adapter и передача всех fills/funding по-прежнему являются обязательным external executor contract.
+
 ## Closed in v1.0.43 — positive sample mean treated as established edge
 
 До v1.0.43 bot-specific calibration считала `weighted_mean_return > 0` достаточным monetary gate. Небольшое положительное среднее, статистически неотличимое от нуля, получало `expectancy_status=positive`; при отсутствующем fitted calibrator raw heuristic confidence мог оставаться actionable. Это позволяло запуск на шуме или до появления воспроизводимой положительной evidence-выборки.

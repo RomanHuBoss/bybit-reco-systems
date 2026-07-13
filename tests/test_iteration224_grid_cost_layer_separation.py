@@ -145,10 +145,10 @@ def test_neutral_completed_pair_is_not_charged_market_spread_and_slippage(tmp_pa
     try:
         db.init_db(conn)
         base = 1_720_000_000
-        _seed(conn, base, [(100.0, 101.0, 100.0, 100.0)])
+        _seed(conn, base, [(100.0, 101.1, 100.0, 101.1), (101.1, 101.1, 99.9, 99.9)])
         success, ret = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.0, 100.0,
-            base, base + 60, "neutral", _grid_params("neutral"),
+            base, base + 120, "neutral", _grid_params("neutral"),
         )
         expected = (1.0 - (101.0 + 100.0) * 0.0005) / 200.0
         assert ret == pytest.approx(expected)
@@ -162,7 +162,7 @@ def test_directional_initial_market_entry_and_grid_tp_use_different_cost_layers(
     try:
         db.init_db(conn)
         base = 1_720_100_000
-        _seed(conn, base, [(100.0, 101.0, 100.0, 101.0)])
+        _seed(conn, base, [(100.0, 101.1, 100.0, 101.0)])
         success, ret = _grid_outcome(
             conn, "linear", "BTCUSDT", 100.0, 101.0,
             base, base + 60, "long", _grid_params("long"),
@@ -203,5 +203,5 @@ def test_live_grid_edge_uses_recurring_fee_while_spread_remains_liquidity_gate()
 
 def test_outcome_contract_bumped_for_cost_layer_separation() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'version="1.0.43"' in source
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
+    assert 'version="1.0.54"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source

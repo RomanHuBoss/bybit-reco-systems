@@ -1,3 +1,64 @@
+## v1.0.54 purged OOF confidence rule
+
+- `bot_logreg` is permitted only when `purged_oof_status=sufficient`.
+- Check `purged_oof_samples >= purged_oof_required_samples`; the default requirement follows `CALIB_MIN_SAMPLES`.
+- `insufficient` or `error` means feature coefficients were withheld. Score-only Platt may remain available, but it is not feature-model validation.
+- Raw or Platt confidence never overrides monetary expectancy, temporal independence, `blocked`, or `no_trade`.
+- Current contracts: application `1.0.54`, outcome `grid_label_v26`, bot/global calibrators v16, direction calibrator v12.
+
+## v1.0.53 horizon and liquidation volume rule
+
+- Never carry a candle's liquidity budget into the next minute.
+- Gap fills at the exact horizon open use the boundary candle's own volume.
+- Terminal residual close shares that boundary-minute budget.
+- Kill-switch close shares the breach candle budget already consumed by grid fills.
+- Insufficient capacity means **NO EVIDENCE**, not a partial win/loss.
+- The 12h strategy horizon remains 12h, but the label becomes available one minute later after boundary volume is complete.
+- Current evidence contract: `grid_label_v26`; bot/global calibration v15; direction calibration v12.
+
+## v1.0.52 kill-switch proxy rule
+
+- Historical-only system: this is not a live stop-order simulator.
+- An intrabar kill-switch breach no longer assumes a perfect fill at the trigger.
+- Residual SHORT + upper breach: use observed candle high as the conservative liquidation bound.
+- Residual LONG + lower breach: use observed candle low as the conservative liquidation bound.
+- Favorable continuation is not credited; gaps that skip the trigger remain unlabelable.
+- Current evidence contract: `grid_label_v25`; bot/global calibration v14; direction calibration v11.
+
+## Simulation boundary after v1.0.51
+
+This service models historical outcomes only. It does **not** submit orders, attest exchange fills, or decide whether a real order is executable at runtime. Missing current Bybit metadata is not a recommendation blocker. Read `reasons.simulation_scope`: `historical_proxy_only`, `runtime_order_submission=false`, `runtime_execution_validation=not_performed`.
+
+Treat every recommendation as paper/shadow evidence. Strict trade-through, candle-volume capacity and delayed replacement activation are conservative model assumptions, not proof of queue execution. An optional explicit preflight may display current tick/qty/minimum-order diagnostics, but it does not change the recommendation, historical outcome or calibration.
+
+## Mandatory replacement-timing check after v1.0.50
+
+Do not treat a parent fill and its replacement fill inside the same one-minute candle as proven execution. OHLCV does not contain the parent fill time or the replacement submission/acknowledgement time. `intrabar_replacement_fill_timing_unobservable` means **NO EVIDENCE / NO TRADE**, not a loss and not a completed profitable cycle. A replacement becomes proxy-eligible only from the next candle; exact exchange fills remain authoritative.
+
+## Mandatory proxy-volume check after v1.0.49
+
+A candle crossing a limit level does not prove that the whole order was filled. Current `grid_label_v22` outcomes require the simulated initial/fill quantity to fit within the candle's total Bybit base-quantity volume. `insufficient_candle_volume_for_full_fill` or `insufficient_candle_volume_for_initial_inventory` means **NO EVIDENCE / NO TRADE**; do not convert the missing label into a loss or override it with confidence. Even sufficient candle volume does not prove queue priority, level liquidity or partial fills - exact exchange reconciliation remains authoritative.
+
+## Historical v1.0.48 exchange-evidence rule (superseded by v1.0.51)
+
+The mandatory current-metadata gate below is retained only as release history. It must not be used with v1.0.51+.
+
+In v1.0.48-v1.0.50 the system required current-filter normalization and an exchange snapshot. Do not apply that rule to v1.0.51+: missing current metadata is not a model blocker, and historical outcomes use persisted simulation geometry.
+
+For shadow statistics, exact candle touch is not a completed limit fill. Proxy Buy requires trade below the order level; proxy Sell requires trade above. Even trade-through remains a proxy and does not prove queue priority or partial-fill volume.
+
+## Funding receipt rule after v1.0.46
+
+Do not launch because historical funding paid the modeled side. Proxy `ret`, win rate and monetary expectancy exclude positive funding receipts and charge adverse payments. Signed funding belongs to exact realised PnL diagnostics, not to durable grid alpha. After upgrade, wait for new `grid_label_v19` outcomes; old receipt-inflated calibration is reset.
+
+## Temporal independence check after v1.0.45
+
+Do not interpret many symbols in one market window as many independent tests. Before any launch, `confidence_model` must show enough `time_clusters` (default at least 20 for `CALIB_MIN_SAMPLES=80`) and a strictly positive `time_cluster_lower_bound`, in addition to the positive row-level lower bound. `time_clusters` below the minimum, missing cluster diagnostics or a non-positive cluster lower bound means shadow `NO TRADE`. Correlated symbols cannot be used to override this gate.
+
+## Terminal exact-evidence check after v1.0.44
+
+A stopped audit bot is **not** automatically a completed result. Before treating realised PnL as exact validation evidence, verify `total_pnl_finalized=true`, `position_flat=true`, and `net_position_qty≈0`. Rows with `residual_position`, `execution_ledger_incomplete`, `no_execution_events`, or `bot_not_stopped` remain visible but must not enter `LIVE_VALIDATION_*` statistics. Every opening and closing fill plus signed funding must be delivered by the external read-only reconciliation adapter.
+
 ## Обязательная проверка денежного evidence после v1.0.43
 
 Не запускайте Futures Grid только по `score`, raw confidence, win rate или положительному среднему. В `confidence_model` должны одновременно выполняться: `expectancy_status=positive`, достаточный `weighted_effective_return_samples` и `weighted_mean_return_lower_bound > 0`. Статусы `unknown`, `insufficient`, `uncertain` означают shadow `NO TRADE` с кодом `PROXY_MONETARY_EXPECTANCY_UNPROVEN`; `negative` означает подтверждённый monetary veto. Даже положительная нижняя граница не является гарантией прибыли и не отменяет risk/preflight checks.
@@ -22,7 +83,7 @@ After 8 independent stopped bots for one direction, 12 for one symbol, or 20 por
 
 - Approval uses forecast funding conservatively; it never credits a possible receipt as guaranteed edge.
 - Historical statistics use actual Bybit funding settlements, not the earlier ticker forecast.
-- Settled payments and receipts are both included with the sign implied by LONG/SHORT inventory.
+- Legacy `grid_label_v18` included both settled payments and receipts with the LONG/SHORT sign. This rule is superseded by `grid_label_v19`: payments remain costs, receipts are diagnostic-only for proxy validation.
 - Missing settlement data blocks a non-flat historical label.
 - The settlement rate is exact; modeled inventory/price remain OHLCV proxy limitations.
 
@@ -82,8 +143,8 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Do not treat a ticker as fresh unless the exchange event timestamp is valid.
 - A shifted/malformed candle, a missing next-minute entry candle, any gap inside the outcome horizon, or a missing exact exit candle means no proxy label.
 - An already-open candle before publication is not a tradeable entry. Conflicting persisted grid/funding aliases are skipped, never collapsed into a different bot or a zero-return loss.
-- Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted calibrator remains a diagnostic state, not permission to weaken deterministic gates.
-- Current label contract is `grid_label_v17`: entry remains the first exact 1m open strictly after publication; N intervals create N+1 prices but exactly N initial orders, with one idle pivot/bridge level; directional inventory and neutral full initial-order commitment are derived from those actual orders; kill-switch remains terminal.
+- Calibration excludes labels with missing, malformed or future `label_available_ts`; an unfitted or unproven bot-specific calibrator requires shadow `no_trade`; raw confidence is audit-only and cannot make the strategy actionable.
+- Current label contract is `grid_label_v25`: entry remains the first exact 1m open strictly after publication; N intervals create N+1 prices but exactly N initial orders, with one idle pivot/bridge level; directional inventory and neutral full initial-order commitment are derived from those actual orders; kill-switch remains terminal; adverse settled funding reduces proxy `ret`, while positive receipts remain diagnostic-only and cannot create edge.
 - Same-level directional lots are quantity-aware: an initial TP and an adjacent replacement TP at one price must both remain in the ledger, fees and funding state.
 - Missing/inside-range kill-switch is unlabelable. For any candle with material high and low excursions, both O-H-L-C and O-L-H-C paths must produce the same ledger/stop/PnL state; otherwise no proxy label is stored.
 - A close-open or horizon gap beyond the kill-switch is also unlabelable; never assume the skipped boundary was an executable stop price.

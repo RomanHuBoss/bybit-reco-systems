@@ -1,3 +1,57 @@
+## v1.0.54 calibration activation flow
+
+`matured historical outcomes` -> `monetary/temporal gates` -> `score-only Platt baseline` -> `feature extraction` -> `purged chronological OOF logits` -> `OOF Platt-on-top` -> `feature LogReg activation`.
+
+`app/calibration.py` owns both fitting and the activation boundary. Full-sample feature coefficients are withheld unless the OOF stage is sufficient; persistence records the OOF diagnostics. `app/recommender.py` may report `bot_logreg` only when non-empty coefficients survived that boundary. Otherwise it reports `bot_platt` or raw confidence. This is code-only calibration-state evolution: no outcome label, relational schema or publication lifecycle change.
+
+## v1.0.53 boundary-candle liquidity flow
+
+`compute_outcomes_once()` separates the strategy horizon from evidence availability: `horizon_end_ts = entry_ts + horizon_sec`, while `label_available_ts = horizon_end_ts + 60`. It requires the exact boundary 1m candle to be complete before calling `_grid_outcome()`.
+
+`_grid_outcome()` resets `candle_volume_capacity_qty` and `candle_volume_used_qty` when entering the boundary candle. The same budget is consumed by close-to-open gap fills and terminal residual liquidation. Kill-switch liquidation uses the remaining capacity in the breach candle. `ledger_invalid` is checked after all intrabar path simulations so a capacity failure cannot disappear when equivalent path snapshots are restored. No schema change is required; OHLCV volume and JSON diagnostics already exist.
+
+## Historical kill-switch loss bound (v1.0.52)
+
+`app/outcomes.py::_grid_outcome` separates two prices at a protective exit: the grid-processing boundary and the conservative residual-inventory liquidation bound. Resting orders are processed only up to the configured kill-switch. If the observed intrabar continuation is adverse to the residual position, the proxy closes at the corresponding candle extreme; otherwise it retains the boundary price and does not credit favorable slippage. Ledger snapshots include stop boundary and observed extreme so alternative OHLC paths cannot appear equivalent when their terminal loss bounds differ.
+
+## v1.0.51 historical-simulation boundary
+
+The recommendation/outcome path is intentionally independent of runtime exchange executability. `_reco_thread` does not prefetch current Bybit instrument filters for publication, and `run_recommender_once` has no exchange-normalizer callback. `compute_outcomes_once` labels persisted historical geometry without requiring an exchange snapshot.
+
+`reasons.simulation_scope` is the authoritative boundary: `historical_proxy_only`, no order submission, no runtime execution validation, and no exchange fill attestation. Current Bybit snapping/validation helpers remain available only to explicit operator preflight endpoints; their result cannot change recommendation status, persisted geometry, outcome eligibility, or calibration.
+
+The model remains conservative within OHLCV limits: strict trade-through, candle-volume capacity, delayed replacement activation, cost/funding rules, temporal clustering and monetary lower-bound gates. These are simulation assumptions, not claims that an order would have filled in runtime.
+
+## v1.0.50 outcome ledger timing boundary
+
+The proxy ledger now separates `orders` active before the current candle from `pending_orders` created by fills during that candle. Snapshots used for alternative OHLC paths include both maps. Pending replacements activate only at the next candle boundary; crossing one earlier makes the outcome unavailable because order-placement latency is not observable from OHLCV.
+
+## v1.0.49 outcome execution-capacity boundary
+
+`app/outcomes.py` now reads OHLCV `volume` with each one-minute candle and maintains a path-local aggregate fill budget. Recommendation sizing remains immutable input: the persisted `qty_per_order` is multiplied by simulated slot quantity before any ledger mutation. Intrabar high-first/low-first snapshots include consumed volume so path equivalence cannot hide different capacity usage. The change is computation-only and requires no schema migration because `ohlcv.volume` already exists in both SQLite and PostgreSQL schemas.
+
+## v1.0.48 exchange-evidence boundary (historical, removed in v1.0.51)
+
+Versions 1.0.48-v1.0.50 temporarily coupled publication/outcomes to current Bybit filters and an `exchange_execution_snapshot`. Version 1.0.51 removed the metadata prefetch, normalizer callback and mandatory snapshot check. Strict trade-through and other conservative OHLCV rules remain; current exchange filters do not participate in recommendation status or calibration.
+
+## v1.0.46 funding-alpha boundary
+
+- `app/outcomes.py` maintains signed settled funding diagnostics and a separate conservative funding contribution for canonical proxy return. Only negative/adverse cashflows enter `ret`.
+- `app/main.py` advances the outcome contract to `grid_label_v19` and deletes current bot/global/direction calibrator cache keys when labels are reset.
+- Exact execution evidence remains signed account truth; proxy calibration remains conservative hypothesis evidence. No DB schema or API route changes are required.
+
+## v1.0.45 temporal evidence aggregation
+
+`app/calibration.py` now has two monetary uncertainty layers. `_weighted_return_diagnostics()` describes row-level returns. `_temporal_cluster_return_diagnostics()` builds interval-overlap components from matured `[ts, label_available_ts]` rows, computes one weighted mean per component, and evaluates effective cluster count, dispersion and a one-sided lower bound. `fit_logreg()` is fail-closed unless both layers pass.
+
+The new diagnostics are persisted inside the existing `app_config.value_json`; no table or migration changes are required. `app/recommender.py` exposes `time_clusters=current/min` and `time_cluster_lower_bound` in the monetary-veto diagnostic. v9 cache keys isolate the new contract from v8 models.
+
+## v1.0.44: terminal exact-evidence boundary
+
+Execution-evidence persistence remains append-only. `db.get_bot_execution_summary()` now adds a deterministic signed-quantity reconciliation layer over immutable execution rows. `db.list_live_validation_records()` exposes both complete and incomplete records for audit, but marks a record eligible only when the bot is stopped and the execution ledger is terminally flat. `main._live_validation_scope_summary()` independently rechecks `total_pnl_finalized=True` before accepting a row, so a malformed caller or stale payload cannot inject partial PnL into the stop gate.
+
+No new table or column is required: finalization is recomputed from existing `execution_evidence.side`, `qty`, `bot_instances.status`, and `stopped_ts`.
+
 ## v1.0.43: uncertainty-bounded calibration boundary
 
 `app/calibration.py` now owns monetary uncertainty diagnostics in addition to probability fitting. The persisted LogReg payload carries weighted dispersion, Kish effective sample size, one-sided lower bound and confidence level. `app/recommender.py` treats bot-specific monetary evidence as a prerequisite publication layer: non-positive or unproven evidence creates a shadow `no_trade` before operator action, while preserving the row for independent future outcome accumulation.

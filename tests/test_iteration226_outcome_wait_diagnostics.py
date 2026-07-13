@@ -113,8 +113,8 @@ def test_invalid_funding_aliases_have_structured_reason(tmp_path: Path) -> None:
 
 def test_release_contract_bumped_for_outcome_diagnostics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'version="1.0.43"' in source
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
+    assert 'version="1.0.54"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
 
 
 def test_worker_logs_wait_not_invalid_contract_for_missing_settlement(tmp_path: Path, monkeypatch) -> None:

@@ -203,7 +203,7 @@ def test_reco_thread_skips_housekeeping_after_runtime_lock_loss(tmp_path: Path, 
 
         app_main.settings = replace(app_main.settings, reco_interval_sec=5, telegram_token=None)
 
-        def fake_run_recommender_once(conn, settings, *, heartbeat=None):
+        def fake_run_recommender_once(conn, settings, *, heartbeat=None, exchange_normalizer=None):
             assert heartbeat is not None
             raise RuntimeLockLostError("lost reco leadership")
 

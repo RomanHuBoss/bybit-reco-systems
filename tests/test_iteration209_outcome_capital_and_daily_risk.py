@@ -82,7 +82,7 @@ def test_grid_proxy_return_is_normalized_by_committed_grid_capital(tmp_path: Pat
     try:
         db.init_db(conn)
         base_ts = 1_701_000_000
-        closes = [100.0, 101.0, 100.0, 101.0, 100.0]
+        closes = [100.0, 101.1, 99.9, 101.1, 99.9]
         candles = []
         for idx, close in enumerate(closes):
             open_price = 100.0 if idx == 0 else closes[idx - 1]
@@ -229,4 +229,4 @@ def test_execution_preflight_blocks_kill_switch_loss_above_remaining_daily_budge
 
 
 def test_outcome_semantics_bump_label_version_to_avoid_mixing_legacy_calibration(app_main) -> None:
-    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v18"
+    assert app_main.OUTCOME_LABEL_VERSION == "grid_label_v26"

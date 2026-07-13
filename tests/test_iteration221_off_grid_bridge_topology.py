@@ -144,8 +144,8 @@ def test_neutral_bridge_order_is_created_only_after_adjacent_buy_fill(tmp_path: 
         db.init_db(conn)
         base_ts = 1_720_300_000
         _seed(conn, base_ts, [
-            (20_000.0, 20_000.0, 18_000.0, 18_000.0),
-            (18_000.0, 22_000.0, 18_000.0, 22_000.0),
+            (20_000.0, 20_000.0, 17_900.0, 17_900.0),
+            (17_900.0, 22_100.0, 17_900.0, 22_100.0),
         ])
         success, ret = _grid_outcome(
             conn, "linear", "BTCUSDT", 20_000.0, 20_000.0,
@@ -159,5 +159,5 @@ def test_neutral_bridge_order_is_created_only_after_adjacent_buy_fill(tmp_path: 
 
 def test_outcome_contract_is_bumped_for_dynamic_bridge_topology() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source

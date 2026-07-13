@@ -84,7 +84,7 @@ def test_positive_net_total_pnl_below_five_bps_is_still_a_win(tmp_path: Path) ->
     try:
         db.init_db(conn)
         base_ts = 1_704_100_000
-        _seed_path(conn, base_ts=base_ts, closes=[101.0, 100.0])
+        _seed_path(conn, base_ts=base_ts, closes=[101.1, 99.9])
 
         success, ret_proxy = _grid_outcome(
             conn,
@@ -230,8 +230,8 @@ def test_funding_cost_scales_to_position_value_at_event(tmp_path: Path, monkeypa
 
 def test_outcome_contract_is_bumped_for_inventory_aware_finalization() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source
 
 
 def test_short_inventory_pays_negative_funding_at_position_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

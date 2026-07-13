@@ -29,7 +29,12 @@ from .collector import collect_once, collect_backfill_once, collect_futures_once
 from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import compute_outcomes_once
-from .recommender import run_recommender_once, run_llm_review_sweep_once, LLM_REVIEW_ASYNC_STATUS_APP_KEY
+from .recommender import (
+    DIRECTION_CALIBRATION_KEY,
+    LLM_REVIEW_ASYNC_STATUS_APP_KEY,
+    run_llm_review_sweep_once,
+    run_recommender_once,
+)
 from .risk import get_risk_limits, compute_risk_status, gate_candidate, normalize_risk_limits
 from .security import is_authorized
 from . import db
@@ -55,7 +60,7 @@ logger = logging.getLogger(__name__)
 settings = load_settings()
 RUNTIME_OWNER = f"{socket.gethostname()}:{os.getpid()}"
 PROCESS_STARTED_TS = int(time.time())
-OUTCOME_LABEL_VERSION = "grid_label_v18"
+OUTCOME_LABEL_VERSION = "grid_label_v26"
 INSTRUMENT_META_CACHE_TTL_SEC = 15 * 60
 INSTRUMENT_META_NEGATIVE_CACHE_TTL_SEC = 30
 SUPPORTED_RECOMMENDER_GRID_TYPE = "arithmetic"
@@ -141,17 +146,15 @@ def _bootstrap_db() -> None:
 
         current_label_version = db.get_app_config_json(conn, "outcome_label_version")
         if current_label_version != OUTCOME_LABEL_VERSION:
-            from .calibration import BOT_CALIB_KEYS, GLOBAL_LOGREG_KEY
-
             deleted_outcomes = conn.execute("DELETE FROM reco_outcomes").rowcount
-            keys_to_delete = [GLOBAL_LOGREG_KEY, *BOT_CALIB_KEYS.values(), "platt_direction_v4"]
-            qmarks = ",".join("?" for _ in keys_to_delete)
-            deleted_calibrators = 0
-            if qmarks:
-                deleted_calibrators = conn.execute(
-                    f"DELETE FROM app_config WHERE key IN ({qmarks})",
-                    keys_to_delete,
-                ).rowcount
+            # Outcome labels define the target used by every persisted calibrator.
+            # Remove every historical key family, not just the currently imported
+            # identity, so an older coefficient set cannot survive a later label
+            # contract reset and be revived by rollback or compatibility code.
+            deleted_calibrators = conn.execute(
+                "DELETE FROM app_config WHERE key LIKE ? OR key LIKE ?",
+                ("logreg_%", "platt_direction_%"),
+            ).rowcount
             db.set_app_config_json(conn, "outcome_label_version", OUTCOME_LABEL_VERSION)
             db.log_decision(
                 conn,
@@ -2196,6 +2199,7 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
     out["params"] = params
     return out
 
+
 def _first_finite_from_mapping(mapping: dict[str, Any], keys: tuple[str, ...]) -> tuple[str | None, float | None]:
     """Возвращает первое finite-число из набора синонимичных полей sizing.
 
@@ -3999,7 +4003,11 @@ def _live_validation_scope_summary(
     for row in records:
         if len(independent) >= max(1, int(max_observations)):
             break
-        if not isinstance(row, dict) or not bool(row.get("validation_eligible")):
+        if (
+            not isinstance(row, dict)
+            or not bool(row.get("validation_eligible"))
+            or row.get("total_pnl_finalized") is not True
+        ):
             continue
         root = str(row.get("publication_root_rec_id") or row.get("rec_id") or row.get("bot_id") or "").strip()
         if not root or root in seen_roots:
@@ -4627,7 +4635,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.43", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.54", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -5753,6 +5761,11 @@ def api_record_execution_evidence(
                     "execution_evidence_realized_funding": float(summary["realized_funding"]),
                     "execution_evidence_realized_slippage": float(summary["realized_slippage"]),
                     "execution_evidence_realized_pnl_net": float(summary["realized_pnl_net"]),
+                    "execution_evidence_buy_qty": float(summary["buy_qty"]),
+                    "execution_evidence_sell_qty": float(summary["sell_qty"]),
+                    "execution_evidence_net_position_qty": float(summary["net_position_qty"]),
+                    "execution_evidence_position_flat": bool(summary["position_flat"]),
+                    "execution_evidence_total_pnl_finalized": bool(summary["total_pnl_finalized"]),
                     "execution_evidence_last_event_ts": int(summary.get("last_event_ts") or ts),
                     "execution_evidence_last_event_id": event_id,
                     "execution_evidence_last_operator": operator,
@@ -5828,7 +5841,11 @@ def api_live_evidence_validation(
             bot_type=bot_type,
             model_version=model_version,
         )
-    eligible = [row for row in records if bool(row.get("validation_eligible"))]
+    eligible = [
+        row
+        for row in records
+        if bool(row.get("validation_eligible")) and row.get("total_pnl_finalized") is True
+    ]
     net_values = [float(row.get("realized_pnl_net") or 0.0) for row in eligible]
     wins = sum(1 for value in net_values if value > 0.0)
     return {
@@ -6194,7 +6211,11 @@ def _reco_thread():
                     try:
                         if not heartbeat():
                             raise RuntimeLockLostError("reco runtime lock lost")
-                        result = run_recommender_once(conn, settings, heartbeat=heartbeat)
+                        result = run_recommender_once(
+                            conn,
+                            settings,
+                            heartbeat=heartbeat,
+                        )
                         if not heartbeat():
                             raise RuntimeLockLostError("reco runtime lock lost")
                         if time.time() - _last_outcomes >= int(getattr(settings, "outcomes_interval_sec", 60) or 60):

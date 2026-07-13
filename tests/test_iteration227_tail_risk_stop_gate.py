@@ -14,6 +14,7 @@ def _record(index: int, pnl: float, *, symbol: str = "BTCUSDT", direction: str =
         "bot_type": "futures_grid",
         "model_version": "tail-risk-model",
         "validation_eligible": True,
+        "total_pnl_finalized": True,
         "realized_pnl_net": pnl,
     }
 

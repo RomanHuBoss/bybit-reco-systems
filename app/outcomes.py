@@ -7,6 +7,7 @@ from .settings import load_settings
 from .trading_semantics import normalize_execution_direction
 import logging
 import math
+from decimal import Decimal, InvalidOperation
 
 logger = logging.getLogger(__name__)
 settings = load_settings()
@@ -149,28 +150,39 @@ def _get_first_tradeable_candle_after(
     return int(r["ts"]), float(r["open"])
 
 
-def _get_open_at_exact(conn, venue: str, symbol: str, ts: int) -> float | None:
-    """Return the open at the exact requested 1m horizon boundary."""
+def _get_candle_at_exact(conn, venue: str, symbol: str, ts: int):
+    """Return one valid exact 1m candle row or ``None``."""
     target_ts = strict_integer(ts)
     if target_ts is None or target_ts <= 0:
         return None
     cur = conn.execute(
-        """SELECT open FROM ohlcv
+        """SELECT ts, open, high, low, close, volume FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=60 AND ts=?
            LIMIT 1""",
         (venue, symbol, target_ts),
     )
-    r = cur.fetchone()
-    return float(r["open"]) if r else None
+    row = cur.fetchone()
+    return row if row is not None and _is_valid_outcome_candle(row) else None
+
+
+def _get_open_at_exact(conn, venue: str, symbol: str, ts: int) -> float | None:
+    """Return the open at the exact requested 1m horizon boundary."""
+    row = _get_candle_at_exact(conn, venue, symbol, ts)
+    return float(row["open"]) if row is not None else None
 
 
 def _is_valid_outcome_candle(row: object) -> bool:
     try:
         raw_ts = row["ts"]  # type: ignore[index]
         raw_values = [row[key] for key in ("open", "high", "low", "close")]  # type: ignore[index]
+        raw_volume = row["volume"]  # type: ignore[index]
     except Exception:
         return False
-    if isinstance(raw_ts, bool) or any(isinstance(value, bool) for value in raw_values):
+    if (
+        isinstance(raw_ts, bool)
+        or isinstance(raw_volume, bool)
+        or any(isinstance(value, bool) for value in raw_values)
+    ):
         return False
     candle_ts = strict_integer(raw_ts)
     if candle_ts is None or candle_ts <= 0:
@@ -180,7 +192,13 @@ def _is_valid_outcome_candle(row: object) -> bool:
     except Exception:
         return False
     values = (open_px, high_px, low_px, close_px)
+    try:
+        volume = float(raw_volume)
+    except Exception:
+        return False
     if not all(math.isfinite(value) and value > 0.0 for value in values):
+        return False
+    if not math.isfinite(volume) or volume < 0.0:
         return False
     if high_px < max(open_px, close_px, low_px):
         return False
@@ -220,7 +238,7 @@ def _get_price_range_in_window(conn, venue: str, symbol: str, ts_start: int, ts_
 
 def _iter_1m_candles(conn, venue: str, symbol: str, ts_start: int, ts_end_exclusive: int):
     cur = conn.execute(
-        """SELECT ts, open, high, low, close FROM ohlcv
+        """SELECT ts, open, high, low, close, volume FROM ohlcv
            WHERE venue=? AND symbol=? AND tf_sec=60
            AND ts>=? AND ts<?
            ORDER BY ts ASC""",
@@ -697,6 +715,7 @@ def _grid_outcome(
     params: dict | None,
     *,
     diagnostics: dict[str, object] | None = None,
+    require_terminal_boundary_candle: bool = False,
 ) -> tuple[int, float] | None:
     """Estimate arithmetic Futures Grid total P&L from a conservative order ledger.
 
@@ -709,8 +728,11 @@ def _grid_outcome(
     resulting ledgers are equivalent.
 
     A kill-switch is an actual terminal event: the ledger processes fills up to
-    the protective boundary, liquidates residual inventory there and ignores all
-    later candles/funding. A close->open gap beyond that boundary is unavailable
+    the protective boundary and then liquidates residual inventory at a
+    conservative observed-price bound. For inventory harmed by the continued
+    breach, the candle extreme is used rather than fabricating a perfect market
+    fill at the trigger boundary. Later candles/funding are ignored. A close->open
+    gap beyond that boundary is unavailable
     because OHLC cannot identify the stop/grid-order execution chronology or a
     fill at the skipped protective price.
     """
@@ -878,6 +900,20 @@ def _grid_outcome(
     initial_long_slots = int(topology["initial_long_slots"])
     initial_short_slots = int(topology["initial_short_slots"])
 
+    # OHLC trade-through proves that the market traded beyond a resting limit,
+    # but it still cannot prove a full fill when the requested base quantity is
+    # larger than the entire observed minute volume.  For Linear USDT klines,
+    # volume is expressed in the same base/contract quantity as order qty.  The
+    # aggregate candle volume is only a necessary (not sufficient) capacity
+    # bound, yet ignoring even that bound fabricates fills that are
+    # mathematically impossible. Legacy/manual payloads without a usable qty keep
+    # the older proxy behaviour; current exchange-normalized recommendations
+    # always persist qty and are therefore protected by this cap.
+    order_qty_decimal = _first_positive_qty(params)
+    order_qty_per_slot = (
+        float(order_qty_decimal) if order_qty_decimal is not None else None
+    )
+
     # Signed quantity per price level: positive = buy quantity, negative = sell
     # quantity. Directional grids can legitimately accumulate multiple orders at
     # the same price (for example, the existing TP for initial inventory plus a
@@ -886,6 +922,13 @@ def _grid_outcome(
     # funding inventory.
     orders: dict[int, int] = {index: 1 for index in buy_indices}
     orders.update({index: -1 for index in sell_indices})
+    # Replacement orders are created only after the parent fill is observed.
+    # One-minute OHLCV does not expose the parent fill timestamp or the moment
+    # when the bot submitted the replacement.  Keep those orders pending until
+    # the next candle.  If the current candle would already cross a pending
+    # replacement, both "filled" and "not yet placed" executions are admissible,
+    # so the proxy label must be unavailable rather than assuming zero latency.
+    pending_orders: dict[int, int] = {}
     position_slots = int(topology["initial_position_slots"])
 
     cash = (-float(initial_long_slots) + float(initial_short_slots)) * entry_f
@@ -896,18 +939,23 @@ def _grid_outcome(
     )
     previous_price = entry_f
     tolerance = max(1e-10, step_abs * 1e-10)
-    funding_pnl = 0.0
+    signed_funding_pnl = 0.0
+    conservative_funding_pnl = 0.0
     event_index = 0
     stopped = False
     stop_price: float | None = None
+    stop_boundary_price: float | None = None
+    stop_observed_extreme: float | None = None
     stop_ts: int | None = None
     ledger_invalid = False
+    candle_volume_capacity_qty: float | None = None
+    candle_volume_used_qty = 0.0
 
     def current_position_slots() -> int:
         return int(position_slots)
 
     def apply_funding_event(settled_rate: float | None, price: float, event_ts: int | None = None) -> None:
-        nonlocal funding_pnl, ledger_invalid
+        nonlocal signed_funding_pnl, conservative_funding_pnl, ledger_invalid
         slots = current_position_slots()
         if settled_rate is None:
             # Missing settled rate is harmless only when no position was held at
@@ -922,7 +970,15 @@ def _grid_outcome(
                 )
                 ledger_invalid = True
             return
-        funding_pnl += _signed_settled_funding_pnl(slots, price, float(settled_rate))
+        signed_cashflow = _signed_settled_funding_pnl(slots, price, float(settled_rate))
+        signed_funding_pnl += signed_cashflow
+        # Historical settled funding is retained as a diagnostic truth, but a
+        # temporary receipt must not become canonical strategy alpha.  Outcome
+        # ``ret`` feeds monetary calibration and publication gates, so it charges
+        # every adverse settlement while excluding positive receipts.  Otherwise
+        # a flat/losing grid can be labelled successful solely because one funding
+        # snapshot happened to pay its current inventory side.
+        conservative_funding_pnl += min(0.0, signed_cashflow)
 
     def adverse_exposure_value(price: float) -> float:
         # Retained only as a path-equivalence state component. Historical funding
@@ -931,21 +987,88 @@ def _grid_outcome(
 
     max_adverse_position_value = adverse_exposure_value(entry_f)
 
+    def consume_observed_candle_volume(
+        slot_quantity: int,
+        *,
+        reason: str,
+        event_ts: int,
+        fill_price: float,
+    ) -> bool:
+        nonlocal candle_volume_used_qty, ledger_invalid
+        if order_qty_per_slot is None:
+            return True
+        required_slots = abs(int(slot_quantity))
+        required_fill_qty = float(required_slots) * float(order_qty_per_slot)
+        if required_fill_qty <= 0.0:
+            return True
+        capacity = candle_volume_capacity_qty
+        if capacity is None or not math.isfinite(float(capacity)) or float(capacity) < 0.0:
+            _record_outcome_failure(
+                diagnostics,
+                "invalid_candle_volume_capacity",
+                event_ts=int(event_ts),
+                fill_price=float(fill_price),
+                candle_volume=capacity,
+            )
+            ledger_invalid = True
+            return False
+        tolerance_qty = max(
+            1e-12,
+            abs(float(capacity)) * 1e-12,
+            abs(float(order_qty_per_slot)) * 1e-9,
+        )
+        used_before = float(candle_volume_used_qty)
+        if used_before + required_fill_qty > float(capacity) + tolerance_qty:
+            _record_outcome_failure(
+                diagnostics,
+                reason,
+                event_ts=int(event_ts),
+                fill_price=float(fill_price),
+                candle_volume=float(capacity),
+                volume_used_before_fill=used_before,
+                required_fill_qty=float(required_fill_qty),
+                qty_per_order=float(order_qty_per_slot),
+                required_slot_count=int(required_slots),
+            )
+            ledger_invalid = True
+            return False
+        candle_volume_used_qty = used_before + required_fill_qty
+        return True
+
     def add_order(index: int, signed_quantity: int) -> None:
         nonlocal ledger_invalid
         if signed_quantity == 0 or index < 0 or index > grid_count:
             return
-        existing = int(orders.get(index, 0))
-        if existing != 0 and (existing > 0) != (signed_quantity > 0):
-            # Opposing resting orders at one level would imply self-trading or an
-            # unresolved cancel/replace chronology. Do not fabricate a label.
-            ledger_invalid = True
-            return
-        combined = existing + int(signed_quantity)
+        active_quantity = int(orders.get(index, 0))
+        pending_quantity = int(pending_orders.get(index, 0))
+        for existing in (active_quantity, pending_quantity):
+            if existing != 0 and (existing > 0) != (signed_quantity > 0):
+                # Opposing resting orders at one level would imply self-trading
+                # or an unresolved cancel/replace chronology. Do not fabricate a
+                # label.
+                ledger_invalid = True
+                return
+        combined = pending_quantity + int(signed_quantity)
         if combined == 0:
-            orders.pop(index, None)
+            pending_orders.pop(index, None)
         else:
-            orders[index] = combined
+            pending_orders[index] = combined
+
+    def activate_pending_orders() -> None:
+        nonlocal ledger_invalid
+        if not pending_orders:
+            return
+        for index, signed_quantity in list(pending_orders.items()):
+            existing = int(orders.get(index, 0))
+            if existing != 0 and (existing > 0) != (signed_quantity > 0):
+                ledger_invalid = True
+                return
+            combined = existing + int(signed_quantity)
+            if combined == 0:
+                orders.pop(index, None)
+            else:
+                orders[index] = combined
+        pending_orders.clear()
 
     def gap_crosses_kill_switch(target_price: float) -> bool:
         target = float(target_price)
@@ -958,7 +1081,8 @@ def _grid_outcome(
     def process_segment(target_price: float, *, event_ts: int) -> None:
         """Process every resting grid order crossed by one observable price segment."""
         nonlocal cash, execution_cost, position_slots, previous_price
-        nonlocal max_adverse_position_value, stopped, stop_price, stop_ts, ledger_invalid
+        nonlocal max_adverse_position_value, stopped, stop_price, stop_boundary_price
+        nonlocal stop_observed_extreme, stop_ts, ledger_invalid
         if stopped:
             return
         target = float(target_price)
@@ -975,28 +1099,62 @@ def _grid_outcome(
             terminal = ks_lower_f
             breached = True
 
-        if terminal > start + tolerance:
-            crossed = [
-                index
-                for index, grid_price in enumerate(grid_prices)
-                if grid_price > start + tolerance and grid_price <= terminal + tolerance
-            ]
-        elif terminal < start - tolerance:
-            crossed = [
-                index
-                for index in range(grid_count, -1, -1)
-                if grid_prices[index] < start - tolerance
-                and grid_prices[index] >= terminal - tolerance
-            ]
-        else:
-            crossed = []
+        def crossed_indices(order_map: dict[int, int]) -> list[int]:
+            if terminal > start + tolerance:
+                # A resting Sell is not proven filled merely because OHLC
+                # ``high`` equals its limit price. The market must trade beyond
+                # the level. Include an order at ``start`` so a prior exact touch
+                # can be confirmed by later continuation above the same price.
+                return sorted(
+                    index
+                    for index, signed_quantity in order_map.items()
+                    if int(signed_quantity) < 0
+                    and grid_prices[index] >= start - tolerance
+                    and grid_prices[index] < terminal - tolerance
+                )
+            if terminal < start - tolerance:
+                # Symmetric rule for a resting Buy.
+                return sorted(
+                    (
+                        index
+                        for index, signed_quantity in order_map.items()
+                        if int(signed_quantity) > 0
+                        and grid_prices[index] <= start + tolerance
+                        and grid_prices[index] > terminal + tolerance
+                    ),
+                    reverse=True,
+                )
+            return []
+
+        crossed_pending = crossed_indices(pending_orders)
+        if crossed_pending:
+            index = int(crossed_pending[0])
+            _record_outcome_failure(
+                diagnostics,
+                "intrabar_replacement_fill_timing_unobservable",
+                event_ts=int(event_ts),
+                fill_price=float(grid_prices[index]),
+                signed_slot_quantity=int(pending_orders.get(index, 0)),
+            )
+            ledger_invalid = True
+            return
+
+        crossed = crossed_indices(orders)
 
         for index in crossed:
-            signed_quantity = int(orders.pop(index, 0))
+            signed_quantity = int(orders.get(index, 0))
             if signed_quantity == 0:
                 continue
             fill_price = grid_prices[index]
             quantity = abs(signed_quantity)
+            if not consume_observed_candle_volume(
+                quantity,
+                reason="insufficient_candle_volume_for_full_fill",
+                event_ts=event_ts,
+                fill_price=fill_price,
+            ):
+                return
+            orders.pop(index, None)
             execution_cost += float(quantity) * fill_price * grid_half_leg_fee_rate
             if signed_quantity > 0:
                 cash -= float(quantity) * fill_price
@@ -1018,7 +1176,32 @@ def _grid_outcome(
         )
         if breached:
             stopped = True
-            stop_price = float(terminal)
+            stop_boundary_price = float(terminal)
+            stop_observed_extreme = float(target)
+            residual_slots = current_position_slots()
+            liquidation_bound = float(terminal)
+            if target > start + tolerance and residual_slots < 0:
+                # A short is harmed by continued upside after the upper stop
+                # trigger. OHLC proves trading up to ``target``; pricing a market
+                # stop exactly at the boundary systematically understates the
+                # observable tail loss.
+                liquidation_bound = max(float(terminal), float(target))
+            elif target < start - tolerance and residual_slots > 0:
+                # Symmetric adverse bound for long inventory below the lower
+                # protective trigger.
+                liquidation_bound = min(float(terminal), float(target))
+            stop_price = float(liquidation_bound)
+            if residual_slots != 0 and not consume_observed_candle_volume(
+                abs(int(residual_slots)),
+                reason="insufficient_candle_volume_for_kill_switch_liquidation",
+                event_ts=int(event_ts),
+                fill_price=float(liquidation_bound),
+            ):
+                return
+            max_adverse_position_value = max(
+                max_adverse_position_value,
+                adverse_exposure_value(float(liquidation_bound)),
+            )
             stop_ts = int(event_ts)
 
     def snapshot_ledger() -> dict[str, object]:
@@ -1030,14 +1213,24 @@ def _grid_outcome(
             "max_adverse_position_value": float(max_adverse_position_value),
             "stopped": bool(stopped),
             "stop_price": None if stop_price is None else float(stop_price),
+            "stop_boundary_price": (
+                None if stop_boundary_price is None else float(stop_boundary_price)
+            ),
+            "stop_observed_extreme": (
+                None if stop_observed_extreme is None else float(stop_observed_extreme)
+            ),
             "stop_ts": stop_ts,
             "ledger_invalid": bool(ledger_invalid),
+            "candle_volume_used_qty": float(candle_volume_used_qty),
             "orders": dict(orders),
+            "pending_orders": dict(pending_orders),
         }
 
     def restore_ledger(state: dict[str, object]) -> None:
         nonlocal cash, execution_cost, position_slots, previous_price
-        nonlocal max_adverse_position_value, stopped, stop_price, stop_ts, ledger_invalid, orders
+        nonlocal max_adverse_position_value, stopped, stop_price, stop_boundary_price
+        nonlocal stop_observed_extreme, stop_ts, ledger_invalid, orders
+        nonlocal pending_orders, candle_volume_used_qty
         cash = float(state["cash"])
         execution_cost = float(state["execution_cost"])
         position_slots = int(state["position_slots"])
@@ -1046,30 +1239,57 @@ def _grid_outcome(
         stopped = bool(state["stopped"])
         raw_stop_price = state["stop_price"]
         stop_price = None if raw_stop_price is None else float(raw_stop_price)
+        raw_stop_boundary = state["stop_boundary_price"]
+        stop_boundary_price = (
+            None if raw_stop_boundary is None else float(raw_stop_boundary)
+        )
+        raw_stop_extreme = state["stop_observed_extreme"]
+        stop_observed_extreme = (
+            None if raw_stop_extreme is None else float(raw_stop_extreme)
+        )
         raw_stop_ts = state["stop_ts"]
         stop_ts = None if raw_stop_ts is None else int(raw_stop_ts)
         ledger_invalid = bool(state["ledger_invalid"])
+        candle_volume_used_qty = float(state["candle_volume_used_qty"])
         orders = {
             int(index): int(quantity)
             for index, quantity in dict(state["orders"]).items()  # type: ignore[arg-type]
         }
+        pending_orders = {
+            int(index): int(quantity)
+            for index, quantity in dict(state["pending_orders"]).items()  # type: ignore[arg-type]
+        }
 
     def equivalent_ledger(left: dict[str, object], right: dict[str, object]) -> bool:
-        for key in ("cash", "execution_cost", "previous_price", "max_adverse_position_value"):
+        for key in (
+            "cash",
+            "execution_cost",
+            "previous_price",
+            "max_adverse_position_value",
+            "candle_volume_used_qty",
+        ):
             if not math.isclose(
                 float(left[key]), float(right[key]), rel_tol=1e-12, abs_tol=max(1e-10, tolerance)
             ):
                 return False
-        for key in ("position_slots", "stopped", "stop_ts", "ledger_invalid", "orders"):
+        for key in ("position_slots", "stopped", "stop_ts", "ledger_invalid", "orders", "pending_orders"):
             if left[key] != right[key]:
                 return False
-        left_stop = left["stop_price"]
-        right_stop = right["stop_price"]
-        if left_stop is None or right_stop is None:
-            return left_stop is right_stop
-        return math.isclose(
-            float(left_stop), float(right_stop), rel_tol=1e-12, abs_tol=max(1e-10, tolerance)
-        )
+        for key in ("stop_price", "stop_boundary_price", "stop_observed_extreme"):
+            left_value = left[key]
+            right_value = right[key]
+            if left_value is None or right_value is None:
+                if left_value is not right_value:
+                    return False
+                continue
+            if not math.isclose(
+                float(left_value),
+                float(right_value),
+                rel_tol=1e-12,
+                abs_tol=max(1e-10, tolerance),
+            ):
+                return False
+        return True
 
     def simulate_intrabar_path(base: dict[str, object], targets: list[float], *, event_ts: int) -> dict[str, object]:
         restore_ledger(base)
@@ -1079,14 +1299,36 @@ def _grid_outcome(
                 break
         return snapshot_ledger()
 
-    for row in rows:
+    for row_index, row in enumerate(rows):
         row_ts = strict_integer(row["ts"])
         row_open = _finite_positive_or_none(row["open"])
         row_high = _finite_positive_or_none(row["high"])
         row_low = _finite_positive_or_none(row["low"])
         row_close = _finite_positive_or_none(row["close"])
-        if row_ts is None or None in (row_open, row_high, row_low, row_close):
+        row_volume = _finite_or_default(row["volume"], -1.0)
+        if (
+            row_ts is None
+            or None in (row_open, row_high, row_low, row_close)
+            or row_volume < 0.0
+        ):
             return None
+        candle_volume_capacity_qty = float(row_volume)
+        candle_volume_used_qty = 0.0
+        activate_pending_orders()
+        if ledger_invalid:
+            return None
+
+        # Directional grids enter their initial inventory at the first tradeable
+        # candle open. That market quantity is part of the same counterfactual
+        # execution and cannot exceed the entire observed minute volume either.
+        if row_index == 0 and abs(int(position_slots)) > 0:
+            if not consume_observed_candle_volume(
+                abs(int(position_slots)),
+                reason="insufficient_candle_volume_for_initial_inventory",
+                event_ts=row_ts,
+                fill_price=float(row_open),
+            ):
+                return None
 
         # Funding at the minute boundary is charged against inventory already
         # held before the first trade of that minute.
@@ -1120,9 +1362,9 @@ def _grid_outcome(
             return None
         if upper_breach:
             base_state = snapshot_ledger()
-            stop_first = simulate_intrabar_path(base_state, [ks_upper_f], event_ts=row_ts)
+            stop_first = simulate_intrabar_path(base_state, [float(row_high)], event_ts=row_ts)
             opposite_first = simulate_intrabar_path(
-                base_state, [float(row_low), ks_upper_f], event_ts=row_ts
+                base_state, [float(row_low), float(row_high)], event_ts=row_ts
             )
             if not equivalent_ledger(stop_first, opposite_first):
                 restore_ledger(base_state)
@@ -1131,9 +1373,9 @@ def _grid_outcome(
             break
         if lower_breach:
             base_state = snapshot_ledger()
-            stop_first = simulate_intrabar_path(base_state, [ks_lower_f], event_ts=row_ts)
+            stop_first = simulate_intrabar_path(base_state, [float(row_low)], event_ts=row_ts)
             opposite_first = simulate_intrabar_path(
-                base_state, [float(row_high), ks_lower_f], event_ts=row_ts
+                base_state, [float(row_high), float(row_low)], event_ts=row_ts
             )
             if not equivalent_ledger(stop_first, opposite_first):
                 restore_ledger(base_state)
@@ -1177,6 +1419,9 @@ def _grid_outcome(
         if stopped:
             break
 
+    if ledger_invalid:
+        return None
+
     if not stopped:
         while event_index < len(funding_events):
             _event_ts, settled_rate = funding_events[event_index]
@@ -1185,10 +1430,42 @@ def _grid_outcome(
             if ledger_invalid:
                 return None
 
-        # The exact horizon open is the next observable price after the final
-        # in-window close. A gap through the kill-switch is path-ambiguous and
-        # cannot be priced at the skipped protective boundary.
+        # The exact horizon open belongs to a new one-minute candle. Any gap
+        # fills and the terminal residual close must share that candle's own
+        # observed volume budget; carrying forward the previous minute's budget
+        # fabricates liquidity across a timestamp boundary. Production outcome
+        # labeling waits until this boundary candle is complete. Direct legacy
+        # unit calls may omit it unless strict boundary evidence is requested.
+        terminal_candle = _get_candle_at_exact(conn, venue, symbol, ts_end)
+        if terminal_candle is None:
+            if require_terminal_boundary_candle:
+                _record_outcome_failure(
+                    diagnostics,
+                    "missing_or_invalid_horizon_boundary_candle",
+                    transient=True,
+                    event_ts=int(ts_end),
+                )
+                return None
+        else:
+            terminal_open = float(terminal_candle["open"])
+            if not math.isclose(terminal_open, exit_f, rel_tol=1e-12, abs_tol=1e-12):
+                _record_outcome_failure(
+                    diagnostics,
+                    "horizon_boundary_open_mismatch",
+                    event_ts=int(ts_end),
+                    expected_open=float(terminal_open),
+                    supplied_exit=float(exit_f),
+                )
+                return None
+            candle_volume_capacity_qty = float(terminal_candle["volume"])
+            candle_volume_used_qty = 0.0
+
+        # A gap through the kill-switch is path-ambiguous and cannot be priced at
+        # the skipped protective boundary.
         if gap_crosses_kill_switch(exit_f):
+            return None
+        activate_pending_orders()
+        if ledger_invalid:
             return None
         process_segment(exit_f, event_ts=ts_end)
         if ledger_invalid:
@@ -1196,6 +1473,18 @@ def _grid_outcome(
 
     liquidation_price = float(stop_price) if stopped and stop_price is not None else exit_f
     open_position_slots = current_position_slots()
+    if (
+        not stopped
+        and open_position_slots != 0
+        and _get_candle_at_exact(conn, venue, symbol, ts_end) is not None
+        and not consume_observed_candle_volume(
+            abs(int(open_position_slots)),
+            reason="insufficient_candle_volume_for_terminal_liquidation",
+            event_ts=int(ts_end),
+            fill_price=float(liquidation_price),
+        )
+    ):
+        return None
     gross_pnl = cash + float(open_position_slots) * liquidation_price
     execution_cost += (
         abs(float(open_position_slots))
@@ -1212,7 +1501,32 @@ def _grid_outcome(
     capital_reference = float(topology["committed_notional_per_qty"])
     if not math.isfinite(capital_reference) or capital_reference <= 0.0:
         return None
-    net_proxy = (gross_pnl - execution_cost + funding_pnl) / capital_reference
+    if isinstance(diagnostics, dict):
+        diagnostics.update({
+            "signed_settled_funding_pnl": float(signed_funding_pnl),
+            "conservative_funding_pnl": float(conservative_funding_pnl),
+            "funding_benefit_excluded": float(max(0.0, signed_funding_pnl - conservative_funding_pnl)),
+            "fill_volume_confirmation": (
+                "aggregate_candle_and_liquidation_volume_cap_v2"
+                if order_qty_per_slot is not None
+                else "unavailable_qty_not_persisted"
+            ),
+            "qty_per_order_for_volume_cap": order_qty_per_slot,
+            "replacement_fill_confirmation": "next_candle_activation_or_unavailable_v1",
+            "kill_switch_fill_confirmation": (
+                "adverse_observed_extreme_v1" if stopped else "not_triggered"
+            ),
+            "kill_switch_boundary_price": (
+                None if stop_boundary_price is None else float(stop_boundary_price)
+            ),
+            "kill_switch_observed_extreme": (
+                None if stop_observed_extreme is None else float(stop_observed_extreme)
+            ),
+            "kill_switch_liquidation_price": (
+                None if stop_price is None else float(stop_price)
+            ),
+        })
+    net_proxy = (gross_pnl - execution_cost + conservative_funding_pnl) / capital_reference
 
     positive_pnl_epsilon = 1e-12
     success = int(
@@ -1222,13 +1536,52 @@ def _grid_outcome(
     )
     return success, float(net_proxy)
 
+
+def _decimal_positive(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not number.is_finite() or number <= 0:
+        return None
+    return number
+
+
+def _decimal_aligned(value: object, step: object) -> bool:
+    number = _decimal_positive(value)
+    quantum = _decimal_positive(step)
+    if number is None or quantum is None:
+        return False
+    quotient = number / quantum
+    nearest = quotient.to_integral_value()
+    return abs(quotient - nearest) <= Decimal("1e-9")
+
+
+def _first_positive_qty(params: dict[str, object]) -> Decimal | None:
+    trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    for mapping in (
+        trade_plan.get("sizing") if isinstance(trade_plan.get("sizing"), dict) else {},
+        params.get("sizing") if isinstance(params.get("sizing"), dict) else {},
+        trade_plan.get("economics") if isinstance(trade_plan.get("economics"), dict) else {},
+        params.get("economics") if isinstance(params.get("economics"), dict) else {},
+        params,
+    ):
+        for key in ("qty_per_order", "order_qty", "qty", "qty_per_leg"):
+            qty = _decimal_positive(mapping.get(key))
+            if qty is not None:
+                return qty
+    return None
+
+
 def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
     min_horizon = min(BOT_HORIZONS.values())
     fetch_limit = max(int(max_to_process), min(2000, int(max_to_process) * 12))
     require_llm_verdict = bool(getattr(settings, "llm_reviewer_enabled", False))
 
     base_sql = """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
-                  r.params_json, r.features_ref_ts, r.status, r.reasons_json
+                  r.params_json, r.features_ref_ts, r.status, r.reasons_json, r.model_version
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.ts <= ? AND o.rec_id IS NULL
@@ -1310,9 +1663,10 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "bot_type": bot_type,
                 "fallback_horizon_sec": effective_horizon,
             })
-        if db.now_ts() < entry_ts + effective_horizon:
-            continue
         ts_exit = entry_ts + effective_horizon
+        label_available_ts = ts_exit + 60
+        if db.now_ts() < label_available_ts:
+            continue
         if not _has_complete_1m_window(conn, venue, symbol, entry_ts, ts_exit):
             db.log_decision(conn, "OUTCOME_SKIP_INCOMPLETE_HORIZON", rec_id, None, {
                 "venue": venue,
@@ -1321,6 +1675,21 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "label_available_ts": ts_exit,
                 "horizon_sec": effective_horizon,
             })
+            continue
+        if _get_candle_at_exact(conn, venue, symbol, ts_exit) is None:
+            _log_outcome_decision_once(
+                conn,
+                "OUTCOME_WAIT_HORIZON_BOUNDARY_CANDLE",
+                rec_id,
+                {
+                    "venue": venue,
+                    "symbol": symbol,
+                    "entry_ts": entry_ts,
+                    "horizon_end_ts": ts_exit,
+                    "label_available_ts": label_available_ts,
+                },
+                cooldown_sec=3600,
+            )
             continue
 
         if entry is None or entry == 0:
@@ -1346,6 +1715,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 direction,
                 params,
                 diagnostics=diagnostics,
+                require_terminal_boundary_candle=True,
             )
             if grid_result is None:
                 reason = str(diagnostics.get("reason") or "unknown_grid_outcome_failure")
@@ -1394,7 +1764,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "bot_type": bot_type,
                 "direction": direction,
                 "horizon_sec": effective_horizon,
-                "label_available_ts": int(ts_exit),
+                "label_available_ts": int(label_available_ts),
                 "entry_close": float(entry),
                 "exit_close": float(exitp),
                 "ret": float(ret_proxy),

@@ -1833,20 +1833,34 @@ def list_execution_events(conn: sqlite3.Connection, bot_id: str | None = None, l
 
 def get_bot_execution_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any]:
     cur = conn.execute(
-        """SELECT event_type, ts, gross_pnl, fee, funding, slippage
+        """SELECT event_type, ts, side, qty, gross_pnl, fee, funding, slippage
              FROM execution_evidence WHERE bot_id=?
              ORDER BY ts ASC, event_id ASC""",
         (bot_id,),
     )
     event_count = execution_count = funding_event_count = 0
     gross = fee = funding = slippage = 0.0
+    buy_qty = sell_qty = 0.0
+    execution_ledger_complete = True
     first_event_ts: int | None = None
     last_event_ts: int | None = None
     for row in cur.fetchall():
         event_count += 1
-        if str(row["event_type"]) == "execution":
+        event_type = str(row["event_type"] or "").strip().lower()
+        if event_type == "execution":
             execution_count += 1
-        elif str(row["event_type"]) == "funding":
+            side = str(row["side"] or "").strip().lower()
+            qty = _finite_float_or_default(row["qty"], 0.0)
+            if qty <= 0.0 or side not in {"buy", "sell"}:
+                # Legacy/corrupted execution rows cannot prove the terminal
+                # position. Keep their monetary fields visible for audit, but do
+                # not let them become live-validation evidence.
+                execution_ledger_complete = False
+            elif side == "buy":
+                buy_qty += qty
+            else:
+                sell_qty += qty
+        elif event_type == "funding":
             funding_event_count += 1
         ts = int(row["ts"])
         first_event_ts = ts if first_event_ts is None else min(first_event_ts, ts)
@@ -1855,6 +1869,26 @@ def get_bot_execution_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str
         fee += _finite_float_or_default(row["fee"], 0.0)
         funding += _finite_float_or_default(row["funding"], 0.0)
         slippage += _finite_float_or_default(row["slippage"], 0.0)
+
+    net_position_qty = buy_qty - sell_qty
+    total_executed_qty = buy_qty + sell_qty
+    position_qty_tolerance = max(1e-12, total_executed_qty * 1e-9)
+    position_flat = bool(
+        execution_count > 0
+        and execution_ledger_complete
+        and abs(net_position_qty) <= position_qty_tolerance
+    )
+    bot_row = conn.execute(
+        "SELECT status, stopped_ts FROM bot_instances WHERE bot_id=?",
+        (bot_id,),
+    ).fetchone()
+    bot_stopped = bool(
+        bot_row is not None
+        and str(bot_row["status"] or "").strip().lower() == "stopped"
+        and bot_row["stopped_ts"] is not None
+    )
+    total_pnl_finalized = bool(bot_stopped and position_flat)
+
     net = gross + funding - fee
     return {
         "event_count": event_count,
@@ -1869,6 +1903,15 @@ def get_bot_execution_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str
         "net_formula": "gross_pnl + funding - fee",
         "first_event_ts": first_event_ts,
         "last_event_ts": last_event_ts,
+        "buy_qty": buy_qty,
+        "sell_qty": sell_qty,
+        "net_position_qty": net_position_qty,
+        "position_qty_tolerance": position_qty_tolerance,
+        "position_flat": position_flat,
+        "execution_ledger_complete": execution_ledger_complete,
+        "bot_stopped": bot_stopped,
+        "total_pnl_finalized": total_pnl_finalized,
+        "position_reconciliation_model": "signed_execution_qty_v1",
         "evidence_grade": event_count > 0,
     }
 
@@ -1893,6 +1936,18 @@ def list_live_validation_records(conn: sqlite3.Connection, limit: int = 200) -> 
         if rec is None:
             continue
         summary = get_bot_execution_summary(conn, bot["bot_id"])
+        validation_ineligible_reasons: list[str] = []
+        if str(bot.get("status") or "").strip().lower() != "stopped" or bot.get("stopped_ts") is None:
+            validation_ineligible_reasons.append("bot_not_stopped")
+        if int(summary.get("execution_count") or 0) <= 0:
+            validation_ineligible_reasons.append("no_execution_events")
+        if summary.get("execution_ledger_complete") is not True:
+            validation_ineligible_reasons.append("execution_ledger_incomplete")
+        if int(summary.get("execution_count") or 0) > 0 and summary.get("position_flat") is not True:
+            validation_ineligible_reasons.append("residual_position")
+        if summary.get("total_pnl_finalized") is not True and not validation_ineligible_reasons:
+            validation_ineligible_reasons.append("total_pnl_not_finalized")
+
         out.append({
             "bot_id": bot["bot_id"],
             "rec_id": rec_id,
@@ -1910,7 +1965,8 @@ def list_live_validation_records(conn: sqlite3.Connection, limit: int = 200) -> 
             "expected_rr": rec.get("expected_rr"),
             "model_version": rec.get("model_version"),
             **summary,
-            "validation_eligible": str(bot.get("status") or "") == "stopped" and summary["execution_count"] > 0,
+            "validation_eligible": summary.get("total_pnl_finalized") is True,
+            "validation_ineligible_reasons": validation_ineligible_reasons,
         })
     return out
 

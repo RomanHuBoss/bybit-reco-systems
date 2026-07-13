@@ -147,7 +147,7 @@ def test_database_persists_and_queries_settled_funding(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_short_receives_positive_settled_funding_even_when_forecast_was_adverse(tmp_path: Path) -> None:
+def test_short_funding_receipt_is_excluded_from_canonical_outcome_edge(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "short.db"))
     try:
         db.init_db(conn)
@@ -157,8 +157,8 @@ def test_short_receives_positive_settled_funding_even_when_forecast_was_adverse(
         result = _grid_outcome(conn, "linear", "BTCUSDT", 100.0, 100.0, base, base + 120, "short", _params(base, forecast_rate=-0.009))
         assert result is not None
         success, ret = result
-        assert success == 1
-        assert ret == pytest.approx(0.1 / 201.0)
+        assert success == 0
+        assert ret == pytest.approx(0.0)
     finally:
         conn.close()
 
@@ -188,7 +188,7 @@ def test_negative_settled_funding_reverses_long_short_cashflows(tmp_path: Path) 
         db.upsert_funding_settlements(conn, [{"symbol": "BTCUSDT", "ts": base + 60, "funding_rate": -0.001}])
         long_result = _grid_outcome(conn, "linear", "BTCUSDT", 100.0, 100.0, base, base + 120, "long", _params(base))
         short_result = _grid_outcome(conn, "linear", "BTCUSDT", 100.0, 100.0, base, base + 120, "short", _params(base))
-        assert long_result == pytest.approx((1, 0.1 / 199.0))
+        assert long_result == pytest.approx((0, 0.0))
         assert short_result == pytest.approx((0, -0.1 / 201.0))
     finally:
         conn.close()
@@ -231,5 +231,5 @@ def test_forecast_rate_does_not_change_historical_outcome_when_settlement_is_sam
 
 def test_outcome_contract_bumped_for_settled_funding() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'version="1.0.43"' in source
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
+    assert 'version="1.0.54"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source

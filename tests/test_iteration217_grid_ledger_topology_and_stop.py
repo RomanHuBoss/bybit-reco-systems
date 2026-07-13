@@ -88,49 +88,55 @@ def test_short_entry_between_levels_waits_for_dynamic_bridge_then_closes_at_next
     finally:
         conn.close()
 
-def test_minute_open_gap_and_return_counts_guaranteed_grid_cycle(tmp_path: Path) -> None:
+def test_minute_open_gap_and_next_candle_return_counts_grid_cycle(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "open-gap-cycle.db"))
     try:
         db.init_db(conn)
         base_ts = 1_708_200_000
         _seed(conn, base_ts=base_ts, candles=[
             (100.0, 100.0, 100.0, 100.0),
-            (101.0, 101.0, 100.0, 100.0),
+            (101.1, 101.1, 101.1, 101.1),
+            (101.1, 101.1, 99.9, 99.9),
         ])
 
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 100.0, 100.0,
-            base_ts, base_ts + 120, "neutral", _params(),
+            conn, "linear", "BTCUSDT", 100.0, 99.9,
+            base_ts, base_ts + 180, "neutral", _params(),
         )
 
-        # Previous close -> next open crosses the sell at 101; open -> close
-        # crosses the replacement buy at 100. Both segments are observable.
+        # Previous close -> next open crosses the initial sell at 101. The
+        # replacement buy becomes active at the following candle boundary and
+        # is then crossed below 100.
         assert ret_proxy == pytest.approx(1.0 / 200.0)
         assert success == 1
     finally:
         conn.close()
 
 
-def test_single_sided_intraminute_excursion_counts_unambiguous_cycle(tmp_path: Path) -> None:
+def test_single_sided_move_across_two_candles_counts_confirmed_cycle(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "intraminute-cycle.db"))
     try:
         db.init_db(conn)
         base_ts = 1_708_300_000
-        _seed(conn, base_ts=base_ts, candles=[(100.0, 101.0, 100.0, 100.0)])
+        _seed(conn, base_ts=base_ts, candles=[
+            (100.0, 101.1, 100.0, 101.1),
+            (101.1, 101.1, 99.9, 99.9),
+        ])
 
         success, ret_proxy = _grid_outcome(
-            conn, "linear", "BTCUSDT", 100.0, 100.0,
-            base_ts, base_ts + 60, "neutral", _params(),
+            conn, "linear", "BTCUSDT", 100.0, 99.9,
+            base_ts, base_ts + 120, "neutral", _params(),
         )
 
-        # With low == open == close, the only possible excursion is 100 -> 101 -> 100.
+        # The initial sell and its replacement buy are confirmed in separate
+        # candles, so no zero-latency placement assumption is required.
         assert ret_proxy == pytest.approx(1.0 / 200.0)
         assert success == 1
     finally:
         conn.close()
 
 
-def test_kill_switch_breach_stops_ledger_at_boundary_not_after_recovery(tmp_path: Path) -> None:
+def test_kill_switch_breach_stops_ledger_at_adverse_observed_bound_not_after_recovery(tmp_path: Path) -> None:
     conn = db.connect(str(tmp_path / "kill-stop.db"))
     try:
         db.init_db(conn)
@@ -145,9 +151,10 @@ def test_kill_switch_breach_stops_ledger_at_boundary_not_after_recovery(tmp_path
             base_ts, base_ts + 120, "neutral", _params(),
         )
 
-        # Sell at 101, then the upper kill-switch closes the short at 102.
-        # The later recovery to 100 occurs after the bot has stopped.
-        assert ret_proxy == pytest.approx(-1.0 / 200.0)
+        # Sell at 101, then the upper kill-switch triggers at 102 while the
+        # same candle trades to 102.5. The adverse observed extreme is used as
+        # the conservative market-stop bound; later recovery is irrelevant.
+        assert ret_proxy == pytest.approx(-1.5 / 200.0)
         assert success == 0
     finally:
         conn.close()
@@ -165,7 +172,7 @@ def test_intraminute_kill_switch_breach_cannot_be_erased_by_same_candle_close(tm
             base_ts, base_ts + 60, "neutral", _params(),
         )
 
-        assert ret_proxy == pytest.approx(-1.0 / 200.0)
+        assert ret_proxy == pytest.approx(-1.5 / 200.0)
         assert success == 0
     finally:
         conn.close()
@@ -205,5 +212,5 @@ def test_missing_kill_switch_is_not_a_labelable_executable_grid(tmp_path: Path) 
 
 def test_outcome_contract_is_bumped_for_topology_and_stop_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'OUTCOME_LABEL_VERSION = "grid_label_v18"' in source
-    assert 'version="1.0.43"' in source
+    assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
+    assert 'version="1.0.54"' in source

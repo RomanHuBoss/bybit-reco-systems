@@ -62,6 +62,10 @@ def test_fit_logreg_passes_exact_label_availability_into_walk_forward_oof(monkey
     model = calibration.fit_logreg(rows, min_samples=2, logreg_min_samples=4)
 
     assert model.fitted is True
+    assert model.coef == []
+    assert model.oof_status == "insufficient"
+    assert model.oof_samples == 0
+    assert model.oof_required_samples == 2
     assert captured["tss"] == [row["ts"] for row in rows]
     assert captured["label_available_tss"] == [
         row["label_available_ts"] for row in rows

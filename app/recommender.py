@@ -38,8 +38,8 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v4-independent-shadow-roots"
-DIRECTION_CALIBRATION_KEY = "platt_direction_v6"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v6-historical-proxy-shadow-roots"
+DIRECTION_CALIBRATION_KEY = "platt_direction_v12"
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
 LLM_REVIEWER_DEFAULT_CANDLES_PER_TF = 32
@@ -289,8 +289,26 @@ def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
             "cache_age_sec": llm_review.get("cache_age_sec"),
         }
 
+    simulation_scope = reasons.get("simulation_scope")
+    if not isinstance(simulation_scope, dict):
+        simulation_scope = {}
+    simulation_scope.update({
+        "mode": "historical_proxy_only",
+        "runtime_order_submission": False,
+        "runtime_execution_validation": "not_performed",
+        "exchange_fill_attestation": "not_available",
+        "fill_model": "conservative_ohlcv_proxy",
+    })
+    reasons["simulation_scope"] = simulation_scope
+
     params = rec.get("params")
     if isinstance(params, dict):
+        params["simulation_model"] = {
+            "scope": "historical_proxy_only",
+            "runtime_execution_validation": "not_performed",
+            "instrument_constraints": "model_inputs_only_when_historically_available",
+            "fill_attestation": "not_exchange_attested",
+        }
         risk_report = params.get("risk_report")
         if isinstance(risk_report, dict):
             risk_report["decision"] = _risk_report_decision_for_status(rec.get("status"))
@@ -3102,13 +3120,29 @@ def _calibration_expectancy_no_trade_reason(model: LogRegScaler | None) -> dict[
         lower_bound = _finite_or_none(
             getattr(model, "weighted_mean_return_lower_bound", None) if model is not None else None
         )
+        temporal_clusters = _safe_int_or_none(
+            getattr(model, "temporal_cluster_count", 0) if model is not None else 0
+        ) or 0
+        minimum_temporal_clusters = _safe_int_or_none(
+            getattr(model, "minimum_temporal_clusters", 0) if model is not None else 0
+        ) or 0
+        temporal_lower_bound = _finite_or_none(
+            getattr(model, "weighted_temporal_mean_return_lower_bound", None)
+            if model is not None else None
+        )
         diagnostics = [f"status={status}", f"n={return_samples}"]
         if effective_samples is not None:
             diagnostics.append(f"n_eff={effective_samples:.1f}")
         if mean_return is not None:
             diagnostics.append(f"mean={mean_return:.4%}")
         if lower_bound is not None:
-            diagnostics.append(f"lower_bound={lower_bound:.4%}")
+            diagnostics.append(f"row_lower_bound={lower_bound:.4%}")
+        if temporal_clusters or minimum_temporal_clusters:
+            diagnostics.append(
+                f"time_clusters={temporal_clusters}/{minimum_temporal_clusters}"
+            )
+        if temporal_lower_bound is not None:
+            diagnostics.append(f"time_cluster_lower_bound={temporal_lower_bound:.4%}")
         return {
             "code": "PROXY_MONETARY_EXPECTANCY_UNPROVEN",
             "msg": (
@@ -4433,6 +4467,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "weighted_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "weighted_mean_return_lower_bound", None)) if bot_cal is not None else None,
                 "expectancy_confidence_level": _finite_or_none(getattr(bot_cal, "expectancy_confidence_level", None)) if bot_cal is not None else None,
                 "logreg_active": _cal_source in ("bot_logreg", "global_logreg"),
+                "purged_oof_status": str(getattr(bot_cal, "oof_status", "not_evaluated")) if bot_cal is not None else "not_evaluated",
+                "purged_oof_samples": int(getattr(bot_cal, "oof_samples", 0) or 0) if bot_cal is not None else 0,
+                "purged_oof_required_samples": int(getattr(bot_cal, "oof_required_samples", 0) or 0) if bot_cal is not None else 0,
                 "a": getattr(getattr(_active_cal, "platt", None), "a", None) if _active_cal else None,
                 "b": getattr(getattr(_active_cal, "platt", None), "b", None) if _active_cal else None,
                 "heuristic_cap": float(_heur_cap) if _heur_cap is not None else None,
@@ -4441,8 +4478,12 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "note": (
                     "Raw heuristic confidence; treat it as an operator signal, not as calibrated probability."
                     if _active_cal is None else (
-                        "Bot-specific LogReg + Platt calibration is active."
-                        if _cal_source == "bot_logreg" else "Bot-specific Platt-only calibration is active."
+                        "Bot-specific feature LogReg with purged chronological OOF Platt calibration is active."
+                        if _cal_source == "bot_logreg" else (
+                            "Bot-specific score-only Platt calibration is active; feature LogReg was not activated without sufficient purged OOF evidence."
+                            if str(getattr(bot_cal, "oof_status", "")) in {"insufficient", "error"}
+                            else "Bot-specific Platt-only calibration is active."
+                        )
                     )
                 ),
             }

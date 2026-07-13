@@ -350,7 +350,19 @@ class LogRegScaler:
     weighted_return_std: float | None = None
     weighted_effective_return_samples: float = 0.0
     weighted_mean_return_lower_bound: float | None = None
+    temporal_cluster_count: int = 0
+    temporal_cluster_width_sec: int = 0
+    minimum_temporal_clusters: int = 0
+    weighted_effective_temporal_clusters: float = 0.0
+    weighted_temporal_return_std: float | None = None
+    weighted_temporal_mean_return_lower_bound: float | None = None
     expectancy_confidence_level: float = 0.95
+    # Full feature LogReg is allowed only after purged chronological OOF has
+    # produced enough genuinely out-of-fold predictions for Platt-on-top.
+    # Score-only Platt can remain available as the simpler fallback.
+    oof_status: str = "not_evaluated"
+    oof_samples: int = 0
+    oof_required_samples: int = 0
 
     def predict(self, features: list[float]) -> float:
         """Return calibrated P(success) given a feature vector."""
@@ -509,6 +521,100 @@ def _weighted_return_diagnostics(
         "weighted_effective_return_samples": float(effective_samples),
         "weighted_mean_return_lower_bound": lower_bound,
         "expectancy_confidence_level": float(confidence),
+    }
+
+
+def _temporal_cluster_return_diagnostics(
+    rows: list[dict[str, Any]],
+    returns: list[float],
+    row_weights: list[float],
+    *,
+    confidence_level: float = 0.95,
+) -> dict[str, float | int | None]:
+    """Estimate monetary uncertainty on non-overlapping market intervals.
+
+    Cross-sectional crypto outcomes whose observation windows overlap share market
+    information and are not independent evidence.  Rows are therefore converted to
+    intervals ``[ts, label_available_ts]`` and merged into connected overlap
+    components.  Each component contributes one weighted mean return and one recency
+    weight, so neither symbol count nor an arbitrary wall-clock bucket boundary can
+    manufacture statistical degrees of freedom.
+    """
+    observations: list[tuple[int, int, float, float]] = []
+    horizon_candidates: list[int] = []
+    for row, raw_ret, raw_weight in zip(rows, returns, row_weights):
+        ts = strict_integer(row.get("ts"))
+        available = strict_integer(row.get("label_available_ts"))
+        ret = _finite_float(raw_ret)
+        weight = _finite_float(raw_weight)
+        if (
+            ts is None
+            or available is None
+            or available <= ts
+            or ret is None
+            or weight is None
+            or weight <= 0.0
+        ):
+            continue
+        observations.append((int(ts), int(available), ret, weight))
+        horizon_candidates.append(int(available - ts))
+
+    cluster_width_sec = max(horizon_candidates) if horizon_candidates else 0
+    if not observations or cluster_width_sec <= 0:
+        return {
+            "temporal_cluster_count": 0,
+            "temporal_cluster_width_sec": 0,
+            "weighted_effective_temporal_clusters": 0.0,
+            "weighted_temporal_return_std": None,
+            "weighted_temporal_mean_return_lower_bound": None,
+        }
+
+    observations.sort(key=lambda item: (item[0], item[1]))
+    clusters: list[list[tuple[float, float]]] = []
+    current_end: int | None = None
+    current_observations: list[tuple[float, float]] = []
+    for start_ts, end_ts, ret, weight in observations:
+        # Touching intervals are consecutive and may form separate evidence;
+        # any strict overlap, including transitive overlap, remains one cluster.
+        if current_end is None or start_ts >= current_end:
+            if current_observations:
+                clusters.append(current_observations)
+            current_observations = [(ret, weight)]
+            current_end = end_ts
+        else:
+            current_observations.append((ret, weight))
+            current_end = max(current_end, end_ts)
+    if current_observations:
+        clusters.append(current_observations)
+
+    cluster_returns: list[float] = []
+    cluster_weights: list[float] = []
+    for cluster in clusters:
+        total_weight = sum(weight for _ret, weight in cluster)
+        if total_weight <= 0.0:
+            continue
+        cluster_returns.append(
+            sum(ret * weight for ret, weight in cluster) / total_weight
+        )
+        # One overlap component contributes one statistical observation.  The
+        # maximum recency weight preserves time decay without rewarding row count.
+        cluster_weights.append(max(weight for _ret, weight in cluster))
+
+    temporal = _weighted_return_diagnostics(
+        cluster_returns,
+        cluster_weights,
+        confidence_level=confidence_level,
+    )
+    return {
+        "temporal_cluster_count": len(cluster_returns),
+        "temporal_cluster_width_sec": int(cluster_width_sec),
+        "weighted_effective_temporal_clusters": float(
+            temporal["weighted_effective_return_samples"] or 0.0
+        ),
+        "weighted_temporal_return_std": temporal["weighted_return_std"],
+        "weighted_temporal_mean_return_lower_bound": temporal[
+            "weighted_mean_return_lower_bound"
+        ],
     }
 
 
@@ -796,6 +902,22 @@ def fit_logreg(
     expectancy_confidence_level = float(
         monetary["expectancy_confidence_level"] or 0.95
     )
+    temporal = _temporal_cluster_return_diagnostics(
+        sanitized_rows,
+        returns,
+        ws,
+        confidence_level=expectancy_confidence_level,
+    )
+    temporal_cluster_count = int(temporal["temporal_cluster_count"] or 0)
+    temporal_cluster_width_sec = int(temporal["temporal_cluster_width_sec"] or 0)
+    minimum_temporal_clusters = max(1, min(20, int(math.ceil(float(min_samples) / 4.0))))
+    weighted_effective_temporal_clusters = float(
+        temporal["weighted_effective_temporal_clusters"] or 0.0
+    )
+    weighted_temporal_return_std = temporal["weighted_temporal_return_std"]
+    weighted_temporal_mean_return_lower_bound = temporal[
+        "weighted_temporal_mean_return_lower_bound"
+    ]
 
     monetary_fields = {
         "weighted_mean_return": weighted_mean_return,
@@ -803,13 +925,22 @@ def fit_logreg(
         "weighted_return_std": weighted_return_std,
         "weighted_effective_return_samples": weighted_effective_return_samples,
         "weighted_mean_return_lower_bound": weighted_mean_return_lower_bound,
+        "temporal_cluster_count": temporal_cluster_count,
+        "temporal_cluster_width_sec": temporal_cluster_width_sec,
+        "minimum_temporal_clusters": minimum_temporal_clusters,
+        "weighted_effective_temporal_clusters": weighted_effective_temporal_clusters,
+        "weighted_temporal_return_std": weighted_temporal_return_std,
+        "weighted_temporal_mean_return_lower_bound": weighted_temporal_mean_return_lower_bound,
         "expectancy_confidence_level": expectancy_confidence_level,
     }
 
     if (
         weighted_mean_return is None
         or weighted_mean_return_lower_bound is None
+        or weighted_temporal_mean_return_lower_bound is None
         or weighted_effective_return_samples + 1e-6 < float(min_samples)
+        or temporal_cluster_count < minimum_temporal_clusters
+        or weighted_effective_temporal_clusters + 1e-6 < float(minimum_temporal_clusters)
     ):
         return LogRegScaler(
             fitted=False,
@@ -828,7 +959,10 @@ def fit_logreg(
             expectancy_status="negative",
             **monetary_fields,
         )
-    if weighted_mean_return_lower_bound <= 0.0:
+    if (
+        weighted_mean_return_lower_bound <= 0.0
+        or weighted_temporal_mean_return_lower_bound <= 0.0
+    ):
         return LogRegScaler(
             fitted=False,
             saved_ts=fit_ts,
@@ -870,8 +1004,11 @@ def fit_logreg(
     if n < logreg_min_samples:
         return LogRegScaler(
             coef=[], intercept=0.0, platt=platt,
-            fitted=True, saved_ts=fit_ts, n_samples=n,
+            fitted=bool(platt.fitted), saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
+            oof_status="not_required_score_only",
+            oof_samples=0,
+            oof_required_samples=0,
             **monetary_fields,
         )
 
@@ -895,8 +1032,11 @@ def fit_logreg(
     if len(X) < logreg_min_samples:
         return LogRegScaler(
             coef=[], intercept=0.0, platt=platt,
-            fitted=True, saved_ts=fit_ts, n_samples=n,
+            fitted=bool(platt.fitted), saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
+            oof_status="not_required_score_only",
+            oof_samples=0,
+            oof_required_samples=0,
             **monetary_fields,
         )
 
@@ -921,24 +1061,52 @@ def fit_logreg(
         )
         coef_raw, intercept_raw = _fit_weighted_logreg_raw(X_ord, y_ord, w_ord)
 
+        oof_required_samples = int(min_samples)
+        oof_samples = len(oof_logits)
         platt_top = (
             fit_platt(oof_logits, oof_y, min_samples=min_samples, ws=oof_w)
-            if len(oof_logits) >= min_samples
+            if oof_samples >= oof_required_samples
             else PlattScaler(fitted=False)
         )
+
+        # A feature model trained on the full retained sample is not an
+        # out-of-sample probability model by itself.  When chronological purging
+        # leaves too few validation predictions, do not expose its coefficients as
+        # calibrated confidence.  Degrade to the existing one-dimensional score
+        # Platt baseline (or raw confidence when that baseline is also unfitted).
+        if (
+            oof_samples < oof_required_samples
+            or not platt_top.fitted
+            or not coef_raw
+        ):
+            return LogRegScaler(
+                coef=[], intercept=0.0, platt=platt,
+                fitted=bool(platt.fitted), saved_ts=fit_ts, n_samples=n,
+                return_samples=n, expectancy_status="positive",
+                oof_status="insufficient",
+                oof_samples=int(oof_samples),
+                oof_required_samples=int(oof_required_samples),
+                **monetary_fields,
+            )
 
         return LogRegScaler(
             coef=coef_raw, intercept=intercept_raw, platt=platt_top,
             fitted=True, saved_ts=fit_ts, n_samples=len(X),
             return_samples=n, expectancy_status="positive",
+            oof_status="sufficient",
+            oof_samples=int(oof_samples),
+            oof_required_samples=int(oof_required_samples),
             **monetary_fields,
         )
 
     except Exception:
         return LogRegScaler(
             coef=[], intercept=0.0, platt=platt,
-            fitted=True, saved_ts=fit_ts, n_samples=n,
+            fitted=bool(platt.fitted), saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
+            oof_status="error",
+            oof_samples=0,
+            oof_required_samples=int(min_samples),
             **monetary_fields,
         )
 
@@ -953,6 +1121,11 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
         "fitted":    model.fitted,
         "n_samples": model.n_samples,
         "ts":        model.saved_ts or int(time.time()),
+        "oof_validation": {
+            "status": model.oof_status,
+            "samples": model.oof_samples,
+            "required_samples": model.oof_required_samples,
+        },
         "expectancy": {
             "status": model.expectancy_status,
             "return_samples": model.return_samples,
@@ -961,6 +1134,12 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
             "weighted_return_std": model.weighted_return_std,
             "weighted_effective_return_samples": model.weighted_effective_return_samples,
             "weighted_mean_return_lower_bound": model.weighted_mean_return_lower_bound,
+            "temporal_cluster_count": model.temporal_cluster_count,
+            "temporal_cluster_width_sec": model.temporal_cluster_width_sec,
+            "minimum_temporal_clusters": model.minimum_temporal_clusters,
+            "weighted_effective_temporal_clusters": model.weighted_effective_temporal_clusters,
+            "weighted_temporal_return_std": model.weighted_temporal_return_std,
+            "weighted_temporal_mean_return_lower_bound": model.weighted_temporal_mean_return_lower_bound,
             "confidence_level": model.expectancy_confidence_level,
         },
         "platt": {
@@ -1015,12 +1194,21 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         std_raw = expectancy_obj.get("weighted_return_std")
         eff_raw = expectancy_obj.get("weighted_effective_return_samples", 0.0)
         lower_raw = expectancy_obj.get("weighted_mean_return_lower_bound")
+        temporal_cluster_count = max(0, _finite_int(expectancy_obj.get("temporal_cluster_count", 0), 0))
+        temporal_cluster_width_sec = max(0, _finite_int(expectancy_obj.get("temporal_cluster_width_sec", 0), 0))
+        minimum_temporal_clusters = max(0, _finite_int(expectancy_obj.get("minimum_temporal_clusters", 0), 0))
+        temporal_eff_raw = expectancy_obj.get("weighted_effective_temporal_clusters", 0.0)
+        temporal_std_raw = expectancy_obj.get("weighted_temporal_return_std")
+        temporal_lower_raw = expectancy_obj.get("weighted_temporal_mean_return_lower_bound")
         confidence_raw = expectancy_obj.get("confidence_level", 0.95)
         weighted_mean_return = None if mean_raw is None else _finite_float(mean_raw)
         weighted_expected_shortfall = None if es_raw is None else _finite_float(es_raw)
         weighted_return_std = None if std_raw is None else _finite_float(std_raw)
         weighted_effective_return_samples = _finite_float(eff_raw)
         weighted_mean_return_lower_bound = None if lower_raw is None else _finite_float(lower_raw)
+        weighted_effective_temporal_clusters = _finite_float(temporal_eff_raw)
+        weighted_temporal_return_std = None if temporal_std_raw is None else _finite_float(temporal_std_raw)
+        weighted_temporal_mean_return_lower_bound = None if temporal_lower_raw is None else _finite_float(temporal_lower_raw)
         expectancy_confidence_level = _finite_float(confidence_raw)
         if mean_raw is not None and weighted_mean_return is None:
             return None
@@ -1030,12 +1218,37 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             return None
         if lower_raw is not None and weighted_mean_return_lower_bound is None:
             return None
+        if temporal_std_raw is not None and weighted_temporal_return_std is None:
+            return None
+        if temporal_lower_raw is not None and weighted_temporal_mean_return_lower_bound is None:
+            return None
         if weighted_effective_return_samples is None or weighted_effective_return_samples < 0.0:
+            return None
+        if weighted_effective_temporal_clusters is None or weighted_effective_temporal_clusters < 0.0:
             return None
         if expectancy_confidence_level is None or not (0.50 <= expectancy_confidence_level < 1.0):
             return None
         if expectancy_status in {"negative", "uncertain", "positive"} and (
             return_samples <= 0 or weighted_mean_return is None
+        ):
+            return None
+
+        oof_obj = obj.get("oof_validation") or {}
+        if not isinstance(oof_obj, dict):
+            return None
+        oof_status = str(oof_obj.get("status") or "not_evaluated").strip().lower()
+        if oof_status not in {
+            "not_evaluated",
+            "not_required_score_only",
+            "insufficient",
+            "sufficient",
+            "error",
+        }:
+            return None
+        oof_samples = max(0, _finite_int(oof_obj.get("samples", 0), 0))
+        oof_required_samples = max(0, _finite_int(oof_obj.get("required_samples", 0), 0))
+        if oof_status == "sufficient" and (
+            oof_required_samples <= 0 or oof_samples < oof_required_samples
         ):
             return None
 
@@ -1067,7 +1280,16 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             weighted_return_std=weighted_return_std,
             weighted_effective_return_samples=float(weighted_effective_return_samples),
             weighted_mean_return_lower_bound=weighted_mean_return_lower_bound,
+            temporal_cluster_count=temporal_cluster_count,
+            temporal_cluster_width_sec=temporal_cluster_width_sec,
+            minimum_temporal_clusters=minimum_temporal_clusters,
+            weighted_effective_temporal_clusters=float(weighted_effective_temporal_clusters),
+            weighted_temporal_return_std=weighted_temporal_return_std,
+            weighted_temporal_mean_return_lower_bound=weighted_temporal_mean_return_lower_bound,
             expectancy_confidence_level=float(expectancy_confidence_level),
+            oof_status=oof_status,
+            oof_samples=int(oof_samples),
+            oof_required_samples=int(oof_required_samples),
         )
     except Exception:
         return None
@@ -1113,14 +1335,14 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
-# v8: positive monetary expectancy requires a positive one-sided lower confidence
-#     bound and an effective weighted sample floor. New keys force an immediate
-#     current-evidence refit under the stricter contract on upgrade.
+# v16: full feature LogReg requires sufficient purged chronological OOF
+#      predictions and a fitted Platt-on-top.  Otherwise confidence degrades to
+#      the score-only baseline instead of exposing in-sample feature coefficients.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v8",
+    "futures_grid": "logreg_futures_grid_v16",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v8"
+GLOBAL_LOGREG_KEY = "logreg_global_v16"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

@@ -134,10 +134,10 @@ def test_shadow_no_trade_does_not_reuse_opposite_direction(tmp_path: Path) -> No
 
 
 def test_calibration_identity_changes_when_shadow_sampling_contract_changes() -> None:
-    assert RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v4-independent-shadow-roots"
-    assert BOT_CALIB_KEYS["futures_grid"] == "logreg_futures_grid_v8"
-    assert GLOBAL_LOGREG_KEY == "logreg_global_v8"
-    assert DIRECTION_CALIBRATION_KEY == "platt_direction_v6"
+    assert RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v6-historical-proxy-shadow-roots"
+    assert BOT_CALIB_KEYS["futures_grid"] == "logreg_futures_grid_v16"
+    assert GLOBAL_LOGREG_KEY == "logreg_global_v16"
+    assert DIRECTION_CALIBRATION_KEY == "platt_direction_v12"
 
 
 def test_old_overlapping_shadow_rows_are_excluded_from_new_calibration() -> None:
