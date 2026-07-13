@@ -1,3 +1,9 @@
+## v1.0.43 module responsibility update
+
+- `app/calibration.py`: computes monetary proxy mean, expected shortfall, unbiased weighted dispersion, Kish effective sample size, and one-sided 95% lower confidence bound; returns `unknown/insufficient/negative/uncertain/positive`; persists v8 diagnostics.
+- `app/recommender.py`: converts every non-positive or unproven bot-specific monetary state into explicit shadow `no_trade`, exposes diagnostics in `confidence_model`, and prevents raw confidence from becoming actionable before positive evidence.
+- `tests/test_iteration231_expectancy_uncertainty_gate.py`: independent payoff-distribution, persistence, identity and end-to-end publication regressions.
+
 ## v1.0.42 module responsibility update
 
 - `app/recommender.py`: expires stale positive bot/global/direction calibrators when current retained evidence is insufficient; preserves stale negative monetary veto only.

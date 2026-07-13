@@ -3079,15 +3079,43 @@ def _current_range_edge_calibration_rows(rows: list[dict[str, Any]]) -> list[dic
 
 
 def _calibration_expectancy_no_trade_reason(model: LogRegScaler | None) -> dict[str, str] | None:
-    """Translate confirmed negative proxy expectancy into an explicit no-trade policy.
+    """Require positive, uncertainty-bounded monetary evidence before actionability.
 
     The calibration target is still a proxy outcome rather than live exchange PnL,
-    but a mature cohort that loses money in aggregate cannot be used to justify a
-    higher success probability.  This is a soft ``no_trade`` thesis veto, not a
-    technical execution failure and not a claim that future expectancy is known.
+    but raw heuristic confidence is not evidence of profitability.  Until the
+    bot-specific matured cohort has both the effective sample floor and a positive
+    one-sided lower confidence bound, the recommendation remains a shadow
+    ``no_trade`` candidate.  This preserves outcome accumulation without exposing
+    an unproven strategy as actionable.
     """
-    if model is None or str(getattr(model, "expectancy_status", "unknown")) != "negative":
+    status = str(getattr(model, "expectancy_status", "unknown") if model is not None else "unknown")
+    if status == "positive":
         return None
+    if status != "negative":
+        return_samples = _safe_int_or_none(getattr(model, "return_samples", 0) if model is not None else 0) or 0
+        effective_samples = _finite_or_none(
+            getattr(model, "weighted_effective_return_samples", None) if model is not None else None
+        )
+        mean_return = _finite_or_none(
+            getattr(model, "weighted_mean_return", None) if model is not None else None
+        )
+        lower_bound = _finite_or_none(
+            getattr(model, "weighted_mean_return_lower_bound", None) if model is not None else None
+        )
+        diagnostics = [f"status={status}", f"n={return_samples}"]
+        if effective_samples is not None:
+            diagnostics.append(f"n_eff={effective_samples:.1f}")
+        if mean_return is not None:
+            diagnostics.append(f"mean={mean_return:.4%}")
+        if lower_bound is not None:
+            diagnostics.append(f"lower_bound={lower_bound:.4%}")
+        return {
+            "code": "PROXY_MONETARY_EXPECTANCY_UNPROVEN",
+            "msg": (
+                "bot-specific monetary expectancy is not proven positive under the current "
+                f"independent retained sample ({', '.join(diagnostics)}); recommendation remains shadow no-trade"
+            ),
+        }
     mean_return = _finite_or_none(getattr(model, "weighted_mean_return", None))
     return_samples = _safe_int_or_none(getattr(model, "return_samples", 0)) or 0
     if mean_return is None or return_samples <= 0:
@@ -3115,7 +3143,7 @@ def _calibration_state_persistable(model: LogRegScaler | None) -> bool:
         model is not None
         and (
             model.fitted
-            or str(getattr(model, "expectancy_status", "unknown")) in {"negative", "positive"}
+            or str(getattr(model, "expectancy_status", "unknown")) in {"negative", "uncertain", "positive"}
         )
     )
 
@@ -3163,11 +3191,15 @@ def _load_or_fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
         if now - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
             return saved
     model = _fit_global_logreg(conn, min_samples=min_samples)
+    if (
+        saved is not None
+        and str(getattr(saved, "expectancy_status", "unknown")) == "negative"
+        and str(getattr(model, "expectancy_status", "unknown")) != "positive"
+    ):
+        return saved
     if _calibration_state_persistable(model):
         save_logreg_to_db(conn, GLOBAL_LOGREG_KEY, model)
         return model
-    if saved is not None and str(getattr(saved, "expectancy_status", "unknown")) == "negative":
-        return saved
     # Persist the current insufficient state so a restart cannot resurrect the
     # stale positive coefficients from app_config before the next refit.
     save_logreg_to_db(conn, GLOBAL_LOGREG_KEY, model)
@@ -3214,11 +3246,15 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
                 expectancy_status="insufficient",
             )
             saved = saved_by_bot.get(bt)
+            if (
+                saved is not None
+                and str(getattr(saved, "expectancy_status", "unknown")) == "negative"
+                and str(getattr(candidate, "expectancy_status", "unknown")) != "positive"
+            ):
+                calibrators[bt] = saved
+                continue
             if _calibration_state_persistable(candidate):
                 calibrators[bt] = candidate
-                continue
-            if saved is not None and str(getattr(saved, "expectancy_status", "unknown")) == "negative":
-                calibrators[bt] = saved
                 continue
             calibrators[bt] = candidate
             save_logreg_to_db(conn, BOT_CALIB_KEYS[bt], candidate)
@@ -4392,6 +4428,10 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "return_samples": int(getattr(bot_cal, "return_samples", 0) or 0) if bot_cal is not None else 0,
                 "weighted_mean_return": _finite_or_none(getattr(bot_cal, "weighted_mean_return", None)) if bot_cal is not None else None,
                 "weighted_expected_shortfall": _finite_or_none(getattr(bot_cal, "weighted_expected_shortfall", None)) if bot_cal is not None else None,
+                "weighted_return_std": _finite_or_none(getattr(bot_cal, "weighted_return_std", None)) if bot_cal is not None else None,
+                "weighted_effective_return_samples": _finite_or_none(getattr(bot_cal, "weighted_effective_return_samples", None)) if bot_cal is not None else None,
+                "weighted_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "weighted_mean_return_lower_bound", None)) if bot_cal is not None else None,
+                "expectancy_confidence_level": _finite_or_none(getattr(bot_cal, "expectancy_confidence_level", None)) if bot_cal is not None else None,
                 "logreg_active": _cal_source in ("bot_logreg", "global_logreg"),
                 "a": getattr(getattr(_active_cal, "platt", None), "a", None) if _active_cal else None,
                 "b": getattr(getattr(_active_cal, "platt", None), "b", None) if _active_cal else None,

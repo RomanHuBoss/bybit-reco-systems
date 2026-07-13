@@ -347,6 +347,10 @@ class LogRegScaler:
     expectancy_status: str = "unknown"
     weighted_mean_return: float | None = None
     weighted_expected_shortfall: float | None = None
+    weighted_return_std: float | None = None
+    weighted_effective_return_samples: float = 0.0
+    weighted_mean_return_lower_bound: float | None = None
+    expectancy_confidence_level: float = 0.95
 
     def predict(self, features: list[float]) -> float:
         """Return calibrated P(success) given a feature vector."""
@@ -401,12 +405,18 @@ def _weighted_return_diagnostics(
     weights: list[float],
     *,
     tail_fraction: float = 0.20,
-) -> tuple[float | None, float | None]:
-    """Return recency-weighted mean and lower-tail expected shortfall.
+    confidence_level: float = 0.95,
+) -> dict[str, float | None]:
+    """Return weighted monetary diagnostics and a one-sided mean lower bound.
 
     The tail statistic consumes the worst ``tail_fraction`` of total observation
     weight, including a fractional boundary observation.  It is descriptive
     proxy evidence, not a claim about exchange fill truth or future alpha.
+
+    The effective sample size is Kish's weighted sample size.  The lower bound
+    uses a one-sided normal critical value at 95% confidence.  This is still a
+    proxy-model diagnostic, but it prevents a tiny positive sample mean from
+    being treated as positive expectancy when dispersion is materially larger.
     """
     cleaned: list[tuple[float, float]] = []
     for raw_ret, raw_weight in zip(returns, weights):
@@ -416,12 +426,56 @@ def _weighted_return_diagnostics(
             continue
         cleaned.append((ret, weight))
     if not cleaned:
-        return None, None
+        return {
+            "weighted_mean_return": None,
+            "weighted_expected_shortfall": None,
+            "weighted_return_std": None,
+            "weighted_effective_return_samples": 0.0,
+            "weighted_mean_return_lower_bound": None,
+            "expectancy_confidence_level": float(confidence_level),
+        }
 
     total_weight = sum(weight for _ret, weight in cleaned)
-    if not math.isfinite(total_weight) or total_weight <= 0.0:
-        return None, None
+    squared_weight_sum = sum(weight * weight for _ret, weight in cleaned)
+    if (
+        not math.isfinite(total_weight)
+        or total_weight <= 0.0
+        or not math.isfinite(squared_weight_sum)
+        or squared_weight_sum <= 0.0
+    ):
+        return {
+            "weighted_mean_return": None,
+            "weighted_expected_shortfall": None,
+            "weighted_return_std": None,
+            "weighted_effective_return_samples": 0.0,
+            "weighted_mean_return_lower_bound": None,
+            "expectancy_confidence_level": float(confidence_level),
+        }
     weighted_mean = sum(ret * weight for ret, weight in cleaned) / total_weight
+    effective_samples = (total_weight * total_weight) / squared_weight_sum
+
+    weighted_variance = (
+        sum(weight * (ret - weighted_mean) ** 2 for ret, weight in cleaned)
+        / total_weight
+    )
+    if effective_samples > 1.0:
+        weighted_variance *= effective_samples / (effective_samples - 1.0)
+    weighted_variance = max(0.0, weighted_variance)
+    weighted_std = math.sqrt(weighted_variance)
+
+    # 95% one-sided standard-normal critical value.  The minimum evidence floor
+    # is 80 effective observations, so the normal approximation is intentionally
+    # used only after a non-trivial sample has accumulated.
+    confidence = _finite_float(confidence_level)
+    if confidence is None or confidence < 0.50 or confidence >= 1.0:
+        confidence = 0.95
+    z_value = 1.6448536269514722
+    standard_error = (
+        weighted_std / math.sqrt(effective_samples)
+        if effective_samples > 0.0
+        else float("inf")
+    )
+    lower_bound = weighted_mean - z_value * standard_error
 
     fraction = _finite_float(tail_fraction)
     if fraction is None or fraction <= 0.0 or fraction > 1.0:
@@ -440,9 +494,22 @@ def _weighted_return_diagnostics(
     expected_shortfall = tail_sum / consumed if consumed > 0.0 else None
     if not math.isfinite(weighted_mean):
         weighted_mean = None
+    if not math.isfinite(weighted_std):
+        weighted_std = None
+    if not math.isfinite(effective_samples):
+        effective_samples = 0.0
+    if not math.isfinite(lower_bound):
+        lower_bound = None
     if expected_shortfall is not None and not math.isfinite(expected_shortfall):
         expected_shortfall = None
-    return weighted_mean, expected_shortfall
+    return {
+        "weighted_mean_return": weighted_mean,
+        "weighted_expected_shortfall": expected_shortfall,
+        "weighted_return_std": weighted_std,
+        "weighted_effective_return_samples": float(effective_samples),
+        "weighted_mean_return_lower_bound": lower_bound,
+        "expectancy_confidence_level": float(confidence),
+    }
 
 
 def _weighted_mean_std(X: list[list[float]], ws: list[float]) -> tuple[list[float], list[float]]:
@@ -718,14 +785,39 @@ def fit_logreg(
         )
 
     ws = _recency_weights(tss, half_life_days=half_life_days)
-    weighted_mean_return, weighted_expected_shortfall = _weighted_return_diagnostics(returns, ws)
-    if weighted_mean_return is None:
+    monetary = _weighted_return_diagnostics(returns, ws)
+    weighted_mean_return = monetary["weighted_mean_return"]
+    weighted_expected_shortfall = monetary["weighted_expected_shortfall"]
+    weighted_return_std = monetary["weighted_return_std"]
+    weighted_effective_return_samples = float(
+        monetary["weighted_effective_return_samples"] or 0.0
+    )
+    weighted_mean_return_lower_bound = monetary["weighted_mean_return_lower_bound"]
+    expectancy_confidence_level = float(
+        monetary["expectancy_confidence_level"] or 0.95
+    )
+
+    monetary_fields = {
+        "weighted_mean_return": weighted_mean_return,
+        "weighted_expected_shortfall": weighted_expected_shortfall,
+        "weighted_return_std": weighted_return_std,
+        "weighted_effective_return_samples": weighted_effective_return_samples,
+        "weighted_mean_return_lower_bound": weighted_mean_return_lower_bound,
+        "expectancy_confidence_level": expectancy_confidence_level,
+    }
+
+    if (
+        weighted_mean_return is None
+        or weighted_mean_return_lower_bound is None
+        or weighted_effective_return_samples + 1e-6 < float(min_samples)
+    ):
         return LogRegScaler(
             fitted=False,
             saved_ts=fit_ts,
             n_samples=n,
             return_samples=n,
             expectancy_status="insufficient",
+            **monetary_fields,
         )
     if weighted_mean_return <= 0.0:
         return LogRegScaler(
@@ -734,8 +826,16 @@ def fit_logreg(
             n_samples=n,
             return_samples=n,
             expectancy_status="negative",
-            weighted_mean_return=weighted_mean_return,
-            weighted_expected_shortfall=weighted_expected_shortfall,
+            **monetary_fields,
+        )
+    if weighted_mean_return_lower_bound <= 0.0:
+        return LogRegScaler(
+            fitted=False,
+            saved_ts=fit_ts,
+            n_samples=n,
+            return_samples=n,
+            expectancy_status="uncertain",
+            **monetary_fields,
         )
 
     # Probability calibration still requires the balanced effective sample;
@@ -747,8 +847,7 @@ def fit_logreg(
             n_samples=n,
             return_samples=n,
             expectancy_status="positive",
-            weighted_mean_return=weighted_mean_return,
-            weighted_expected_shortfall=weighted_expected_shortfall,
+            **monetary_fields,
         )
 
     # Guard: degenerate class balance. A 90%+ hit-rate on proxy labels is not a
@@ -762,8 +861,7 @@ def fit_logreg(
             n_samples=n,
             return_samples=n,
             expectancy_status="positive",
-            weighted_mean_return=weighted_mean_return,
-            weighted_expected_shortfall=weighted_expected_shortfall,
+            **monetary_fields,
         )
 
     # Platt on score (fallback/baseline)
@@ -774,8 +872,7 @@ def fit_logreg(
             coef=[], intercept=0.0, platt=platt,
             fitted=True, saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
-            weighted_mean_return=weighted_mean_return,
-            weighted_expected_shortfall=weighted_expected_shortfall,
+            **monetary_fields,
         )
 
     # Build feature matrix
@@ -800,8 +897,7 @@ def fit_logreg(
             coef=[], intercept=0.0, platt=platt,
             fitted=True, saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
-            weighted_mean_return=weighted_mean_return,
-            weighted_expected_shortfall=weighted_expected_shortfall,
+            **monetary_fields,
         )
 
     try:
@@ -835,8 +931,7 @@ def fit_logreg(
             coef=coef_raw, intercept=intercept_raw, platt=platt_top,
             fitted=True, saved_ts=fit_ts, n_samples=len(X),
             return_samples=n, expectancy_status="positive",
-            weighted_mean_return=weighted_mean_return,
-            weighted_expected_shortfall=weighted_expected_shortfall,
+            **monetary_fields,
         )
 
     except Exception:
@@ -844,8 +939,7 @@ def fit_logreg(
             coef=[], intercept=0.0, platt=platt,
             fitted=True, saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
-            weighted_mean_return=weighted_mean_return,
-            weighted_expected_shortfall=weighted_expected_shortfall,
+            **monetary_fields,
         )
 
 
@@ -864,6 +958,10 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
             "return_samples": model.return_samples,
             "weighted_mean_return": model.weighted_mean_return,
             "weighted_expected_shortfall": model.weighted_expected_shortfall,
+            "weighted_return_std": model.weighted_return_std,
+            "weighted_effective_return_samples": model.weighted_effective_return_samples,
+            "weighted_mean_return_lower_bound": model.weighted_mean_return_lower_bound,
+            "confidence_level": model.expectancy_confidence_level,
         },
         "platt": {
             "a":      model.platt.a,
@@ -909,18 +1007,34 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         if not isinstance(expectancy_obj, dict):
             return None
         expectancy_status = str(expectancy_obj.get("status") or "unknown").strip().lower()
-        if expectancy_status not in {"unknown", "insufficient", "negative", "positive"}:
+        if expectancy_status not in {"unknown", "insufficient", "negative", "uncertain", "positive"}:
             return None
         return_samples = max(0, _finite_int(expectancy_obj.get("return_samples", 0), 0))
         mean_raw = expectancy_obj.get("weighted_mean_return")
         es_raw = expectancy_obj.get("weighted_expected_shortfall")
+        std_raw = expectancy_obj.get("weighted_return_std")
+        eff_raw = expectancy_obj.get("weighted_effective_return_samples", 0.0)
+        lower_raw = expectancy_obj.get("weighted_mean_return_lower_bound")
+        confidence_raw = expectancy_obj.get("confidence_level", 0.95)
         weighted_mean_return = None if mean_raw is None else _finite_float(mean_raw)
         weighted_expected_shortfall = None if es_raw is None else _finite_float(es_raw)
+        weighted_return_std = None if std_raw is None else _finite_float(std_raw)
+        weighted_effective_return_samples = _finite_float(eff_raw)
+        weighted_mean_return_lower_bound = None if lower_raw is None else _finite_float(lower_raw)
+        expectancy_confidence_level = _finite_float(confidence_raw)
         if mean_raw is not None and weighted_mean_return is None:
             return None
         if es_raw is not None and weighted_expected_shortfall is None:
             return None
-        if expectancy_status in {"negative", "positive"} and (
+        if std_raw is not None and weighted_return_std is None:
+            return None
+        if lower_raw is not None and weighted_mean_return_lower_bound is None:
+            return None
+        if weighted_effective_return_samples is None or weighted_effective_return_samples < 0.0:
+            return None
+        if expectancy_confidence_level is None or not (0.50 <= expectancy_confidence_level < 1.0):
+            return None
+        if expectancy_status in {"negative", "uncertain", "positive"} and (
             return_samples <= 0 or weighted_mean_return is None
         ):
             return None
@@ -950,6 +1064,10 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             expectancy_status=expectancy_status,
             weighted_mean_return=weighted_mean_return,
             weighted_expected_shortfall=weighted_expected_shortfall,
+            weighted_return_std=weighted_return_std,
+            weighted_effective_return_samples=float(weighted_effective_return_samples),
+            weighted_mean_return_lower_bound=weighted_mean_return_lower_bound,
+            expectancy_confidence_level=float(expectancy_confidence_level),
         )
     except Exception:
         return None
@@ -995,13 +1113,14 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
-# v7: stale positive calibrators are not allowed to outlive the retained
-#     evidence window. New keys force an immediate current-evidence refit on upgrade.
+# v8: positive monetary expectancy requires a positive one-sided lower confidence
+#     bound and an effective weighted sample floor. New keys force an immediate
+#     current-evidence refit under the stricter contract on upgrade.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v7",
+    "futures_grid": "logreg_futures_grid_v8",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v7"
+GLOBAL_LOGREG_KEY = "logreg_global_v8"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

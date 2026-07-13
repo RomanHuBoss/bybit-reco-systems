@@ -1,3 +1,9 @@
+## v1.0.43: uncertainty-bounded calibration boundary
+
+`app/calibration.py` now owns monetary uncertainty diagnostics in addition to probability fitting. The persisted LogReg payload carries weighted dispersion, Kish effective sample size, one-sided lower bound and confidence level. `app/recommender.py` treats bot-specific monetary evidence as a prerequisite publication layer: non-positive or unproven evidence creates a shadow `no_trade` before operator action, while preserving the row for independent future outcome accumulation.
+
+The v8 bot/global cache identities prevent v7 positive-mean models from being reloaded under the stricter contract. No relational schema migration is needed because calibration state remains versioned JSON in `app_config`. Direction Platt calibration is diagnostic and remains v6; it cannot override the bot-specific monetary gate.
+
 ## v1.0.42: calibration cache lifecycle
 
 Calibration persistence in `app_config` is now a bounded cache, not an independent source of model truth. `app/recommender.py` revalidates stale positive bot/global/direction models against the retained joined outcome dataset; sparse current evidence produces a persisted unfitted state. Negative monetary expectancy remains an asymmetric safety veto. New cache keys force this lifecycle on first startup without deleting outcomes or changing schema.

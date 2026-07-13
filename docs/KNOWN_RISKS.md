@@ -1,3 +1,9 @@
+## Closed in v1.0.43 — positive sample mean treated as established edge
+
+До v1.0.43 bot-specific calibration считала `weighted_mean_return > 0` достаточным monetary gate. Небольшое положительное среднее, статистически неотличимое от нуля, получало `expectancy_status=positive`; при отсутствующем fitted calibrator raw heuristic confidence мог оставаться actionable. Это позволяло запуск на шуме или до появления воспроизводимой положительной evidence-выборки.
+
+Теперь рассчитываются weighted standard deviation, Kish effective sample size и односторонняя 95% нижняя граница среднего. Только `lower_bound > 0` снимает monetary veto. `unknown`, `insufficient` и `uncertain` остаются shadow `no_trade`; отрицательное среднее остаётся отдельным более сильным veto. Остаточный риск: normal-bound по proxy outcomes не заменяет block bootstrap, regime-aware walk-forward и exact-fill live validation. Положительная граница является необходимым gate, но не доказательством устойчивого alpha.
+
 ## Closed in v1.0.42 — stale positive calibrator without supporting rows
 
 До v1.0.42 положительный fitted calibrator после истечения `CALIB_REFIT_INTERVAL_SEC` сохранялся, если refit не набирал `CALIB_MIN_SAMPLES`. Поскольку recommendations/outcomes очищаются по 14-дневному retention, модель могла пережить собственную доказательную выборку и продолжать влиять на confidence неограниченно долго.

@@ -1,3 +1,9 @@
+## Uncertainty-bounded monetary evidence gate (v1.0.43)
+
+Actionable `futures_grid` recommendations now require more than a positive observed proxy-return mean. The bot-specific retained cohort must reach the effective weighted sample floor and its one-sided 95% lower confidence bound for recency-weighted mean return must be strictly positive. `unknown`, `insufficient`, and `uncertain` evidence remains shadow `no_trade` with `PROXY_MONETARY_EXPECTANCY_UNPROVEN`; confirmed non-positive mean remains `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE`. Raw heuristic confidence is still recorded for audit and shadow labeling, but it cannot make an unproven strategy actionable.
+
+The calibration payload now records weighted return standard deviation, Kish effective sample size, one-sided lower bound, and confidence level. Bot/global calibration identities are v8 so stale v7 coefficients cannot bypass the new contract. FastAPI version: `1.0.43`. No DB schema, public API field removal, env, or outcome-label-version change is required. This is a fail-closed evidence rule, not proof of future profitability.
+
 ## Stale positive calibrator fail-closed (v1.0.42)
 
 Исправлена **HIGH model/risk fail-open ошибка**: после истечения часового cache interval положительный bot/global/direction calibrator продолжал использоваться бессрочно, если текущая 14-дневная outcome-выборка стала недостаточной или была очищена. Сохранённые коэффициенты оставались `fitted` и влияли на confidence, хотя поддерживающих строк в активном контуре данных уже не было.

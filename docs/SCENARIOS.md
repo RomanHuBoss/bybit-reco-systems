@@ -1,3 +1,12 @@
+## Scenario: positive mean without demonstrated positive edge (v1.0.43)
+
+1. The current independent matured cohort reaches the raw row count but has a small positive recency-weighted mean relative to dispersion.
+2. The system computes Kish effective sample size and a one-sided 95% lower bound.
+3. If effective samples are below the floor, status is `insufficient`; if the lower bound is `<= 0`, status is `uncertain`.
+4. LogReg/Platt remains unfitted for actionability and the candidate receives `PROXY_MONETARY_EXPECTANCY_UNPROVEN`.
+5. The recommendation is stored as shadow `no_trade`, allowing a later independent outcome without exposing the strategy to operator execution.
+6. Only a new current cohort with lower bound `> 0` can produce `expectancy_status=positive`; all deterministic risk, economics, temporal and execution gates still apply.
+
 ## Scenario: positive calibrator outlives its retained evidence (v1.0.42)
 
 1. A bot calibrator was fitted on a positive 320-row proxy cohort and saved in `app_config`.

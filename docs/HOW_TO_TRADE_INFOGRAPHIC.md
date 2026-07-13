@@ -1,3 +1,7 @@
+## Обязательная проверка денежного evidence после v1.0.43
+
+Не запускайте Futures Grid только по `score`, raw confidence, win rate или положительному среднему. В `confidence_model` должны одновременно выполняться: `expectancy_status=positive`, достаточный `weighted_effective_return_samples` и `weighted_mean_return_lower_bound > 0`. Статусы `unknown`, `insufficient`, `uncertain` означают shadow `NO TRADE` с кодом `PROXY_MONETARY_EXPECTANCY_UNPROVEN`; `negative` означает подтверждённый monetary veto. Даже положительная нижняя граница не является гарантией прибыли и не отменяет risk/preflight checks.
+
 ## Проверка срока статистического evidence после v1.0.42
 
 `calibrated confidence` допустим только пока положительный calibrator воспроизводится из текущей retained outcome-выборки. После hourly refresh недостаточная выборка переводит модель в `unfitted/raw`; старые коэффициенты не являются основанием для запуска. Отрицательный monetary expectancy остаётся `NO_TRADE`, даже если новые данные временно отсутствуют. В UI всегда проверяйте `confidence_model.source`, `fitted`, `n_samples` и `expectancy_status`.

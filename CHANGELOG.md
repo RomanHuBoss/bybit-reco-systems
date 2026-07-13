@@ -1,3 +1,14 @@
+## 2026-07-13 — 1.0.43 — uncertainty-bounded monetary expectancy gate
+
+- Actionable `futures_grid` now requires a strictly positive one-sided 95% lower confidence bound for recency-weighted proxy return, not merely a positive sample mean.
+- Added Kish effective sample size, weighted return standard deviation, lower-bound and confidence-level diagnostics to persisted calibration state and recommendation audit payloads.
+- `unknown`, `insufficient`, and `uncertain` monetary evidence now produces explicit shadow `no_trade` code `PROXY_MONETARY_EXPECTANCY_UNPROVEN`; raw confidence cannot bypass missing evidence even when `REQUIRE_CONF_GATE=1`.
+- Preserved confirmed negative expectancy as the stronger `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE` veto until new evidence has a positive lower bound.
+- Bumped bot/global calibrator identities to `logreg_futures_grid_v8` / `logreg_global_v8`; direction calibration remains `platt_direction_v6`.
+- Added `tests/test_iteration231_expectancy_uncertainty_gate.py` with nine red-to-green checks, including an end-to-end recommender assertion.
+- Updated three legacy calibration tests whose tiny synthetic cohorts encoded the superseded “positive mean is sufficient” assumption while retaining their OOF/sanitization purpose.
+- Baseline: 1025 passed. Post-check: 1034/1034 passed; SQLite fresh/upgrade and 24-test PostgreSQL offline subset passed; no schema, migration, API removal, or env changes.
+
 ## 2026-07-13 — 1.0.42 — stale calibrator fail-closed
 
 - Исправлена HIGH model/risk fail-open ошибка: stale positive bot/global/direction calibrators больше не сохраняются бессрочно после исчезновения текущей retained outcome-выборки.

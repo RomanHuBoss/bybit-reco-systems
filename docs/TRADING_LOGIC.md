@@ -1,3 +1,16 @@
+## Monetary expectancy uncertainty contract — v1.0.43
+
+For `futures_grid`, probability calibration and raw heuristic confidence are subordinate to a monetary-evidence gate. Matured finite proxy returns are recency weighted; the system records the weighted mean, unbiased weighted standard deviation, Kish effective sample size, worst-20% expected shortfall, and a one-sided 95% lower confidence bound.
+
+The decision rule is fail-closed:
+
+- fewer than the required effective samples or missing diagnostics -> `expectancy_status=insufficient`;
+- weighted mean `<= 0` -> `negative`;
+- weighted mean `> 0` but lower bound `<= 0` -> `uncertain`;
+- lower bound `> 0` -> `positive`, after which class-balance, purged temporal validation, feature integrity, risk and execution gates still apply.
+
+Only `positive` can remove the bot-specific monetary thesis veto. `unknown`, `insufficient`, and `uncertain` add `PROXY_MONETARY_EXPECTANCY_UNPROVEN` and retain the candidate only as a shadow `no_trade` outcome root. Raw confidence remains descriptive and cannot make the candidate actionable. Confirmed negative expectancy uses `PROXY_MONETARY_EXPECTANCY_NON_POSITIVE` and is preserved conservatively until a new cohort satisfies the positive lower-bound contract.
+
 ## Calibration evidence lifetime — v1.0.42
 
 - `CALIB_REFIT_INTERVAL_SEC` является только cache interval, а не бессрочной лицензией на использование коэффициентов.
