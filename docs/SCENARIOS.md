@@ -1,3 +1,11 @@
+## 0. Tail-loss exact-evidence stop - v1.0.39
+
+1. Eight independent stopped bots of one symbol/direction contain seven `+1` exact-net outcomes and one `-100` range-break outcome.
+2. Cohort diagnostics are total `-93`, median `+1`, positive rate `87.5%`.
+3. Because the minimum sample is reached and cumulative exact net PnL is negative, preflight emits `LIVE_VALIDATION_DIRECTION_NEGATIVE_EXPECTANCY` despite the positive median/win rate.
+4. Operator action `executed` remains blocked and no new `bot_instance` is materialized.
+5. A cohort below the sample floor or with positive cumulative net PnL is not blocked by this predicate; absence of a block is not a profitability claim.
+
 ## 0. Outcome dependency diagnostics - v1.0.38
 
 Expected behavior:
@@ -204,7 +212,7 @@ Expected behavior:
 ## 18. Exact-evidence stop gate after persistent losses
 
 1. External adapter has recorded exact fills/fees/funding for independent stopped bots.
-2. Five newest independent bots for the same `(symbol, direction)` are loss-making, or the predefined minimum cohort has negative total and median net PnL with positive-bot rate below 50%.
+2. Five newest independent bots for the same `(symbol, direction)` are loss-making, or a predefined minimum cohort has negative cumulative exact net PnL; median and positive-bot rate remain diagnostics and cannot override aggregate loss.
 3. A new recommendation can still be published for audit, but operator action `executed` returns `409`, no `bot_instance` is created, and `decision_log` contains the relevant `LIVE_VALIDATION_*` code and cohort metrics.
 4. A losing long cohort does not by itself block short until the broader symbol threshold is reached. Repeated rows from one publication root count once, and an explicit new `model_version` starts a separate evidence cohort.
 5. The operator must diagnose/revise the strategy or evidence pipeline; manually downgrading the blocker is not a supported path.

@@ -1,3 +1,7 @@
+## v1.0.39 exact-evidence tail-loss control flow
+
+`_execution_preflight()` calls `_compute_live_validation_strategy_health()` before bot audit materialization. The latter reads immutable stopped-bot execution evidence, filters by venue/bot/model version, deduplicates publication roots, builds direction/symbol/portfolio summaries, and applies the sample floors. In v1.0.39 a negative cumulative exact net PnL is the sample-based stop predicate; median and win rate are emitted only as distribution diagnostics. Any resulting `LIVE_VALIDATION_*` block prevents `executed` and bot-instance creation.
+
 ## v1.0.38 unavailable-outcome state flow
 
 `recommendation + OHLCV + settled funding` -> outcome ledger. A missing settlement is a retryable dependency state, not a malformed recommendation. The worker writes a rate-limited `OUTCOME_WAIT_FUNDING_SETTLEMENT` event and leaves the recommendation unlabeled. Permanent persisted-contract failures use structured `OUTCOME_SKIP_INVALID_GRID_CONTRACT` reasons. No new database table or API contract is introduced.

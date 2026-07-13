@@ -1,3 +1,7 @@
+## v1.0.39 operator safety update
+
+After 8 independent stopped bots for one direction, 12 for one symbol, or 20 portfolio-wide, a negative cumulative exact net PnL blocks a new launch even when most bots were profitable. This catches the grid tail-loss pattern in which one large range-break loss outweighs many small gains. Do not treat a high win rate or a positive median as permission to bypass `LIVE_VALIDATION_*`.
+
 ## Settled funding labels - v1.0.37 / grid_label_v18
 
 - Approval uses forecast funding conservatively; it never credits a possible receipt as guaranteed edge.
@@ -86,7 +90,7 @@ Treat the recommendation as NO TRADE when any of the following appears:
 - empty/corrupted payload; Complete `params.trade_plan` exists; no empty/corrupted payload. If this statement is false, do not launch;
 - missing OK LLM gate when the reviewer is configured as a gate;
 - unknown or conflicting same-symbol direction in one-way mode.
-- exact execution evidence has triggered `LIVE_VALIDATION_*`: five consecutive losses for the same symbol/direction, or negative total+median PnL with sub-50% positive rate after the predefined direction/symbol/portfolio sample threshold for the same explicit model version.
+- exact execution evidence has triggered `LIVE_VALIDATION_*`: five consecutive losses for the same symbol/direction, or negative cumulative exact net PnL after the predefined direction/symbol/portfolio sample threshold for the same explicit model version. Median and win rate are diagnostics only.
 
 ## Required operator payload
 

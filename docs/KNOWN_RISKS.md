@@ -1,3 +1,11 @@
+## Tail-loss exact-evidence stop gate - v1.0.39
+
+**Resolved HIGH/P0:** v1.0.38 required negative total PnL, negative median PnL **and** positive-bot rate below 50% before the sample-based `LIVE_VALIDATION_*_NEGATIVE_EXPECTANCY` block fired. A grid cohort with seven `+1 USDT` bots and one `-100 USDT` range-break bot therefore remained executable: total `-93`, median `+1`, win rate `87.5%`. This is a fail-open mismatch with the principal tail-risk shape of grid trading.
+
+**Fix:** after the existing independent-bot sample floor, negative cumulative exact `realized_pnl_net` blocks the relevant direction/symbol/portfolio cohort. Median and win rate remain visible diagnostics only. Five consecutive losses still trigger the earlier direction-specific guard. Evidence remains restricted to validation-eligible stopped bots with immutable execution events, deduplicated by publication root and scoped to explicit model version.
+
+**Residual risk:** this is a loss-containment gate, not proof of alpha. It cannot fire before enough exact stopped-bot evidence exists (8/12/20), does not estimate confidence intervals or regime-conditioned expectancy, and does not repair an intrinsically unprofitable recommender. Raw score and proxy calibration remain insufficient to establish live profitability; a monetary walk-forward comparator using exact fills, fees, funding and drawdown is still required.
+
 ## Outcome wait diagnostics - v1.0.38
 
 **Resolved MEDIUM:** v1.0.37 reported a missing historical funding settlement as `OUTCOME_SKIP_INVALID_GRID_CONTRACT`. This did not insert a bad label, but it made a transient collector dependency look like corrupt trading mathematics and repeated the same warning every outcome cycle. v1.0.38 emits `OUTCOME_WAIT_FUNDING_SETTLEMENT`, records the exact missing timestamp/inventory, retries automatically, and rate-limits repeated log entries.
@@ -309,7 +317,7 @@ Launch-score классифицирует пригодность текущег�
 
 До v1.0.17 сервис уже сохранял immutable execution evidence и строил descriptive live-validation export, но operator execution preflight не использовал накопленный realised net PnL. Поэтому система могла продолжать materialize новые `bot_instance`, даже когда несколько независимых остановленных ботов по тому же символу и направлению подряд дали отрицательный результат. Зелёный unit-test suite этого не выявлял, потому что проверял корректность отдельных формул и persistence, а не замкнутый feedback loop «фактический результат → разрешение следующего запуска».
 
-Исправление: preflight применяет fail-closed stop gate только к stopped bots с exact execution evidence, дедуплицирует наблюдения по immutable publication root, ограничивает cohort текущим explicit `model_version` и отдельно считает direction/symbol/portfolio cohorts. Directional gate срабатывает после пяти последовательных убытков либо после восьми независимых наблюдений с отрицательными total и median net PnL и positive rate ниже 50%; symbol и portfolio gates требуют соответственно 12 и 20 наблюдений. Это заранее определённый operational stop criterion, а не статистический тест alpha.
+Исправление: preflight применяет fail-closed stop gate только к stopped bots с exact execution evidence, дедуплицирует наблюдения по immutable publication root, ограничивает cohort текущим explicit `model_version` и отдельно считает direction/symbol/portfolio cohorts. Directional gate срабатывает после пяти последовательных убытков либо после восьми независимых наблюдений с отрицательным cumulative exact net PnL; symbol и portfolio gates требуют соответственно 12 и 20 наблюдений. Median и positive rate остаются диагностикой и не отменяют агрегированный убыток. Это заранее определённый operational stop criterion, а не статистический тест alpha.
 
 Остаточный риск: отсутствие exact evidence означает отсутствие данных для этого gate. Внешний adapter обязан передавать все fills, fee и funding; до накопления достаточной независимой выборки технология остаётся непроверенной.
 

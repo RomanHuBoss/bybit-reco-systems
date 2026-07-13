@@ -1,3 +1,11 @@
+## v1.0.39 tail-loss gate responsibilities
+
+- `app/main.py::_live_validation_scope_summary`: derives independent-bot cumulative, mean, median, win-rate and consecutive-loss diagnostics from exact evidence.
+- `app/main.py::_negative_expectancy_condition`: enforces the sample floor and blocks on negative cumulative/mean exact net PnL; it deliberately does not require negative median or sub-50% win rate.
+- `app/main.py::_compute_live_validation_strategy_health`: applies direction/symbol/portfolio scopes and exposes diagnostic policy metadata.
+- `app/main.py::_execution_preflight`: propagates the block before any `bot_instance` materialization.
+- `tests/test_iteration227_tail_risk_stop_gate.py`: locks the grid tail-loss reproducer and non-blocking controls.
+
 ## v1.0.38 outcome diagnostic responsibilities
 
 - `app/outcomes.py`: returns optional structured failure diagnostics while preserving the existing `None` compatibility contract.

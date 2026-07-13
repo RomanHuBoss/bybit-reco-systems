@@ -1,3 +1,9 @@
+## Tail-loss stop semantics - v1.0.39
+
+Exact execution evidence is evaluated as an operational capital-protection gate. Once an independent cohort reaches its predefined sample floor, `total_realized_pnl_net < 0` is sufficient for the corresponding negative-expectancy block. Median PnL and positive-bot rate are diagnostics, not vetoes over cumulative loss. This intentionally catches the grid-specific profile of frequent small wins offset by a rare large range-break loss.
+
+The policy does not infer profitability when no block is present. It uses only stopped, validation-eligible bots with exact execution events; repeated publication roots count once and explicit `model_version` cohorts do not mix.
+
 ## Settled funding in historical outcomes - v1.0.37 / grid_label_v18
 
 - Ticker `fundingRate` is a forecast for the next settlement and is used only by recommendation approval/risk logic.
@@ -275,9 +281,11 @@ Operator execution preflight не ограничивается проверко�
 Fail-closed коды:
 
 - `LIVE_VALIDATION_DIRECTION_LOSS_STREAK`: пять последних независимых stopped bots того же symbol/direction имеют `realized_pnl_net < 0`;
-- `LIVE_VALIDATION_DIRECTION_NEGATIVE_EXPECTANCY`: минимум 8 независимых observations, total и median net PnL отрицательны, positive-bot rate < 50%;
-- `LIVE_VALIDATION_SYMBOL_NEGATIVE_EXPECTANCY`: те же условия после минимум 12 observations по символу;
-- `LIVE_VALIDATION_PORTFOLIO_NEGATIVE_EXPECTANCY`: те же условия после минимум 20 observations по всему Linear USDT `futures_grid` contour.
+- `LIVE_VALIDATION_DIRECTION_NEGATIVE_EXPECTANCY`: минимум 8 независимых observations и отрицательный cumulative exact net PnL по direction;
+- `LIVE_VALIDATION_SYMBOL_NEGATIVE_EXPECTANCY`: минимум 12 независимых observations и отрицательный cumulative exact net PnL по символу;
+- `LIVE_VALIDATION_PORTFOLIO_NEGATIVE_EXPECTANCY`: минимум 20 независимых observations и отрицательный cumulative exact net PnL по всему Linear USDT `futures_grid` contour.
+
+`median_realized_pnl_net` и `positive_bot_rate` сохраняются в metrics/сообщении для диагностики распределения, но высокий win rate больше не делает убыточный cumulative cohort исполнимым.
 
 В расчёт входят только `validation_eligible` stopped bots с хотя бы одним exact execution event. Legacy `/trades`, running bots, malformed/non-finite PnL и повторные publication roots не используются. Это safety stop criterion: он запрещает механически продолжать подтверждённо убыточный режим, но не объявляет оставшиеся режимы прибыльными и не заменяет chronological walk-forward/comparator validation.
 

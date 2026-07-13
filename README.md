@@ -1,3 +1,11 @@
+## Tail-loss exact-evidence stop gate (v1.0.39)
+
+Исправлена **HIGH/P0 fail-open ошибка** операционного stop gate. До v1.0.39 отрицательный cumulative exact net PnL блокировал новый `executed` только если одновременно были отрицательны median PnL и доля прибыльных ботов была ниже 50%. Для arithmetic grid это пропускало характерный tail-loss профиль: много небольших прибыльных циклов и один крупный выход из диапазона могли оставить median и win rate положительными, хотя независимый cohort уже был убыточен в сумме.
+
+Теперь после прежнего минимального числа независимых stopped bots отрицательный cumulative `realized_pnl_net` сам по себе блокирует соответствующий direction (8), symbol (12) или portfolio (20). Пятиботовый consecutive-loss gate сохранён. Median и positive rate остаются диагностикой, но не могут отменить накопленный убыток. Gate по-прежнему использует только exact execution evidence, дедуплицирует `publication_root_rec_id` и изолирует explicit `model_version`.
+
+FastAPI version: `1.0.39`. Схема БД, API, env и `OUTCOME_LABEL_VERSION=grid_label_v18` не менялись. Исправление предотвращает продолжение уже подтверждённо убыточного режима, но не доказывает прибыльность оставшихся режимов.
+
 ## Outcome dependency diagnostics (v1.0.38)
 
 Исправлена MEDIUM-ошибка диагностики outcome worker. В v1.0.37 отсутствие ещё не загруженной settled funding row возвращало тот же `None`, что и действительно повреждённая grid-геометрия, поэтому журнал ошибочно показывал `OUTCOME_SKIP_INVALID_GRID_CONTRACT`. Теперь transient-зависимость записывается как `OUTCOME_WAIT_FUNDING_SETTLEMENT` с точным funding timestamp и текущим inventory; worker автоматически повторит расчёт после backfill. Настоящие конфликты funding/grid contract содержат машинно-читаемый `reason` и подробности. Повтор одинакового сообщения ограничен cooldown, чтобы decision log не заполнялся каждую минуту.
@@ -169,7 +177,7 @@ Execution preflight дополнительно оценивает консерв
 
 Точный evidence-ledger и legacy `/trades` нельзя смешивать для одного `bot_id`. Risk/drawdown/cooldown используют единый поток с приоритетом exact evidence, а endpoints чтения evidence защищены `ADMIN_API_KEY`. `/api/v1/validation/live-evidence` формирует только descriptive dataset и не доказывает live edge.
 
-Execution preflight теперь использует этот exact-evidence контур как **операционный stop gate**. Новое подтверждение `executed` блокируется для конкретного `(symbol, direction)` после пяти последовательных независимых убыточных остановленных ботов либо после восьми независимых наблюдений, если одновременно отрицательны total и median net PnL, а доля прибыльных запусков ниже 50%. Более широкие stop-условия применяются после 12 наблюдений по символу и 20 по всему `futures_grid`-контуру. Повторные публикации одного `publication_root_rec_id` не увеличивают выборку; при заданном `model_version` учитывается только evidence той же версии модели, чтобы старая стратегия не блокировала явно новую. Это консервативная защита от продолжения доказанно убыточного режима, но не статистическое доказательство alpha.
+Execution preflight использует этот exact-evidence контур как **операционный stop gate**. Новое подтверждение `executed` блокируется для конкретного `(symbol, direction)` после пяти последовательных независимых убыточных остановленных ботов либо после восьми независимых наблюдений с отрицательным cumulative exact net PnL. Более широкие stop-условия применяются после 12 наблюдений по символу и 20 по всему `futures_grid`-контуру; median и доля прибыльных запусков остаются диагностикой, но не отменяют агрегированный убыток. Повторные публикации одного `publication_root_rec_id` не увеличивают выборку; при заданном `model_version` учитывается только evidence той же версии модели, чтобы старая стратегия не блокировала явно новую. Это консервативная защита от продолжения доказанно убыточного режима, но не статистическое доказательство alpha.
 
 ## Поддерживаемые bot_type
 - `futures_grid` — только Bybit `category=linear`, USDT perpetual, settlement/margin/PnL в USDT.

@@ -4047,16 +4047,21 @@ def _live_validation_scope_summary(
 
 
 def _negative_expectancy_condition(summary: dict[str, Any], *, min_bots: int) -> bool:
-    rate = summary.get("positive_bot_rate")
-    median = summary.get("median_realized_pnl_net")
-    return bool(
-        int(summary.get("eligible_stopped_bots") or 0) >= int(min_bots)
-        and float(summary.get("total_realized_pnl_net") or 0.0) < 0.0
-        and median is not None
-        and float(median) < 0.0
-        and rate is not None
-        and float(rate) < 0.5
-    )
+    """Stop a sufficiently large cohort once its realised cumulative net PnL is negative.
+
+    Grid systems commonly realise many small profitable cycles and an occasional
+    large range-break loss. Requiring a negative median and a sub-50% win rate
+    therefore lets the defining short-gamma/tail-loss failure mode pass open even
+    when the exact-evidence cohort has already lost money in aggregate. The sample
+    floor remains the noise guard; after that floor, negative cumulative net PnL is
+    sufficient for this operational stop criterion.
+    """
+    count = int(summary.get("eligible_stopped_bots") or 0)
+    total = summary.get("total_realized_pnl_net")
+    mean = summary.get("mean_realized_pnl_net")
+    if count < int(min_bots) or total is None or mean is None:
+        return False
+    return bool(float(total) < 0.0 and float(mean) < 0.0)
 
 
 def _compute_live_validation_strategy_health(
@@ -4120,8 +4125,9 @@ def _compute_live_validation_strategy_health(
         blocks.append({
             "code": "LIVE_VALIDATION_DIRECTION_NEGATIVE_EXPECTANCY",
             "msg": (
-                f"{symbol_key} {direction_key}: exact live/shadow evidence имеет отрицательные total, mean и median "
-                f"net PnL при доле прибыльных независимых запусков {rate:.1%}; execution lifecycle заблокирован."
+                f"{symbol_key} {direction_key}: exact execution evidence имеет отрицательные cumulative total и mean "
+                f"net PnL после минимальной выборки; median={direction_summary.get('median_realized_pnl_net')}, "
+                f"positive_rate={rate:.1%}. Tail-loss grid cohort не может оставаться открытым только из-за высокого win rate."
             ),
             "scope": "symbol_direction",
             "metrics": direction_summary,
@@ -4132,8 +4138,9 @@ def _compute_live_validation_strategy_health(
         blocks.append({
             "code": "LIVE_VALIDATION_SYMBOL_NEGATIVE_EXPECTANCY",
             "msg": (
-                f"{symbol_key}: все направления вместе показывают отрицательные exact-evidence total/mean/median net PnL "
-                f"при доле прибыльных запусков {rate:.1%}; новые запуски символа остановлены."
+                f"{symbol_key}: exact execution evidence показывает отрицательные cumulative total и mean net PnL "
+                f"после минимальной выборки; median={symbol_summary.get('median_realized_pnl_net')}, "
+                f"positive_rate={rate:.1%}. Новые запуски символа остановлены."
             ),
             "scope": "symbol",
             "metrics": symbol_summary,
@@ -4143,8 +4150,8 @@ def _compute_live_validation_strategy_health(
         blocks.append({
             "code": "LIVE_VALIDATION_PORTFOLIO_NEGATIVE_EXPECTANCY",
             "msg": (
-                "Весь futures_grid-контур имеет отрицательные exact-evidence total/mean/median net PnL; "
-                "операторские запуски остановлены до ревизии модели."
+                "Весь futures_grid-контур имеет отрицательные cumulative total и mean net PnL по exact execution evidence; "
+                "операторские запуски остановлены независимо от median/win rate до ревизии модели."
             ),
             "scope": "portfolio",
             "metrics": portfolio,
@@ -4160,6 +4167,8 @@ def _compute_live_validation_strategy_health(
             "symbol_min_bots": LIVE_VALIDATION_SYMBOL_MIN_BOTS,
             "portfolio_min_bots": LIVE_VALIDATION_PORTFOLIO_MIN_BOTS,
             "direction_loss_streak": LIVE_VALIDATION_DIRECTION_LOSS_STREAK,
+            "negative_expectancy_basis": "negative_cumulative_net_pnl_after_min_sample",
+            "tail_loss_guard": True,
             "requires_exact_execution_evidence": True,
             "deduplicates_publication_roots": True,
             "statistical_claim": False,
@@ -4618,7 +4627,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.38", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.39", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

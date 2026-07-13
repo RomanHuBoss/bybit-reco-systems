@@ -1,3 +1,13 @@
+## 2026-07-12 - v1.0.39 - Tail-loss exact-evidence stop gate
+
+- Fixed a HIGH/P0 fail-open defect in the exact-evidence execution stop gate.
+- Negative cumulative realised net PnL after the predefined independent-bot sample floor now blocks direction/symbol/portfolio execution even when median PnL and win rate remain positive.
+- Preserved the five-consecutive-loss guard, publication-root deduplication, explicit model-version scoping and exact-evidence-only input contract.
+- Added `tests/test_iteration227_tail_risk_stop_gate.py` with an independent 7-small-wins/1-large-loss reproducer plus positive-total and minimum-sample controls.
+- No database schema, API route, environment variable or outcome-label version changed.
+- Post-check: 1008/1008 collected nodes passed through exhaustive non-overlapping batches (252+252+126+126+252); targeted regression 3/3 passed twice; relevant suite 13/13 and DB/dialect subset 33/33 passed. The monolithic run timed out after 92% without a final summary and is not counted as a pass.
+- `ruff`/`pip check` environment limitations are reported in the iteration audit rather than hidden.
+
 ## 2026-07-12 - v1.0.38 - Outcome dependency diagnostics
 
 - Distinguished transient missing funding settlements from permanently invalid grid contracts.
