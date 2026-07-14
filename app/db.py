@@ -4003,22 +4003,156 @@ def _materialize_stat_rows(grouped: dict[tuple[Any, ...], dict[str, Any]], key_n
 
 
 
-def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200, *, require_llm_verdict: bool = False) -> list[dict[str, Any]]:
+def _normalize_outcome_scope(scope: Any) -> str:
+    normalized = str(scope or "archive").strip().lower()
+    aliases = {
+        "all": "archive",
+        "historical": "archive",
+        "model": "current_model",
+        "policy": "current_policy",
+        "current": "current_policy",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"archive", "current_model", "current_policy"}:
+        raise ValueError("outcome scope must be archive, current_model or current_policy")
+    return normalized
+
+
+def _model_version_matches(value: Any, current_model_version: str) -> bool:
+    actual = str(value or "").strip()
+    expected = str(current_model_version or "").strip()
+    return bool(expected and (actual == expected or actual.startswith(expected + "+")))
+
+
+def _outcome_scope_metadata(
+    scope: str,
+    *,
+    current_model_version: str | None,
+    policy_fingerprint: str | None,
+) -> dict[str, Any]:
+    labels = {
+        "current_policy": "Текущая policy-когорта",
+        "current_model": "Текущая model lineage",
+        "archive": "Исторический архив",
+    }
+    return {
+        "name": scope,
+        "label": labels[scope],
+        "current_model_version": str(current_model_version or "") or None,
+        "policy_fingerprint": str(policy_fingerprint or "").strip().lower() or None,
+        "is_historical_archive": scope == "archive",
+    }
+
+
+def _outcome_row_scope_snapshot(
+    row: Any,
+    *,
+    scope: str,
+    current_model_version: str | None,
+    policy_fingerprint: str | None,
+) -> dict[str, Any] | None:
+    """Return verified lineage metadata when an outcome row belongs to ``scope``.
+
+    ``current_policy`` never trusts the persisted digest alone: the attached
+    canonical contract is re-hashed before the row can enter operator statistics.
+    This keeps the archive immutable while preventing old or tampered evidence from
+    being presented as evidence for the policy currently running in the process.
+    """
+    reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+    outcome_policy = reasons.get("outcome_policy") if isinstance(reasons, dict) else None
+    outcome_policy = outcome_policy if isinstance(outcome_policy, dict) else {}
+    stored_fingerprint = str(outcome_policy.get("policy_fingerprint") or "").strip().lower()
+    sample_role = str(outcome_policy.get("sample_role") or "").strip()
+    model_version = str(row["model_version"] or "").strip()
+
+    if scope in {"current_model", "current_policy"}:
+        if not _model_version_matches(model_version, str(current_model_version or "")):
+            return None
+
+    verified_fingerprint = ""
+    if outcome_policy:
+        try:
+            verified_fingerprint = canonical_policy_fingerprint(
+                outcome_policy.get("policy_contract")
+            )
+        except Exception:
+            verified_fingerprint = ""
+
+    if scope == "current_policy":
+        expected_fingerprint = str(policy_fingerprint or "").strip().lower()
+        if not is_sha256_fingerprint(expected_fingerprint):
+            raise ValueError("current_policy outcome scope requires a sha256 policy_fingerprint")
+        if (
+            stored_fingerprint != expected_fingerprint
+            or verified_fingerprint != stored_fingerprint
+        ):
+            return None
+
+    return {
+        "model_version": model_version or None,
+        "policy_fingerprint": stored_fingerprint or None,
+        "policy_contract_verified": bool(
+            stored_fingerprint and verified_fingerprint == stored_fingerprint
+        ),
+        "sample_role": sample_role or None,
+        "reasons": reasons,
+    }
+
+
+def get_outcomes_recent_enriched(
+    conn: sqlite3.Connection,
+    limit: int = 200,
+    *,
+    require_llm_verdict: bool = False,
+    scope: str = "archive",
+    current_model_version: str | None = None,
+    policy_fingerprint: str | None = None,
+) -> list[dict[str, Any]]:
+    scope_name = _normalize_outcome_scope(scope)
+    current_model = str(current_model_version or "").strip()
+    expected_policy = str(policy_fingerprint or "").strip().lower()
+    if scope_name != "archive" and not current_model:
+        raise ValueError("current outcome scope requires current_model_version")
+    if scope_name == "current_policy" and not is_sha256_fingerprint(expected_policy):
+        raise ValueError("current_policy outcome scope requires a sha256 policy_fingerprint")
+
     _supported_sql, _supported_params = sql_in_clause("o.bot_type")
+    where_parts = [_supported_sql]
+    query_params: list[Any] = [*_supported_params]
+    if scope_name in {"current_model", "current_policy"}:
+        where_parts.append("(r.model_version = ? OR r.model_version LIKE ?)")
+        query_params.extend([current_model, current_model + "+%"])
+
+    # Archive mode keeps the former bounded recent-query behaviour. Current-policy
+    # mode must not apply a pre-filter LIMIT: a valid current-policy row may sit
+    # behind an arbitrary number of same-model historical-policy rows.
+    limit_sql = "" if scope_name != "archive" else "\n              LIMIT ?"
+    if scope_name == "archive":
+        query_params.append(max(int(limit) * 8, int(limit)))
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                      o.horizon_sec, o.entry_close, o.exit_close, o.ret, o.success,
                      r.direction AS reco_direction, r.status AS reco_status,
-                     r.score, r.confidence, r.expected_rr, r.reasons_json
+                     r.score, r.confidence, r.expected_rr, r.reasons_json,
+                     r.model_version, r.is_outcome_label_root
               FROM reco_outcomes o
               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
-              WHERE {_supported_sql} AND COALESCE(r.is_outcome_label_root, 1) = 1
-              ORDER BY o.ts DESC
-              LIMIT ?""",
-        [*_supported_params, int(limit)],
+              WHERE {' AND '.join(where_parts)}
+              ORDER BY o.ts DESC{limit_sql}""",
+        query_params,
     )
     out: list[dict[str, Any]] = []
     for row in cur.fetchall():
+        if row["is_outcome_label_root"] is not None and not bool(int(row["is_outcome_label_root"] or 0)):
+            continue
+        scope_snapshot = _outcome_row_scope_snapshot(
+            row,
+            scope=scope_name,
+            current_model_version=current_model_version,
+            policy_fingerprint=policy_fingerprint,
+        )
+        if scope_snapshot is None:
+            continue
         if require_llm_verdict and not is_outcome_eligible_under_llm_mode(row["reco_status"], row["reasons_json"]):
             continue
         dirs = _extract_outcome_directions(row["direction"], row["reco_direction"], row["reasons_json"])
@@ -4043,24 +4177,43 @@ def get_outcomes_recent_enriched(conn: sqlite3.Connection, limit: int = 200, *, 
             "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
             "expected_rr": float(row["expected_rr"]) if row["expected_rr"] is not None else None,
             "llm_review": llm_review,
+            "model_version": scope_snapshot["model_version"],
+            "policy_fingerprint": scope_snapshot["policy_fingerprint"],
+            "policy_contract_verified": scope_snapshot["policy_contract_verified"],
+            "sample_role": scope_snapshot["sample_role"],
         })
+        if len(out) >= int(limit):
+            break
     return out
 
 
+def get_outcomes_stats(
+    conn: sqlite3.Connection,
+    *,
+    require_llm_verdict: bool = False,
+    scope: str = "archive",
+    current_model_version: str | None = None,
+    policy_fingerprint: str | None = None,
+) -> dict:
+    """Aggregate outcome proxies inside an explicit, verified evidence scope.
 
-def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = False) -> dict:
-    """Aggregate win-rate / return proxies and expose raw vs execution direction splits.
-
-    Neutral execution can hide two very different realities:
-    true neutral thesis and linear short neutralisation (raw short -> execution neutral).
-    The UI needs both axes to avoid mixing them together.
+    The database retains immutable historical outcomes.  Operator-facing callers
+    should request ``current_policy`` so an old model or policy cannot masquerade as
+    current evidence. ``archive`` remains available for audit and research only.
     """
+    scope_name = _normalize_outcome_scope(scope)
+    current_model = str(current_model_version or "").strip()
+    expected_policy = str(policy_fingerprint or "").strip().lower()
+    if scope_name != "archive" and not current_model:
+        raise ValueError("current outcome scope requires current_model_version")
+    if scope_name == "current_policy" and not is_sha256_fingerprint(expected_policy):
+        raise ValueError("current_policy outcome scope requires a sha256 policy_fingerprint")
     _supported_sql, _supported_params = sql_in_clause("o.bot_type")
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                      o.ret, o.success,
                      r.direction AS reco_direction, r.status AS reco_status,
-                     r.reasons_json, r.is_outcome_label_root
+                     r.reasons_json, r.is_outcome_label_root, r.model_version
               FROM reco_outcomes o
               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
               WHERE {_supported_sql}
@@ -4101,6 +4254,14 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
 
     rows = cur.fetchall()
     for row in rows:
+        scope_snapshot = _outcome_row_scope_snapshot(
+            row,
+            scope=scope_name,
+            current_model_version=current_model_version,
+            policy_fingerprint=policy_fingerprint,
+        )
+        if scope_snapshot is None:
+            continue
         if require_llm_verdict and not is_outcome_eligible_under_llm_mode(row["reco_status"], row["reasons_json"]):
             continue
         raw_total += 1
@@ -4113,10 +4274,7 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         success = int(row["success"] or 0)
         ret = float(row["ret"] or 0.0)
         reco_status = str(row["reco_status"] or "").strip().lower()
-        try:
-            reasons_mapping = _json_loads_mapping_or_default(row["reasons_json"], {})
-        except Exception:
-            reasons_mapping = {}
+        reasons_mapping = scope_snapshot["reasons"]
         outcome_policy = reasons_mapping.get("outcome_policy") if isinstance(reasons_mapping, dict) else None
         sample_role = str(outcome_policy.get("sample_role") or "") if isinstance(outcome_policy, dict) else ""
         if sample_role == "shadow_no_trade" or (not sample_role and reco_status == "no_trade"):
@@ -4295,6 +4453,11 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
     )
 
     return {
+        "scope": _outcome_scope_metadata(
+            scope_name,
+            current_model_version=current_model_version,
+            policy_fingerprint=policy_fingerprint,
+        ),
         "summary": summary,
         "cohorts": {
             "all_roots": _cohort_summary(summary_bucket),
@@ -4311,7 +4474,14 @@ def get_outcomes_stats(conn: sqlite3.Connection, *, require_llm_verdict: bool = 
         "llm_alignment": llm_alignment,
         "llm_engine_alignment": llm_engine_alignment,
         "llm_engine_matrix": llm_engine_matrix,
-        "recent": get_outcomes_recent_enriched(conn, limit=120, require_llm_verdict=require_llm_verdict),
+        "recent": get_outcomes_recent_enriched(
+            conn,
+            limit=120,
+            require_llm_verdict=require_llm_verdict,
+            scope=scope_name,
+            current_model_version=current_model_version,
+            policy_fingerprint=policy_fingerprint,
+        ),
     }
 
 

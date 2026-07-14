@@ -1,3 +1,11 @@
+## Outcome scopes and readiness truth (v1.0.58)
+
+- The default operator scope is `current_policy`: active model lineage + exact active policy fingerprint + successfully re-hashed persisted policy contract.
+- `current_model` is a diagnostic lineage view and may contain multiple policy fingerprints.
+- `archive` is immutable research/audit history. It is never the default performance headline and never proves current-policy edge.
+- The 80-row default is the monetary-return floor only. With `REQUIRE_CONF_GATE=1`, feature probability inference requires at least 300 exact-policy labels, sufficient purged OOF predictions, accepted aggregate skill, and accepted terminal-future-block skill.
+- Any censored, unresolved or invalid matured current-policy root remains a hard observability veto. This avoids labeled-subset survivorship bias but creates an acknowledged liveness risk pending a bounded-censor model.
+
 ## Policy-conditioned calibration contract (v1.0.57)
 
 `RECOMMENDER_MODEL_VERSION=bybit-taxonomy-v8-policy-conditioned-censor-aware`; bot/global keys are v19 and direction calibration is v14. Each publication root stores `outcome_policy.policy_contract`, its full SHA-256 `policy_fingerprint`, an exact canonical maturity timestamp and a role: `current_policy_evaluation`, `shadow_exploration` or excluded. The contract covers model/outcome/feature versions, selection thresholds, universe, LLM gate and active normalized risk limits. Readers recompute canonical JSON SHA-256 from the stored contract; a missing/tampered contract is unresolved even when its claimed digest matches a current cache key.
@@ -403,7 +411,7 @@ Calibration не должна обучаться только на уже ото
 - worker принимает только literal JSON boolean `eligible=true`, повторно проверяет `risk_checks.passed=true` и отсутствие blocks;
 - `blocked`, `pending`, `suppressed`, malformed и legacy no-trade без явного opt-in не размечаются;
 - shadow outcome является counterfactual OHLCV proxy, а не доказательством реального запуска или fill sequence;
-- outcome API returns separate `actionable` and `shadow_no_trade` cohorts; UI headline uses actionable only, while all-roots/shadow remain research/control statistics.
+- outcome API defaults to verified `current_policy`; `current_model` and `archive` are explicit scopes. Inside a scope it still separates `actionable` and `shadow_no_trade`, while the historical archive never enters the current headline.
 
 Необученный calibrator не меняет status автоматически: до fit используется ограниченный raw-confidence, а deterministic gates остаются source of truth.
 

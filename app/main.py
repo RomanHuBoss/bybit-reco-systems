@@ -28,7 +28,7 @@ from .bybit_client import BybitPublicClient
 from .collector import collect_once, collect_backfill_once, collect_futures_once, RuntimeLockLostError
 from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
-from .outcomes import compute_outcomes_once
+from .outcomes import BOT_HORIZONS, compute_outcomes_once
 from .recommender import (
     DIRECTION_CALIBRATION_KEY,
     LLM_REVIEW_ASYNC_STATUS_APP_KEY,
@@ -4640,7 +4640,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.57", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.59", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6075,9 +6075,32 @@ def api_trades(bot_id: str | None = None, limit: int = 200) -> dict[str, Any]:
 
 
 @app.get("/api/v1/outcomes/stats")
-def api_outcomes_stats() -> dict[str, Any]:
+def api_outcomes_stats(scope: str = "current_policy") -> dict[str, Any]:
+    """Return outcome proxies in an explicit evidence lineage.
+
+    The operator UI defaults to the exact policy currently running. Historical
+    outcomes remain available via ``scope=archive`` but are never blended into the
+    current-policy headline.
+    """
     with closing(_get_conn()) as conn:
-        return db.get_outcomes_stats(conn, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
+        active_risk_limits = normalize_risk_limits(
+            db.get_active_risk_limits(conn),
+            settings.risk_limits,
+        )
+        policy_fingerprint = calibration_policy_fingerprint(
+            settings,
+            active_risk_limits,
+        )
+        try:
+            return db.get_outcomes_stats(
+                conn,
+                require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)),
+                scope=scope,
+                current_model_version=RECOMMENDER_MODEL_VERSION,
+                policy_fingerprint=policy_fingerprint,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/health/symbols")
@@ -6605,6 +6628,9 @@ def api_status() -> dict[str, Any]:
 
         min_samples = int(settings.calib_min_samples)
         logreg_min_samples = 300
+        label_horizon_sec = int(BOT_HORIZONS.get("futures_grid", 12 * 3600))
+        minimum_temporal_clusters = max(1, min(20, int(math.ceil(float(min_samples) / 4.0))))
+        minimum_temporal_span_sec = int(label_horizon_sec * minimum_temporal_clusters)
 
         _supported_sql, _supported_params = sql_in_clause("bot_type")
         require_llm_outcome_verdict = bool(getattr(settings, "llm_reviewer_enabled", False))
@@ -6760,6 +6786,18 @@ def api_status() -> dict[str, Any]:
                 "unfitted_reason": unfitted_reason,
                 "min_samples": min_samples,
                 "logreg_min_samples": logreg_min_samples,
+                "monetary_min_samples": min_samples,
+                "probability_min_samples": logreg_min_samples,
+                "full_actionability_sample_floor": (
+                    logreg_min_samples if bool(settings.require_conf_gate) else min_samples
+                ),
+                "monetary_sample_gap": max(0, min_samples - int(stats["total"])),
+                "probability_sample_gap": max(0, logreg_min_samples - int(stats["total"])),
+                "observability_hard_block": bool(
+                    int(observability.get("censored_total") or 0) > 0
+                    or int(observability.get("unresolved_total") or 0) > 0
+                    or int(observability.get("invalid_labeled_total") or 0) > 0
+                ),
                 "purged_oof_status": str(getattr(m, "oof_status", "not_evaluated")) if m is not None else "not_evaluated",
                 "purged_oof_skill_status": str(getattr(m, "oof_skill_status", "not_evaluated")) if m is not None else "not_evaluated",
                 "purged_oof_feature_log_loss": getattr(m, "oof_feature_log_loss", None) if m is not None else None,
@@ -6830,6 +6868,29 @@ def api_status() -> dict[str, Any]:
             "outcome_count": outcome_count,
             "calib_min_samples": min_samples,
             "calib_logreg_min_samples": logreg_min_samples,
+            "calibration_gate_contract": {
+                "require_conf_gate": bool(settings.require_conf_gate),
+                "monetary_min_samples": min_samples,
+                "probability_min_samples": logreg_min_samples,
+                "full_actionability_sample_floor": (
+                    logreg_min_samples if bool(settings.require_conf_gate) else min_samples
+                ),
+                "bounded_censoring_sensitivity_enabled": True,
+                "maximum_censoring_rate": 0.05,
+                "unresolved_or_invalid_root_blocks_positive_expectancy": True,
+                "any_unresolved_root_blocks_positive_expectancy": True,
+                "label_horizon_sec": label_horizon_sec,
+                "minimum_temporal_clusters": minimum_temporal_clusters,
+                "minimum_temporal_span_sec": minimum_temporal_span_sec,
+                "minimum_temporal_span_days": round(minimum_temporal_span_sec / 86400.0, 2),
+                "policy_fingerprint_change_starts_new_cohort": True,
+                "probability_requires_purged_oof_skill": True,
+                "note": (
+                    "The 80-row floor proves neither a fitted probability model nor actionability. "
+                    "With REQUIRE_CONF_GATE=1, at least 300 exact-policy labeled rows plus accepted "
+                    "purged OOF and terminal-holdout skill are required."
+                ),
+            },
             "last_reco_ts": last_reco_ts,
             "collect_errors_10m": collect_errors_10m,
             "admin_key_configured": bool(settings.admin_api_key),

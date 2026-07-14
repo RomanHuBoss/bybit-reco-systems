@@ -1,3 +1,10 @@
+## v1.0.58 module responsibility update
+
+- `app/db.py`: scope-normalized outcome aggregation, exact model/policy admission, policy-contract digest verification, and lineage fields in recent outcome rows.
+- `app/main.py`: current-policy default API contract and truthful calibration-readiness diagnostics (80 monetary versus 300 probability by default).
+- `app/ui/static/app.js`: separate current-policy and historical-archive requests/rendering; archive never drives the active headline.
+- `tests/test_iteration246_outcome_scope_readiness.py`: lineage separation, fail-closed scope validation, deep-current-row retrieval, API default, and readiness-copy regressions.
+
 ## v1.0.57 module responsibility update
 
 - `app/calibration.py`: Student-t monetary bounds; aggregate and terminal purged log-loss skill; activates the pre-terminal-holdout pipeline only; rejects malformed fitted persistence.

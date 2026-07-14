@@ -1,3 +1,26 @@
+## 2026-07-14 - v1.0.59 - bounded censoring sensitivity and liveness
+
+- Fixed the OPEN HIGH liveness/methodology risk where one terminally censored root permanently destroyed an otherwise validated exact-policy model.
+- Replaced the all-or-nothing censoring rule with a bounded adverse sensitivity analysis: every censored root is assigned the worse of -1%, observed lower-tail expected shortfall, or mean minus three standard deviations, capped at -100%.
+- Positive inference survives only when censoring is at most 5%, the pessimistically adjusted mean remains positive, and both row-level and temporal lower confidence bounds remain positive.
+- Unresolved, invalid-contract and invalid-labeled roots remain hard fail-closed blockers; excessive censoring or weak edge still disables the model.
+- Persisted sensitivity status, censoring rate, assumed adverse return and adjusted mean in the calibrator JSON contract.
+- Added `tests/test_iteration247_bounded_censoring_and_liveness.py` with four regressions.
+- Advanced FastAPI version to `1.0.59`; database schema, outcome label version, model lineage and policy fingerprint contract are unchanged.
+
+## 2026-07-14 - v1.0.58 - outcome lineage truth and readiness diagnostics
+
+- Fixed a HIGH operator-evidence defect: `/api/v1/outcomes/stats` no longer blends the immutable historical archive into the default current-policy headline.
+- Added explicit `current_policy`, `current_model`, and `archive` scopes. Current-policy admission requires matching model lineage, exact active policy fingerprint, and a policy-contract hash that recomputes successfully.
+- Split the Outcomes modal into current-policy evidence and a separately labeled historical archive; model version, policy digest, sample role, and contract-verification state are exposed in the journal.
+- Fixed a HIGH readiness-reporting defect: the UI/status now distinguish the 80-row monetary floor from the 300-row probability floor and state that `REQUIRE_CONF_GATE=1` additionally requires accepted purged OOF and terminal holdout skill.
+- Added explicit observability hard-block diagnostics. Investigation confirmed that a single censored/unresolved/invalid matured root disables a fitted positive model; this conservative rule remains an OPEN HIGH liveness/methodology risk rather than being weakened without a bounded missing-outcome model.
+- Added `tests/test_iteration246_outcome_scope_readiness.py` with seven regressions. Original v1.0.57 production code failed the first three tests: unsupported `scope`, no separated API fetches, and no 80-vs-300 readiness contract.
+- Advanced FastAPI version to `1.0.58`. Model lineage remains `bybit-taxonomy-v8-policy-conditioned-censor-aware`; outcome target remains `grid_label_v26`; DB schema, migrations, calibrator identities and environment variables are unchanged.
+- Profitability remains unverified because the supplied release contains no runtime DB or externally reconciled execution sample.
+- Exposed the liveness floor: the 12-hour label horizon and 20 independent temporal cohorts require at least 10 days of unchanged policy before the temporal monetary gate can possibly pass; a policy-fingerprint change starts a new exact-policy cohort.
+- Post-check: `1113/1113` collected test nodes passed in 12 deterministic non-overlapping batches; compileall, JavaScript syntax, SQLite fresh/re-init/1.0.57-upgrade and PostgreSQL offline dialect/locking tests passed. Ruff remained unavailable and global `pip check` retained the pre-existing MoviePy/Pillow conflict.
+
 ## 2026-07-14 - v1.0.57 - policy-conditioned calibration and reconciled evidence
 
 - Fixed a CRITICAL selection-policy contamination gap by binding recommendations, outcomes and cache identities to a full canonical SHA-256 policy fingerprint and recomputing the digest from every persisted contract before admitting evidence.

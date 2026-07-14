@@ -1,3 +1,17 @@
+## Resolved in v1.0.58: historical outcomes were still presented as current-policy performance
+
+The database intentionally retains immutable outcomes across releases, but the operator endpoint and modal still aggregated the full archive and labelled it as the active headline. A new model/policy could therefore appear to start with dozens of observations and an inherited win rate. v1.0.58 makes `current_policy` the API default, verifies the current model plus exact policy fingerprint by re-hashing the persisted contract, and renders the archive separately. Archive performance is research history only and does not enter the current-policy headline.
+
+## Open HIGH risk in v1.0.58: zero-tolerance censoring can make calibration permanently non-actionable
+
+`_apply_outcome_observability_gate()` invalidates positive expectancy and clears fitted coefficients when `censored_total`, `unresolved_total`, or `invalid_labeled_total` is non-zero. This is safe against survivorship bias, but a single permanently unobservable 12-hour grid root can disable an otherwise large exact-policy cohort forever. Legitimate proxy conditions such as gap-through stops, ambiguous replacement timing, insufficient candle volume or permanent data gaps can produce such roots, so the condition is a structural liveness risk rather than a rare UI state.
+
+This patch does not ignore censored rows or convert them to zero loss. Either shortcut could manufacture positive expectancy. A safe follow-up requires a pre-registered partial-identification/sensitivity contract: explicit reason classes, conservative return bounds where derivable, worst-case binary labels, maximum admissible censor fraction, and chronological validation showing that actionability is robust under the pessimistic bound. Until then, `PROXY_OUTCOME_CENSORING_UNBOUNDED` correctly means shadow `NO_TRADE`, and the project is not a validated live strategy.
+
+## Open evidence limitation in v1.0.58: profitability cannot be inferred from the release archive
+
+No runtime SQLite/PostgreSQL database, exact exchange fill history, or terminal externally reconciled account sample was supplied. The screenshot's 72 outcomes are mixed historical lineage and are now explicitly treated as archive. Therefore neither inherent profitability nor inherent loss can be established from this ZIP. A valid conclusion requires the current-policy dataset, censor reasons, chronological proxy returns, and independently reconciled net execution PnL.
+
 ## Resolved in v1.0.57: policy contamination, censored-outcome omission and terminal-holdout refit
 
 The previous lineage reset separated model versions but did not identify the full decision policy. Outcomes produced under different candidate thresholds, symbol universes, LLM settings or active risk limits could still share one calibrator. The fitted inner join also had no independent denominator for matured roots that could not be labeled because of gap-through stops, replacement timing, missing settlement/candle capacity or persistent data gaps. A positive labeled subset could therefore hide unbounded missing outcomes. Version `1.0.57` stores a canonical policy contract/fingerprint per root, recomputes the digest on read and fits only the exact cohort. Missing/tampered contracts become unresolved rather than trusting a copied hash. `reco_outcome_observability` counts every matured root as labeled, censored or unresolved; any nonzero omission, malformed label or disappeared cache support disables positive inference.

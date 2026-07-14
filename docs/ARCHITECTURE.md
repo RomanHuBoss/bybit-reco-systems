@@ -1,3 +1,9 @@
+## v1.0.58 operator evidence boundary
+
+`GET /api/v1/outcomes/stats` accepts `scope=current_policy|current_model|archive` and defaults to `current_policy`. `app/main.py` derives the active fingerprint from current settings plus active risk limits. `app/db.py` filters model lineage, recomputes each persisted policy-contract digest, and aggregates only admitted rows. The frontend requests current-policy and archive payloads independently; only the former drives headline and detailed policy tables. No relational migration is required.
+
+Status now publishes a calibration gate contract with separate monetary and probability floors, sample gaps, OOF requirements, and the observability hard-block. These are diagnostics only; they do not weaken publication gates or create execution authority.
+
 ## v1.0.57 policy/evidence architecture
 
 The recommendation cycle canonicalizes normalized settings plus active risk limits into a full SHA-256 policy fingerprint before loading calibration. Each root persists that contract, and both the fit path and outer denominator recompute its digest before use. The calibration path is:
@@ -10,7 +16,7 @@ The relational change is additive and idempotent in both `init.sql` and `init_po
 
 ## v1.0.56 calibration lineage boundary
 
-`app/recommender.py::calibration_lineage_diagnostics()` is the shared source of truth for archive/current/eligible partitioning. Fit paths and `/api/v1/status` use the same filter. `app/calibration.py` uses v18 cache identities and `app/recommender.py` uses direction key v13, so stale v17/v12 objects cannot be loaded as current. PostgreSQL and SQLite schemas are unchanged.
+`app/recommender.py::calibration_lineage_diagnostics()` is the shared source of truth for archive/current/eligible partitioning. Fit paths and `/api/v1/status` use the same filter. `app/calibration.py` uses v19 cache identities and `app/recommender.py` uses direction key v14, so stale v18/v13 objects cannot be loaded as current. PostgreSQL and SQLite schemas are unchanged.
 
 ## v1.0.55 candidate-screen and temporal-thinning flow
 

@@ -1,3 +1,27 @@
+## Scenario: old outcomes remain in the DB after a policy update (v1.0.58)
+
+1. The database contains 72 outcomes from prior model/policy lineages.
+2. The running policy has zero verified outcomes.
+3. `GET /api/v1/outcomes/stats` without a scope returns `current_policy` and a zero current headline.
+4. The UI separately requests `scope=archive` and labels the 72 rows as historical.
+5. Archive win rate/return never enters current-policy cards or detailed policy tables.
+
+## Scenario: 80 outcomes exist but confidence is still unavailable (v1.0.58)
+
+1. The exact-policy cohort reaches the default `CALIB_MIN_SAMPLES=80`.
+2. Monetary diagnostics may be evaluated, subject to temporal independence and positive lower bounds.
+3. With `REQUIRE_CONF_GATE=1`, probability inference still requires at least 300 exact-policy labels plus accepted purged OOF and terminal holdout skill.
+4. The UI reports both floors and does not call 80 rows full readiness.
+5. Raw confidence remains audit-only until the complete probability contract passes.
+
+## Scenario: one root is permanently censored (open risk, v1.0.58)
+
+1. Five hundred exact-policy labels support positive monetary and probability diagnostics.
+2. One additional matured root is permanently unobservable.
+3. The current zero-tolerance gate changes expectancy to `censored`, clears fitted coefficients and keeps `NO_TRADE`.
+4. The operator sees the observability hard block and censor reason instead of a misleading readiness percentage.
+5. Actionability may resume only after a separately validated bounded-censor policy; the operator must not manually ignore the row.
+
 ## Scenario: threshold or risk limit changes under the same code (v1.0.57)
 
 1. Policy A has matured positive proxy outcomes and a fitted cache.

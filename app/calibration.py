@@ -378,6 +378,10 @@ class LogRegScaler:
     policy_censored_total: int = 0
     policy_unresolved_total: int = 0
     policy_invalid_labeled_total: int = 0
+    censoring_sensitivity_status: str = "not_evaluated"
+    censoring_rate: float = 0.0
+    censoring_assumed_return: float | None = None
+    censoring_adjusted_mean_return: float | None = None
 
     def predict(self, features: list[float]) -> float:
         """Return calibrated P(success) given a feature vector."""
@@ -1519,6 +1523,10 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
             "labeled_total": model.policy_labeled_total,
             "censored_total": model.policy_censored_total,
             "unresolved_total": model.policy_unresolved_total,
+            "sensitivity_status": model.censoring_sensitivity_status,
+            "censoring_rate": model.censoring_rate,
+            "assumed_return": model.censoring_assumed_return,
+            "adjusted_mean_return": model.censoring_adjusted_mean_return,
             "invalid_labeled_total": model.policy_invalid_labeled_total,
         },
         "expectancy": {
@@ -1697,6 +1705,14 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         policy_labeled_total = max(0, _finite_int(policy_obj.get("labeled_total", 0), 0))
         policy_censored_total = max(0, _finite_int(policy_obj.get("censored_total", 0), 0))
         policy_unresolved_total = max(0, _finite_int(policy_obj.get("unresolved_total", 0), 0))
+        censoring_sensitivity_status = str(policy_obj.get("sensitivity_status") or "not_evaluated").strip().lower()
+        if censoring_sensitivity_status not in {"not_evaluated", "passed", "failed", "hard_block"}:
+            return None
+        censoring_rate = _finite_float(policy_obj.get("censoring_rate", 0.0))
+        censoring_assumed_return = _finite_float(policy_obj.get("assumed_return"))
+        censoring_adjusted_mean_return = _finite_float(policy_obj.get("adjusted_mean_return"))
+        if censoring_rate is None or censoring_rate < 0.0 or censoring_rate > 1.0:
+            return None
         policy_invalid_labeled_total = max(
             0,
             _finite_int(policy_obj.get("invalid_labeled_total", 0), 0),
@@ -1769,6 +1785,10 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             policy_labeled_total=policy_labeled_total,
             policy_censored_total=policy_censored_total,
             policy_unresolved_total=policy_unresolved_total,
+            censoring_sensitivity_status=censoring_sensitivity_status,
+            censoring_rate=float(censoring_rate),
+            censoring_assumed_return=censoring_assumed_return,
+            censoring_adjusted_mean_return=censoring_adjusted_mean_return,
             policy_invalid_labeled_total=policy_invalid_labeled_total,
         )
     except Exception:

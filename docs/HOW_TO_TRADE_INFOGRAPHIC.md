@@ -1,3 +1,11 @@
+## v1.0.58 outcome-scope and readiness rule
+
+- Application `1.0.58`; model `bybit-taxonomy-v8-policy-conditioned-censor-aware`; outcome target `grid_label_v26`.
+- Outcomes headline = verified `current_policy` only. `archive` is shown separately and never proves current edge.
+- `CALIB_MIN_SAMPLES=80` is a monetary floor, not full readiness. With `REQUIRE_CONF_GATE=1`, probability needs at least 300 exact-policy labels plus accepted purged OOF and terminal holdout skill.
+- Any censored/unresolved/invalid matured root remains `NO TRADE`; this is a documented liveness risk pending a conservative bounded-censor model.
+- No order execution or profitability claim is introduced.
+
 ## v1.0.57 evidence-contract rule
 
 - Application `1.0.57`; model `bybit-taxonomy-v8-policy-conditioned-censor-aware`; outcome target `grid_label_v26`; bot/global v19; direction v14.
@@ -174,7 +182,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Same-level directional lots are quantity-aware: an initial TP and an adjacent replacement TP at one price must both remain in the ledger, fees and funding state.
 - Missing/inside-range kill-switch is unlabelable. For any candle with material high and low excursions, both O-H-L-C and O-L-H-C paths must produce the same ledger/stop/PnL state; otherwise no proxy label is stored.
 - A close-open or horizon gap beyond the kill-switch is also unlabelable; never assume the skipped boundary was an executable stop price.
-- Outcome headline is actionable-only; all-roots and shadow no_trade metrics are separate research/control cohorts.
+- Outcome headline uses verified `current_policy` only; `current_model` and historical `archive` are separate scopes. Within a scope, actionable and shadow no_trade metrics remain separate research/control cohorts.
 
 ## NO TRADE / BLOCKED checklist
 

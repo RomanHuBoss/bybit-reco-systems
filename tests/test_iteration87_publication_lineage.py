@@ -322,7 +322,7 @@ def test_status_and_outcome_stats_ignore_historical_active_duplicates(client_and
         },
     )
 
-    stats_resp = client.get("/api/v1/outcomes/stats")
+    stats_resp = client.get("/api/v1/outcomes/stats?scope=archive")
     assert stats_resp.status_code == 200
     stats_body = stats_resp.json()
     assert stats_body["summary"]["total"] == 1

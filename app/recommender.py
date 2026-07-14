@@ -3444,48 +3444,76 @@ def _apply_outcome_observability_gate(
     model: LogRegScaler,
     diagnostics: dict[str, Any],
 ) -> LogRegScaler:
-    """Attach the full matured-root denominator and fail closed on censoring.
+    """Attach the full matured-root denominator and apply bounded censoring sensitivity.
 
-    No exact loss bound exists for gap-through-stop, unobservable replacement
-    timing or insufficient volume.  Such roots therefore cannot be silently
-    omitted from an otherwise positive sample.
+    Unresolved or contract-invalid roots remain a hard fail-closed condition.  A
+    small number of terminally censored roots no longer destroys a validated
+    model automatically: they are assigned a deliberately adverse return and
+    the monetary conclusion must remain positive under that sensitivity case.
+    This prevents both survivorship bias and permanent liveness loss from one
+    unobservable fill path.
     """
     model.policy_fingerprint = str(diagnostics.get("policy_fingerprint") or "")
-    model.policy_matured_total = max(
-        0, _safe_int_or_none(diagnostics.get("matured_total")) or 0
-    )
-    model.policy_labeled_total = max(
-        0, _safe_int_or_none(diagnostics.get("labeled_total")) or 0
-    )
-    model.policy_censored_total = max(
-        0, _safe_int_or_none(diagnostics.get("censored_total")) or 0
-    )
-    model.policy_unresolved_total = max(
-        0, _safe_int_or_none(diagnostics.get("unresolved_total")) or 0
-    )
+    model.policy_matured_total = max(0, _safe_int_or_none(diagnostics.get("matured_total")) or 0)
+    model.policy_labeled_total = max(0, _safe_int_or_none(diagnostics.get("labeled_total")) or 0)
+    model.policy_censored_total = max(0, _safe_int_or_none(diagnostics.get("censored_total")) or 0)
+    model.policy_unresolved_total = max(0, _safe_int_or_none(diagnostics.get("unresolved_total")) or 0)
     model.policy_invalid_labeled_total = max(
         max(0, _safe_int_or_none(diagnostics.get("invalid_labeled_total")) or 0),
         max(0, model.policy_labeled_total - max(0, int(model.return_samples or 0))),
     )
-    # A fresh cache is not self-authenticating evidence.  If its supporting rows
-    # were pruned, deleted or replaced, the current outer-join denominator can no
-    # longer reproduce the fit even before the hourly refit deadline.  Treat that
-    # missing support as unresolved rather than letting cached positive evidence
-    # survive detached from its data.
     missing_support = (
-        max(
-            0,
-            max(0, int(model.return_samples or 0)) - model.policy_matured_total,
-        )
+        max(0, max(0, int(model.return_samples or 0)) - model.policy_matured_total)
         if str(getattr(model, "expectancy_status", "unknown")) == "positive"
         else 0
     )
     model.policy_unresolved_total += missing_support
-    if (
-        model.policy_censored_total > 0
-        or model.policy_unresolved_total > 0
+
+    matured = max(0, model.policy_matured_total)
+    censored = max(0, model.policy_censored_total)
+    model.censoring_rate = float(censored / matured) if matured > 0 else 0.0
+    model.censoring_sensitivity_status = "not_evaluated"
+    model.censoring_assumed_return = None
+    model.censoring_adjusted_mean_return = None
+
+    hard_invalid = (
+        model.policy_unresolved_total > 0
         or model.policy_invalid_labeled_total > 0
-    ):
+    )
+    if hard_invalid:
+        model.censoring_sensitivity_status = "hard_block"
+    elif censored > 0 and str(getattr(model, "expectancy_status", "unknown")) == "positive":
+        mean_ret = _finite_or_none(model.weighted_mean_return)
+        lower_bound = _finite_or_none(model.weighted_mean_return_lower_bound)
+        temporal_lower = _finite_or_none(model.weighted_temporal_mean_return_lower_bound)
+        expected_shortfall = _finite_or_none(model.weighted_expected_shortfall)
+        std = _finite_or_none(model.weighted_return_std)
+        effective_n = max(1.0, float(model.weighted_effective_return_samples or model.return_samples or 1))
+        adverse_candidates = [-0.01]
+        if expected_shortfall is not None:
+            adverse_candidates.append(float(expected_shortfall))
+        if mean_ret is not None and std is not None:
+            adverse_candidates.append(float(mean_ret - 3.0 * std))
+        assumed = max(-1.0, min(adverse_candidates))
+        adjusted = (
+            ((float(mean_ret) * effective_n) + (assumed * censored)) / (effective_n + censored)
+            if mean_ret is not None else None
+        )
+        model.censoring_assumed_return = assumed
+        model.censoring_adjusted_mean_return = adjusted
+        # Censoring above 5% is not treated as ignorable.  Below that threshold,
+        # the conclusion must remain positive after assigning every censored root
+        # the adverse sensitivity return and all existing lower bounds must pass.
+        sensitivity_pass = bool(
+            model.censoring_rate <= 0.05
+            and adjusted is not None and adjusted > 0.0
+            and lower_bound is not None and lower_bound > 0.0
+            and temporal_lower is not None and temporal_lower > 0.0
+        )
+        model.censoring_sensitivity_status = "passed" if sensitivity_pass else "failed"
+        hard_invalid = not sensitivity_pass
+
+    if hard_invalid:
         model.expectancy_status = "censored"
         model.fitted = False
         model.coef = []
@@ -3556,7 +3584,7 @@ def _calibration_expectancy_no_trade_reason(model: LogRegScaler | None) -> dict[
                 "current policy cohort contains matured roots without a bounded outcome "
                 f"(censored={censored}, unresolved={unresolved}, "
                 f"invalid_labeled={invalid_labeled}, matured={matured}); "
-                "positive expectancy cannot be inferred from the labeled subset"
+                "positive expectancy fails the bounded censoring sensitivity analysis"
             ),
         }
     if status != "negative":

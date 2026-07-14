@@ -1391,7 +1391,8 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
   const wins = Number(info?.wins || 0);
   const losses = Number(info?.losses || Math.max(0, total - wins));
   const effective = Number(info?.effective_samples || (2 * Math.min(wins, losses)) || 0);
-  const needed = Number(info?.min_samples || statusPayload?.calib_min_samples || 80);
+  const monetaryNeeded = Number(info?.monetary_min_samples || info?.min_samples || 80);
+  const probabilityNeeded = Number(info?.probability_min_samples || info?.logreg_min_samples || 300);
   const winRate = info?.win_rate;
   const winRateText = (winRate === null || winRate === undefined) ? "—" : Number(winRate).toFixed(2);
   const calibratorKey = String(info?.calibrator_key || "unknown-calibrator");
@@ -1409,9 +1410,10 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
     ? `; time_clusters=${temporalClusters}/${minimumTemporalClusters}`
     : "";
   const observabilityText = `; policy outcomes: matured=${matured}, labeled=${labeled}, censored=${censored}, unresolved=${unresolved}, invalid_labeled=${invalidLabeled}`;
+  const readinessText = `Денежная доказательность: eligible=${total}/${monetaryNeeded}. Вероятностная калибровка: eligible=${total}/${probabilityNeeded} + accepted purged OOF/terminal holdout.`;
 
   if (censored > 0 || unresolved > 0 || invalidLabeled > 0) {
-    return `${botType}: калибровка заблокирована неполной наблюдаемостью (${lineageText}${observabilityText}; skill=${skill}${temporalText}).`;
+    return `${botType}: калибровка заблокирована неполной наблюдаемостью (${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText}`;
   }
 
   if (info?.fitted) {
@@ -1419,7 +1421,7 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
       const fitRows = Number(info?.n_samples || 0);
       const dropped = Number(info?.rows_dropped_for_fit || Math.max(0, total - fitRows) || 0);
       const droppedText = dropped > 0 ? `; не вошло в feature-fit=${dropped}` : "";
-      return `${botType}: калибратор активен (terminal-holdout LogReg + Platt, fit_rows=${fitRows}/${total}; побед=${wins}, поражений=${losses}${droppedText}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}).`;
+      return `${botType}: калибратор активен (terminal-holdout LogReg + Platt, fit_rows=${fitRows}/${total}; побед=${wins}, поражений=${losses}${droppedText}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText}`;
     }
     return `${botType}: legacy Platt state отклонён текущим held-out контрактом (${lineageText}${observabilityText}).`;
   }
@@ -1429,12 +1431,12 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
     const recent7d = Number(info?.outcomes_7d || 0) > 0
       ? ` За 7д eligible: побед=${Number(info?.wins_7d || 0)}, поражений=${Number(info?.losses_7d || 0)}.`
       : "";
-    return `${botType}: raw-only, вырожденные eligible-метки (minority=${minority}, effective=${effective}/${needed}, win-rate=${winRateText}, entropy=${fmt(info?.class_entropy_bits, 3)}, expectancy=${expectancyStatus}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}).${recent7d}`;
+    return `${botType}: raw-only, вырожденные eligible-метки (minority=${minority}, effective=${effective}/${monetaryNeeded}, win-rate=${winRateText}, entropy=${fmt(info?.class_entropy_bits, 3)}, expectancy=${expectancyStatus}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText}${recent7d}`;
   }
   if ((info?.unfitted_reason || "") === "pending_refit") {
-    return `${botType}: eligible-исходов достаточно (effective=${effective}/${needed}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). Refit ещё не завершён.`;
+    return `${botType}: eligible-исходов достаточно (effective=${effective}/${monetaryNeeded}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText} Refit ещё не завершён.`;
   }
-  return `${botType}: effective для fit ${effective}/${needed} (eligible=${total}, побед=${wins}, поражений=${losses}, expectancy=${expectancyStatus}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}).`;
+  return `${botType}: effective для fit ${effective}/${monetaryNeeded} (eligible=${total}, побед=${wins}, поражений=${losses}, expectancy=${expectancyStatus}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText}`;
 }
 
 function updateCalibrationUi(items) {
@@ -1462,12 +1464,15 @@ function updateCalibrationUi(items) {
       const archiveCount = Number(statusPayload?.historical_outcome_count ?? statusPayload?.outcome_count ?? 0);
       const currentModelCount = Number(statusPayload?.current_model_outcome_count || 0);
       const eligibleCount = Number(statusPayload?.calibration_eligible_outcome_count || 0);
-      const needed = Number(statusPayload?.calib_min_samples || 80);
-      const pct = needed > 0 ? Math.min(100, Math.round(eligibleCount / needed * 100)) : 0;
+      const monetaryNeeded = Number(statusPayload?.calib_min_samples || 80);
+      const probabilityNeeded = Number(statusPayload?.calib_logreg_min_samples || 300);
+      const fullNeeded = statusPayload?.calibration_gate_contract?.require_conf_gate === false ? monetaryNeeded : probabilityNeeded;
+      const pct = fullNeeded > 0 ? Math.min(100, Math.round(eligibleCount / fullNeeded * 100)) : 0;
       const readiness = botCalibs.length > 0
         ? `Готово: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (LogReg: ${logregBots.length})` : ""}. `
         : "";
-      $("calibProgress").textContent = `${readiness}Исторический архив=${archiveCount}; текущая model lineage=${currentModelCount}; feature-eligible=${eligibleCount}. Прогресс считается только по текущей lineage, старые outcomes сохранены исключительно для аудита.`;
+      const temporalDays = Number(statusPayload?.calibration_gate_contract?.minimum_temporal_span_days || 10);
+      $("calibProgress").textContent = `${readiness}Исторический архив=${archiveCount}; текущая model lineage=${currentModelCount}; feature-eligible=${eligibleCount}. Денежная доказательность: ${eligibleCount}/${monetaryNeeded}. Вероятностная калибровка: ${eligibleCount}/${probabilityNeeded} + accepted purged OOF/terminal holdout. Полная готовность не наступает на пороге 80 при REQUIRE_CONF_GATE=1. При 12-часовом label horizon temporal floor физически требует не менее ${temporalDays} суток неизменной policy; смена policy fingerprint начинает новую evidence-когорту.`;
       $("calibBarFill").style.width = `${pct}%`;
     }
     return;
@@ -1498,8 +1503,11 @@ function updateCalibrationUi(items) {
   const primaryBot = botTypes.length === 1 ? botTypes[0] : null;
   const primaryInfo = primaryBot ? botCalibs[primaryBot] : null;
   const effective = Number(primaryInfo?.effective_samples || 0);
-  const needed = Number(primaryInfo?.min_samples || statusPayload?.calib_min_samples || 80);
-  const pct = needed > 0 ? Math.min(100, Math.round(effective / needed * 100)) : 0;
+  const monetaryNeeded = Number(primaryInfo?.monetary_min_samples || primaryInfo?.min_samples || statusPayload?.calib_min_samples || 80);
+  const probabilityNeeded = Number(primaryInfo?.probability_min_samples || primaryInfo?.logreg_min_samples || statusPayload?.calib_logreg_min_samples || 300);
+  const fullNeeded = statusPayload?.calibration_gate_contract?.require_conf_gate === false ? monetaryNeeded : probabilityNeeded;
+  const eligibleForProbability = Number(primaryInfo?.policy_eligible_outcomes_total || 0);
+  const pct = fullNeeded > 0 ? Math.min(100, Math.round(eligibleForProbability / fullNeeded * 100)) : 0;
 
   banner.classList.remove("hidden");
   if (primaryBot) {
@@ -1512,7 +1520,8 @@ function updateCalibrationUi(items) {
   } else {
     document.querySelector(".calib-title").innerHTML = `Калибровка по текущему набору <b>смешанная</b>`;
   }
-  $("calibProgress").textContent = `${messages.join(" ")} При REQUIRE_CONF_GATE=1 raw-confidence остаётся audit-only и публикацию не разблокирует.`;
+  const temporalDays = Number(statusPayload?.calibration_gate_contract?.minimum_temporal_span_days || 10);
+  $("calibProgress").textContent = `${messages.join(" ")} Полная готовность не наступает на пороге 80: при REQUIRE_CONF_GATE=1 требуется минимум ${probabilityNeeded} exact-policy labels, accepted purged OOF и terminal holdout. При 12-часовом label horizon temporal floor требует не менее ${temporalDays} суток неизменной policy; смена policy fingerprint начинает новую evidence-когорту. raw-confidence остаётся audit-only и публикацию не разблокирует.`;
   $("calibBarFill").style.width = `${pct}%`;
 }
 
@@ -2476,11 +2485,28 @@ async function loadHealth() {
 }
 
 async function loadOutcomes() {
-  const res = await fetch("/api/v1/outcomes/stats");
+  const [currentRes, archiveRes] = await Promise.all([
+    fetch("/api/v1/outcomes/stats?scope=current_policy"),
+    fetch("/api/v1/outcomes/stats?scope=archive"),
+  ]);
   let data;
-  try { data = await res.json(); } catch (e) { return; }
+  let archiveData;
+  try {
+    data = await currentRes.json();
+    archiveData = await archiveRes.json();
+  } catch (e) { return; }
+  if (!currentRes.ok || !archiveRes.ok) {
+    showModal("Ошибка загрузки исходов", {
+      current_policy: data,
+      archive: archiveData,
+    });
+    return;
+  }
 
   const s = data.summary || {};
+  const archiveSummary = archiveData?.summary || {};
+  const archiveRoots = archiveData?.cohorts?.all_roots || archiveSummary;
+  const currentScope = data?.scope || {};
   const actionableSummary = data.cohorts?.actionable || {};
   const shadowSummary = data.cohorts?.shadow_no_trade || {};
   const allRootsSummary = data.cohorts?.all_roots || s;
@@ -2496,9 +2522,11 @@ async function loadOutcomes() {
   const byBot = data.by_bot || [];
   const bySymbol = (data.by_symbol || []).slice(0, 30);
   const recent = (data.recent || []).slice(0, 80);
+  const archiveRecent = (archiveData?.recent || []).slice(0, 20);
   const insights = buildOutcomeDiagnostics(llmByEngine, neutralBreakdown, s);
 
   const total = Number(allRootsSummary.total || 0);
+  const archiveTotal = Number(archiveRoots.total || 0);
   const actionableTotal = Number(actionableSummary.total || 0);
   const llmReviewed = Number(llmSummary.ok_total || 0);
   const llmDisagree = Number(llmSummary.disagree_total || 0);
@@ -2509,14 +2537,15 @@ async function loadOutcomes() {
 
   const html = `
     ${renderModalSummaryCards([
-      { label: "Actionable roots", value: actionableTotal },
-      { label: "Actionable win-rate", value: headlineSummary.win_rate !== null && headlineSummary.win_rate !== undefined ? `${(Number(headlineSummary.win_rate) * 100).toFixed(1)}%` : "—" },
-      { label: "Actionable avg ret", value: `${Number(headlineSummary.avg_ret || 0).toFixed(2)}%` },
-      { label: "Actionable avg |ret|", value: `${Number(headlineSummary.avg_abs_ret || 0).toFixed(2)}%` },
-      { label: "Все proxy roots", value: total },
-      { label: "Все proxy WR", value: allRootsSummary.win_rate !== null && allRootsSummary.win_rate !== undefined ? `${(Number(allRootsSummary.win_rate) * 100).toFixed(1)}%` : "—" },
-      { label: "Shadow no_trade", value: Number(shadowSummary.total || 0) },
-      { label: "Shadow WR", value: shadowSummary.win_rate !== null && shadowSummary.win_rate !== undefined ? `${(Number(shadowSummary.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Текущая policy · исполнимые", value: actionableTotal },
+      { label: "Текущая policy · WR", value: headlineSummary.win_rate !== null && headlineSummary.win_rate !== undefined ? `${(Number(headlineSummary.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Текущая policy · avg ret", value: `${Number(headlineSummary.avg_ret || 0).toFixed(2)}%` },
+      { label: "Текущая policy · avg |ret|", value: `${Number(headlineSummary.avg_abs_ret || 0).toFixed(2)}%` },
+      { label: "Текущая policy-когорта", value: total },
+      { label: "Текущая policy · все WR", value: allRootsSummary.win_rate !== null && allRootsSummary.win_rate !== undefined ? `${(Number(allRootsSummary.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Текущая policy · shadow", value: Number(shadowSummary.total || 0) },
+      { label: "Исторический архив", value: archiveTotal },
+      { label: "Архивный WR", value: archiveRoots.win_rate !== null && archiveRoots.win_rate !== undefined ? `${(Number(archiveRoots.win_rate) * 100).toFixed(1)}%` : "—" },
       { label: "Повторов убрано", value: Number(s.deduped_duplicates || 0) },
       { label: "Истинный neutral", value: Number(s.true_neutral_total || 0) },
       { label: "Short → neutral", value: Number(s.futures_neutral_total || 0) },
@@ -2524,7 +2553,7 @@ async function loadOutcomes() {
       { label: "LLM disagree", value: `${llmDisagree} · ${llmDisagreeShare}` },
       { label: "LLM errors", value: `${Number(llmSummary.error_total || 0)} · ${llmErrorShare}` },
     ])}
-    <p class="modal-note">Основной headline показывает только actionable-когорту. Общая proxy-выборка и shadow no_trade показаны отдельно как исследовательский контроль. Это OHLCV proxy-оценка корневых кандидатов, а не подтверждение биржевого исполнения; повторные active-подтверждения одной идеи не раздувают win-rate.</p>
+    <p class="modal-note"><b>${escapeHtml(currentScope.label || "Текущая policy-когорта")}</b> — единственный источник headline и детальных таблиц. Исторический архив показан отдельными плитками и отдельным журналом; он не входит в текущий win-rate. Policy fingerprint: <span class="wrap">${escapeHtml(String(currentScope.policy_fingerprint || "—").slice(0, 16))}</span>. Это OHLCV proxy-оценка, а не подтверждение биржевого исполнения или live edge.</p>
     <div class="modal-section">
       <div class="modal-section-title">На что стоит смотреть в первую очередь</div>
       ${renderOutcomeInsightCards(insights)}
@@ -2619,7 +2648,7 @@ async function loadOutcomes() {
       ], bySymbol, { emptyText: "Нет данных по символам." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">8. Журнал исходов (последние 80)</div>
+      <div class="modal-section-title">8. Журнал текущей policy-когорты (последние 80)</div>
       ${buildModalTable([
         { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
@@ -2635,8 +2664,22 @@ async function loadOutcomes() {
         { label: "Ret", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
         { label: "Горизонт", render: row => escapeHtml(formatAgeHuman(row.horizon_sec)) },
         { label: "LLM summary", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.llm_review?.summary || row.llm_review?.error || "—")}</span>` },
+        { label: "Policy", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
         { label: "rec_id", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
-      ], recent, { emptyText: "Исходов пока нет. Данные появятся после созревания label horizon.", compact: true, maxHeight: 420 })}
+      ], recent, { emptyText: "В текущей policy-когорте исходов пока нет. Данные появятся после созревания label horizon.", compact: true, maxHeight: 420 })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">9. Исторический архив (последние 20; не входит в headline)</div>
+      ${buildModalTable([
+        { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
+        { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
+        { label: "Модель", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.model_version || "—")}</span>` },
+        { label: "Policy", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
+        { label: "Роль", render: row => `<span class="neutral-note">${escapeHtml(row.sample_role || row.reco_status || "legacy")}</span>` },
+        { label: "Исход", render: row => renderOutcomeResult(row.success) },
+        { label: "Ret", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
+        { label: "rec_id", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
+      ], archiveRecent, { emptyText: "Исторический архив пуст.", compact: true, maxHeight: 300 })}
     </div>
   `;
 
