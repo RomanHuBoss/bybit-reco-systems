@@ -108,10 +108,10 @@ def test_new_model_identity_and_calibrators_do_not_reuse_legacy_range_semantics(
     import app.calibration as calibration
     import app.recommender as recommender
 
-    assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v7-mr-floor-temporal-cohorts"
-    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v18")
-    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v18")
-    assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v13"
+    assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v8-policy-conditioned-censor-aware"
+    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v19")
+    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v19")
+    assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v14"
 
 
 def test_calibration_rows_require_current_model_and_mean_reversion_snapshot() -> None:

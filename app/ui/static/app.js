@@ -1349,7 +1349,7 @@ function confCell(item) {
   const logregActive = !!confModel.logreg_active;
 
   let cls = "conf-val";
-  if (!fitted) cls += " conf-uncal";
+  if (!fitted || !logregActive) cls += " conf-uncal";
   else if (v >= 0.75) cls += " conf-high";
   else if (v >= 0.60) cls += " conf-mid";
   else cls += " conf-low";
@@ -1364,20 +1364,20 @@ function confCell(item) {
     marker = " <span class='conf-mode-tag conf-mode-cal' title='Откалибровано: LogReg + Platt'>cal</span>";
   } else {
     const nSamples = toFiniteNumber(confModel.n_samples) ?? 0;
-    marker = ` <span class='conf-mode-tag conf-mode-platt' title='Частично откалибровано: Platt only (n=${nSamples})'>platt</span>`;
+    marker = ` <span class='conf-mode-tag conf-mode-platt' title='Legacy Platt не допускается текущим held-out контрактом (n=${nSamples})'>legacy</span>`;
   }
 
   return `<span class="${cls}">${v.toFixed(2)}${marker}</span>`;
 }
 
 function summariseCalibState(items) {
-  const summary = { unfitted: 0, platt: 0, logreg: 0, total: 0 };
+  const summary = { unfitted: 0, legacy: 0, logreg: 0, total: 0 };
   (items || []).forEach((it) => {
     const confModel = getConfModel(it);
     summary.total += 1;
     if (!confModel.fitted) summary.unfitted += 1;
     else if (confModel.logreg_active) summary.logreg += 1;
-    else summary.platt += 1;
+    else summary.legacy += 1;
   });
   return summary;
 }
@@ -1385,8 +1385,9 @@ function summariseCalibState(items) {
 function buildBotCalibText(botType, info, totalOutcomeCount) {
   const archiveTotal = Number(info?.historical_outcomes_total ?? totalOutcomeCount ?? 0);
   const currentModelTotal = Number(info?.current_model_outcomes_total || 0);
-  const eligibleTotal = Number(info?.feature_eligible_outcomes_total ?? info?.outcomes_total ?? 0);
-  const total = eligibleTotal;
+  const featureEligibleTotal = Number(info?.feature_eligible_outcomes_total || 0);
+  const policyEligibleTotal = Number(info?.policy_eligible_outcomes_total ?? info?.outcomes_total ?? 0);
+  const total = policyEligibleTotal;
   const wins = Number(info?.wins || 0);
   const losses = Number(info?.losses || Math.max(0, total - wins));
   const effective = Number(info?.effective_samples || (2 * Math.min(wins, losses)) || 0);
@@ -1397,19 +1398,30 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
   const expectancyStatus = String(info?.expectancy_status || "insufficient");
   const temporalClusters = Number(info?.temporal_cluster_count || 0);
   const minimumTemporalClusters = Number(info?.minimum_temporal_clusters || 0);
-  const lineageText = `lineage ${calibratorKey}: архив=${archiveTotal}, текущая модель=${currentModelTotal}, eligible=${eligibleTotal}`;
+  const matured = Number(info?.policy_matured_total || 0);
+  const labeled = Number(info?.policy_labeled_total || 0);
+  const censored = Number(info?.policy_censored_total || 0);
+  const unresolved = Number(info?.policy_unresolved_total || 0);
+  const invalidLabeled = Number(info?.policy_invalid_labeled_total || 0);
+  const skill = String(info?.purged_oof_skill_status || "not_evaluated");
+  const lineageText = `lineage ${calibratorKey}: архив=${archiveTotal}, текущая модель=${currentModelTotal}, feature=${featureEligibleTotal}, eligible=${policyEligibleTotal}`;
   const temporalText = minimumTemporalClusters > 0
     ? `; time_clusters=${temporalClusters}/${minimumTemporalClusters}`
     : "";
+  const observabilityText = `; policy outcomes: matured=${matured}, labeled=${labeled}, censored=${censored}, unresolved=${unresolved}, invalid_labeled=${invalidLabeled}`;
+
+  if (censored > 0 || unresolved > 0 || invalidLabeled > 0) {
+    return `${botType}: калибровка заблокирована неполной наблюдаемостью (${lineageText}${observabilityText}; skill=${skill}${temporalText}).`;
+  }
 
   if (info?.fitted) {
     if (info?.logreg_active) {
       const fitRows = Number(info?.n_samples || 0);
       const dropped = Number(info?.rows_dropped_for_fit || Math.max(0, total - fitRows) || 0);
       const droppedText = dropped > 0 ? `; не вошло в feature-fit=${dropped}` : "";
-      return `${botType}: калибратор активен (LogReg + Platt, fit_rows=${fitRows}/${total}; побед=${wins}, поражений=${losses}${droppedText}; ${lineageText}${temporalText}).`;
+      return `${botType}: калибратор активен (terminal-holdout LogReg + Platt, fit_rows=${fitRows}/${total}; побед=${wins}, поражений=${losses}${droppedText}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}).`;
     }
-    return `${botType}: включён Platt-only (fit_rows=${Number(info.n_samples || 0)} / ${total}; побед=${wins}, поражений=${losses}; ${lineageText}${temporalText}).`;
+    return `${botType}: legacy Platt state отклонён текущим held-out контрактом (${lineageText}${observabilityText}).`;
   }
 
   if ((info?.unfitted_reason || "") === "degenerate_win_rate") {
@@ -1417,12 +1429,12 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
     const recent7d = Number(info?.outcomes_7d || 0) > 0
       ? ` За 7д eligible: побед=${Number(info?.wins_7d || 0)}, поражений=${Number(info?.losses_7d || 0)}.`
       : "";
-    return `${botType}: raw-only, вырожденные eligible-метки (minority=${minority}, effective=${effective}/${needed}, win-rate=${winRateText}, entropy=${fmt(info?.class_entropy_bits, 3)}, expectancy=${expectancyStatus}; ${lineageText}${temporalText}).${recent7d}`;
+    return `${botType}: raw-only, вырожденные eligible-метки (minority=${minority}, effective=${effective}/${needed}, win-rate=${winRateText}, entropy=${fmt(info?.class_entropy_bits, 3)}, expectancy=${expectancyStatus}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}).${recent7d}`;
   }
   if ((info?.unfitted_reason || "") === "pending_refit") {
-    return `${botType}: eligible-исходов достаточно (effective=${effective}/${needed}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}; ${lineageText}${temporalText}). Refit ещё не завершён.`;
+    return `${botType}: eligible-исходов достаточно (effective=${effective}/${needed}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). Refit ещё не завершён.`;
   }
-  return `${botType}: effective для fit ${effective}/${needed} (eligible=${total}, побед=${wins}, поражений=${losses}, expectancy=${expectancyStatus}; ${lineageText}${temporalText}).`;
+  return `${botType}: effective для fit ${effective}/${needed} (eligible=${total}, побед=${wins}, поражений=${losses}, expectancy=${expectancyStatus}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}).`;
 }
 
 function updateCalibrationUi(items) {
@@ -1461,7 +1473,7 @@ function updateCalibrationUi(items) {
     return;
   }
 
-  if (summary.unfitted === 0 && summary.platt === 0) {
+  if (summary.unfitted === 0 && summary.legacy === 0) {
     header.textContent = "Увер ✓";
     header.title = `Все строки откалиброваны: LogReg + Platt (${summary.logreg}/${summary.total}).`;
     banner.classList.add("hidden");
@@ -1469,13 +1481,13 @@ function updateCalibrationUi(items) {
   }
   if (summary.unfitted === 0) {
     header.textContent = summary.logreg > 0 ? "Увер ~" : "Увер ~";
-    header.title = `Все строки имеют калибровку, но часть работает в режиме Platt only (LogReg: ${summary.logreg}, Platt: ${summary.platt}).`;
-    banner.classList.add("hidden");
+    header.title = `Обнаружено legacy Platt-состояние, не соответствующее terminal-holdout контракту (LogReg: ${summary.logreg}, legacy: ${summary.legacy}).`;
+    banner.classList.remove("hidden");
     return;
   }
 
-  header.textContent = (summary.logreg > 0 || summary.platt > 0) ? "Увер ?" : "Увер ⚠";
-  header.title = `Есть неоткалиброванные строки: raw=${summary.unfitted}, Platt=${summary.platt}, LogReg=${summary.logreg}.`;
+  header.textContent = summary.logreg > 0 ? "Увер ?" : "Увер ⚠";
+  header.title = `Есть неоткалиброванные строки: raw=${summary.unfitted}, legacy=${summary.legacy}, LogReg=${summary.logreg}.`;
 
   const botTypes = [...new Set((items || []).map(it => it.bot_type).filter(Boolean))];
   const botCalibs = statusPayload?.bot_calibrators || {};
@@ -1494,13 +1506,13 @@ function updateCalibrationUi(items) {
     const title = primaryInfo?.fitted
       ? (primaryInfo?.logreg_active
         ? `Futures Grid: калибратор активен`
-        : `Futures Grid: работает Platt-only`) 
+        : `Futures Grid: legacy калибратор отклонён`) 
       : `Futures Grid: калибратор не обучен`;
     document.querySelector(".calib-title").innerHTML = `${title} — уверенность <b>${primaryInfo?.fitted ? "частично/полностью откалибрована" : "не откалибрована"}</b>`;
   } else {
     document.querySelector(".calib-title").innerHTML = `Калибровка по текущему набору <b>смешанная</b>`;
   }
-  $("calibProgress").textContent = `${messages.join(" ")} Калибратор сам по себе не блокирует публикацию: до fit используется raw-confidence.`;
+  $("calibProgress").textContent = `${messages.join(" ")} При REQUIRE_CONF_GATE=1 raw-confidence остаётся audit-only и публикацию не разблокирует.`;
   $("calibBarFill").style.width = `${pct}%`;
 }
 
@@ -2236,8 +2248,8 @@ function applySort(items) {
     if (sortCol === "dir_conf") {
       const da = (a.reasons || {}).direction_agg || {};
       const db = (b.reasons || {}).direction_agg || {};
-      av = da.direction_confidence_calibrated ?? da.direction_confidence ?? -1;
-      bv = db.direction_confidence_calibrated ?? db.direction_confidence ?? -1;
+      av = da.direction_confidence_feature ?? da.direction_confidence_calibrated ?? da.direction_confidence ?? -1;
+      bv = db.direction_confidence_feature ?? db.direction_confidence_calibrated ?? db.direction_confidence ?? -1;
     } else if (sortCol === "score") {
       av = ensureUiScoreMeta(a, items).percentile ?? -1;
       bv = ensureUiScoreMeta(b, items).percentile ?? -1;
@@ -2271,7 +2283,7 @@ function renderRecoTable(items) {
   sorted.forEach((it, i) => {
     { const s = operatorEffectiveStatus(it); if (s === "recommended" || s === "active") hasActionable = true; }
     const dirAgg = (it.reasons || {}).direction_agg || {};
-    const dirConf = dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
+    const dirConf = dirAgg.direction_confidence_feature ?? dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
     const scoreUi = ensureUiScoreMeta(it, items);
     const tr = document.createElement("tr");
     { const s = operatorEffectiveStatus(it); if (s === "recommended" || s === "active") tr.classList.add("row-recommended"); }

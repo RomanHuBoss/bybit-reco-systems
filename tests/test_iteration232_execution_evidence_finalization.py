@@ -162,6 +162,27 @@ def test_balanced_buy_sell_ledger_is_finalized_and_eligible(conn) -> None:
         qty=0.1,
         gross_pnl=2.0,
     )
+    db.insert_execution_reconciliation(
+        conn,
+        {
+            "reconciliation_id": "XR-232-flat",
+            "bot_id": bot_id,
+            "origin_rec_id": rec_id,
+            "ts": base + 300,
+            "source": "bybit_private_reconciliation",
+            "external_snapshot_id": "snapshot-232-flat",
+            "position_qty": 0.0,
+            "open_order_count": 0,
+            "execution_event_count": 2,
+            "funding_event_count": 0,
+            "realized_pnl_gross": 2.0,
+            "fee": 0.2,
+            "funding": 0.0,
+            "currency": "USDT",
+            "complete": True,
+            "meta": {"cursor": "232-flat"},
+        },
+    )
 
     summary = db.get_bot_execution_summary(conn, bot_id)
     assert summary["buy_qty"] == pytest.approx(0.1)

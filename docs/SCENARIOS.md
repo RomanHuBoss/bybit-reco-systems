@@ -1,3 +1,49 @@
+## Scenario: threshold or risk limit changes under the same code (v1.0.57)
+
+1. Policy A has matured positive proxy outcomes and a fitted cache.
+2. The operator changes a selection threshold, universe, LLM gate or active risk limit without changing code.
+3. Canonical JSON changes, producing a different full SHA-256 policy fingerprint and cache key.
+4. Policy A outcomes remain audit history but contribute zero evidence to Policy B.
+5. Policy B remains `NO TRADE` until its own complete, uncensored chronological evidence proves monetary and probability skill.
+
+## Scenario: matured root cannot be labeled (v1.0.57)
+
+1. A current-policy shadow root reaches canonical maturity.
+2. Gap-through-stop, unobservable replacement timing, missing settlement/candle capacity or malformed contract prevents a bounded label.
+3. The ledger records `censored` (terminal) or `waiting` (transient); it is never silently omitted from the denominator.
+4. Any censored/unresolved root produces `PROXY_OUTCOME_CENSORING_UNBOUNDED` and disables positive inference.
+5. Waiting roots rotate by `last_attempt_ts`, so newer complete roots continue to be processed.
+
+## Scenario: final future block selects but does not train the model (v1.0.57)
+
+1. Earlier chronological folds produce sufficient purged predictions.
+2. Feature LogReg + Platt beats score-only and null log-loss on aggregate folds and on the terminal future block.
+3. The service activates the exact pipeline fitted before that terminal block.
+4. Terminal labels remain untouched by active fitting; a full-data refit is not substituted after selection.
+5. If either aggregate or terminal skill fails, confidence stays raw/audit-only and `REQUIRE_CONF_GATE=1` keeps `NO TRADE`.
+
+## Scenario: local positive PnL lacks terminal exchange reconciliation (v1.0.57)
+
+1. Immutable execution rows form a locally flat signed-quantity ledger with positive net PnL.
+2. No later complete external Bybit reconciliation matches position, open orders, event counts, gross, fees and funding.
+3. `total_pnl_finalized=false`; the bot is excluded from live profitability/validation.
+4. Risk receives zero credit for the positive amount. An unreconciled negative amount would still tighten loss controls.
+5. A matching snapshot from the trusted external read-only adapter unlocks finalized evidence; a pre-stop or mismatched snapshot does not.
+
+## Scenario: claimed policy hash does not match persisted contract (v1.0.57)
+
+1. A row claims the current 64-character fingerprint, but its stored threshold/risk contract was altered or omitted.
+2. The fit path and outer denominator independently recompute canonical JSON SHA-256.
+3. The row is not labeled support; once mature, it is unresolved with an invalid-contract diagnostic.
+4. Positive expectancy and probability inference are disabled until the evidence set is internally reproducible.
+
+## Scenario: direction Platt is fitted but has no chronological skill proof (v1.0.57)
+
+1. Direction outcomes fit a one-dimensional Platt mapping against horizon price sign.
+2. The mapping is exposed as an audit probability only.
+3. `direction_confidence_feature` remains the raw pre-decision value; the mutable cache cannot shift candidate features.
+4. A future iteration may activate it only after an independent chronological comparison against raw/null baselines.
+
 ## Scenario: non-empty audit archive after v7 deployment (v1.0.56)
 
 1. PostgreSQL contains v6 outcomes.

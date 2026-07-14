@@ -27,10 +27,11 @@ from .grid_math import (
 )
 from .collector import RuntimeLockLostError
 from .settings import load_settings
+from .policy import canonical_policy_fingerprint, is_sha256_fingerprint
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
-    extract_features, GLOBAL_LOGREG_KEY, CALIB_REFIT_INTERVAL_SEC,
+    extract_features, FEATURE_NAMES, GLOBAL_LOGREG_KEY, CALIB_REFIT_INTERVAL_SEC,
 )
 # Note: calibrators use db.get_outcomes_with_recs (single JOIN query) to avoid N+1 pattern
 
@@ -38,8 +39,17 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v7-mr-floor-temporal-cohorts"
-DIRECTION_CALIBRATION_KEY = "platt_direction_v13"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v8-policy-conditioned-censor-aware"
+DIRECTION_CALIBRATION_KEY = "platt_direction_v14"
+CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v1"
+POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
+CALIBRATION_LABEL_GRACE_SEC = 120
+CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
+    "PROXY_MONETARY_EXPECTANCY_UNPROVEN",
+    "PROXY_MONETARY_EXPECTANCY_NON_POSITIVE",
+    "PROXY_OUTCOME_CENSORING_UNBOUNDED",
+    "CALIBRATED_CONFIDENCE_UNAVAILABLE",
+})
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
 LLM_REVIEWER_DEFAULT_CANDLES_PER_TF = 32
@@ -1567,7 +1577,7 @@ def _build_feature_snapshot(
 
     liq_map = {"micro": 0.0, "low": 0.33, "medium": 0.67, "high": 1.0, "unknown": 0.5}
     trendiness = abs(float(direction_agg.get("trendiness") or 0.0))
-    dir_conf = direction_agg.get("direction_confidence_calibrated")
+    dir_conf = direction_agg.get("direction_confidence_feature")
     if dir_conf is None:
         dir_conf = direction_agg.get("direction_confidence")
     spread_bps = cost_model.get("spread_bps")
@@ -3084,6 +3094,210 @@ def _stabilize_direction_agg(
     return stable, state_out
 
 
+def calibration_policy_contract(settings_obj: Any, risk_limits: dict[str, Any]) -> dict[str, Any]:
+    """Return the immutable decision-policy contract attached to each root.
+
+    The model version tracks code semantics.  This descriptor additionally tracks
+    deployment settings and active risk limits, so an environment-only threshold
+    change cannot silently reuse outcomes or cached coefficients from a different
+    selection policy.
+    """
+    return {
+        "schema_version": CALIBRATION_POLICY_SCHEMA_VERSION,
+        "recommender_model_version": RECOMMENDER_MODEL_VERSION,
+        "outcome_label_version": POLICY_OUTCOME_LABEL_VERSION,
+        "feature_schema": list(FEATURE_NAMES),
+        "selection": {
+            "mean_reversion_min_score": float(
+                _clamp(
+                    _finite_float(
+                        getattr(settings_obj, "mean_reversion_min_score", MEAN_REVERSION_MIN_SCORE_DEFAULT),
+                        MEAN_REVERSION_MIN_SCORE_DEFAULT,
+                    ),
+                    0.0,
+                    1.0,
+                )
+            ),
+            "min_score_to_recommend": float(
+                _finite_float(getattr(settings_obj, "min_score_to_recommend", 0.08), 0.08)
+            ),
+            "min_conf_to_recommend": float(
+                _clamp(
+                    _finite_float(getattr(settings_obj, "min_conf_to_recommend", 0.52), 0.52),
+                    0.0,
+                    1.0,
+                )
+            ),
+            "require_conf_gate": bool(getattr(settings_obj, "require_conf_gate", True)),
+            "calib_min_samples": int(
+                max(1, _safe_int_or_none(getattr(settings_obj, "calib_min_samples", 80)) or 80)
+            ),
+            "taker_fee_bps_linear": float(
+                max(0.0, _finite_float(getattr(settings_obj, "taker_fee_bps_linear", 6.0), 6.0))
+            ),
+            "stale_data_max_sec": int(
+                max(1, _safe_int_or_none(getattr(settings_obj, "stale_data_max_sec", 300)) or 300)
+            ),
+            "reco_republish_cooldown_sec": int(
+                max(
+                    0,
+                    _safe_int_or_none(
+                        getattr(settings_obj, "reco_republish_cooldown_sec", 3600)
+                    ) or 0,
+                )
+            ),
+            "reco_ttl_sec": (
+                _safe_int_or_none(getattr(settings_obj, "reco_ttl_sec", None))
+            ),
+            "outcome_horizon_fallback_sec": int(
+                max(
+                    1,
+                    _safe_int_or_none(
+                        getattr(settings_obj, "outcome_horizon_fallback_sec", 1800)
+                    ) or 1800,
+                )
+            ),
+            "venues": sorted(
+                str(value).strip().lower()
+                for value in (getattr(settings_obj, "venues", ["linear"]) or [])
+                if str(value).strip()
+            ),
+            "symbols_linear": sorted(
+                str(value).strip().upper()
+                for value in (getattr(settings_obj, "symbols_linear", []) or [])
+                if str(value).strip()
+            ),
+        },
+        "calibration": {
+            "monetary_cohort": "pre-calibration-candidate-policy-v1",
+            "uncertainty": "student-t-temporal-v1",
+            "oof_activation": "purged-logloss-skill-v1",
+            "direction_target": "horizon-price-direction-audit-only-v1",
+            "label_due_grace_sec": CALIBRATION_LABEL_GRACE_SEC,
+        },
+        "llm_review": {
+            "enabled": bool(getattr(settings_obj, "llm_reviewer_enabled", False)),
+            "mode": str(getattr(settings_obj, "llm_reviewer_mode", "advisory") or "advisory"),
+            "provider": str(getattr(settings_obj, "llm_reviewer_provider", "ollama") or "ollama"),
+            "model": str(getattr(settings_obj, "llm_reviewer_model", "") or ""),
+            "prompt_version": PROMPT_VERSION,
+            "tf_secs": sorted(
+                int(value)
+                for value in (getattr(settings_obj, "llm_reviewer_tf_secs", []) or [])
+                if _safe_int_or_none(value) is not None and int(value) > 0
+            ),
+            "candles_per_tf": int(
+                max(
+                    1,
+                    _safe_int_or_none(
+                        getattr(
+                            settings_obj,
+                            "llm_reviewer_candles_per_tf",
+                            LLM_REVIEWER_DEFAULT_CANDLES_PER_TF,
+                        )
+                    ) or LLM_REVIEWER_DEFAULT_CANDLES_PER_TF,
+                )
+            ),
+            "min_confidence": float(
+                _clamp(
+                    _finite_float(
+                        getattr(
+                            settings_obj,
+                            "llm_reviewer_min_confidence",
+                            LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE,
+                        ),
+                        LLM_REVIEWER_DEFAULT_MIN_CONFIDENCE,
+                    ),
+                    0.0,
+                    1.0,
+                )
+            ),
+            "max_candidates": int(
+                max(
+                    1,
+                    _safe_int_or_none(
+                        getattr(
+                            settings_obj,
+                            "llm_reviewer_max_candidates",
+                            LLM_REVIEWER_DEFAULT_MAX_CANDIDATES,
+                        )
+                    ) or LLM_REVIEWER_DEFAULT_MAX_CANDIDATES,
+                )
+            ),
+            "timeout_sec": int(
+                max(
+                    1,
+                    _safe_int_or_none(
+                        getattr(settings_obj, "llm_reviewer_timeout_sec", 60)
+                    ) or 60,
+                )
+            ),
+            "cadence_sec": int(
+                max(
+                    1,
+                    _safe_int_or_none(
+                        getattr(
+                            settings_obj,
+                            "llm_reviewer_cadence_sec",
+                            LLM_REVIEWER_DEFAULT_CADENCE_SEC,
+                        )
+                    ) or LLM_REVIEWER_DEFAULT_CADENCE_SEC,
+                )
+            ),
+            "pending_timeout_sec": int(
+                max(
+                    1,
+                    _safe_int_or_none(
+                        getattr(
+                            settings_obj,
+                            "llm_reviewer_pending_timeout_sec",
+                            LLM_REVIEWER_DEFAULT_PENDING_TIMEOUT_SEC,
+                        )
+                    ) or LLM_REVIEWER_DEFAULT_PENDING_TIMEOUT_SEC,
+                )
+            ),
+            "ttl_sec": _safe_int_or_none(
+                getattr(settings_obj, "llm_reviewer_ttl_sec", None)
+            ),
+        },
+        "risk_limits": dict(risk_limits or {}),
+    }
+
+
+def calibration_policy_fingerprint(settings_obj: Any, risk_limits: dict[str, Any]) -> str:
+    return canonical_policy_fingerprint(
+        calibration_policy_contract(settings_obj, risk_limits)
+    )
+
+
+def calibration_policy_contract_fingerprint(contract: Any) -> str:
+    """Public verifier for contracts persisted in recommendation audit rows."""
+    return canonical_policy_fingerprint(contract)
+
+
+def calibration_policy_label_due_ts(
+    recommendation_ts: Any,
+    bot_type: Any,
+) -> int | None:
+    ts = _safe_int_or_none(recommendation_ts)
+    horizon = BOT_HORIZONS.get(str(bot_type or "").strip())
+    if ts is None or ts <= 0 or horizon is None or int(horizon) <= 0:
+        return None
+    return int(ts + int(horizon) + CALIBRATION_LABEL_GRACE_SEC)
+
+
+def policy_calibration_storage_key(base_key: str, policy_fingerprint: str) -> str:
+    fingerprint = str(policy_fingerprint or "").strip().lower()
+    if not is_sha256_fingerprint(fingerprint):
+        raise ValueError("policy_fingerprint must be a sha256 hex digest")
+    # Display code may abbreviate the digest; cache correctness may not.
+    return f"{base_key}:{fingerprint}"
+
+
+# Compatibility alias for internal callers and focused regression tests.
+_policy_calibration_storage_key = policy_calibration_storage_key
+
+
 def _matches_current_recommender_model(model_version: Any) -> bool:
     normalized = str(model_version or "").strip()
     return bool(
@@ -3092,7 +3306,12 @@ def _matches_current_recommender_model(model_version: Any) -> bool:
     )
 
 
-def calibration_lineage_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def calibration_lineage_diagnostics(
+    rows: list[dict[str, Any]],
+    *,
+    policy_fingerprint: str | None = None,
+    mean_reversion_min_score: float | None = None,
+) -> dict[str, Any]:
     """Separate immutable outcome history from the current calibration dataset.
 
     A recommendation/outcome remains part of the audit archive after a model-policy
@@ -3103,8 +3322,24 @@ def calibration_lineage_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any
     historical_rows = list(rows or [])
     current_model_rows: list[dict[str, Any]] = []
     feature_eligible_rows: list[dict[str, Any]] = []
+    policy_eligible_rows: list[dict[str, Any]] = []
     dropped_old_model = 0
     dropped_invalid_feature_evidence = 0
+    dropped_candidate_policy = 0
+    dropped_invalid_policy_maturity = 0
+    dropped_invalid_policy_contract = 0
+    dropped_not_matured = 0
+    threshold = _clamp(
+        _finite_float(
+            mean_reversion_min_score,
+            _finite_float(
+                getattr(settings, "mean_reversion_min_score", MEAN_REVERSION_MIN_SCORE_DEFAULT),
+                MEAN_REVERSION_MIN_SCORE_DEFAULT,
+            ),
+        ),
+        0.0,
+        1.0,
+    )
 
     for row in historical_rows:
         if not _matches_current_recommender_model(row.get("model_version")):
@@ -3125,22 +3360,168 @@ def calibration_lineage_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any
             dropped_invalid_feature_evidence += 1
             continue
         feature_eligible_rows.append(row)
+        outcome_policy = reasons.get("outcome_policy") or {}
+        if not isinstance(outcome_policy, dict):
+            outcome_policy = {}
+        explicit_policy_eligibility = outcome_policy.get("policy_evaluation_eligible")
+        if score < threshold:
+            dropped_candidate_policy += 1
+            continue
+        if explicit_policy_eligibility is not None and explicit_policy_eligibility is not True:
+            dropped_candidate_policy += 1
+            continue
+        if policy_fingerprint is not None:
+            stored_fingerprint = str(
+                outcome_policy.get("policy_fingerprint") or ""
+            ).strip().lower()
+            try:
+                verified_fingerprint = calibration_policy_contract_fingerprint(
+                    outcome_policy.get("policy_contract")
+                )
+            except ValueError:
+                verified_fingerprint = ""
+            if (
+                not is_sha256_fingerprint(stored_fingerprint)
+                or verified_fingerprint != stored_fingerprint
+            ):
+                dropped_invalid_policy_contract += 1
+                continue
+            if (
+                stored_fingerprint != str(policy_fingerprint)
+                or explicit_policy_eligibility is not True
+            ):
+                dropped_candidate_policy += 1
+                continue
+            expected_label_due_ts = calibration_policy_label_due_ts(
+                row.get("ts"),
+                row.get("bot_type"),
+            )
+            stored_label_due_ts = _safe_int_or_none(outcome_policy.get("label_due_ts"))
+            if (
+                expected_label_due_ts is None
+                or stored_label_due_ts != expected_label_due_ts
+            ):
+                dropped_invalid_policy_maturity += 1
+                continue
+            if expected_label_due_ts > int(time.time()):
+                dropped_not_matured += 1
+                continue
+        policy_eligible_rows.append(row)
 
     return {
         "calibration_model_version": RECOMMENDER_MODEL_VERSION,
         "historical_total": len(historical_rows),
         "current_model_total": len(current_model_rows),
         "feature_eligible_total": len(feature_eligible_rows),
+        "policy_eligible_total": len(policy_eligible_rows),
         "dropped_old_model": dropped_old_model,
         "dropped_invalid_feature_evidence": dropped_invalid_feature_evidence,
+        "dropped_candidate_policy": dropped_candidate_policy,
+        "dropped_invalid_policy_maturity": dropped_invalid_policy_maturity,
+        "dropped_invalid_policy_contract": dropped_invalid_policy_contract,
+        "dropped_not_matured": dropped_not_matured,
         "current_model_rows": current_model_rows,
         "feature_eligible_rows": feature_eligible_rows,
+        "policy_eligible_rows": policy_eligible_rows,
     }
 
 
-def _current_range_edge_calibration_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return only outcomes eligible for the current model lineage and feature schema."""
-    return list(calibration_lineage_diagnostics(rows)["feature_eligible_rows"])
+def _current_range_edge_calibration_rows(
+    rows: list[dict[str, Any]],
+    *,
+    policy_fingerprint: str | None = None,
+    mean_reversion_min_score: float | None = None,
+) -> list[dict[str, Any]]:
+    """Return outcomes from the exact pre-calibration candidate policy."""
+    return list(calibration_lineage_diagnostics(
+        rows,
+        policy_fingerprint=policy_fingerprint,
+        mean_reversion_min_score=mean_reversion_min_score,
+    )["policy_eligible_rows"])
+
+
+def _apply_outcome_observability_gate(
+    model: LogRegScaler,
+    diagnostics: dict[str, Any],
+) -> LogRegScaler:
+    """Attach the full matured-root denominator and fail closed on censoring.
+
+    No exact loss bound exists for gap-through-stop, unobservable replacement
+    timing or insufficient volume.  Such roots therefore cannot be silently
+    omitted from an otherwise positive sample.
+    """
+    model.policy_fingerprint = str(diagnostics.get("policy_fingerprint") or "")
+    model.policy_matured_total = max(
+        0, _safe_int_or_none(diagnostics.get("matured_total")) or 0
+    )
+    model.policy_labeled_total = max(
+        0, _safe_int_or_none(diagnostics.get("labeled_total")) or 0
+    )
+    model.policy_censored_total = max(
+        0, _safe_int_or_none(diagnostics.get("censored_total")) or 0
+    )
+    model.policy_unresolved_total = max(
+        0, _safe_int_or_none(diagnostics.get("unresolved_total")) or 0
+    )
+    model.policy_invalid_labeled_total = max(
+        max(0, _safe_int_or_none(diagnostics.get("invalid_labeled_total")) or 0),
+        max(0, model.policy_labeled_total - max(0, int(model.return_samples or 0))),
+    )
+    # A fresh cache is not self-authenticating evidence.  If its supporting rows
+    # were pruned, deleted or replaced, the current outer-join denominator can no
+    # longer reproduce the fit even before the hourly refit deadline.  Treat that
+    # missing support as unresolved rather than letting cached positive evidence
+    # survive detached from its data.
+    missing_support = (
+        max(
+            0,
+            max(0, int(model.return_samples or 0)) - model.policy_matured_total,
+        )
+        if str(getattr(model, "expectancy_status", "unknown")) == "positive"
+        else 0
+    )
+    model.policy_unresolved_total += missing_support
+    if (
+        model.policy_censored_total > 0
+        or model.policy_unresolved_total > 0
+        or model.policy_invalid_labeled_total > 0
+    ):
+        model.expectancy_status = "censored"
+        model.fitted = False
+        model.coef = []
+        model.intercept = 0.0
+        model.platt = PlattScaler(fitted=False, saved_ts=int(model.saved_ts or time.time()))
+    return model
+
+
+def _probability_calibration_no_trade_reason(
+    model: LogRegScaler | None,
+    *,
+    require_conf_gate: bool,
+) -> dict[str, str] | None:
+    if not require_conf_gate:
+        return None
+    if (
+        model is not None
+        and bool(model.fitted)
+        and len(model.coef) == len(FEATURE_NAMES)
+        and bool(model.platt.fitted)
+        and str(model.oof_status) == "sufficient"
+        and str(model.oof_skill_status) == "accepted"
+    ):
+        return None
+    oof_status = str(getattr(model, "oof_status", "not_evaluated") if model else "not_evaluated")
+    skill_status = str(
+        getattr(model, "oof_skill_status", "not_evaluated") if model else "not_evaluated"
+    )
+    return {
+        "code": "CALIBRATED_CONFIDENCE_UNAVAILABLE",
+        "msg": (
+            "REQUIRE_CONF_GATE=1, but no bot-specific probability model has "
+            f"validated held-out skill (oof_status={oof_status}, skill={skill_status}); "
+            "raw confidence remains audit-only"
+        ),
+    }
 
 
 def _calibration_expectancy_no_trade_reason(model: LogRegScaler | None) -> dict[str, str] | None:
@@ -3156,6 +3537,28 @@ def _calibration_expectancy_no_trade_reason(model: LogRegScaler | None) -> dict[
     status = str(getattr(model, "expectancy_status", "unknown") if model is not None else "unknown")
     if status == "positive":
         return None
+    if status == "censored":
+        censored = _safe_int_or_none(
+            getattr(model, "policy_censored_total", 0) if model is not None else 0
+        ) or 0
+        unresolved = _safe_int_or_none(
+            getattr(model, "policy_unresolved_total", 0) if model is not None else 0
+        ) or 0
+        matured = _safe_int_or_none(
+            getattr(model, "policy_matured_total", 0) if model is not None else 0
+        ) or 0
+        invalid_labeled = _safe_int_or_none(
+            getattr(model, "policy_invalid_labeled_total", 0) if model is not None else 0
+        ) or 0
+        return {
+            "code": "PROXY_OUTCOME_CENSORING_UNBOUNDED",
+            "msg": (
+                "current policy cohort contains matured roots without a bounded outcome "
+                f"(censored={censored}, unresolved={unresolved}, "
+                f"invalid_labeled={invalid_labeled}, matured={matured}); "
+                "positive expectancy cannot be inferred from the labeled subset"
+            ),
+        }
     if status != "negative":
         return_samples = _safe_int_or_none(getattr(model, "return_samples", 0) if model is not None else 0) or 0
         effective_samples = _finite_or_none(
@@ -3224,22 +3627,89 @@ def _calibration_state_persistable(model: LogRegScaler | None) -> bool:
         model is not None
         and (
             model.fitted
-            or str(getattr(model, "expectancy_status", "unknown")) in {"negative", "uncertain", "positive"}
+            or str(getattr(model, "expectancy_status", "unknown")) in {
+                "negative",
+                "uncertain",
+                "positive",
+                "censored",
+            }
         )
     )
 
 
-def _fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
-    """Fit global LogReg+Platt only on the current range-edge feature schema."""
-    rows = db.get_outcomes_with_recs(conn, limit=6000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
-    return fit_logreg(_current_range_edge_calibration_rows(rows), min_samples=min_samples)
+def _policy_observability_diagnostics(
+    conn,
+    *,
+    policy_fingerprint: str,
+    settings_obj: Any,
+    bot_type: str | None,
+) -> dict[str, Any]:
+    return db.get_policy_outcome_observability(
+        conn,
+        model_version=RECOMMENDER_MODEL_VERSION,
+        policy_fingerprint=policy_fingerprint,
+        bot_type=bot_type,
+        require_llm_verdict=bool(getattr(settings_obj, "llm_reviewer_enabled", False)),
+    )
 
 
-def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
+def _fit_global_logreg(
+    conn,
+    min_samples: int,
+    *,
+    policy_fingerprint: str,
+    settings_obj: Any,
+    observability: dict[str, Any] | None = None,
+) -> LogRegScaler:
+    """Fit diagnostics only on outcomes admitted by this immutable policy."""
+    rows = db.get_outcomes_with_recs(
+        conn,
+        limit=200_000,
+        require_llm_verdict=bool(getattr(settings_obj, "llm_reviewer_enabled", False)),
+    )
+    selected = _current_range_edge_calibration_rows(
+        rows,
+        policy_fingerprint=policy_fingerprint,
+        mean_reversion_min_score=getattr(
+            settings_obj,
+            "mean_reversion_min_score",
+            MEAN_REVERSION_MIN_SCORE_DEFAULT,
+        ),
+    )
+    model = fit_logreg(selected, min_samples=min_samples)
+    evidence = observability or _policy_observability_diagnostics(
+        conn,
+        policy_fingerprint=policy_fingerprint,
+        settings_obj=settings_obj,
+        bot_type=None,
+    )
+    return _apply_outcome_observability_gate(model, evidence)
+
+
+def _fit_bot_logregs(
+    conn,
+    min_samples: int,
+    *,
+    policy_fingerprint: str,
+    settings_obj: Any,
+    observability_by_bot: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, LogRegScaler]:
     """Fit one LogReg+Platt per bot_type."""
     from collections import defaultdict
-    rows = db.get_outcomes_with_recs(conn, limit=8000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
-    rows = _current_range_edge_calibration_rows(rows)
+    rows = db.get_outcomes_with_recs(
+        conn,
+        limit=200_000,
+        require_llm_verdict=bool(getattr(settings_obj, "llm_reviewer_enabled", False)),
+    )
+    rows = _current_range_edge_calibration_rows(
+        rows,
+        policy_fingerprint=policy_fingerprint,
+        mean_reversion_min_score=getattr(
+            settings_obj,
+            "mean_reversion_min_score",
+            MEAN_REVERSION_MIN_SCORE_DEFAULT,
+        ),
+    )
     data: dict[str, list] = defaultdict(list)
     for row in rows:
         data[row["bot_type"]].append(row)
@@ -3250,13 +3720,30 @@ def _fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
             result[bt] = LogRegScaler(fitted=False)
             continue
         model = fit_logreg(bt_rows, min_samples=min_samples)
+        evidence = (observability_by_bot or {}).get(bt) or _policy_observability_diagnostics(
+            conn,
+            policy_fingerprint=policy_fingerprint,
+            settings_obj=settings_obj,
+            bot_type=bt,
+        )
+        model = _apply_outcome_observability_gate(model, evidence)
         if _calibration_state_persistable(model):
-            save_logreg_to_db(conn, BOT_CALIB_KEYS.get(bt, f"logreg_{bt}_v1"), model)
+            key = _policy_calibration_storage_key(
+                BOT_CALIB_KEYS.get(bt, f"logreg_{bt}_v1"),
+                policy_fingerprint,
+            )
+            save_logreg_to_db(conn, key, model)
         result[bt] = model
     return result
 
 
-def _load_or_fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
+def _load_or_fit_global_logreg(
+    conn,
+    min_samples: int,
+    *,
+    policy_fingerprint: str,
+    settings_obj: Any,
+) -> LogRegScaler:
     """Load global diagnostics, but never keep stale positive evidence fail-open.
 
     A negative monetary-expectancy state is a conservative veto and may survive a
@@ -3266,28 +3753,49 @@ def _load_or_fit_global_logreg(conn, min_samples: int) -> LogRegScaler:
     continuing indefinitely after the underlying 14-day rows were pruned.
     """
     import time as _time
-    saved = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
+    storage_key = _policy_calibration_storage_key(GLOBAL_LOGREG_KEY, policy_fingerprint)
+    observability = _policy_observability_diagnostics(
+        conn,
+        policy_fingerprint=policy_fingerprint,
+        settings_obj=settings_obj,
+        bot_type=None,
+    )
+    saved = load_logreg_from_db(conn, storage_key)
+    if saved is not None and str(saved.policy_fingerprint or "") != policy_fingerprint:
+        saved = None
     now = int(_time.time())
     if saved is not None and int(saved.saved_ts) > 0:
         if now - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
-            return saved
-    model = _fit_global_logreg(conn, min_samples=min_samples)
+            return _apply_outcome_observability_gate(saved, observability)
+    model = _fit_global_logreg(
+        conn,
+        min_samples=min_samples,
+        policy_fingerprint=policy_fingerprint,
+        settings_obj=settings_obj,
+        observability=observability,
+    )
     if (
         saved is not None
         and str(getattr(saved, "expectancy_status", "unknown")) == "negative"
         and str(getattr(model, "expectancy_status", "unknown")) != "positive"
     ):
-        return saved
+        return _apply_outcome_observability_gate(saved, observability)
     if _calibration_state_persistable(model):
-        save_logreg_to_db(conn, GLOBAL_LOGREG_KEY, model)
+        save_logreg_to_db(conn, storage_key, model)
         return model
     # Persist the current insufficient state so a restart cannot resurrect the
     # stale positive coefficients from app_config before the next refit.
-    save_logreg_to_db(conn, GLOBAL_LOGREG_KEY, model)
+    save_logreg_to_db(conn, storage_key, model)
     return model
 
 
-def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
+def _load_or_fit_bot_logregs(
+    conn,
+    min_samples: int,
+    *,
+    policy_fingerprint: str,
+    settings_obj: Any,
+) -> dict[str, LogRegScaler]:
     """Load per-bot calibrators and expire unreconstructable positive evidence.
 
     Stale negative expectancy remains a conservative no-trade veto.  Stale
@@ -3299,17 +3807,30 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
     now = int(_time.time())
     calibrators: dict[str, LogRegScaler] = {}
     saved_by_bot: dict[str, LogRegScaler | None] = {}
+    storage_keys: dict[str, str] = {}
+    observability_by_bot: dict[str, dict[str, Any]] = {}
     needs_refit: list[str] = []
 
-    for bt, key in BOT_CALIB_KEYS.items():
+    for bt, base_key in BOT_CALIB_KEYS.items():
+        key = _policy_calibration_storage_key(base_key, policy_fingerprint)
+        storage_keys[bt] = key
+        observability = _policy_observability_diagnostics(
+            conn,
+            policy_fingerprint=policy_fingerprint,
+            settings_obj=settings_obj,
+            bot_type=bt,
+        )
+        observability_by_bot[bt] = observability
         if bt in UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS:
             calibrators[bt] = LogRegScaler(fitted=False)
             continue
         saved = load_logreg_from_db(conn, key)
+        if saved is not None and str(saved.policy_fingerprint or "") != policy_fingerprint:
+            saved = None
         saved_by_bot[bt] = saved
         if saved is not None and int(saved.saved_ts) > 0:
             if now - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
-                calibrators[bt] = saved
+                calibrators[bt] = _apply_outcome_observability_gate(saved, observability)
                 continue
         calibrators[bt] = LogRegScaler(
             fitted=False,
@@ -3319,7 +3840,13 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
         needs_refit.append(bt)
 
     if needs_refit:
-        fitted = _fit_bot_logregs(conn, min_samples)
+        fitted = _fit_bot_logregs(
+            conn,
+            min_samples,
+            policy_fingerprint=policy_fingerprint,
+            settings_obj=settings_obj,
+            observability_by_bot=observability_by_bot,
+        )
         for bt in needs_refit:
             candidate = fitted.get(bt) or LogRegScaler(
                 fitted=False,
@@ -3332,13 +3859,16 @@ def _load_or_fit_bot_logregs(conn, min_samples: int) -> dict[str, LogRegScaler]:
                 and str(getattr(saved, "expectancy_status", "unknown")) == "negative"
                 and str(getattr(candidate, "expectancy_status", "unknown")) != "positive"
             ):
-                calibrators[bt] = saved
+                calibrators[bt] = _apply_outcome_observability_gate(
+                    saved,
+                    observability_by_bot[bt],
+                )
                 continue
             if _calibration_state_persistable(candidate):
                 calibrators[bt] = candidate
                 continue
             calibrators[bt] = candidate
-            save_logreg_to_db(conn, BOT_CALIB_KEYS[bt], candidate)
+            save_logreg_to_db(conn, storage_keys[bt], candidate)
 
     return calibrators
 
@@ -3357,36 +3887,123 @@ def _raw_direction_confidence(direction_agg: dict[str, Any]) -> float:
     return float(_clamp(float(x), 0.0, 1.0))
 
 
-def _fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
+def _direction_confidence_projection(
+    direction_agg: dict[str, Any],
+    scaler: PlattScaler | None,
+) -> dict[str, Any]:
+    """Keep an in-sample directional Platt fit outside decision features.
+
+    The standalone directional model has no chronological skill gate.  Letting it
+    rewrite ``dir_conf`` would make the feature distribution depend on a mutable
+    cache fitted with later outcomes.  The raw pre-decision confidence is therefore
+    the only inference feature; the Platt value is retained for audit comparison.
+    """
+    raw = _raw_direction_confidence(direction_agg)
+    audit_probability = (
+        float(scaler.predict(raw))
+        if scaler is not None and bool(scaler.fitted)
+        else None
+    )
+    return {
+        "feature_value": raw,
+        "audit_probability": audit_probability,
+        "used_for_inference": False,
+        "reason": "direction_platt_has_no_chronological_skill_gate",
+    }
+
+
+def _fit_direction_calibrator(
+    conn,
+    min_samples: int,
+    *,
+    policy_fingerprint: str | None = None,
+    settings_obj: Any | None = None,
+) -> PlattScaler:
     """Fit direction calibrator on supported directional outcomes.
 
     We calibrate the *raw direction confidence* (or unsigned strength fallback),
     not the signed aggregate score. This preserves symmetry between strong longs
     and strong shorts and makes the resulting value a true probability-like metric.
     """
-    rows = db.get_outcomes_with_recs(conn, limit=5000, require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)))
-    rows = _current_range_edge_calibration_rows(rows)
+    active_settings = settings_obj or settings
+    rows = db.get_outcomes_with_recs(
+        conn,
+        limit=200_000,
+        require_llm_verdict=bool(getattr(active_settings, "llm_reviewer_enabled", False)),
+    )
+    rows = _current_range_edge_calibration_rows(
+        rows,
+        policy_fingerprint=policy_fingerprint,
+        mean_reversion_min_score=getattr(
+            active_settings,
+            "mean_reversion_min_score",
+            MEAN_REVERSION_MIN_SCORE_DEFAULT,
+        ),
+    )
     xs, ys = [], []
     for row in rows:
         if row["bot_type"] != "futures_grid":
             continue
         d = (row.get("reasons") or {}).get("direction_agg") or {}
-        if str(d.get("direction") or "neutral") == "neutral":
+        direction = str(d.get("direction") or "neutral").strip().lower()
+        if direction not in {"long", "short"}:
+            continue
+        entry = _finite_or_none(row.get("entry_close"))
+        exit_price = _finite_or_none(row.get("exit_close"))
+        if entry is None or exit_price is None or entry <= 0.0 or exit_price <= 0.0:
             continue
         xs.append(_raw_direction_confidence(d))
-        ys.append(int(row["success"]))
-    return fit_platt(xs, ys, min_samples=min_samples) if len(xs) >= min_samples else PlattScaler(fitted=False)
+        ys.append(int(exit_price > entry) if direction == "long" else int(exit_price < entry))
+    scaler = (
+        fit_platt(xs, ys, min_samples=min_samples)
+        if len(xs) >= min_samples
+        else PlattScaler(fitted=False)
+    )
+    scaler.policy_fingerprint = str(policy_fingerprint or "")
+    return scaler
 
 
-def _load_or_fit_direction_calibrator(conn, min_samples: int) -> PlattScaler:
+def _load_or_fit_direction_calibrator(
+    conn,
+    min_samples: int,
+    *,
+    policy_fingerprint: str,
+    settings_obj: Any,
+) -> PlattScaler:
     """Load direction calibration without resurrecting stale fitted coefficients."""
     import time as _time
-    key = DIRECTION_CALIBRATION_KEY
+    key = _policy_calibration_storage_key(DIRECTION_CALIBRATION_KEY, policy_fingerprint)
+    observability = _policy_observability_diagnostics(
+        conn,
+        policy_fingerprint=policy_fingerprint,
+        settings_obj=settings_obj,
+        bot_type="futures_grid",
+    )
+    if (
+        int(observability.get("censored_total") or 0) > 0
+        or int(observability.get("unresolved_total") or 0) > 0
+        or int(observability.get("invalid_labeled_total") or 0) > 0
+    ):
+        scaler = PlattScaler(
+            fitted=False,
+            saved_ts=int(_time.time()),
+            policy_fingerprint=policy_fingerprint,
+        )
+        save_platt_to_db(conn, key, scaler)
+        return scaler
     saved = load_platt_from_db(conn, key)
+    if saved is not None and str(saved.policy_fingerprint or "") != policy_fingerprint:
+        saved = None
     if saved is not None and int(saved.saved_ts) > 0:
         if int(_time.time()) - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC:
             return saved
-    scaler = _fit_direction_calibrator(conn, min_samples=min_samples)
+    scaler = _fit_direction_calibrator(
+        conn,
+        min_samples=min_samples,
+        policy_fingerprint=policy_fingerprint,
+        settings_obj=settings_obj,
+    )
+    scaler.policy_fingerprint = policy_fingerprint
     # Persist both fitted and current unfitted states.  Otherwise a restart can
     # reload the old fitted payload even though the latest evidence was sparse.
     save_platt_to_db(conn, key, scaler)
@@ -3795,6 +4412,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     _fresh_gap = _persistence_fresh_gap(settings)
     _prev_recommended = _load_prev_recommended(conn)
     _direction_state_cache = _load_direction_state(conn)
+    limits = normalize_risk_limits(db.get_active_risk_limits(conn), settings.risk_limits)
+    policy_contract = calibration_policy_contract(settings, limits)
+    policy_fingerprint = calibration_policy_fingerprint(settings, limits)
     sent_agg = compute_sentiment_agg(conn, scope="global", key="crypto")
     # Primary sentiment for scoring: adaptive blend from compute_sentiment_agg.
     # Falls back to 6h EWMA for backward compatibility with older snapshots.
@@ -3803,9 +4423,24 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     symbol_sent_map: dict[str, tuple[float, int]] = compute_symbol_sentiment_map(conn)
 
     # LogReg+Platt calibrators (new) — replace legacy Platt-on-score
-    global_calibrator  = _load_or_fit_global_logreg(conn, min_samples=settings.calib_min_samples)
-    bot_calibrators    = _load_or_fit_bot_logregs(conn, min_samples=settings.calib_min_samples)
-    dir_calibrator     = _load_or_fit_direction_calibrator(conn, min_samples=settings.calib_min_samples)
+    global_calibrator = _load_or_fit_global_logreg(
+        conn,
+        min_samples=settings.calib_min_samples,
+        policy_fingerprint=policy_fingerprint,
+        settings_obj=settings,
+    )
+    bot_calibrators = _load_or_fit_bot_logregs(
+        conn,
+        min_samples=settings.calib_min_samples,
+        policy_fingerprint=policy_fingerprint,
+        settings_obj=settings,
+    )
+    dir_calibrator = _load_or_fit_direction_calibrator(
+        conn,
+        min_samples=settings.calib_min_samples,
+        policy_fingerprint=policy_fingerprint,
+        settings_obj=settings,
+    )
     # Legacy alias — used in PUBLISH log and UI status endpoint
     calibrator = global_calibrator
 
@@ -3942,7 +4577,6 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     market_shock = compute_market_shock(conn, settings, sent_agg, symbol_feature_map, ts_now)
     db.set_app_config_json(conn, MARKET_SHOCK_APP_KEY, market_shock, commit=False)
 
-    limits = normalize_risk_limits(db.get_active_risk_limits(conn), settings.risk_limits)
     model_version = RECOMMENDER_MODEL_VERSION
     if bool(getattr(settings, "llm_reviewer_enabled", False)):
         model_version += "+llm-review-v1"
@@ -4002,10 +4636,19 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             # Using raw confidence in one branch and calibrated confidence elsewhere
             # creates contradictory allow/block decisions for the same signal.
             _dir_agg_raw = dict(f.get("_direction_agg", {}))
-            _xdir_pre = _raw_direction_confidence(_dir_agg_raw)
-            _dir_conf_pre = dir_calibrator.predict(_xdir_pre) if dir_calibrator.fitted else _xdir_pre
+            _direction_projection = _direction_confidence_projection(
+                _dir_agg_raw,
+                dir_calibrator,
+            )
+            _dir_conf_pre = float(_direction_projection["feature_value"])
             _dir_agg_cal = dict(_dir_agg_raw)
+            _dir_agg_cal["direction_confidence_feature"] = _dir_conf_pre
+            # Backward-compatible display alias. The accompanying model metadata
+            # explicitly marks this as raw/audit-only rather than calibrated.
             _dir_agg_cal["direction_confidence_calibrated"] = _dir_conf_pre
+            _dir_agg_cal["direction_confidence_audit"] = _direction_projection.get(
+                "audit_probability"
+            )
 
             # Combine OI trend with price direction for final signal
             if oi_sig["trend"] == "growing":
@@ -4122,6 +4765,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             beta_info = f.get("_btc_beta", {})
             if beta_info.get("is_btc_driven") and sym != "BTCUSDT":
                 _dir_conf_pre = float(_clamp(_dir_conf_pre * 0.88, 0.0, 0.99))
+                _dir_agg_cal["direction_confidence_feature"] = _dir_conf_pre
                 _dir_agg_cal["direction_confidence_calibrated"] = _dir_conf_pre
             # Block threshold 0.05 = 5% 1h ATR. Old value 0.018 was calibrated for 1m ATR
             # and blocked ALL symbols since typical 1h ATR for small caps is 3–8%.
@@ -4186,13 +4830,23 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             _expectancy_no_trade = _calibration_expectancy_no_trade_reason(bot_cal)
             if _expectancy_no_trade is not None:
                 thesis_no_trade_reasons.append(_expectancy_no_trade)
-            if bot_cal and bot_cal.fitted and len(bot_cal.coef) > 0 and _fv is not None:
+            _probability_no_trade = _probability_calibration_no_trade_reason(
+                bot_cal,
+                require_conf_gate=bool(settings.require_conf_gate),
+            )
+            if _probability_no_trade is not None:
+                thesis_no_trade_reasons.append(_probability_no_trade)
+            if (
+                bot_cal
+                and bot_cal.fitted
+                and len(bot_cal.coef) == len(FEATURE_NAMES)
+                and bot_cal.platt.fitted
+                and str(bot_cal.oof_status) == "sufficient"
+                and str(bot_cal.oof_skill_status) == "accepted"
+                and _fv is not None
+            ):
                 conf_cal = float(bot_cal.predict(_fv))
                 _cal_source = "bot_logreg"
-                _active_cal = bot_cal
-            elif bot_cal and bot_cal.fitted:
-                conf_cal = float(bot_cal.predict_score_only(score))
-                _cal_source = "bot_platt"
                 _active_cal = bot_cal
             else:
                 # Do NOT fall back to a cross-bot/global calibrator for inference.
@@ -4246,7 +4900,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
 
             blocks = list(feasibility_blocks)  # risk_blocks already included via feasibility_blocks.extend()
 
-            confidence_gate_applied = bool(settings.require_conf_gate and _active_cal is not None)
+            confidence_gate_applied = bool(
+                settings.require_conf_gate and _cal_source == "bot_logreg"
+            )
 
             status = "recommended"
             if blocks:
@@ -4414,7 +5070,17 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
             reasons2["grid_economics"] = params.get("economics")
             reasons2["sizing"] = params.get("sizing")
-            thesis_ok = bool(score >= settings.min_score_to_recommend and (not confidence_gate_applied or conf >= settings.min_conf_to_recommend))
+            probability_gate_ready = bool(
+                not settings.require_conf_gate
+                or (
+                    confidence_gate_applied
+                    and conf >= settings.min_conf_to_recommend
+                )
+            )
+            thesis_ok = bool(
+                score >= settings.min_score_to_recommend
+                and probability_gate_ready
+            )
             reasons2["decision_layers"] = {
                 "thesis_status": "favored" if thesis_ok else "unfavorable",
                 "execution_status": "blocked" if blocks else ("not_actionable" if no_trade_reasons else "allowed"),
@@ -4422,6 +5088,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "no_trade_reasons": no_trade_reasons,
                 "score_threshold": float(settings.min_score_to_recommend),
                 "confidence_threshold": float(settings.min_conf_to_recommend),
+                "confidence_gate_required": bool(settings.require_conf_gate),
                 "confidence_gate_applied": bool(confidence_gate_applied),
             }
             _trade_plan_complete = isinstance(params.get("trade_plan"), dict) and bool(params.get("trade_plan"))
@@ -4431,8 +5098,34 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 and _trade_plan_complete
                 and params.get("price_input_valid") is not False
             )
+            non_calibration_no_trade_reasons = [
+                reason
+                for reason in no_trade_reasons
+                if str(reason.get("code") or "") not in CALIBRATION_EVIDENCE_REASON_CODES
+            ]
+            policy_evaluation_eligible = bool(
+                score >= settings.min_score_to_recommend
+                and not blocks
+                and not non_calibration_no_trade_reasons
+                and _trade_plan_complete
+                and params.get("price_input_valid") is not False
+            )
+            label_due_ts = calibration_policy_label_due_ts(ts_now, bot_type)
             reasons2["outcome_policy"] = {
                 "eligible": bool(status in {"recommended", "active", "executed"} or _shadow_no_trade_eligible),
+                "policy_evaluation_eligible": policy_evaluation_eligible,
+                "policy_fingerprint": policy_fingerprint,
+                "policy_contract": policy_contract,
+                "label_due_ts": label_due_ts,
+                "calibration_role": (
+                    "current_policy_evaluation"
+                    if policy_evaluation_eligible
+                    else (
+                        "shadow_exploration"
+                        if _shadow_no_trade_eligible
+                        else "excluded"
+                    )
+                ),
                 "sample_role": (
                     "shadow_no_trade" if _shadow_no_trade_eligible else (
                         "actionable_root" if status in {"recommended", "active", "executed"} else "excluded"
@@ -4483,7 +5176,16 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             }
             # Reuse the already calibrated direction aggregate built before the bot loop.
             dtmp = dict(_dir_agg_cal)
-            dtmp["direction_confidence_model"] = {"type":"platt_scaling","fitted": dir_calibrator.fitted, "a": getattr(dir_calibrator,"a",None), "b": getattr(dir_calibrator,"b",None)}
+            dtmp["direction_confidence_model"] = {
+                "type": "platt_scaling_audit_only",
+                "fitted": dir_calibrator.fitted,
+                "a": getattr(dir_calibrator, "a", None),
+                "b": getattr(dir_calibrator, "b", None),
+                "policy_fingerprint": policy_fingerprint,
+                "used_for_inference": False,
+                "audit_probability": _direction_projection.get("audit_probability"),
+                "reason": _direction_projection.get("reason"),
+            }
             reasons2["direction_agg"] = dtmp
             reasons2["execution_constraints"] = {
                 "raw_direction": raw_direction,
@@ -4503,8 +5205,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             # fitted/a/b when bot_cal existed-but-unfitted and global was used instead.
             reasons2["confidence_model"] = {
                 "source": _cal_source,
-                "type": "logreg_platt_v1" if _cal_source in ("bot_logreg", "global_logreg") else (
-                    "platt_only" if _cal_source in ("bot_platt", "global_platt") else ("raw_proxy" if _cal_source == "raw_proxy" else "raw")
+                "type": "logreg_platt_v2_terminal_holdout" if _cal_source == "bot_logreg" else (
+                    "raw_proxy" if _cal_source == "raw_proxy" else "raw"
                 ),
                 "fitted": _active_cal.fitted if _active_cal is not None else False,
                 "n_samples": _active_cal.n_samples if _active_cal is not None and _active_cal.fitted else 0,
@@ -4516,25 +5218,34 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "weighted_effective_return_samples": _finite_or_none(getattr(bot_cal, "weighted_effective_return_samples", None)) if bot_cal is not None else None,
                 "weighted_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "weighted_mean_return_lower_bound", None)) if bot_cal is not None else None,
                 "expectancy_confidence_level": _finite_or_none(getattr(bot_cal, "expectancy_confidence_level", None)) if bot_cal is not None else None,
+                "policy_fingerprint": policy_fingerprint,
+                "policy_matured_total": int(getattr(bot_cal, "policy_matured_total", 0) or 0) if bot_cal is not None else 0,
+                "policy_labeled_total": int(getattr(bot_cal, "policy_labeled_total", 0) or 0) if bot_cal is not None else 0,
+                "policy_censored_total": int(getattr(bot_cal, "policy_censored_total", 0) or 0) if bot_cal is not None else 0,
+                "policy_unresolved_total": int(getattr(bot_cal, "policy_unresolved_total", 0) or 0) if bot_cal is not None else 0,
+                "policy_invalid_labeled_total": int(getattr(bot_cal, "policy_invalid_labeled_total", 0) or 0) if bot_cal is not None else 0,
                 "logreg_active": _cal_source in ("bot_logreg", "global_logreg"),
                 "purged_oof_status": str(getattr(bot_cal, "oof_status", "not_evaluated")) if bot_cal is not None else "not_evaluated",
                 "purged_oof_samples": int(getattr(bot_cal, "oof_samples", 0) or 0) if bot_cal is not None else 0,
                 "purged_oof_required_samples": int(getattr(bot_cal, "oof_required_samples", 0) or 0) if bot_cal is not None else 0,
+                "purged_oof_skill_status": str(getattr(bot_cal, "oof_skill_status", "not_evaluated")) if bot_cal is not None else "not_evaluated",
+                "purged_oof_feature_log_loss": _finite_or_none(getattr(bot_cal, "oof_feature_log_loss", None)) if bot_cal is not None else None,
+                "purged_oof_score_log_loss": _finite_or_none(getattr(bot_cal, "oof_score_log_loss", None)) if bot_cal is not None else None,
+                "purged_oof_null_log_loss": _finite_or_none(getattr(bot_cal, "oof_null_log_loss", None)) if bot_cal is not None else None,
+                "purged_oof_final_feature_log_loss": _finite_or_none(getattr(bot_cal, "oof_final_feature_log_loss", None)) if bot_cal is not None else None,
+                "purged_oof_final_score_log_loss": _finite_or_none(getattr(bot_cal, "oof_final_score_log_loss", None)) if bot_cal is not None else None,
+                "purged_oof_final_null_log_loss": _finite_or_none(getattr(bot_cal, "oof_final_null_log_loss", None)) if bot_cal is not None else None,
+                "purged_oof_final_samples": int(getattr(bot_cal, "oof_final_samples", 0) or 0) if bot_cal is not None else 0,
                 "a": getattr(getattr(_active_cal, "platt", None), "a", None) if _active_cal else None,
                 "b": getattr(getattr(_active_cal, "platt", None), "b", None) if _active_cal else None,
                 "heuristic_cap": float(_heur_cap) if _heur_cap is not None else None,
                 "calibration_weight": float(_cal_weight),
                 "confidence_gate_applied": bool(confidence_gate_applied),
+                "confidence_gate_required": bool(settings.require_conf_gate),
                 "note": (
                     "Raw heuristic confidence; treat it as an operator signal, not as calibrated probability."
-                    if _active_cal is None else (
-                        "Bot-specific feature LogReg with purged chronological OOF Platt calibration is active."
-                        if _cal_source == "bot_logreg" else (
-                            "Bot-specific score-only Platt calibration is active; feature LogReg was not activated without sufficient purged OOF evidence."
-                            if str(getattr(bot_cal, "oof_status", "")) in {"insufficient", "error"}
-                            else "Bot-specific Platt-only calibration is active."
-                        )
-                    )
+                    if _active_cal is None
+                    else "Bot-specific LogReg + Platt pipeline trained before the terminal holdout is active."
                 ),
             }
 

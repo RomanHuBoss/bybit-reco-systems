@@ -196,7 +196,8 @@ def test_live_validation_records_are_linked_to_immutable_rec_id(conn) -> None:
     assert record["publication_root_rec_id"] == rec_id
     assert record["confidence"] == pytest.approx(0.72)
     assert record["realized_pnl_net"] == pytest.approx(-4.5)
-    assert record["evidence_grade"] is True
+    assert record["evidence_grade"] is False
+    assert record["exchange_reconciled"] is False
 
 
 def test_execution_evidence_api_rejects_incomplete_bybit_execution(client_and_conn) -> None:
@@ -244,7 +245,8 @@ def test_legacy_trade_net_includes_funding_and_reports_slippage_without_double_c
     assert summary["realized_funding"] == pytest.approx(-1.0)
     assert summary["realized_slippage"] == pytest.approx(0.5)
     assert summary["realized_pnl_net"] == pytest.approx(7.0)
-    assert db.sum_daily_pnl(conn, ts) == pytest.approx(7.0)
+    assert db.sum_daily_pnl(conn, ts) == pytest.approx(0.0)
+    assert db.list_risk_net_events(conn, since_ts=ts)[0]["net_pnl"] == pytest.approx(0.0)
 
 def test_risk_stream_prefers_execution_evidence_without_double_counting(conn) -> None:
     from app.risk import compute_risk_status
@@ -287,9 +289,13 @@ def test_risk_stream_prefers_execution_evidence_without_double_counting(conn) ->
     conn.commit()
 
     events = db.list_realized_net_events(conn, since_ts=ts)
-    assert [event["source"] for event in events] == ["execution_evidence"]
-    assert events[0]["net_pnl"] == pytest.approx(-11.0)
-    assert db.sum_daily_pnl(conn, ts) == pytest.approx(-11.0)
+    assert events == []
+    risk_events = db.list_risk_net_events(conn, since_ts=ts)
+    assert [event["source"] for event in risk_events] == [
+        "unreconciled_execution_loss_only"
+    ]
+    assert risk_events[0]["net_pnl"] == pytest.approx(-11.0)
+    assert db.sum_daily_pnl(conn, ts) == pytest.approx(0.0)
 
     status = compute_risk_status(
         conn,
@@ -399,7 +405,11 @@ def test_existing_sqlite_schema_is_upgraded_additively(tmp_path: Path) -> None:
 
 def test_exact_execution_evidence_read_endpoints_require_admin_key(client_and_conn) -> None:
     client, _conn = client_and_conn
-    for path in ("/api/v1/execution-evidence", "/api/v1/validation/live-evidence"):
+    for path in (
+        "/api/v1/execution-evidence",
+        "/api/v1/execution-reconciliations",
+        "/api/v1/validation/live-evidence",
+    ):
         denied = client.get(path)
         assert denied.status_code == 401
         allowed = client.get(path, headers={"X-API-Key": "test-admin-key"})

@@ -2,7 +2,7 @@
 
 Stage 1: LogisticRegression on raw features extracted from reasons_json.
          Learns weights from actual outcomes — replaces hand-tuned score formula.
-         Falls back to score-only when insufficient per-bot data.
+         Remains unavailable when held-out evidence is insufficient.
 
 Stage 2: Platt scaling on top of LogReg probability output.
          Corrects any remaining systematic bias / overconfidence.
@@ -12,8 +12,8 @@ Architecture:
                                dir_conf, coherence, spread_bps, score,
                                oi_4h, funding, liq_tier, btc_corr, regime_conf]) )
 
-Fallback chain (when not enough data to fit a layer):
-  LogReg + Platt  →  Platt(score)  →  sigmoid(score × 2.5)
+Inference chain:
+  held-out-skilled LogReg + Platt  →  capped raw heuristic (audit-only)
 """
 from __future__ import annotations
 
@@ -70,6 +70,7 @@ class PlattScaler:
     b: float = 0.0
     fitted: bool = False
     saved_ts: int = 0
+    policy_fingerprint: str = ""
 
     def predict(self, x: float) -> float:
         x_num = _finite_float(x)
@@ -357,12 +358,26 @@ class LogRegScaler:
     weighted_temporal_return_std: float | None = None
     weighted_temporal_mean_return_lower_bound: float | None = None
     expectancy_confidence_level: float = 0.95
-    # Full feature LogReg is allowed only after purged chronological OOF has
-    # produced enough genuinely out-of-fold predictions for Platt-on-top.
-    # Score-only Platt can remain available as the simpler fallback.
+    # Probability inference is allowed only after purged chronological OOF has
+    # produced enough genuinely out-of-fold predictions and demonstrated skill
+    # over both score-only and null baselines.
     oof_status: str = "not_evaluated"
     oof_samples: int = 0
     oof_required_samples: int = 0
+    oof_skill_status: str = "not_evaluated"
+    oof_feature_log_loss: float | None = None
+    oof_score_log_loss: float | None = None
+    oof_null_log_loss: float | None = None
+    oof_final_feature_log_loss: float | None = None
+    oof_final_score_log_loss: float | None = None
+    oof_final_null_log_loss: float | None = None
+    oof_final_samples: int = 0
+    policy_fingerprint: str = ""
+    policy_matured_total: int = 0
+    policy_labeled_total: int = 0
+    policy_censored_total: int = 0
+    policy_unresolved_total: int = 0
+    policy_invalid_labeled_total: int = 0
 
     def predict(self, features: list[float]) -> float:
         """Return calibrated P(success) given a feature vector."""
@@ -412,6 +427,107 @@ def _sigmoid(z: float) -> float:
     return e / (1.0 + e)
 
 
+def _continued_beta_fraction(a: float, b: float, x: float) -> float:
+    """Stable continued fraction used by the regularized incomplete beta."""
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    tiny = 1e-300
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    h = d
+    for m in range(1, 201):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) <= 3e-14:
+            break
+    return h
+
+
+def _regularized_incomplete_beta(a: float, b: float, x: float) -> float:
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    log_term = (
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    factor = math.exp(log_term)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return factor * _continued_beta_fraction(a, b, x) / a
+    return 1.0 - factor * _continued_beta_fraction(b, a, 1.0 - x) / b
+
+
+def _student_t_cdf(value: float, degrees_of_freedom: float) -> float:
+    if value == 0.0:
+        return 0.5
+    x = degrees_of_freedom / (degrees_of_freedom + value * value)
+    tail = 0.5 * _regularized_incomplete_beta(
+        degrees_of_freedom / 2.0,
+        0.5,
+        x,
+    )
+    return 1.0 - tail if value > 0.0 else tail
+
+
+def _one_sided_student_t_critical(confidence: float, effective_samples: float) -> float:
+    """Return a deterministic one-sided Student-t critical value.
+
+    The inverse CDF is solved from the incomplete-beta representation, avoiding a
+    runtime SciPy dependency while retaining small-sample accuracy.  Fewer than
+    two effective observations cannot support a finite variance bound and fail
+    closed.
+    """
+    confidence_num = _finite_float(confidence)
+    n_eff = _finite_float(effective_samples)
+    if (
+        confidence_num is None
+        or not (0.50 < confidence_num < 1.0)
+        or n_eff is None
+        or n_eff < 2.0
+    ):
+        return float("inf")
+    df = max(1.0, n_eff - 1.0)
+    low = 0.0
+    high = 2.0
+    while _student_t_cdf(high, df) < confidence_num and high < 1e6:
+        high *= 2.0
+    if high >= 1e6:
+        return float("inf")
+    for _ in range(80):
+        midpoint = (low + high) / 2.0
+        if _student_t_cdf(midpoint, df) < confidence_num:
+            low = midpoint
+        else:
+            high = midpoint
+    return float((low + high) / 2.0)
+
+
 def _weighted_return_diagnostics(
     returns: list[float],
     weights: list[float],
@@ -426,9 +542,9 @@ def _weighted_return_diagnostics(
     proxy evidence, not a claim about exchange fill truth or future alpha.
 
     The effective sample size is Kish's weighted sample size.  The lower bound
-    uses a one-sided normal critical value at 95% confidence.  This is still a
-    proxy-model diagnostic, but it prevents a tiny positive sample mean from
-    being treated as positive expectancy when dispersion is materially larger.
+    uses a one-sided Student-t critical value derived from that effective sample
+    size.  This matters for the temporal gate, which can become eligible at only
+    twenty independent cohorts.
     """
     cleaned: list[tuple[float, float]] = []
     for raw_ret, raw_weight in zip(returns, weights):
@@ -475,19 +591,16 @@ def _weighted_return_diagnostics(
     weighted_variance = max(0.0, weighted_variance)
     weighted_std = math.sqrt(weighted_variance)
 
-    # 95% one-sided standard-normal critical value.  The minimum evidence floor
-    # is 80 effective observations, so the normal approximation is intentionally
-    # used only after a non-trivial sample has accumulated.
     confidence = _finite_float(confidence_level)
     if confidence is None or confidence < 0.50 or confidence >= 1.0:
         confidence = 0.95
-    z_value = 1.6448536269514722
+    critical_value = _one_sided_student_t_critical(confidence, effective_samples)
     standard_error = (
         weighted_std / math.sqrt(effective_samples)
         if effective_samples > 0.0
         else float("inf")
     )
-    lower_bound = weighted_mean - z_value * standard_error
+    lower_bound = weighted_mean - critical_value * standard_error
 
     fraction = _finite_float(tail_fraction)
     if fraction is None or fraction <= 0.0 or fraction > 1.0:
@@ -818,6 +931,219 @@ def _time_series_oof_logits(
     return logits, y_out, w_out
 
 
+def _weighted_log_loss(
+    probabilities: list[float],
+    labels: list[int],
+    weights: list[float],
+) -> float | None:
+    cleaned: list[tuple[float, int, float]] = []
+    for raw_p, raw_y, raw_weight in zip(probabilities, labels, weights):
+        p = _finite_float(raw_p)
+        y = strict_integer(raw_y)
+        weight = _finite_float(raw_weight)
+        if p is None or y not in (0, 1) or weight is None or weight <= 0.0:
+            continue
+        cleaned.append((min(1.0 - 1e-12, max(1e-12, p)), int(y), weight))
+    total_weight = sum(weight for _p, _y, weight in cleaned)
+    if not cleaned or total_weight <= 0.0:
+        return None
+    loss = -sum(
+        weight * (y * math.log(p) + (1 - y) * math.log(1.0 - p))
+        for p, y, weight in cleaned
+    ) / total_weight
+    return float(loss) if math.isfinite(loss) else None
+
+
+def _time_series_oof_skill_diagnostics(
+    X: list[list[float]],
+    scores: list[float],
+    ys: list[int],
+    ws: list[float],
+    *,
+    min_samples: int,
+    tss: list[int],
+    label_available_tss: list[int | None],
+) -> dict[str, Any]:
+    """Compare feature, score-only and null models on purged future folds.
+
+    Each feature model and both calibration baselines are fit only on labels that
+    were available before the validation decision.  The final chronological fold
+    is reported separately and must agree with the aggregate result; row count
+    alone is never evidence of predictive skill.
+    """
+    empty = {
+        "status": "insufficient",
+        "samples": 0,
+        "final_samples": 0,
+        "feature_log_loss": None,
+        "score_log_loss": None,
+        "null_log_loss": None,
+        "final_feature_log_loss": None,
+        "final_score_log_loss": None,
+        "final_null_log_loss": None,
+        "candidate_coef": None,
+        "candidate_intercept": None,
+        "candidate_platt": None,
+    }
+    n = len(X)
+    if not (
+        n == len(scores) == len(ys) == len(ws) == len(tss) == len(label_available_tss)
+        and n >= max(6, min_samples * 2)
+    ):
+        return empty
+
+    n_splits = min(5, max(2, n // max(1, min_samples)))
+    fold_size = max(1, n // (n_splits + 1))
+    feature_probs: list[float] = []
+    score_probs: list[float] = []
+    null_probs: list[float] = []
+    labels: list[int] = []
+    weights: list[float] = []
+    fold_ids: list[int] = []
+    candidate_coef: list[float] | None = None
+    candidate_intercept: float | None = None
+    candidate_platt: PlattScaler | None = None
+    candidate_validation_end = 0
+
+    for split in range(fold_size, n, fold_size):
+        end = min(n, split + fold_size)
+        if split < min_samples or end <= split:
+            continue
+        train_indices = _purged_train_indices(
+            tss,
+            label_available_tss,
+            validation_start_index=split,
+        )
+        if len(train_indices) < min_samples:
+            continue
+        train_y = [ys[idx] for idx in train_indices]
+        if min(sum(train_y), len(train_y) - sum(train_y)) * 2 < min_samples:
+            continue
+        train_X = [X[idx] for idx in train_indices]
+        train_w = [ws[idx] for idx in train_indices]
+        train_scores = [scores[idx] for idx in train_indices]
+        coef, intercept = _fit_weighted_logreg_raw(
+            train_X,
+            train_y,
+            train_w,
+            iters=260,
+        )
+        if not coef:
+            continue
+        train_logits = [
+            intercept + sum(coef[j] * float(row[j]) for j in range(len(coef)))
+            for row in train_X
+        ]
+        feature_platt = fit_platt(
+            train_logits,
+            train_y,
+            min_samples=min_samples,
+            ws=train_w,
+        )
+        score_platt = fit_platt(
+            train_scores,
+            train_y,
+            min_samples=min_samples,
+            ws=train_w,
+        )
+        if not feature_platt.fitted or not score_platt.fitted:
+            continue
+        total_weight = sum(train_w)
+        null_probability = (
+            sum(weight * y for weight, y in zip(train_w, train_y)) / total_weight
+            if total_weight > 0.0
+            else 0.5
+        )
+        null_probability = min(1.0 - 1e-12, max(1e-12, null_probability))
+
+        for idx in range(split, end):
+            row = X[idx]
+            if len(row) != len(coef):
+                continue
+            logit = intercept + sum(coef[j] * float(row[j]) for j in range(len(coef)))
+            if not math.isfinite(logit):
+                continue
+            feature_probs.append(feature_platt.predict(logit))
+            score_probs.append(score_platt.predict(scores[idx]))
+            null_probs.append(float(null_probability))
+            labels.append(int(ys[idx]))
+            weights.append(float(ws[idx]))
+            fold_ids.append(int(split))
+        # Preserve the pipeline fitted strictly before this validation block.
+        # Only the terminal candidate may be activated; fitting again on its
+        # validation rows would destroy the held-out evidence boundary.
+        candidate_coef = list(coef)
+        candidate_intercept = float(intercept)
+        candidate_platt = feature_platt
+        candidate_validation_end = int(end)
+        if end >= n:
+            break
+
+    if (
+        len(feature_probs) < int(min_samples)
+        or not fold_ids
+        or candidate_validation_end != n
+        or candidate_coef is None
+        or candidate_intercept is None
+        or candidate_platt is None
+        or not candidate_platt.fitted
+    ):
+        return {**empty, "samples": len(feature_probs)}
+
+    feature_loss = _weighted_log_loss(feature_probs, labels, weights)
+    score_loss = _weighted_log_loss(score_probs, labels, weights)
+    null_loss = _weighted_log_loss(null_probs, labels, weights)
+    final_fold = max(fold_ids)
+    final_indices = [idx for idx, fold_id in enumerate(fold_ids) if fold_id == final_fold]
+    final_feature_loss = _weighted_log_loss(
+        [feature_probs[idx] for idx in final_indices],
+        [labels[idx] for idx in final_indices],
+        [weights[idx] for idx in final_indices],
+    )
+    final_score_loss = _weighted_log_loss(
+        [score_probs[idx] for idx in final_indices],
+        [labels[idx] for idx in final_indices],
+        [weights[idx] for idx in final_indices],
+    )
+    final_null_loss = _weighted_log_loss(
+        [null_probs[idx] for idx in final_indices],
+        [labels[idx] for idx in final_indices],
+        [weights[idx] for idx in final_indices],
+    )
+    metrics = (
+        feature_loss,
+        score_loss,
+        null_loss,
+        final_feature_loss,
+        final_score_loss,
+        final_null_loss,
+    )
+    if any(value is None for value in metrics):
+        return {**empty, "samples": len(feature_probs), "final_samples": len(final_indices)}
+
+    minimum_improvement = 1e-4
+    accepted = bool(
+        float(feature_loss) + minimum_improvement < float(score_loss)
+        and float(feature_loss) + minimum_improvement < float(null_loss)
+        and float(final_feature_loss) + minimum_improvement < float(final_score_loss)
+        and float(final_feature_loss) + minimum_improvement < float(final_null_loss)
+    )
+    return {
+        "status": "accepted" if accepted else "rejected",
+        "samples": len(feature_probs),
+        "final_samples": len(final_indices),
+        "feature_log_loss": feature_loss,
+        "score_log_loss": score_loss,
+        "null_log_loss": null_loss,
+        "final_feature_log_loss": final_feature_loss,
+        "final_score_log_loss": final_score_loss,
+        "final_null_log_loss": final_null_loss,
+        "candidate_coef": candidate_coef,
+        "candidate_intercept": candidate_intercept,
+        "candidate_platt": candidate_platt,
+    }
+
+
 def fit_logreg(
     rows: list[dict[str, Any]],
     min_samples: int = 80,
@@ -828,8 +1154,8 @@ def fit_logreg(
 
     - Recency weighting: half_life_days=21 → observation 21 days old weighs 0.5x.
       Crypto regimes shift fast; old outcomes from a different regime should matter less.
-    - If n >= logreg_min_samples: full LogReg + Platt.
-    - If logreg_min_samples > n >= min_samples: Platt on score only.
+    - If n >= logreg_min_samples: full LogReg + OOF Platt, subject to held-out skill.
+    - If n < logreg_min_samples: probability inference remains unavailable.
     - If n < min_samples or degenerate WR: unfitted.
 
     The historical joins used for calibration should be robust to dirty rows in SQLite.
@@ -838,7 +1164,6 @@ def fit_logreg(
     cohort has positive recency-weighted monetary proxy expectancy.
     """
     sanitized_rows: list[dict[str, Any]] = []
-    xs_score: list[float] = []
     ys: list[int] = []
     tss: list[int] = []
     returns: list[float] = []
@@ -872,7 +1197,6 @@ def fit_logreg(
             "ret": ret,
             "label_available_ts": available_ts,
         })
-        xs_score.append(float(score))
         ys.append(success)
         tss.append(ts)
         returns.append(ret)
@@ -1000,22 +1324,20 @@ def fit_logreg(
             **monetary_fields,
         )
 
-    # Platt on score (fallback/baseline)
-    platt = fit_platt(xs_score, ys, min_samples=min_samples, ws=ws)
-
     if n < logreg_min_samples:
         return LogRegScaler(
-            coef=[], intercept=0.0, platt=platt,
-            fitted=bool(platt.fitted), saved_ts=fit_ts, n_samples=n,
+            coef=[], intercept=0.0, platt=PlattScaler(fitted=False),
+            fitted=False, saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
-            oof_status="not_required_score_only",
+            oof_status="insufficient",
             oof_samples=0,
-            oof_required_samples=0,
+            oof_required_samples=int(min_samples),
+            oof_skill_status="insufficient",
             **monetary_fields,
         )
 
     # Build feature matrix
-    X, y_used, w_used, ts_used, label_available_used = [], [], [], [], []
+    X, y_used, w_used, ts_used, label_available_used, score_used = [], [], [], [], [], []
     for r, w in zip(sanitized_rows, ws):
         fv = extract_features(r)
         if fv is not None:
@@ -1023,6 +1345,7 @@ def fit_logreg(
             y_used.append(int(r["success"]))
             w_used.append(w)
             ts_used.append(int(r.get("ts") or 0))
+            score_used.append(float(r.get("score") or 0.0))
             raw_available_ts = r.get("label_available_ts")
             parsed_available_ts = strict_integer(raw_available_ts)
             label_available_used.append(
@@ -1033,18 +1356,19 @@ def fit_logreg(
 
     if len(X) < logreg_min_samples:
         return LogRegScaler(
-            coef=[], intercept=0.0, platt=platt,
-            fitted=bool(platt.fitted), saved_ts=fit_ts, n_samples=n,
+            coef=[], intercept=0.0, platt=PlattScaler(fitted=False),
+            fitted=False, saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
-            oof_status="not_required_score_only",
+            oof_status="insufficient",
             oof_samples=0,
-            oof_required_samples=0,
+            oof_required_samples=int(min_samples),
+            oof_skill_status="insufficient",
             **monetary_fields,
         )
 
     try:
         ordered = sorted(
-            zip(ts_used, label_available_used, X, y_used, w_used),
+            zip(ts_used, label_available_used, X, y_used, w_used, score_used),
             key=lambda item: item[0],
         )
         ts_ord = [item[0] for item in ordered]
@@ -1052,6 +1376,7 @@ def fit_logreg(
         X_ord = [item[2] for item in ordered]
         y_ord = [item[3] for item in ordered]
         w_ord = [item[4] for item in ordered]
+        score_ord = [item[5] for item in ordered]
 
         oof_logits, oof_y, oof_w = _time_series_oof_logits(
             X_ord,
@@ -1061,7 +1386,6 @@ def fit_logreg(
             tss=ts_ord,
             label_available_tss=label_available_ord,
         )
-        coef_raw, intercept_raw = _fit_weighted_logreg_raw(X_ord, y_ord, w_ord)
 
         oof_required_samples = int(min_samples)
         oof_samples = len(oof_logits)
@@ -1070,41 +1394,94 @@ def fit_logreg(
             if oof_samples >= oof_required_samples
             else PlattScaler(fitted=False)
         )
+        skill = (
+            _time_series_oof_skill_diagnostics(
+                X_ord,
+                score_ord,
+                y_ord,
+                w_ord,
+                min_samples=min_samples,
+                tss=ts_ord,
+                label_available_tss=label_available_ord,
+            )
+            if oof_samples >= oof_required_samples
+            else {"status": "insufficient"}
+        )
+        skill_fields = {
+            "oof_skill_status": str(skill.get("status") or "insufficient"),
+            "oof_feature_log_loss": skill.get("feature_log_loss"),
+            "oof_score_log_loss": skill.get("score_log_loss"),
+            "oof_null_log_loss": skill.get("null_log_loss"),
+            "oof_final_feature_log_loss": skill.get("final_feature_log_loss"),
+            "oof_final_score_log_loss": skill.get("final_score_log_loss"),
+            "oof_final_null_log_loss": skill.get("final_null_log_loss"),
+            "oof_final_samples": int(skill.get("final_samples") or 0),
+        }
 
-        # A feature model trained on the full retained sample is not an
-        # out-of-sample probability model by itself.  When chronological purging
-        # leaves too few validation predictions, do not expose its coefficients as
-        # calibrated confidence.  Degrade to the existing one-dimensional score
-        # Platt baseline (or raw confidence when that baseline is also unfitted).
+        # A model trained on the full retained sample is not an out-of-sample
+        # probability model by itself.  When chronological purging leaves too few
+        # predictions, expose neither feature coefficients nor the in-sample
+        # score-only Platt baseline as calibrated confidence.
         if (
             oof_samples < oof_required_samples
             or not platt_top.fitted
-            or not coef_raw
         ):
             return LogRegScaler(
-                coef=[], intercept=0.0, platt=platt,
-                fitted=bool(platt.fitted), saved_ts=fit_ts, n_samples=n,
+                coef=[], intercept=0.0, platt=PlattScaler(fitted=False),
+                fitted=False, saved_ts=fit_ts, n_samples=n,
                 return_samples=n, expectancy_status="positive",
                 oof_status="insufficient",
                 oof_samples=int(oof_samples),
                 oof_required_samples=int(oof_required_samples),
+                **skill_fields,
+                **monetary_fields,
+            )
+
+        candidate_coef_raw = skill.get("candidate_coef")
+        candidate_intercept = _finite_float(skill.get("candidate_intercept"))
+        candidate_platt = skill.get("candidate_platt")
+        candidate_coef = (
+            [_finite_float(value) for value in candidate_coef_raw]
+            if isinstance(candidate_coef_raw, list)
+            else []
+        )
+        candidate_is_valid = bool(
+            candidate_coef
+            and len(candidate_coef) == len(FEATURE_NAMES)
+            and all(value is not None for value in candidate_coef)
+            and candidate_intercept is not None
+            and isinstance(candidate_platt, PlattScaler)
+            and candidate_platt.fitted
+        )
+        if str(skill.get("status") or "") != "accepted" or not candidate_is_valid:
+            return LogRegScaler(
+                coef=[], intercept=0.0, platt=PlattScaler(fitted=False),
+                fitted=False, saved_ts=fit_ts, n_samples=n,
+                return_samples=n, expectancy_status="positive",
+                oof_status="no_skill",
+                oof_samples=int(oof_samples),
+                oof_required_samples=int(oof_required_samples),
+                **skill_fields,
                 **monetary_fields,
             )
 
         return LogRegScaler(
-            coef=coef_raw, intercept=intercept_raw, platt=platt_top,
+            coef=[float(value) for value in candidate_coef if value is not None],
+            intercept=float(candidate_intercept),
+            platt=candidate_platt,
             fitted=True, saved_ts=fit_ts, n_samples=len(X),
             return_samples=n, expectancy_status="positive",
             oof_status="sufficient",
             oof_samples=int(oof_samples),
             oof_required_samples=int(oof_required_samples),
+            **skill_fields,
             **monetary_fields,
         )
 
     except Exception:
         return LogRegScaler(
-            coef=[], intercept=0.0, platt=platt,
-            fitted=bool(platt.fitted), saved_ts=fit_ts, n_samples=n,
+            coef=[], intercept=0.0, platt=PlattScaler(fitted=False),
+            fitted=False, saved_ts=fit_ts, n_samples=n,
             return_samples=n, expectancy_status="positive",
             oof_status="error",
             oof_samples=0,
@@ -1127,6 +1504,22 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
             "status": model.oof_status,
             "samples": model.oof_samples,
             "required_samples": model.oof_required_samples,
+            "skill_status": model.oof_skill_status,
+            "feature_log_loss": model.oof_feature_log_loss,
+            "score_log_loss": model.oof_score_log_loss,
+            "null_log_loss": model.oof_null_log_loss,
+            "final_feature_log_loss": model.oof_final_feature_log_loss,
+            "final_score_log_loss": model.oof_final_score_log_loss,
+            "final_null_log_loss": model.oof_final_null_log_loss,
+            "final_samples": model.oof_final_samples,
+        },
+        "policy_evidence": {
+            "fingerprint": model.policy_fingerprint,
+            "matured_total": model.policy_matured_total,
+            "labeled_total": model.policy_labeled_total,
+            "censored_total": model.policy_censored_total,
+            "unresolved_total": model.policy_unresolved_total,
+            "invalid_labeled_total": model.policy_invalid_labeled_total,
         },
         "expectancy": {
             "status": model.expectancy_status,
@@ -1188,7 +1581,14 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         if not isinstance(expectancy_obj, dict):
             return None
         expectancy_status = str(expectancy_obj.get("status") or "unknown").strip().lower()
-        if expectancy_status not in {"unknown", "insufficient", "negative", "uncertain", "positive"}:
+        if expectancy_status not in {
+            "unknown",
+            "insufficient",
+            "negative",
+            "uncertain",
+            "positive",
+            "censored",
+        }:
             return None
         return_samples = max(0, _finite_int(expectancy_obj.get("return_samples", 0), 0))
         mean_raw = expectancy_obj.get("weighted_mean_return")
@@ -1244,6 +1644,7 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             "not_required_score_only",
             "insufficient",
             "sufficient",
+            "no_skill",
             "error",
         }:
             return None
@@ -1252,6 +1653,57 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         if oof_status == "sufficient" and (
             oof_required_samples <= 0 or oof_samples < oof_required_samples
         ):
+            return None
+        oof_skill_status = str(
+            oof_obj.get("skill_status") or "not_evaluated"
+        ).strip().lower()
+        if oof_skill_status not in {
+            "not_evaluated",
+            "insufficient",
+            "accepted",
+            "rejected",
+        }:
+            return None
+
+        def _optional_metric(name: str) -> float | None:
+            raw = oof_obj.get(name)
+            if raw is None:
+                return None
+            return _finite_float(raw)
+
+        oof_feature_log_loss = _optional_metric("feature_log_loss")
+        oof_score_log_loss = _optional_metric("score_log_loss")
+        oof_null_log_loss = _optional_metric("null_log_loss")
+        oof_final_feature_log_loss = _optional_metric("final_feature_log_loss")
+        oof_final_score_log_loss = _optional_metric("final_score_log_loss")
+        oof_final_null_log_loss = _optional_metric("final_null_log_loss")
+        for metric_name, metric_value in (
+            ("feature_log_loss", oof_feature_log_loss),
+            ("score_log_loss", oof_score_log_loss),
+            ("null_log_loss", oof_null_log_loss),
+            ("final_feature_log_loss", oof_final_feature_log_loss),
+            ("final_score_log_loss", oof_final_score_log_loss),
+            ("final_null_log_loss", oof_final_null_log_loss),
+        ):
+            if oof_obj.get(metric_name) is not None and metric_value is None:
+                return None
+        oof_final_samples = max(0, _finite_int(oof_obj.get("final_samples", 0), 0))
+
+        policy_obj = obj.get("policy_evidence") or {}
+        if not isinstance(policy_obj, dict):
+            return None
+        policy_fingerprint = str(policy_obj.get("fingerprint") or "").strip()
+        policy_matured_total = max(0, _finite_int(policy_obj.get("matured_total", 0), 0))
+        policy_labeled_total = max(0, _finite_int(policy_obj.get("labeled_total", 0), 0))
+        policy_censored_total = max(0, _finite_int(policy_obj.get("censored_total", 0), 0))
+        policy_unresolved_total = max(0, _finite_int(policy_obj.get("unresolved_total", 0), 0))
+        policy_invalid_labeled_total = max(
+            0,
+            _finite_int(policy_obj.get("invalid_labeled_total", 0), 0),
+        )
+        if policy_labeled_total + policy_censored_total + policy_unresolved_total > policy_matured_total:
+            return None
+        if policy_invalid_labeled_total > policy_labeled_total:
             return None
 
         platt_obj = obj.get("platt") or {}
@@ -1268,6 +1720,18 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             fitted=platt_fitted,
             saved_ts=_finite_int(platt_obj.get("ts", 0), 0),
         )
+        if fitted and (
+            len(coef) != N_FEATURES
+            or not platt.fitted
+            or expectancy_status != "positive"
+            or oof_status != "sufficient"
+            or oof_skill_status != "accepted"
+            or oof_required_samples <= 0
+            or oof_samples < oof_required_samples
+        ):
+            return None
+        if not fitted and (coef or platt.fitted):
+            return None
         return LogRegScaler(
             coef=coef,
             intercept=intercept,
@@ -1292,6 +1756,20 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             oof_status=oof_status,
             oof_samples=int(oof_samples),
             oof_required_samples=int(oof_required_samples),
+            oof_skill_status=oof_skill_status,
+            oof_feature_log_loss=oof_feature_log_loss,
+            oof_score_log_loss=oof_score_log_loss,
+            oof_null_log_loss=oof_null_log_loss,
+            oof_final_feature_log_loss=oof_final_feature_log_loss,
+            oof_final_score_log_loss=oof_final_score_log_loss,
+            oof_final_null_log_loss=oof_final_null_log_loss,
+            oof_final_samples=oof_final_samples,
+            policy_fingerprint=policy_fingerprint,
+            policy_matured_total=policy_matured_total,
+            policy_labeled_total=policy_labeled_total,
+            policy_censored_total=policy_censored_total,
+            policy_unresolved_total=policy_unresolved_total,
+            policy_invalid_labeled_total=policy_invalid_labeled_total,
         )
     except Exception:
         return None
@@ -1304,6 +1782,7 @@ def save_platt_to_db(conn, key: str, scaler: PlattScaler) -> None:
         "b":      scaler.b,
         "fitted": scaler.fitted,
         "ts":     scaler.saved_ts or int(time.time()),
+        "policy_fingerprint": scaler.policy_fingerprint,
     }
     conn.execute(
         "INSERT OR REPLACE INTO app_config(key, value_json, updated_ts) VALUES (?, ?, ?)",
@@ -1331,21 +1810,24 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
             b=b,
             fitted=fitted,
             saved_ts=_finite_int(obj.get("ts", 0), 0),
+            policy_fingerprint=str(obj.get("policy_fingerprint") or "").strip(),
         )
     except Exception:
         return None
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
+# v19: binds cached evidence to an immutable policy fingerprint, requires held-out
+#      skill over score-only/null baselines, and uses small-sample temporal bounds.
 # v18: retains the v17 purged-OOF/temporal rule and starts a new model-lineage dataset;
 # v17: retains the v16 purged-OOF activation rule and replaces transitive
 #      overlap components with deterministic non-overlapping decision cohorts.
 #      Existing outcomes remain valid, but cached v16 diagnostics must refit.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v18",
+    "futures_grid": "logreg_futures_grid_v19",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v18"
+GLOBAL_LOGREG_KEY = "logreg_global_v19"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

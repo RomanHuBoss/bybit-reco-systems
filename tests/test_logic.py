@@ -1067,7 +1067,9 @@ def test_risk_status_uses_peak_to_trough_drawdown_and_trade_losses_for_cooldown(
         "max_symbol_bots": 10,
     }
     rs = compute_risk_status(conn, limits)
-    assert rs.daily_pnl == 50.0
+    # Legacy rows can tighten controls through losses, but cannot credit
+    # self-reported profit without terminal exchange reconciliation.
+    assert rs.daily_pnl == -250.0
     assert rs.daily_dd == 250.0
     assert rs.cooldown_active is True
 
@@ -2791,8 +2793,11 @@ def test_fit_logreg_tolerates_malformed_feature_snapshot_values():
 
     model = fit_logreg(rows, min_samples=4, logreg_min_samples=4)
 
-    assert model.fitted is True
+    # Malformed optional features are sanitized, but this tiny, concentrated
+    # sample cannot establish chronological held-out skill.
+    assert model.fitted is False
     assert model.n_samples == len(rows)
+    assert model.oof_skill_status != "passed"
 
 
 

@@ -160,6 +160,32 @@ CREATE INDEX IF NOT EXISTS idx_execution_evidence_bot_ts
 CREATE INDEX IF NOT EXISTS idx_execution_evidence_rec_ts
   ON execution_evidence(origin_rec_id, ts ASC, event_id ASC);
 
+CREATE TABLE IF NOT EXISTS execution_reconciliations (
+  reconciliation_id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL,
+  origin_rec_id TEXT NOT NULL,
+  ts BIGINT NOT NULL,
+  source TEXT NOT NULL,
+  external_snapshot_id TEXT NOT NULL,
+  position_qty DOUBLE PRECISION NOT NULL,
+  open_order_count BIGINT NOT NULL,
+  execution_event_count BIGINT NOT NULL,
+  funding_event_count BIGINT NOT NULL,
+  realized_pnl_gross DOUBLE PRECISION NOT NULL,
+  fee DOUBLE PRECISION NOT NULL,
+  funding DOUBLE PRECISION NOT NULL,
+  currency TEXT NOT NULL,
+  complete INTEGER NOT NULL,
+  meta_json TEXT NOT NULL,
+  FOREIGN KEY (bot_id) REFERENCES bot_instances(bot_id),
+  FOREIGN KEY (origin_rec_id) REFERENCES recommendations(rec_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_reconciliations_external_unique
+  ON execution_reconciliations(source, external_snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_execution_reconciliations_bot_ts
+  ON execution_reconciliations(bot_id, ts DESC, reconciliation_id DESC);
+
 CREATE TABLE IF NOT EXISTS app_config (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,
@@ -196,6 +222,19 @@ CREATE TABLE IF NOT EXISTS reco_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_outcomes_ts ON reco_outcomes(ts DESC);
+
+CREATE TABLE IF NOT EXISTS reco_outcome_observability (
+  rec_id TEXT PRIMARY KEY,
+  recommendation_ts BIGINT NOT NULL,
+  label_due_ts BIGINT,
+  last_attempt_ts BIGINT NOT NULL,
+  state TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcome_observability_due
+  ON reco_outcome_observability(state, label_due_ts, recommendation_ts DESC);
 
 CREATE TABLE IF NOT EXISTS funding_rate (
   symbol TEXT NOT NULL,

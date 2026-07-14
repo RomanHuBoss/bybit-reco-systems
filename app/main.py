@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictFloat, StrictInt
+from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt
 
 from .settings import load_settings
 from .shock_guard import (
@@ -33,7 +33,10 @@ from .recommender import (
     DIRECTION_CALIBRATION_KEY,
     LLM_REVIEW_ASYNC_STATUS_APP_KEY,
     RECOMMENDER_MODEL_VERSION,
+    calibration_policy_contract,
+    calibration_policy_fingerprint,
     calibration_lineage_diagnostics,
+    policy_calibration_storage_key,
     run_llm_review_sweep_once,
     run_recommender_once,
 )
@@ -4637,7 +4640,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.56", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.57", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -4711,6 +4714,24 @@ class ExecutionEvidenceRequest(BaseModel):
     funding: StrictFloat = Field(0.0, allow_inf_nan=False, description="Signed funding cashflow: positive receipt, negative payment")
     slippage: StrictFloat | None = Field(None, ge=0.0, allow_inf_nan=False, description="Adverse benchmark-to-fill deviation derived from side/qty/benchmark_price/price; diagnostic only")
     currency: str = "USDT"
+    operator: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionReconciliationRequest(BaseModel):
+    reconciliation_id: str | None = None
+    source: str = Field(..., pattern="^bybit_private_reconciliation$")
+    external_snapshot_id: str
+    ts: StrictInt | None = Field(None, gt=0)
+    position_qty: StrictFloat = Field(..., allow_inf_nan=False)
+    open_order_count: StrictInt = Field(..., ge=0)
+    execution_event_count: StrictInt = Field(..., ge=0)
+    funding_event_count: StrictInt = Field(..., ge=0)
+    realized_pnl_gross: StrictFloat = Field(..., allow_inf_nan=False)
+    fee: StrictFloat = Field(..., allow_inf_nan=False)
+    funding: StrictFloat = Field(..., allow_inf_nan=False)
+    currency: str = "USDT"
+    complete: StrictBool
     operator: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
 
@@ -5767,6 +5788,10 @@ def api_record_execution_evidence(
                     "execution_evidence_sell_qty": float(summary["sell_qty"]),
                     "execution_evidence_net_position_qty": float(summary["net_position_qty"]),
                     "execution_evidence_position_flat": bool(summary["position_flat"]),
+                    "exchange_reconciled": bool(summary.get("exchange_reconciled")),
+                    "exchange_reconciliation_failures": list(
+                        summary.get("exchange_reconciliation_failures") or []
+                    ),
                     "execution_evidence_total_pnl_finalized": bool(summary["total_pnl_finalized"]),
                     "execution_evidence_last_event_ts": int(summary.get("last_event_ts") or ts),
                     "execution_evidence_last_event_id": event_id,
@@ -5806,6 +5831,152 @@ def api_record_execution_evidence(
         }
 
 
+@app.post("/api/v1/bots/{bot_id}/execution-reconciliation")
+def api_record_execution_reconciliation(
+    bot_id: str,
+    req: ExecutionReconciliationRequest,
+    request: Request,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    """Record an immutable terminal snapshot from a read-only Bybit adapter."""
+    _require_admin_key(x_api_key, request)
+    _ensure_json_payload_has_only_finite_numbers(req.meta, field_name="meta")
+    with closing(_get_conn()) as conn:
+        db.begin_immediate(conn)
+        bot = db.get_bot_instance(conn, bot_id, for_update=True)
+        if not bot:
+            raise HTTPException(status_code=404, detail="bot_id not found")
+        if str(bot.get("status") or "").strip().lower() != "stopped":
+            raise HTTPException(
+                status_code=409,
+                detail="terminal exchange reconciliation requires a stopped bot",
+            )
+
+        reconciliation_id = (
+            _normalized_non_empty_text(
+                req.reconciliation_id,
+                field_name="reconciliation_id",
+            )
+            if req.reconciliation_id is not None
+            else f"XR-{int(time.time())}-{secrets.token_hex(5)}"
+        )
+        external_snapshot_id = _normalized_non_empty_text(
+            req.external_snapshot_id,
+            field_name="external_snapshot_id",
+        )
+        operator = _normalized_optional_text(req.operator, field_name="operator")
+        ts = req.ts or int(time.time())
+        now = int(time.time())
+        if ts > now + 300:
+            raise HTTPException(
+                status_code=409,
+                detail="reconciliation timestamp is too far in the future (> 300s)",
+            )
+        stopped_ts = int(bot.get("stopped_ts") or 0)
+        if stopped_ts <= 0 or ts < stopped_ts:
+            raise HTTPException(
+                status_code=409,
+                detail="terminal reconciliation timestamp must be at or after bot stop",
+            )
+        snapshot = {
+            "reconciliation_id": reconciliation_id,
+            "bot_id": bot_id,
+            "origin_rec_id": bot.get("origin_rec_id"),
+            "ts": ts,
+            "source": req.source,
+            "external_snapshot_id": external_snapshot_id,
+            "position_qty": req.position_qty,
+            "open_order_count": req.open_order_count,
+            "execution_event_count": req.execution_event_count,
+            "funding_event_count": req.funding_event_count,
+            "realized_pnl_gross": req.realized_pnl_gross,
+            "fee": req.fee,
+            "funding": req.funding,
+            "currency": req.currency,
+            "complete": req.complete,
+            "meta": req.meta,
+        }
+        try:
+            insert_result = db.insert_execution_reconciliation(
+                conn,
+                snapshot,
+                commit=False,
+            )
+        except ValueError as exc:
+            _rollback_quietly(conn)
+            message = str(exc)
+            status_code = 409 if "already exists with different payload" in message else 422
+            raise HTTPException(status_code=status_code, detail=message)
+
+        summary = db.get_bot_execution_summary(conn, bot_id)
+        if insert_result == "duplicate":
+            canonical = db.get_execution_reconciliation_by_external_id(
+                conn,
+                req.source,
+                external_snapshot_id,
+            )
+            canonical_id = str(
+                (canonical or {}).get("reconciliation_id") or reconciliation_id
+            )
+            _rollback_quietly(conn)
+            return {
+                "ok": True,
+                "reconciliation_id": canonical_id,
+                "external_snapshot_id": external_snapshot_id,
+                "bot_id": bot_id,
+                "insert_result": "duplicate",
+                "idempotent": True,
+                **summary,
+            }
+        try:
+            state_updated = db.update_bot_state(
+                conn,
+                bot_id,
+                {
+                    "exchange_reconciliation_id": reconciliation_id,
+                    "exchange_reconciliation_ts": ts,
+                    "exchange_reconciled": bool(summary.get("exchange_reconciled")),
+                    "exchange_reconciliation_failures": list(
+                        summary.get("exchange_reconciliation_failures") or []
+                    ),
+                    "execution_evidence_total_pnl_finalized": bool(
+                        summary.get("total_pnl_finalized")
+                    ),
+                    "exchange_reconciliation_last_operator": operator,
+                },
+                commit=False,
+            )
+            if not state_updated:
+                raise RuntimeError("bot state update failed after execution reconciliation")
+            db.log_decision(
+                conn,
+                "EXECUTION_RECONCILIATION_RECORDED",
+                bot.get("origin_rec_id"),
+                operator,
+                {
+                    "bot_id": bot_id,
+                    "reconciliation_id": reconciliation_id,
+                    "external_snapshot_id": external_snapshot_id,
+                    "exchange_reconciled": bool(summary.get("exchange_reconciled")),
+                    "failures": list(summary.get("exchange_reconciliation_failures") or []),
+                },
+                commit=False,
+            )
+            conn.commit()
+        except Exception:
+            _rollback_quietly(conn)
+            raise
+        return {
+            "ok": True,
+            "reconciliation_id": reconciliation_id,
+            "external_snapshot_id": external_snapshot_id,
+            "bot_id": bot_id,
+            "insert_result": insert_result,
+            "idempotent": False,
+            **summary,
+        }
+
+
 @app.get("/api/v1/execution-evidence")
 def api_execution_evidence(
     request: Request,
@@ -5817,7 +5988,35 @@ def api_execution_evidence(
     limit = _bounded_limit(limit, default=500, max_value=2000)
     with closing(_get_conn()) as conn:
         items = db.list_execution_events(conn, bot_id=bot_id, limit=limit)
-        return {"items": items, "count": len(items), "evidence_grade": True}
+        return {
+            "items": items,
+            "count": len(items),
+            "evidence_grade": False,
+            "source_records_only": True,
+            "requires_terminal_exchange_reconciliation": True,
+        }
+
+
+@app.get("/api/v1/execution-reconciliations")
+def api_execution_reconciliations(
+    request: Request,
+    bot_id: str | None = None,
+    limit: int = 200,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    _require_admin_key(x_api_key, request)
+    limit = _bounded_limit(limit, default=200, max_value=1000)
+    with closing(_get_conn()) as conn:
+        items = db.list_execution_reconciliations(
+            conn,
+            bot_id=bot_id,
+            limit=limit,
+        )
+        return {
+            "items": items,
+            "count": len(items),
+            "terminal_exchange_reconciliation": True,
+        }
 
 
 @app.get("/api/v1/validation/live-evidence")
@@ -6385,7 +6584,21 @@ def api_status() -> dict[str, Any]:
         elif str(collector_thread_state.get("state") or "").lower() == "running":
             collector_runtime_state = "starting"
 
-        global_model = load_logreg_from_db(conn, GLOBAL_LOGREG_KEY)
+        active_risk_limits = normalize_risk_limits(
+            db.get_active_risk_limits(conn),
+            settings.risk_limits,
+        )
+        policy_contract = calibration_policy_contract(settings, active_risk_limits)
+        policy_fingerprint = calibration_policy_fingerprint(settings, active_risk_limits)
+        global_calibrator_key = policy_calibration_storage_key(
+            GLOBAL_LOGREG_KEY,
+            policy_fingerprint,
+        )
+        direction_calibrator_key = policy_calibration_storage_key(
+            DIRECTION_CALIBRATION_KEY,
+            policy_fingerprint,
+        )
+        global_model = load_logreg_from_db(conn, global_calibrator_key)
         calib_fitted = bool(global_model and global_model.fitted)
         calib_n = int(global_model.n_samples) if global_model and global_model.fitted else 0
         calib_logreg = bool(global_model and global_model.fitted and len(global_model.coef) > 0)
@@ -6418,9 +6631,14 @@ def api_status() -> dict[str, Any]:
                 "reasons": _json_loads_or_default(row["reasons_json"], {}),
             })
 
-        lineage = calibration_lineage_diagnostics(historical_rows)
+        lineage = calibration_lineage_diagnostics(
+            historical_rows,
+            policy_fingerprint=policy_fingerprint,
+            mean_reversion_min_score=settings.mean_reversion_min_score,
+        )
         current_model_rows = list(lineage["current_model_rows"])
         feature_eligible_rows = list(lineage["feature_eligible_rows"])
+        policy_eligible_rows = list(lineage["policy_eligible_rows"])
 
         def _stats_by_bot(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             stats_by_bot: dict[str, dict[str, Any]] = {}
@@ -6454,9 +6672,10 @@ def api_status() -> dict[str, Any]:
 
         historical_stats_by_bot = _stats_by_bot(historical_rows)
         current_model_stats_by_bot = _stats_by_bot(current_model_rows)
-        outcome_stats_by_bot = _stats_by_bot(feature_eligible_rows)
+        feature_stats_by_bot = _stats_by_bot(feature_eligible_rows)
+        outcome_stats_by_bot = _stats_by_bot(policy_eligible_rows)
         outcome_stats_7d_by_bot = _stats_by_bot([
-            item for item in feature_eligible_rows
+            item for item in policy_eligible_rows
             if int(item.get("ts") or 0) >= db.now_ts() - 7 * 86400
         ])
         outcome_count = int(lineage["historical_total"])
@@ -6476,7 +6695,8 @@ def api_status() -> dict[str, Any]:
             return True, "pending_refit"
 
         bot_status = {}
-        for bt, key in BOT_CALIB_KEYS.items():
+        for bt, base_key in BOT_CALIB_KEYS.items():
+            key = policy_calibration_storage_key(base_key, policy_fingerprint)
             m = load_logreg_from_db(conn, key)
             fitted = bool(m and m.fitted)
             logreg_active = bool(m and m.fitted and len(m.coef) > 0)
@@ -6486,6 +6706,14 @@ def api_status() -> dict[str, Any]:
             })
             historical_stats = historical_stats_by_bot.get(bt, {"total": 0})
             current_stats = current_model_stats_by_bot.get(bt, {"total": 0})
+            feature_stats = feature_stats_by_bot.get(bt, {"total": 0})
+            observability = db.get_policy_outcome_observability(
+                conn,
+                model_version=RECOMMENDER_MODEL_VERSION,
+                policy_fingerprint=policy_fingerprint,
+                bot_type=bt,
+                require_llm_verdict=require_llm_outcome_verdict,
+            )
             eligible, unfitted_reason = _bot_gate(
                 int(stats["total"]),
                 int(stats["wins"]),
@@ -6497,7 +6725,7 @@ def api_status() -> dict[str, Any]:
             if fitted and logreg_active:
                 confidence_mode = "bot_logreg"
             elif fitted:
-                confidence_mode = "bot_platt"
+                confidence_mode = "invalid_legacy_state"
             fit_rows = int(m.n_samples) if m is not None else 0
             bot_status[bt] = {
                 "fitted": fitted,
@@ -6508,13 +6736,16 @@ def api_status() -> dict[str, Any]:
                 "last_fit_ts": int(m.saved_ts) if m is not None else 0,
                 "confidence_mode": confidence_mode,
                 "calibrator_key": key,
+                "calibrator_base_key": base_key,
                 "calibration_model_version": RECOMMENDER_MODEL_VERSION,
+                "policy_fingerprint": policy_fingerprint,
                 "expectancy_status": str(getattr(m, "expectancy_status", "insufficient")) if m is not None else "insufficient",
                 "temporal_cluster_count": int(getattr(m, "temporal_cluster_count", 0) or 0) if m is not None else 0,
                 "minimum_temporal_clusters": int(getattr(m, "minimum_temporal_clusters", 0) or 0) if m is not None else 0,
                 "historical_outcomes_total": int(historical_stats.get("total", 0)),
                 "current_model_outcomes_total": int(current_stats.get("total", 0)),
-                "feature_eligible_outcomes_total": int(stats["total"]),
+                "feature_eligible_outcomes_total": int(feature_stats.get("total", 0)),
+                "policy_eligible_outcomes_total": int(stats["total"]),
                 "outcomes_total": int(stats["total"]),
                 "wins": int(stats["wins"]),
                 "losses": int(stats.get("losses", max(0, int(stats["total"]) - int(stats["wins"])))),
@@ -6529,6 +6760,23 @@ def api_status() -> dict[str, Any]:
                 "unfitted_reason": unfitted_reason,
                 "min_samples": min_samples,
                 "logreg_min_samples": logreg_min_samples,
+                "purged_oof_status": str(getattr(m, "oof_status", "not_evaluated")) if m is not None else "not_evaluated",
+                "purged_oof_skill_status": str(getattr(m, "oof_skill_status", "not_evaluated")) if m is not None else "not_evaluated",
+                "purged_oof_feature_log_loss": getattr(m, "oof_feature_log_loss", None) if m is not None else None,
+                "purged_oof_score_log_loss": getattr(m, "oof_score_log_loss", None) if m is not None else None,
+                "purged_oof_null_log_loss": getattr(m, "oof_null_log_loss", None) if m is not None else None,
+                "policy_matured_total": int(observability.get("matured_total") or 0),
+                "policy_labeled_total": int(observability.get("labeled_total") or 0),
+                "policy_censored_total": int(observability.get("censored_total") or 0),
+                "policy_unresolved_total": int(observability.get("unresolved_total") or 0),
+                "policy_invalid_contract_total": int(observability.get("invalid_contract_total") or 0),
+                "policy_invalid_labeled_total": max(
+                    int(observability.get("invalid_labeled_total") or 0),
+                    int(getattr(m, "policy_invalid_labeled_total", 0) or 0)
+                    if m is not None
+                    else 0,
+                ),
+                "policy_censor_reasons": dict(observability.get("censor_reasons") or {}),
             }
 
         last_reco_ts = db.get_latest_reco_ts(conn)
@@ -6555,13 +6803,22 @@ def api_status() -> dict[str, Any]:
             "confidence_mode_in_use": confidence_mode_in_use,
             "outcome_label_version": OUTCOME_LABEL_VERSION,
             "calibration_model_version": RECOMMENDER_MODEL_VERSION,
-            "global_calibrator_key": GLOBAL_LOGREG_KEY,
+            "calibration_policy_fingerprint": policy_fingerprint,
+            "calibration_policy_contract": policy_contract,
+            "global_calibrator_key": global_calibrator_key,
+            "global_calibrator_base_key": GLOBAL_LOGREG_KEY,
+            "direction_calibrator_key": direction_calibrator_key,
             "historical_outcome_count": int(lineage["historical_total"]),
             "current_model_outcome_count": int(lineage["current_model_total"]),
-            "calibration_eligible_outcome_count": int(lineage["feature_eligible_total"]),
+            "feature_eligible_outcome_count": int(lineage["feature_eligible_total"]),
+            "calibration_eligible_outcome_count": int(lineage["policy_eligible_total"]),
             "calibration_lineage_drops": {
                 "old_model": int(lineage["dropped_old_model"]),
                 "invalid_feature_evidence": int(lineage["dropped_invalid_feature_evidence"]),
+                "candidate_policy": int(lineage["dropped_candidate_policy"]),
+                "invalid_policy_maturity": int(lineage["dropped_invalid_policy_maturity"]),
+                "invalid_policy_contract": int(lineage["dropped_invalid_policy_contract"]),
+                "not_matured": int(lineage["dropped_not_matured"]),
             },
             "inference_ready_bot_count": inference_ready_bot_count,
             "inference_supported_bot_count": inference_supported_bot_count,

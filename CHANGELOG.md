@@ -1,3 +1,17 @@
+## 2026-07-14 - v1.0.57 - policy-conditioned calibration and reconciled evidence
+
+- Fixed a CRITICAL selection-policy contamination gap by binding recommendations, outcomes and cache identities to a full canonical SHA-256 policy fingerprint and recomputing the digest from every persisted contract before admitting evidence.
+- Fixed HIGH survivorship/censoring bias: every matured policy root is counted as labeled, censored or unresolved; positive inference fails closed on any unbounded omission or vanished cache support.
+- Fixed HIGH probability-validation defects: score-only in-sample Platt is no longer an inference fallback; feature LogReg must beat score-only/null log-loss on purged walk-forward and terminal future blocks; the terminal block is excluded from the activated fit.
+- Replaced the small-cohort normal approximation with a one-sided Student-t bound based on effective sample size.
+- Fixed HIGH direction-label leakage by targeting horizon entry/exit sign instead of whole-grid profitability; because the standalone Platt still lacks chronological skill validation, it is audit-only and cannot rewrite decision features.
+- Fixed HIGH outcome-worker starvation by recording attempts and rotating waiting roots; terminally unobservable roots are censored instead of silently retried or omitted forever.
+- Added additive SQLite/PostgreSQL tables `reco_outcome_observability` and `execution_reconciliations`, immutable/idempotent reconciliation ingestion, and status/UI diagnostics for policy counts, censoring and held-out skill.
+- Fixed CRITICAL live-evidence inflation: positive live PnL requires stopped + locally flat + matching terminal external Bybit reconciliation; unreconciled profit gets zero credit while unreconciled losses still tighten risk controls.
+- Advanced application to `1.0.57`, model lineage to `bybit-taxonomy-v8-policy-conditioned-censor-aware`, bot/global keys to v19 and direction key to v14. `grid_label_v26` and environment variables are unchanged.
+- Added 24 regression tests across `test_iteration245_policy_conditioned_calibration.py` and `test_iteration245_exchange_attestation_and_queue.py`. RED on the supplied v1.0.56 code: 10 + 10 failures; additional cases cover terminal-holdout refit, waiting-queue starvation, pre-stop reconciliation, detached positive cache support, contract-hash tampering, invalid direction labels and audit-only directional projection. Post-check: `1106 passed in 24.80s`; baseline: `1082 passed in 19.60s`. Ruff improved from 24 to 22 historical findings with no new finding.
+- Updated README, risk/trading/architecture/module/scenario docs, UI, operator DOCX/PDF and root infographic. Live PostgreSQL integration was not run because no explicitly disposable DSN was supplied; offline dialect tests and fresh/upgrade SQLite checks are required release gates.
+
 ## 2026-07-14 - v1.0.56 - calibration lineage reset and dataset transparency
 
 - Advanced recommendation lineage to `bybit-taxonomy-v7-mr-floor-temporal-cohorts`.

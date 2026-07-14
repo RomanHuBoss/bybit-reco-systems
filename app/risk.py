@@ -233,12 +233,11 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     n_active = len(active_bots)
 
     start = day_start_ts_utc()
-    realized_events = db.list_realized_net_events(conn, since_ts=start)
+    realized_events = db.list_risk_net_events(conn, since_ts=start)
     daily_pnl = sum(float(item.get("net_pnl") or 0.0) for item in realized_events)
 
-    # True realised intraday drawdown = peak-to-trough drop of the unified net
-    # evidence stream. Evidence-grade events replace legacy aggregate rows per bot
-    # so the same execution is not counted twice.
+    # Risk uses a loss-conservative stream: unreconciled/legacy losses tighten the
+    # guard, but only terminal exchange reconciliation can credit positive PnL.
     cumulative = 0.0
     peak = 0.0
     max_dd = 0.0
@@ -266,7 +265,7 @@ def compute_risk_status(conn, limits: dict[str, Any]) -> RiskStatus:
     if cooldown_min > 0:
         last_loss_ts = None
 
-        recent_realized = db.list_realized_net_events(
+        recent_realized = db.list_risk_net_events(
             conn,
             since_ts=max(0, db.now_ts() - int(cooldown_min) * 60),
         )

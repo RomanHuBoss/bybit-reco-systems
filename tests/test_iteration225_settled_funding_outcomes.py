@@ -231,5 +231,5 @@ def test_forecast_rate_does_not_change_historical_outcome_when_settlement_is_sam
 
 def test_outcome_contract_bumped_for_settled_funding() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'version="1.0.56"' in source
+    assert 'version="1.0.57"' in source
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source

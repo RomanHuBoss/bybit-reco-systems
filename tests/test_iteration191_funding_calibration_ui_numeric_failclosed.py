@@ -116,8 +116,11 @@ def test_calibration_rejects_boolean_labels_and_boolean_timestamps() -> None:
         ts_value=lambda i, now: now - (i + 1) * 60,
     )
     model = calibration.fit_logreg(valid_rows, min_samples=20, logreg_min_samples=300)
-    assert model.fitted is True
+    # Valid small samples still contribute monetary diagnostics, but they cannot
+    # activate an in-sample score-only probability model.
+    assert model.fitted is False
     assert model.n_samples == 100
+    assert model.oof_status == "insufficient"
 
 
 def test_all_operator_numeric_formatters_reject_boolean_values() -> None:

@@ -133,6 +133,27 @@ def _seed_stopped_evidence_bot(
             "meta": {},
         },
     )
+    db.insert_execution_reconciliation(
+        conn,
+        {
+            "reconciliation_id": f"XR-205-{symbol}-{index}",
+            "bot_id": bot_id,
+            "origin_rec_id": rec_id,
+            "ts": started_ts + 40,
+            "source": "bybit_private_reconciliation",
+            "external_snapshot_id": f"snapshot-205-{symbol}-{index}",
+            "position_qty": 0.0,
+            "open_order_count": 0,
+            "execution_event_count": 2,
+            "funding_event_count": 0,
+            "realized_pnl_gross": gross_pnl,
+            "fee": 0.1,
+            "funding": 0.0,
+            "currency": "USDT",
+            "complete": True,
+            "meta": {"cursor": f"205-{symbol}-{index}"},
+        },
+    )
 
 
 def _patch_unrelated_preflight(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,3 +1,14 @@
+## v1.0.57 evidence-contract rule
+
+- Application `1.0.57`; model `bybit-taxonomy-v8-policy-conditioned-censor-aware`; outcome target `grid_label_v26`; bot/global v19; direction v14.
+- Compare the full policy fingerprint, not only model version. Its digest must recompute from the persisted contract; different thresholds, universe, LLM gate or risk limits mean different evidence.
+- Check `policy_matured_total = labeled + censored + unresolved`. Any censored/unresolved/invalid or vanished cache support means **NO TRADE**.
+- Probability requires purged aggregate and terminal future-block skill over score-only/null baselines. The terminal block is never refit into the active model. Score-only Platt is not an inference fallback.
+- Direction Platt is audit-only; the decision feature remains raw until a separate chronological skill gate exists.
+- With `REQUIRE_CONF_GATE=1`, raw confidence is audit-only and cannot unlock publication.
+- Live positive PnL requires stopped + locally flat + complete matching external Bybit reconciliation. Before it, gains get zero credit and losses remain conservative.
+- This repository remains recommendation/audit-only: no order create/amend/cancel and no claim of live edge.
+
 ## v1.0.56 calibration-lineage rule
 
 - Application `1.0.56`; outcome target remains `grid_label_v26`.
@@ -225,4 +236,3 @@ Runtime guards are authoritative: risk status, Bybit metadata, live ticker/bid-a
 - An unfitted calibrator does not itself block publication; raw confidence is shown until fit.
 - Eligible `no_trade` candidates may be labeled later as `shadow_no_trade` for research. They are not live trades and cannot be executed.
 - The outcomes journal separates shadow roots from actionable roots and must never call OHLCV proxy labels real fills.
-

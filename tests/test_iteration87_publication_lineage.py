@@ -333,4 +333,6 @@ def test_status_and_outcome_stats_ignore_historical_active_duplicates(client_and
     assert status_resp.status_code == 200
     status_body = status_resp.json()
     assert status_body["outcome_count"] == 1
-    assert status_body["bot_calibrators"]["futures_grid"]["outcomes_total"] == 1
+    bot_status = status_body["bot_calibrators"]["futures_grid"]
+    assert bot_status["historical_outcomes_total"] == 1
+    assert bot_status["outcomes_total"] == 0

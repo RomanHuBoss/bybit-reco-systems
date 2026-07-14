@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from .bot_types import is_supported_bot_type, sql_in_clause
 from .grid_math import strict_integer
+from .policy import canonical_policy_fingerprint, is_sha256_fingerprint
 from .db_backend import connect as backend_connect, describe_target, is_postgres_target, OPERATIONAL_ERRORS, INTEGRITY_ERRORS, POSTGRES, SQLITE
 import logging
 
@@ -1831,6 +1832,278 @@ def list_execution_events(conn: sqlite3.Connection, bot_id: str | None = None, l
     return [item for row in cur.fetchall() if (item := _decode_execution_event_row(row)) is not None]
 
 
+def _normalize_execution_reconciliation(snapshot: dict[str, Any]) -> dict[str, Any]:
+    source = str(snapshot.get("source") or "").strip().lower()
+    if source != "bybit_private_reconciliation":
+        raise ValueError("execution reconciliation requires source=bybit_private_reconciliation")
+    reconciliation_id = _normalized_execution_text(
+        "reconciliation_id",
+        snapshot.get("reconciliation_id"),
+    )
+    bot_id = _normalized_execution_text("bot_id", snapshot.get("bot_id"))
+    origin_rec_id = _normalized_execution_text(
+        "origin_rec_id",
+        snapshot.get("origin_rec_id"),
+    )
+    external_snapshot_id = _normalized_execution_text(
+        "external_snapshot_id",
+        snapshot.get("external_snapshot_id"),
+    )
+    ts = _require_positive_int("ts", snapshot.get("ts"))
+    position_qty = _require_finite_float("position_qty", snapshot.get("position_qty"))
+    open_order_count = _require_non_negative_int(
+        "open_order_count",
+        snapshot.get("open_order_count"),
+    )
+    execution_event_count = _require_non_negative_int(
+        "execution_event_count",
+        snapshot.get("execution_event_count"),
+    )
+    funding_event_count = _require_non_negative_int(
+        "funding_event_count",
+        snapshot.get("funding_event_count"),
+    )
+    realized_pnl_gross = _require_finite_float(
+        "realized_pnl_gross",
+        snapshot.get("realized_pnl_gross"),
+    )
+    fee = _require_finite_float("fee", snapshot.get("fee"))
+    funding = _require_finite_float("funding", snapshot.get("funding"))
+    currency = str(snapshot.get("currency") or "").strip().upper()
+    if currency != "USDT":
+        raise ValueError("currency must be USDT for Bybit Linear USDT reconciliation")
+    complete_raw = snapshot.get("complete")
+    if not isinstance(complete_raw, bool):
+        raise ValueError("complete must be a boolean")
+    meta = snapshot.get("meta") or {}
+    if not isinstance(meta, dict):
+        raise ValueError("meta must be an object")
+    return {
+        "reconciliation_id": reconciliation_id,
+        "bot_id": bot_id,
+        "origin_rec_id": origin_rec_id,
+        "ts": ts,
+        "source": source,
+        "external_snapshot_id": external_snapshot_id,
+        "position_qty": position_qty,
+        "open_order_count": open_order_count,
+        "execution_event_count": execution_event_count,
+        "funding_event_count": funding_event_count,
+        "realized_pnl_gross": realized_pnl_gross,
+        "fee": fee,
+        "funding": funding,
+        "currency": currency,
+        "complete": complete_raw,
+        "meta": meta,
+    }
+
+
+def _decode_execution_reconciliation_row(row: Any) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "reconciliation_id": row["reconciliation_id"],
+        "bot_id": row["bot_id"],
+        "origin_rec_id": row["origin_rec_id"],
+        "ts": int(row["ts"]),
+        "source": row["source"],
+        "external_snapshot_id": row["external_snapshot_id"],
+        "position_qty": _finite_float_or_default(row["position_qty"], 0.0),
+        "open_order_count": int(row["open_order_count"]),
+        "execution_event_count": int(row["execution_event_count"]),
+        "funding_event_count": int(row["funding_event_count"]),
+        "realized_pnl_gross": _finite_float_or_default(row["realized_pnl_gross"], 0.0),
+        "fee": _finite_float_or_default(row["fee"], 0.0),
+        "funding": _finite_float_or_default(row["funding"], 0.0),
+        "currency": row["currency"],
+        "complete": bool(int(row["complete"])),
+        "meta": _json_loads_mapping_or_default(row["meta_json"], {}),
+    }
+
+
+def _execution_reconciliation_comparable(snapshot: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        snapshot["bot_id"],
+        snapshot["origin_rec_id"],
+        int(snapshot["ts"]),
+        snapshot["source"],
+        snapshot["external_snapshot_id"],
+        snapshot["position_qty"],
+        int(snapshot["open_order_count"]),
+        int(snapshot["execution_event_count"]),
+        int(snapshot["funding_event_count"]),
+        snapshot["realized_pnl_gross"],
+        snapshot["fee"],
+        snapshot["funding"],
+        snapshot["currency"],
+        bool(snapshot["complete"]),
+        _json_dumps_canonical(snapshot.get("meta") or {}),
+    )
+
+
+def get_execution_reconciliation_by_id(
+    conn: sqlite3.Connection,
+    reconciliation_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM execution_reconciliations WHERE reconciliation_id=?",
+        (str(reconciliation_id),),
+    ).fetchone()
+    return _decode_execution_reconciliation_row(row)
+
+
+def get_execution_reconciliation_by_external_id(
+    conn: sqlite3.Connection,
+    source: str,
+    external_snapshot_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """SELECT * FROM execution_reconciliations
+           WHERE source=? AND external_snapshot_id=?""",
+        (str(source).strip().lower(), str(external_snapshot_id).strip()),
+    ).fetchone()
+    return _decode_execution_reconciliation_row(row)
+
+
+def get_latest_execution_reconciliation(
+    conn: sqlite3.Connection,
+    bot_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """SELECT * FROM execution_reconciliations
+           WHERE bot_id=? ORDER BY ts DESC, reconciliation_id DESC LIMIT 1""",
+        (str(bot_id),),
+    ).fetchone()
+    return _decode_execution_reconciliation_row(row)
+
+
+def list_execution_reconciliations(
+    conn: sqlite3.Connection,
+    bot_id: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    if bot_id:
+        cur = conn.execute(
+            """SELECT * FROM execution_reconciliations WHERE bot_id=?
+               ORDER BY ts DESC, reconciliation_id DESC LIMIT ?""",
+            (str(bot_id), int(limit)),
+        )
+    else:
+        cur = conn.execute(
+            """SELECT * FROM execution_reconciliations
+               ORDER BY ts DESC, reconciliation_id DESC LIMIT ?""",
+            (int(limit),),
+        )
+    return [
+        item
+        for row in cur.fetchall()
+        if (item := _decode_execution_reconciliation_row(row)) is not None
+    ]
+
+
+def insert_execution_reconciliation(
+    conn: sqlite3.Connection,
+    snapshot: dict[str, Any],
+    *,
+    commit: bool = True,
+) -> str:
+    normalized = _normalize_execution_reconciliation(snapshot)
+    bot = get_bot_instance(conn, normalized["bot_id"])
+    if bot is None:
+        raise ValueError(f"bot_id={normalized['bot_id']} does not exist")
+    if str(bot.get("origin_rec_id") or "") != normalized["origin_rec_id"]:
+        raise ValueError("origin_rec_id does not match immutable bot origin")
+    if get_recommendation_by_id(conn, normalized["origin_rec_id"]) is None:
+        raise ValueError("origin_rec_id does not exist")
+    if str(bot.get("status") or "").strip().lower() != "stopped":
+        raise ValueError("terminal execution reconciliation requires a stopped bot")
+    stopped_ts = strict_integer(bot.get("stopped_ts"))
+    if stopped_ts is None or stopped_ts <= 0 or normalized["ts"] < stopped_ts:
+        raise ValueError("terminal reconciliation timestamp must be at or after bot stop")
+
+    existing = get_execution_reconciliation_by_id(
+        conn,
+        normalized["reconciliation_id"],
+    )
+    if existing is not None:
+        if _execution_reconciliation_comparable(existing) == _execution_reconciliation_comparable(normalized):
+            return "duplicate"
+        raise ValueError(
+            f"reconciliation_id={normalized['reconciliation_id']} already exists with different payload"
+        )
+    external = get_execution_reconciliation_by_external_id(
+        conn,
+        normalized["source"],
+        normalized["external_snapshot_id"],
+    )
+    if external is not None:
+        if _execution_reconciliation_comparable(external) == _execution_reconciliation_comparable(normalized):
+            return "duplicate"
+        raise ValueError(
+            f"external_snapshot_id={normalized['external_snapshot_id']} already exists with different payload"
+        )
+
+    payload = (
+        normalized["reconciliation_id"],
+        normalized["bot_id"],
+        normalized["origin_rec_id"],
+        normalized["ts"],
+        normalized["source"],
+        normalized["external_snapshot_id"],
+        normalized["position_qty"],
+        normalized["open_order_count"],
+        normalized["execution_event_count"],
+        normalized["funding_event_count"],
+        normalized["realized_pnl_gross"],
+        normalized["fee"],
+        normalized["funding"],
+        normalized["currency"],
+        int(normalized["complete"]),
+        _json_dumps_canonical(normalized["meta"]),
+    )
+    savepoint = _savepoint_name("execution_reconciliation_insert")
+    _begin_savepoint(conn, savepoint)
+    try:
+        conn.execute(
+            """INSERT INTO execution_reconciliations(
+                 reconciliation_id, bot_id, origin_rec_id, ts, source,
+                 external_snapshot_id, position_qty, open_order_count,
+                 execution_event_count, funding_event_count, realized_pnl_gross,
+                 fee, funding, currency, complete, meta_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            payload,
+        )
+        _release_savepoint(conn, savepoint)
+    except INTEGRITY_ERRORS:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        existing = get_execution_reconciliation_by_id(
+            conn,
+            normalized["reconciliation_id"],
+        )
+        if existing is not None:
+            if _execution_reconciliation_comparable(existing) == _execution_reconciliation_comparable(normalized):
+                return "duplicate"
+            raise ValueError(
+                f"reconciliation_id={normalized['reconciliation_id']} already exists with different payload"
+            )
+        external = get_execution_reconciliation_by_external_id(
+            conn,
+            normalized["source"],
+            normalized["external_snapshot_id"],
+        )
+        if external is not None and _execution_reconciliation_comparable(external) == _execution_reconciliation_comparable(normalized):
+            return "duplicate"
+        raise
+    except Exception:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        raise
+    if commit:
+        conn.commit()
+    return "inserted"
+
+
 def get_bot_execution_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str, Any]:
     cur = conn.execute(
         """SELECT event_type, ts, side, qty, gross_pnl, fee, funding, slippage
@@ -1887,7 +2160,62 @@ def get_bot_execution_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str
         and str(bot_row["status"] or "").strip().lower() == "stopped"
         and bot_row["stopped_ts"] is not None
     )
-    total_pnl_finalized = bool(bot_stopped and position_flat)
+    reconciliation = get_latest_execution_reconciliation(conn, bot_id)
+    reconciliation_failures: list[str] = []
+    if reconciliation is None:
+        reconciliation_failures.append("missing_terminal_exchange_reconciliation")
+    else:
+        if reconciliation.get("complete") is not True:
+            reconciliation_failures.append("exchange_reconciliation_incomplete")
+        if (
+            bot_row is not None
+            and bot_row["stopped_ts"] is not None
+            and int(reconciliation.get("ts") or 0) < int(bot_row["stopped_ts"])
+        ):
+            reconciliation_failures.append("exchange_reconciliation_precedes_bot_stop")
+        if last_event_ts is not None and int(reconciliation.get("ts") or 0) < last_event_ts:
+            reconciliation_failures.append("exchange_reconciliation_precedes_last_event")
+        if int(reconciliation.get("open_order_count") or 0) != 0:
+            reconciliation_failures.append("exchange_open_orders_remain")
+        snapshot_position = _finite_float_or_default(
+            reconciliation.get("position_qty"),
+            float("nan"),
+        )
+        if (
+            not math.isfinite(snapshot_position)
+            or abs(snapshot_position) > position_qty_tolerance
+        ):
+            reconciliation_failures.append("exchange_position_not_flat")
+        if int(reconciliation.get("execution_event_count") or 0) != execution_count:
+            reconciliation_failures.append("execution_event_count_mismatch")
+        if int(reconciliation.get("funding_event_count") or 0) != funding_event_count:
+            reconciliation_failures.append("funding_event_count_mismatch")
+        for field_name, local_value in (
+            ("realized_pnl_gross", gross),
+            ("fee", fee),
+            ("funding", funding),
+        ):
+            snapshot_value = _finite_float_or_default(
+                reconciliation.get(field_name),
+                float("nan"),
+            )
+            tolerance = max(
+                1e-8,
+                max(abs(local_value), abs(snapshot_value) if math.isfinite(snapshot_value) else 0.0)
+                * 1e-9,
+            )
+            if (
+                not math.isfinite(snapshot_value)
+                or not math.isclose(
+                    snapshot_value,
+                    local_value,
+                    rel_tol=0.0,
+                    abs_tol=tolerance,
+                )
+            ):
+                reconciliation_failures.append(f"{field_name}_mismatch")
+    exchange_reconciled = bool(reconciliation is not None and not reconciliation_failures)
+    total_pnl_finalized = bool(bot_stopped and position_flat and exchange_reconciled)
 
     net = gross + funding - fee
     return {
@@ -1910,9 +2238,12 @@ def get_bot_execution_summary(conn: sqlite3.Connection, bot_id: str) -> dict[str
         "position_flat": position_flat,
         "execution_ledger_complete": execution_ledger_complete,
         "bot_stopped": bot_stopped,
+        "exchange_reconciled": exchange_reconciled,
+        "exchange_reconciliation": reconciliation,
+        "exchange_reconciliation_failures": reconciliation_failures,
         "total_pnl_finalized": total_pnl_finalized,
-        "position_reconciliation_model": "signed_execution_qty_v1",
-        "evidence_grade": event_count > 0,
+        "position_reconciliation_model": "signed_execution_qty_plus_terminal_bybit_snapshot_v2",
+        "evidence_grade": total_pnl_finalized,
     }
 
 
@@ -1945,6 +2276,14 @@ def list_live_validation_records(conn: sqlite3.Connection, limit: int = 200) -> 
             validation_ineligible_reasons.append("execution_ledger_incomplete")
         if int(summary.get("execution_count") or 0) > 0 and summary.get("position_flat") is not True:
             validation_ineligible_reasons.append("residual_position")
+        if summary.get("exchange_reconciled") is not True:
+            failures = summary.get("exchange_reconciliation_failures") or []
+            if isinstance(failures, list) and failures:
+                validation_ineligible_reasons.extend(
+                    f"exchange_reconciliation:{str(reason)}" for reason in failures
+                )
+            else:
+                validation_ineligible_reasons.append("exchange_reconciliation_unavailable")
         if summary.get("total_pnl_finalized") is not True and not validation_ineligible_reasons:
             validation_ineligible_reasons.append("total_pnl_not_finalized")
 
@@ -2362,12 +2701,11 @@ def get_sentiment_series(conn: sqlite3.Connection, scope: str, key: str, limit: 
     return out
 
 def list_realized_net_events(conn: sqlite3.Connection, *, since_ts: int = 0) -> list[dict[str, Any]]:
-    """Return one de-duplicated realised PnL stream for risk accounting.
+    """Return only terminally exchange-reconciled realised PnL events.
 
-    Evidence-grade events take precedence per bot. Legacy aggregate ``trades``
-    remain a compatibility fallback only for bots that have no execution evidence,
-    preventing the same economic result from being counted twice. Fill-relative
-    slippage is diagnostic because actual gross PnL already reflects execution prices.
+    Local signed fills, operator-submitted events and legacy aggregate trades are
+    not profitability evidence by themselves.  A bot enters this stream only after
+    its stopped/flat ledger matches a later complete Bybit private reconciliation.
     """
     start_ts = _require_non_negative_int("since_ts", since_ts)
     out: list[dict[str, Any]] = []
@@ -2378,21 +2716,74 @@ def list_realized_net_events(conn: sqlite3.Connection, *, since_ts: int = 0) -> 
             ORDER BY ts ASC, event_id ASC""",
         (start_ts,),
     )
+    finalized_by_bot: dict[str, bool] = {}
     for row in cur.fetchall():
+        bot_id = str(row["bot_id"])
+        if bot_id not in finalized_by_bot:
+            summary = get_bot_execution_summary(conn, bot_id)
+            finalized_by_bot[bot_id] = bool(summary.get("total_pnl_finalized"))
+        if not finalized_by_bot[bot_id]:
+            continue
         gross = _finite_float_or_default(row["gross_pnl"], 0.0)
         fee = _finite_float_or_default(row["fee"], 0.0)
         funding = _finite_float_or_default(row["funding"], 0.0)
-        slippage = _finite_float_or_default(row["slippage"], 0.0)
         out.append({
             "event_id": row["event_id"],
-            "bot_id": row["bot_id"],
+            "bot_id": bot_id,
             "ts": int(row["ts"]),
+            "gross_pnl": gross,
+            "fee": fee,
+            "funding": funding,
             "net_pnl": gross + funding - fee,
-            "source": "execution_evidence",
+            "source": "exchange_reconciled_evidence",
+        })
+    return out
+
+
+def list_risk_net_events(conn: sqlite3.Connection, *, since_ts: int = 0) -> list[dict[str, Any]]:
+    """Return a loss-conservative risk stream without crediting unverified profit.
+
+    Reconciled terminal bots contribute their signed net cashflows.  Unreconciled
+    execution events and legacy trades can tighten controls through losses, but
+    positive values are clamped to zero and cannot manufacture daily profitability,
+    drawdown recovery or a favorable cooldown state.
+    """
+    start_ts = _require_non_negative_int("since_ts", since_ts)
+    out: list[dict[str, Any]] = []
+    cur = conn.execute(
+        """SELECT event_id, bot_id, ts, gross_pnl, fee, funding
+             FROM execution_evidence
+            WHERE ts>=?
+            ORDER BY ts ASC, event_id ASC""",
+        (start_ts,),
+    )
+    finalized_by_bot: dict[str, bool] = {}
+    for row in cur.fetchall():
+        bot_id = str(row["bot_id"])
+        if bot_id not in finalized_by_bot:
+            finalized_by_bot[bot_id] = bool(
+                get_bot_execution_summary(conn, bot_id).get("total_pnl_finalized")
+            )
+        raw_net = (
+            _finite_float_or_default(row["gross_pnl"], 0.0)
+            + _finite_float_or_default(row["funding"], 0.0)
+            - _finite_float_or_default(row["fee"], 0.0)
+        )
+        reconciled = finalized_by_bot[bot_id]
+        out.append({
+            "event_id": row["event_id"],
+            "bot_id": bot_id,
+            "ts": int(row["ts"]),
+            "net_pnl": raw_net if reconciled else min(0.0, raw_net),
+            "source": (
+                "exchange_reconciled_evidence"
+                if reconciled
+                else "unreconciled_execution_loss_only"
+            ),
         })
 
     cur = conn.execute(
-        """SELECT t.trade_id, t.bot_id, t.ts, t.pnl, t.fee, t.funding, t.slippage
+        """SELECT t.trade_id, t.bot_id, t.ts, t.pnl, t.fee, t.funding
              FROM trades t
             WHERE t.ts>=?
               AND NOT EXISTS (
@@ -2406,30 +2797,34 @@ def list_realized_net_events(conn: sqlite3.Connection, *, since_ts: int = 0) -> 
         pnl = _finite_float_or_default(row["pnl"], 0.0)
         fee = _finite_float_or_default(row["fee"], 0.0)
         funding = _finite_float_or_default(row["funding"], 0.0)
-        slippage = _finite_float_or_default(row["slippage"], 0.0)
+        raw_net = pnl + funding - fee
         out.append({
             "event_id": row["trade_id"],
             "bot_id": row["bot_id"],
             "ts": int(row["ts"]),
-            "net_pnl": pnl + funding - fee,
-            "source": "legacy_trade",
+            "net_pnl": min(0.0, raw_net),
+            "source": "legacy_trade_loss_only",
         })
     out.sort(key=lambda item: (int(item["ts"]), str(item["source"]), str(item["event_id"])))
     return out
 
 
 def sum_daily_gross_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
-    cur = conn.execute("SELECT pnl FROM trades WHERE ts>=?", (day_start_ts,))
-    return sum(_finite_float_or_default(row["pnl"], 0.0) for row in cur.fetchall())
+    return sum(
+        float(item.get("gross_pnl") or 0.0)
+        for item in list_realized_net_events(conn, since_ts=day_start_ts)
+    )
 
 
 def sum_daily_fees(conn: sqlite3.Connection, day_start_ts: int) -> float:
-    cur = conn.execute("SELECT fee FROM trades WHERE ts>=?", (day_start_ts,))
-    return sum(_finite_float_or_default(row["fee"], 0.0) for row in cur.fetchall())
+    return sum(
+        float(item.get("fee") or 0.0)
+        for item in list_realized_net_events(conn, since_ts=day_start_ts)
+    )
 
 
 def sum_daily_pnl(conn: sqlite3.Connection, day_start_ts: int) -> float:
-    """Net daily PnL from the de-duplicated realised event stream."""
+    """Net daily PnL from terminally exchange-reconciled evidence only."""
     return sum(float(item["net_pnl"]) for item in list_realized_net_events(conn, since_ts=day_start_ts))
 
 
@@ -2448,7 +2843,8 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
     """
     cur = conn.execute(
         """SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
-                  o.horizon_sec, o.label_available_ts, o.success, o.ret,
+                  o.horizon_sec, o.label_available_ts, o.entry_close, o.exit_close,
+                  o.success, o.ret,
                   r.score, r.status, r.reasons_json, r.model_version, r.publication_root_rec_id, r.is_outcome_label_root
            FROM reco_outcomes o
            JOIN recommendations r ON r.rec_id = o.rec_id
@@ -2491,6 +2887,8 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
             "label_available_ts": (
                 label_available_ts if label_available_ts is not None and label_available_ts > 0 else None
             ),
+            "entry_close": _finite_float_or_default(row["entry_close"], float("nan")),
+            "exit_close": _finite_float_or_default(row["exit_close"], float("nan")),
             "success":   success,
             "ret":       ret,
             "score":     score,
@@ -2500,6 +2898,248 @@ def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, requi
             "is_outcome_label_root": bool(root_flag),
         })
     return out
+
+
+OUTCOME_OBSERVABILITY_STATES: frozenset[str] = frozenset({
+    "waiting",
+    "censored",
+    "labeled",
+})
+POLICY_LABEL_HORIZONS_SEC: dict[str, int] = {
+    "futures_grid": 12 * 3600,
+}
+POLICY_LABEL_GRACE_SEC = 120
+
+
+def upsert_outcome_observability(
+    conn: sqlite3.Connection,
+    *,
+    rec_id: str,
+    recommendation_ts: int,
+    label_due_ts: int | None,
+    state: str,
+    reason: str,
+    details: dict[str, Any] | None = None,
+    commit: bool = True,
+) -> None:
+    rec_id_norm = str(rec_id or "").strip()
+    recommendation_ts_int = strict_integer(recommendation_ts)
+    label_due_ts_int = strict_integer(label_due_ts) if label_due_ts is not None else None
+    state_norm = str(state or "").strip().lower()
+    reason_norm = str(reason or "").strip()
+    if not rec_id_norm or recommendation_ts_int is None or recommendation_ts_int <= 0:
+        raise ValueError("outcome observability requires rec_id and positive recommendation_ts")
+    if label_due_ts is not None and (
+        label_due_ts_int is None or label_due_ts_int < recommendation_ts_int
+    ):
+        raise ValueError("outcome observability label_due_ts is invalid")
+    if state_norm not in OUTCOME_OBSERVABILITY_STATES:
+        raise ValueError("unsupported outcome observability state")
+    if not reason_norm:
+        raise ValueError("outcome observability reason is required")
+    attempt_ts = now_ts()
+    conn.execute(
+        """INSERT INTO reco_outcome_observability(
+                 rec_id, recommendation_ts, label_due_ts, last_attempt_ts,
+                 state, reason, details_json
+               ) VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(rec_id) DO UPDATE SET
+                 recommendation_ts=excluded.recommendation_ts,
+                 label_due_ts=excluded.label_due_ts,
+                 last_attempt_ts=excluded.last_attempt_ts,
+                 state=excluded.state,
+                 reason=excluded.reason,
+                 details_json=excluded.details_json""",
+        (
+            rec_id_norm,
+            recommendation_ts_int,
+            label_due_ts_int,
+            attempt_ts,
+            state_norm,
+            reason_norm,
+            _json_dumps_safe(details or {}),
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def get_policy_outcome_observability(
+    conn: sqlite3.Connection,
+    *,
+    model_version: str,
+    policy_fingerprint: str,
+    now_ts_value: int | None = None,
+    bot_type: str | None = None,
+    require_llm_verdict: bool = False,
+) -> dict[str, Any]:
+    """Count every matured root in an immutable policy cohort.
+
+    Calibration rows are an inner join by construction; this outer-join ledger is
+    the independent denominator that exposes censored and unresolved outcomes.
+    """
+    now_value = strict_integer(now_ts_value if now_ts_value is not None else now_ts())
+    if now_value is None or now_value <= 0:
+        raise ValueError("now_ts_value must be a positive integer timestamp")
+    model_norm = str(model_version or "").strip()
+    fingerprint_norm = str(policy_fingerprint or "").strip().lower()
+    if not is_sha256_fingerprint(fingerprint_norm):
+        raise ValueError("policy_fingerprint must be a sha256 hex digest")
+    cur = conn.execute(
+        """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type,
+                  r.direction AS recommendation_direction, r.score,
+                  r.status, r.reasons_json,
+                  r.model_version, r.is_outcome_label_root,
+                  o.rec_id AS outcome_rec_id,
+                  o.ts AS outcome_ts, o.venue AS outcome_venue,
+                  o.symbol AS outcome_symbol, o.bot_type AS outcome_bot_type,
+                  o.direction AS outcome_direction, o.horizon_sec,
+                  o.label_available_ts, o.entry_close, o.exit_close,
+                  o.success, o.ret,
+                  obs.state AS observability_state,
+                  obs.reason AS observability_reason
+             FROM recommendations r
+             LEFT JOIN reco_outcomes o ON o.rec_id=r.rec_id
+             LEFT JOIN reco_outcome_observability obs ON obs.rec_id=r.rec_id
+            WHERE COALESCE(r.is_outcome_label_root, 1)=1
+              AND (r.model_version=? OR r.model_version LIKE ?)
+            ORDER BY r.ts DESC, r.rec_id DESC""",
+        (model_norm, model_norm + "+%"),
+    )
+    matured_total = 0
+    labeled_total = 0
+    censored_total = 0
+    unresolved_total = 0
+    invalid_contract_total = 0
+    invalid_labeled_total = 0
+    censor_reasons: dict[str, int] = {}
+
+    def _record_invalid_contract(reason: str) -> None:
+        nonlocal matured_total, unresolved_total, invalid_contract_total
+        matured_total += 1
+        unresolved_total += 1
+        invalid_contract_total += 1
+        censor_reasons[reason] = censor_reasons.get(reason, 0) + 1
+
+    for row in cur.fetchall():
+        if bot_type is not None and str(row["bot_type"] or "") != str(bot_type):
+            continue
+        recommendation_ts = strict_integer(row["ts"])
+        horizon_sec = POLICY_LABEL_HORIZONS_SEC.get(str(row["bot_type"] or "").strip())
+        canonical_label_due_ts = (
+            recommendation_ts + horizon_sec + POLICY_LABEL_GRACE_SEC
+            if recommendation_ts is not None
+            and recommendation_ts > 0
+            and horizon_sec is not None
+            else None
+        )
+        is_matured = bool(
+            canonical_label_due_ts is None or canonical_label_due_ts <= now_value
+        )
+        reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+        outcome_policy = reasons.get("outcome_policy") if isinstance(reasons, dict) else None
+        if not isinstance(outcome_policy, dict):
+            if is_matured:
+                _record_invalid_contract("missing_policy_contract")
+            continue
+        policy_eligible = outcome_policy.get("policy_evaluation_eligible")
+        if policy_eligible is False:
+            continue
+        if policy_eligible is not True:
+            if is_matured:
+                _record_invalid_contract("invalid_policy_eligibility")
+            continue
+        stored_fingerprint = str(
+            outcome_policy.get("policy_fingerprint") or ""
+        ).strip().lower()
+        try:
+            contract_fingerprint = canonical_policy_fingerprint(
+                outcome_policy.get("policy_contract")
+            )
+        except Exception:
+            contract_fingerprint = ""
+        if (
+            not is_sha256_fingerprint(stored_fingerprint)
+            or contract_fingerprint != stored_fingerprint
+        ):
+            if is_matured:
+                _record_invalid_contract("invalid_policy_contract_fingerprint")
+            continue
+        if stored_fingerprint != fingerprint_norm:
+            continue
+        if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
+            row["status"], row["reasons_json"]
+        ):
+            continue
+        if canonical_label_due_ts is None:
+            _record_invalid_contract("invalid_policy_maturity_contract")
+            continue
+        if canonical_label_due_ts > now_value:
+            continue
+        matured_total += 1
+        stored_label_due_ts = strict_integer(outcome_policy.get("label_due_ts"))
+        if stored_label_due_ts != canonical_label_due_ts:
+            unresolved_total += 1
+            invalid_contract_total += 1
+            censor_reasons["invalid_policy_maturity_contract"] = (
+                censor_reasons.get("invalid_policy_maturity_contract", 0) + 1
+            )
+            continue
+        if row["outcome_rec_id"] is not None:
+            outcome_ts = strict_integer(row["outcome_ts"])
+            outcome_horizon = strict_integer(row["horizon_sec"])
+            outcome_available_ts = strict_integer(row["label_available_ts"])
+            outcome_success = strict_integer(row["success"])
+            entry_close = _finite_float_or_default(row["entry_close"], float("nan"))
+            exit_close = _finite_float_or_default(row["exit_close"], float("nan"))
+            outcome_return = _finite_float_or_default(row["ret"], float("nan"))
+            recommendation_score = _finite_float_or_default(row["score"], float("nan"))
+            label_valid = bool(
+                outcome_ts == recommendation_ts
+                and outcome_horizon == horizon_sec
+                and outcome_available_ts is not None
+                and outcome_available_ts >= int(recommendation_ts or 0)
+                and outcome_available_ts <= now_value
+                and str(row["outcome_venue"] or "") == str(row["venue"] or "")
+                and str(row["outcome_symbol"] or "") == str(row["symbol"] or "")
+                and str(row["outcome_bot_type"] or "") == str(row["bot_type"] or "")
+                and str(row["outcome_direction"] or "")
+                == str(row["recommendation_direction"] or "")
+                and outcome_success in (0, 1)
+                and math.isfinite(entry_close)
+                and entry_close > 0.0
+                and math.isfinite(exit_close)
+                and exit_close > 0.0
+                and math.isfinite(outcome_return)
+                and math.isfinite(recommendation_score)
+            )
+            if label_valid:
+                labeled_total += 1
+            else:
+                unresolved_total += 1
+                invalid_labeled_total += 1
+                censor_reasons["invalid_labeled_outcome"] = (
+                    censor_reasons.get("invalid_labeled_outcome", 0) + 1
+                )
+            continue
+        state = str(row["observability_state"] or "").strip().lower()
+        if state == "censored":
+            censored_total += 1
+            reason = str(row["observability_reason"] or "unknown").strip() or "unknown"
+            censor_reasons[reason] = censor_reasons.get(reason, 0) + 1
+        else:
+            unresolved_total += 1
+    return {
+        "policy_fingerprint": fingerprint_norm,
+        "matured_total": matured_total,
+        "labeled_total": labeled_total,
+        "censored_total": censored_total,
+        "unresolved_total": unresolved_total,
+        "invalid_contract_total": invalid_contract_total,
+        "invalid_labeled_total": invalid_labeled_total,
+        "censor_reasons": dict(sorted(censor_reasons.items())),
+    }
+
 
 def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
     conn.execute(
@@ -2511,6 +3151,16 @@ def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
             o["rec_id"], o["ts"], o["venue"], o["symbol"], o["bot_type"], o["direction"], o["horizon_sec"],
             o.get("label_available_ts"), o["entry_close"], o["exit_close"], o["ret"], o["success"]
         ),
+    )
+    upsert_outcome_observability(
+        conn,
+        rec_id=str(o["rec_id"]),
+        recommendation_ts=int(o["ts"]),
+        label_due_ts=o.get("label_available_ts"),
+        state="labeled",
+        reason="outcome_inserted",
+        details={"bot_type": o.get("bot_type")},
+        commit=False,
     )
     conn.commit()
 
@@ -3861,6 +4511,15 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     # reco_outcomes: keep 14 days (calibrator uses up to 6000 recent outcomes)
     cur = conn.execute("DELETE FROM reco_outcomes WHERE ts < ?", (cutoff_14d,))
     deleted["reco_outcomes"] = cur.rowcount
+
+    # Keep the independent denominator for exactly the same retained window as
+    # recommendations/outcomes.  Otherwise censored roots disappear earlier and
+    # can make the monetary gate fail open.
+    cur = conn.execute(
+        "DELETE FROM reco_outcome_observability WHERE recommendation_ts < ?",
+        (cutoff_14d,),
+    )
+    deleted["reco_outcome_observability"] = cur.rowcount
 
     # ohlcv: prune by timeframe, not with one flat horizon.
     # Recommender requires up to 80 daily candles for the 1d vote. A single 30d cutoff

@@ -10,10 +10,33 @@ from pathlib import Path
 
 from app import calibration, db, recommender
 
-CURRENT_MODEL = "bybit-taxonomy-v7-mr-floor-temporal-cohorts"
+CURRENT_MODEL = "bybit-taxonomy-v8-policy-conditioned-censor-aware"
 
 
-def _recommendation(rec_id: str, ts: int, model_version: str, *, evidence_valid: bool = True) -> dict:
+def _recommendation(
+    rec_id: str,
+    ts: int,
+    model_version: str,
+    *,
+    evidence_valid: bool = True,
+    policy_fingerprint: str | None = None,
+    policy_contract: dict | None = None,
+) -> dict:
+    reasons = {
+        "feature_snapshot": {
+            "mean_reversion_evidence_valid": 1 if evidence_valid else 0,
+            "mean_reversion_score": 0.31,
+        }
+    }
+    if policy_fingerprint is not None:
+        reasons["outcome_policy"] = {
+            "eligible": True,
+            "sample_role": "shadow_no_trade",
+            "policy_evaluation_eligible": True,
+            "policy_fingerprint": policy_fingerprint,
+            "policy_contract": policy_contract,
+            "label_due_ts": ts + 12 * 3600 + 120,
+        }
     return {
         "rec_id": rec_id,
         "ts": ts,
@@ -28,12 +51,7 @@ def _recommendation(rec_id: str, ts: int, model_version: str, *, evidence_valid:
         "expected_rr": 1.1,
         "risk_score": 0.2,
         "params": {},
-        "reasons": {
-            "feature_snapshot": {
-                "mean_reversion_evidence_valid": 1 if evidence_valid else 0,
-                "mean_reversion_score": 0.31,
-            }
-        },
+        "reasons": reasons,
         "blocks": [],
         "status": "no_trade",
         "ttl_sec": 1800,
@@ -63,9 +81,9 @@ def _outcome(rec_id: str, ts: int, success: int) -> dict:
 
 def test_model_and_calibrator_lineage_are_advanced() -> None:
     assert recommender.RECOMMENDER_MODEL_VERSION == CURRENT_MODEL
-    assert calibration.BOT_CALIB_KEYS["futures_grid"] == "logreg_futures_grid_v18"
-    assert calibration.GLOBAL_LOGREG_KEY == "logreg_global_v18"
-    assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v13"
+    assert calibration.BOT_CALIB_KEYS["futures_grid"] == "logreg_futures_grid_v19"
+    assert calibration.GLOBAL_LOGREG_KEY == "logreg_global_v19"
+    assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v14"
 
 
 def test_lineage_diagnostics_preserve_archive_but_reject_old_model_rows() -> None:
@@ -94,11 +112,29 @@ def test_status_separates_historical_current_and_feature_eligible_outcomes(tmp_p
         now = db.now_ts() - 13 * 3600
         with closing(db.connect(str(db_path))) as conn:
             db.init_db(conn)
+            active_limits = recommender.normalize_risk_limits(
+                db.get_active_risk_limits(conn),
+                app_main.settings.risk_limits,
+            )
+            policy_fingerprint = recommender.calibration_policy_fingerprint(
+                app_main.settings,
+                active_limits,
+            )
+            policy_contract = recommender.calibration_policy_contract(
+                app_main.settings,
+                active_limits,
+            )
             db.insert_recommendations(
                 conn,
                 [
                     _recommendation("R-old", now, "bybit-taxonomy-v6-historical-proxy-shadow-roots"),
-                    _recommendation("R-new", now + 1, CURRENT_MODEL),
+                    _recommendation(
+                        "R-new",
+                        now + 1,
+                        CURRENT_MODEL,
+                        policy_fingerprint=policy_fingerprint,
+                        policy_contract=policy_contract,
+                    ),
                 ],
             )
             db.insert_outcome(conn, _outcome("R-old", now, 1))
@@ -110,14 +146,18 @@ def test_status_separates_historical_current_and_feature_eligible_outcomes(tmp_p
         assert status["outcome_count"] == 2  # backward-compatible archive count
         assert status["historical_outcome_count"] == 2
         assert status["current_model_outcome_count"] == 1
+        assert status["feature_eligible_outcome_count"] == 1
         assert status["calibration_eligible_outcome_count"] == 1
         assert status["calibration_model_version"] == CURRENT_MODEL
-        assert status["global_calibrator_key"] == "logreg_global_v18"
+        assert status["global_calibrator_base_key"] == "logreg_global_v19"
+        assert status["global_calibrator_key"].startswith("logreg_global_v19:")
         assert bot["historical_outcomes_total"] == 2
         assert bot["current_model_outcomes_total"] == 1
         assert bot["feature_eligible_outcomes_total"] == 1
+        assert bot["policy_eligible_outcomes_total"] == 1
         assert bot["outcomes_total"] == 1
-        assert bot["calibrator_key"] == "logreg_futures_grid_v18"
+        assert bot["calibrator_base_key"] == "logreg_futures_grid_v19"
+        assert bot["calibrator_key"].startswith("logreg_futures_grid_v19:")
         assert bot["calibration_model_version"] == CURRENT_MODEL
     finally:
         sys.modules.pop("app.main", None)

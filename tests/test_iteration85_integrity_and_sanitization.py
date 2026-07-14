@@ -105,13 +105,13 @@ def test_fit_logreg_skips_malformed_rows_instead_of_crashing() -> None:
 
     model = fit_logreg(good_rows + dirty_rows, min_samples=4, logreg_min_samples=4)
 
-    assert model.fitted is True
+    assert model.fitted is False
     assert model.n_samples == 4
-    # Sanitization remains successful, but four concentrated timestamps do not
-    # provide enough purged OOF validation for the full feature model.
+    # Sanitization remains successful, but four rows cannot establish a positive
+    # small-sample monetary lower bound or held-out probability skill.
     assert model.coef == []
-    assert model.platt.fitted is True
-    assert model.oof_status == "insufficient"
+    assert model.platt.fitted is False
+    assert model.expectancy_status == "uncertain"
 
 
 def test_fetch_reddit_sentiment_sanitizes_non_finite_upvote_ratio(monkeypatch) -> None:

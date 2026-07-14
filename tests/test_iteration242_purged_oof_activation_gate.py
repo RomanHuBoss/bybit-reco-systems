@@ -81,7 +81,7 @@ def _distributed_rows() -> list[dict]:
     return rows
 
 
-def test_feature_logreg_degrades_to_score_platt_when_purged_oof_is_insufficient() -> None:
+def test_probability_model_remains_unavailable_when_purged_oof_is_insufficient() -> None:
     model = calibration.fit_logreg(
         _concentrated_rows(),
         min_samples=80,
@@ -95,8 +95,8 @@ def test_feature_logreg_degrades_to_score_platt_when_purged_oof_is_insufficient(
     assert model.oof_samples == 0
     assert model.oof_required_samples == 80
     assert model.coef == []
-    assert model.platt.fitted is True
-    assert model.fitted is True
+    assert model.platt.fitted is False
+    assert model.fitted is False
 
 
 def test_feature_logreg_activates_only_with_sufficient_purged_oof() -> None:

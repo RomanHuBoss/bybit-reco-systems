@@ -1,3 +1,16 @@
+## v1.0.57 module responsibility update
+
+- `app/calibration.py`: Student-t monetary bounds; aggregate and terminal purged log-loss skill; activates the pre-terminal-holdout pipeline only; rejects malformed fitted persistence.
+- `app/policy.py`: one strict canonical-JSON SHA-256 implementation shared by write and read boundaries.
+- `app/recommender.py`: canonical full policy contract/fingerprint, verified exact-policy cohort selection, censor/cache-support veto, v8 model and v19/v14 identities; no score-only probability fallback; direction Platt audit-only.
+- `app/outcomes.py`: durable waiting/censored/labeled attempts and starvation-free bounded queue rotation.
+- `app/db.py`: observability denominator, immutable/idempotent terminal reconciliation, exchange-reconciled profitability stream and loss-conservative unreconciled risk stream.
+- `app/risk.py`: consumes the loss-conservative stream, so unverified gains cannot recover drawdown while losses still tighten controls.
+- `app/main.py`: FastAPI 1.0.57, reconciliation POST/admin-list GET, fresh policy/censor/skill status fields.
+- `app/ui/static/app.js`: labels raw/legacy confidence as uncalibrated and exposes policy matured/labeled/censored/unresolved plus held-out skill.
+- `migrations/init.sql`, `migrations/init_postgres.sql`: additive observability and reconciliation tables/indexes.
+- `tests/test_iteration245_policy_conditioned_calibration.py`, `tests/test_iteration245_exchange_attestation_and_queue.py`: 24 new regressions.
+
 ## v1.0.56 module responsibility update
 
 - `app/recommender.py`: v7 model identity and shared calibration-lineage diagnostics.

@@ -80,7 +80,10 @@ def test_twenty_separate_horizons_can_establish_temporally_independent_positive_
     assert model.weighted_temporal_mean_return_lower_bound is not None
     assert model.weighted_temporal_mean_return_lower_bound > 0.0
     assert model.expectancy_status == "positive"
-    assert model.fitted is True
+    # Positive monetary evidence is not interchangeable with held-out
+    # probability-calibration skill.
+    assert model.fitted is False
+    assert model.oof_status == "insufficient"
 
 
 

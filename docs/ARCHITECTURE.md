@@ -1,3 +1,13 @@
+## v1.0.57 policy/evidence architecture
+
+The recommendation cycle canonicalizes normalized settings plus active risk limits into a full SHA-256 policy fingerprint before loading calibration. Each root persists that contract, and both the fit path and outer denominator recompute its digest before use. The calibration path is:
+
+`pre-calibration candidate policy -> exact fingerprint cohort -> outer-join observability denominator -> monetary Student-t gates -> purged walk-forward skill -> untouched terminal holdout -> pre-holdout LogReg + Platt activation`.
+
+`app/policy.py` owns canonical JSON hashing. `app/recommender.py` owns policy construction, verified exact-cohort selection and fail-closed inference; its standalone direction Platt is audit-only. `app/outcomes.py` owns queue rotation and waiting/censored/labeled transitions. `app/db.py` owns the verified independent denominator, immutable reconciliation snapshots and distinct profitability versus loss-conservative risk streams. `app/calibration.py` owns Student-t bounds, aggregate/final log-loss comparisons and persistence validation. `/api/v1/status` and the frontend expose the same policy counts and skill metrics.
+
+The relational change is additive and idempotent in both `init.sql` and `init_postgres.sql`: `reco_outcome_observability` and `execution_reconciliations` plus indexes. Existing databases upgrade through normal `init_db()`; no Alembic/manual data rewrite is used. Execution reconciliation is an ingestion boundary for a trusted external read-only adapter, not private order flow.
+
 ## v1.0.56 calibration lineage boundary
 
 `app/recommender.py::calibration_lineage_diagnostics()` is the shared source of truth for archive/current/eligible partitioning. Fit paths and `/api/v1/status` use the same filter. `app/calibration.py` uses v18 cache identities and `app/recommender.py` uses direction key v13, so stale v17/v12 objects cannot be loaded as current. PostgreSQL and SQLite schemas are unchanged.
@@ -335,4 +345,3 @@ Calibration contour версионирован отдельно: recommendation 
 ## Shadow outcome branch
 
 `candidate -> deterministic gates -> no_trade` не должен становиться тупиком обучения. Если payload полный и hard blocks отсутствуют, recommender добавляет explicit `outcome_policy(sample_role=shadow_no_trade, eligible=true)`. Outcome worker принимает только этот literal opt-in, повторно проверяет `risk_checks.passed` и после horizon создаёт counterfactual proxy label. Hard-blocked/pending/malformed/legacy rows остаются вне sample. Calibration и UI получают sample-role diagnostics; реальное исполнение по-прежнему подтверждается только external execution evidence.
-

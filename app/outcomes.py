@@ -1575,6 +1575,42 @@ def _first_positive_qty(params: dict[str, object]) -> Decimal | None:
     return None
 
 
+def _record_outcome_observability_attempt(
+    conn,
+    *,
+    rec_id: object,
+    recommendation_ts: object,
+    label_due_ts: object | None,
+    state: str,
+    reason: str,
+    details: dict[str, object] | None = None,
+) -> None:
+    """Persist queue progress without inventing an invalid event timestamp.
+
+    Waiting rows need a durable ``last_attempt_ts`` so an old unavailable symbol
+    cannot occupy every bounded worker batch forever.  Terminally invalid rows are
+    censored and leave the queue.  A database-corrupted recommendation timestamp
+    is logged by the caller but is deliberately not replaced with a fabricated
+    value in the observability ledger.
+    """
+    ts_value = strict_integer(recommendation_ts)
+    if ts_value is None or ts_value <= 0:
+        return
+    due_value = strict_integer(label_due_ts) if label_due_ts is not None else None
+    if due_value is not None and due_value < ts_value:
+        due_value = None
+    db.upsert_outcome_observability(
+        conn,
+        rec_id=str(rec_id),
+        recommendation_ts=int(ts_value),
+        label_due_ts=int(due_value) if due_value is not None else None,
+        state=state,
+        reason=reason,
+        details=details or {},
+        commit=True,
+    )
+
+
 def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
     min_horizon = min(BOT_HORIZONS.values())
     fetch_limit = max(int(max_to_process), min(2000, int(max_to_process) * 12))
@@ -1584,7 +1620,9 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                   r.params_json, r.features_ref_ts, r.status, r.reasons_json, r.model_version
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
+           LEFT JOIN reco_outcome_observability obs ON obs.rec_id = r.rec_id
            WHERE r.ts <= ? AND o.rec_id IS NULL
+           AND COALESCE(obs.state, '') <> 'censored'
            AND COALESCE(r.is_outcome_label_root, 1) = 1
            AND r.status NOT IN ('blocked', 'suppressed', 'pending')
            AND (
@@ -1602,7 +1640,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
            AND LOWER(COALESCE(json_extract(r.reasons_json, '$.llm_review.status'), '')) = 'ok'"""
 
     base_sql += """
-           ORDER BY r.ts ASC LIMIT ?"""
+           ORDER BY COALESCE(obs.last_attempt_ts, 0) ASC, r.ts ASC LIMIT ?"""
     params.append(fetch_limit)
 
     cur = conn.execute(base_sql, tuple(params))
@@ -1612,16 +1650,41 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
     for r in rows:
         if done >= int(max_to_process):
             break
+        rec_id = r["rec_id"]
         if require_llm_verdict and not db.is_outcome_eligible_under_llm_mode(r["status"], r["reasons_json"]):
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=r["ts"],
+                label_due_ts=None,
+                state="censored",
+                reason="llm_outcome_contract_not_satisfied",
+            )
             continue
         if str(r["status"] or "").strip().lower() == "no_trade" and not _shadow_no_trade_outcome_eligible(
             r["status"], r["reasons_json"]
         ):
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=r["ts"],
+                label_due_ts=None,
+                state="censored",
+                reason="shadow_outcome_contract_not_satisfied",
+            )
             continue
-        rec_id = r["rec_id"]
         bot_type = r["bot_type"]
         if bot_type not in SUPPORTED_BOT_TYPES:
             db.log_decision(conn, "OUTCOME_SKIP_UNSUPPORTED_BOT_TYPE", rec_id, None, {"bot_type": bot_type})
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=r["ts"],
+                label_due_ts=None,
+                state="censored",
+                reason="unsupported_bot_type",
+                details={"bot_type": bot_type},
+            )
             continue
         venue = r["venue"]
         symbol = r["symbol"]
@@ -1636,6 +1699,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "recommendation_ts": r["ts"],
                 "features_ref_ts": r["features_ref_ts"],
             })
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=r["ts"],
+                label_due_ts=None,
+                state="censored",
+                reason="invalid_temporal_fields",
+                details={"features_ref_ts": r["features_ref_ts"]},
+            )
             continue
 
         if direction is None or not _is_supported_direction(bot_type, venue, direction):
@@ -1645,6 +1717,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "symbol": symbol,
                 "direction": direction,
             })
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=ts0,
+                label_due_ts=ts0 + int(BOT_HORIZONS.get(bot_type, horizon_sec)) + 120,
+                state="censored",
+                reason="unsupported_direction",
+                details={"direction": direction, "venue": venue},
+            )
             continue
 
         import json
@@ -1654,6 +1735,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             params = None
         tradeable = _get_first_tradeable_candle_after(conn, venue, symbol, signal_ref_ts, ts0)
         if tradeable is None:
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=ts0,
+                label_due_ts=ts0 + int(BOT_HORIZONS.get(bot_type, horizon_sec)) + 120,
+                state="waiting",
+                reason="missing_tradeable_entry_candle",
+                details={"venue": venue, "symbol": symbol, "features_ref_ts": signal_ref_ts},
+            )
             continue
         entry_ts, entry = tradeable
 
@@ -1666,6 +1756,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         ts_exit = entry_ts + effective_horizon
         label_available_ts = ts_exit + 60
         if db.now_ts() < label_available_ts:
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=ts0,
+                label_due_ts=label_available_ts,
+                state="waiting",
+                reason="label_horizon_not_mature",
+                details={"entry_ts": entry_ts, "label_available_ts": label_available_ts},
+            )
             continue
         if not _has_complete_1m_window(conn, venue, symbol, entry_ts, ts_exit):
             db.log_decision(conn, "OUTCOME_SKIP_INCOMPLETE_HORIZON", rec_id, None, {
@@ -1675,6 +1774,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "label_available_ts": ts_exit,
                 "horizon_sec": effective_horizon,
             })
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=ts0,
+                label_due_ts=label_available_ts,
+                state="waiting",
+                reason="incomplete_horizon_window",
+                details={"venue": venue, "symbol": symbol, "entry_ts": entry_ts, "horizon_end_ts": ts_exit},
+            )
             continue
         if _get_candle_at_exact(conn, venue, symbol, ts_exit) is None:
             _log_outcome_decision_once(
@@ -1690,9 +1798,27 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 },
                 cooldown_sec=3600,
             )
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=ts0,
+                label_due_ts=label_available_ts,
+                state="waiting",
+                reason="missing_horizon_boundary_candle",
+                details={"venue": venue, "symbol": symbol, "horizon_end_ts": ts_exit},
+            )
             continue
 
         if entry is None or entry == 0:
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=ts0,
+                label_due_ts=label_available_ts,
+                state="censored",
+                reason="invalid_entry_price",
+                details={"entry": entry, "entry_ts": entry_ts},
+            )
             continue
         ret_proxy: float
         success: int
@@ -1701,6 +1827,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         if bot_type in GRID_BOTS:
             ep = _get_open_at_exact(conn, venue, symbol, ts_exit)
             if ep is None:
+                _record_outcome_observability_attempt(
+                    conn,
+                    rec_id=rec_id,
+                    recommendation_ts=ts0,
+                    label_due_ts=label_available_ts,
+                    state="waiting",
+                    reason="missing_exit_open",
+                    details={"venue": venue, "symbol": symbol, "horizon_end_ts": ts_exit},
+                )
                 continue
             exitp = ep
             diagnostics: dict[str, object] = {}
@@ -1741,6 +1876,16 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                     }
                     else "OUTCOME_SKIP_INVALID_GRID_CONTRACT"
                 )
+                db.upsert_outcome_observability(
+                    conn,
+                    rec_id=str(rec_id),
+                    recommendation_ts=int(ts0),
+                    label_due_ts=int(label_available_ts),
+                    state="waiting" if transient else "censored",
+                    reason=reason,
+                    details=details,
+                    commit=True,
+                )
                 _log_outcome_decision_once(
                     conn,
                     action,
@@ -1752,6 +1897,15 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             success, ret_proxy = grid_result
 
         else:
+            _record_outcome_observability_attempt(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=ts0,
+                label_due_ts=label_available_ts,
+                state="censored",
+                reason="unsupported_outcome_model",
+                details={"bot_type": bot_type},
+            )
             continue
 
         db.insert_outcome(

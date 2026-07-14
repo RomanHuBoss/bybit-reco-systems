@@ -63,7 +63,7 @@ def test_fit_logreg_passes_exact_label_availability_into_walk_forward_oof(monkey
 
     model = calibration.fit_logreg(rows, min_samples=2, logreg_min_samples=4)
 
-    assert model.fitted is True
+    assert model.fitted is False
     assert model.coef == []
     assert model.oof_status == "insufficient"
     assert model.oof_samples == 0
