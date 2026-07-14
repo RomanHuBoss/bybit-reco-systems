@@ -1,3 +1,10 @@
+## v1.0.60 module responsibility update
+
+- `app/collector.py`: accumulates API/bootstrap/derived OHLCV rows before database persistence; uses retry-capable committed batches; tracks source-timeframe touches so hot 1m work cannot rewrite unrelated 4h series.
+- `app/db.py`: existing `_commit_write_with_retry()` and canonical OHLCV key ordering remain the single persistence mechanism for deadlock recovery; schema unchanged.
+- `app/main.py`: FastAPI version `1.0.60`; collector/backfill supervision and runtime-lock topology unchanged.
+- `tests/test_iteration248_postgres_ohlcv_transaction_order.py`: reproduces localized PostgreSQL deadlock-victim behavior and verifies global canonical lock order for hot and backfill batches.
+
 ## v1.0.58 module responsibility update
 
 - `app/db.py`: scope-normalized outcome aggregation, exact model/policy admission, policy-contract digest verification, and lineage fields in recent outcome rows.

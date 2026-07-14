@@ -944,6 +944,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     api_fetch_counts: dict[int, int] = {}
     derived_bootstrap_fetch_counts: dict[int, int] = {}
     derived_write_counts: dict[int, int] = {}
+    touched_by_source_tf: dict[int, set[str]] = {}
 
     def _api_task_worker(task: tuple[str, int, int | None]) -> tuple[str, int, list[list[Any]]]:
         sym, tf_sec, last_local_ts = task
@@ -996,14 +997,18 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                     appended += 1
                 if appended > 0:
                     api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
+                    touched_by_source_tf.setdefault(tf_sec, set()).add(sym)
             if idx % max(1, max_workers) == 0:
                 _heartbeat(heartbeat)
         if ohlcv_rows:
-            db.upsert_ohlcv(conn, ohlcv_rows, commit=False)
+            # PostgreSQL deadlock victims abort the whole transaction. Use the
+            # retry-capable commit boundary here instead of leaving OHLCV inside
+            # a larger caller-managed transaction.
+            db.upsert_ohlcv(conn, ohlcv_rows, commit=True)
             stats["ohlcv_written"] += len(ohlcv_rows)
         for action, details in api_log_events:
             db.log_decision(conn, action, None, None, details, commit=False)
-        if ohlcv_rows or api_log_events:
+        if api_log_events:
             conn.commit()
         _heartbeat(heartbeat)
 
@@ -1012,6 +1017,7 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     if allow_derived_bootstrap:
         bootstrap_log_events: list[tuple[str, dict[str, Any]]] = []
         bootstrap_tasks: list[tuple[str, int]] = []
+        bootstrap_ohlcv_rows: list[dict[str, Any]] = []
         for target_tf_sec in _DERIVED_TF_SOURCES:
             for sym in active_symbols:
                 if int(disabled.get(sym, 0) or 0) > now_ts:
@@ -1049,30 +1055,39 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
             else:
                 _sym_out, _target_out, bootstrap_rows = result
                 if bootstrap_rows:
-                    db.upsert_ohlcv(conn, bootstrap_rows, commit=False)
+                    bootstrap_ohlcv_rows.extend(bootstrap_rows)
                     stats["ohlcv_written"] += len(bootstrap_rows)
                     derived_bootstrap_fetch_counts[target_tf_sec] = derived_bootstrap_fetch_counts.get(target_tf_sec, 0) + 1
+                    source_tf = _DERIVED_TF_SOURCES.get(target_tf_sec)
+                    if source_tf is not None:
+                        touched_by_source_tf.setdefault(source_tf, set()).add(sym)
             if idx % max(1, max_workers) == 0:
                 _heartbeat(heartbeat)
+        if bootstrap_ohlcv_rows:
+            db.upsert_ohlcv(conn, bootstrap_ohlcv_rows, commit=True)
         for action, details in bootstrap_log_events:
             db.log_decision(conn, action, None, None, details, commit=False)
-        if bootstrap_tasks or bootstrap_log_events:
+        if bootstrap_log_events:
             conn.commit()
         _heartbeat(heartbeat)
 
-    # Maintain derived TFs locally after primary source TFs are written.
+    # Maintain only derivatives whose source TF changed in this cycle. Besides
+    # removing write amplification, this prevents the 1m hot worker from rewriting
+    # 4h rows concurrently with the 1h backfill worker.
     for target_tf_sec, source_tf_sec in _DERIVED_TF_SOURCES.items():
-        for sym in active_symbols:
+        derived_batch: list[dict[str, Any]] = []
+        target_symbols = sorted(touched_by_source_tf.get(source_tf_sec, set()))
+        for sym in target_symbols:
             if int(disabled.get(sym, 0) or 0) > now_ts:
                 continue
             derived_rows = _derive_local_tf_rows(conn, venue, sym, source_tf_sec, target_tf_sec)
             if not derived_rows:
                 continue
-            db.upsert_ohlcv(conn, derived_rows, commit=False)
+            derived_batch.extend(derived_rows)
             stats["ohlcv_written"] += len(derived_rows)
             derived_write_counts[target_tf_sec] = derived_write_counts.get(target_tf_sec, 0) + len(derived_rows)
-        if derived_write_counts.get(target_tf_sec, 0):
-            conn.commit()
+        if derived_batch:
+            db.upsert_ohlcv(conn, derived_batch, commit=True)
         _heartbeat(heartbeat)
 
     conn.commit()
@@ -1178,16 +1193,17 @@ def collect_backfill_once(
             if idx % max(1, max_workers) == 0:
                 _heartbeat(heartbeat)
         if ohlcv_rows:
-            db.upsert_ohlcv(conn, ohlcv_rows, commit=False)
+            db.upsert_ohlcv(conn, ohlcv_rows, commit=True)
             stats["ohlcv_written"] += len(ohlcv_rows)
         for action, details in api_log_events:
             db.log_decision(conn, action, None, None, details, commit=False)
-        if ohlcv_rows or api_log_events:
+        if api_log_events:
             conn.commit()
         _heartbeat(heartbeat)
 
     bootstrap_log_events: list[tuple[str, dict[str, Any]]] = []
     bootstrap_tasks: list[tuple[str, int]] = []
+    bootstrap_ohlcv_rows: list[dict[str, Any]] = []
     for target_tf_sec in _DERIVED_TF_SOURCES:
         candidates: list[tuple[str, int]] = []
         for sym in symbols2:
@@ -1228,7 +1244,7 @@ def collect_backfill_once(
         else:
             _sym_out, _target_out, bootstrap_rows = result
             if bootstrap_rows:
-                db.upsert_ohlcv(conn, bootstrap_rows, commit=False)
+                bootstrap_ohlcv_rows.extend(bootstrap_rows)
                 stats["ohlcv_written"] += len(bootstrap_rows)
                 derived_bootstrap_fetch_counts[target_tf_sec] = derived_bootstrap_fetch_counts.get(target_tf_sec, 0) + 1
                 source_tf = _DERIVED_TF_SOURCES.get(target_tf_sec)
@@ -1236,9 +1252,11 @@ def collect_backfill_once(
                     touched_by_source_tf.setdefault(source_tf, set()).add(sym)
         if idx % max(1, max_workers) == 0:
             _heartbeat(heartbeat)
+    if bootstrap_ohlcv_rows:
+        db.upsert_ohlcv(conn, bootstrap_ohlcv_rows, commit=True)
     for action, details in bootstrap_log_events:
         db.log_decision(conn, action, None, None, details, commit=False)
-    if bootstrap_tasks or bootstrap_log_events:
+    if bootstrap_log_events:
         conn.commit()
     _heartbeat(heartbeat)
 
@@ -1246,17 +1264,18 @@ def collect_backfill_once(
         target_symbols = sorted(touched_by_source_tf.get(source_tf_sec, set()))
         if not target_symbols:
             continue
+        derived_batch: list[dict[str, Any]] = []
         for sym in target_symbols:
             if int(disabled.get(sym, 0) or 0) > now_ts:
                 continue
             derived_rows = _derive_local_tf_rows(conn, venue, sym, source_tf_sec, target_tf_sec)
             if not derived_rows:
                 continue
-            db.upsert_ohlcv(conn, derived_rows, commit=False)
+            derived_batch.extend(derived_rows)
             stats["ohlcv_written"] += len(derived_rows)
             derived_write_counts[target_tf_sec] = derived_write_counts.get(target_tf_sec, 0) + len(derived_rows)
-        if derived_write_counts.get(target_tf_sec, 0):
-            conn.commit()
+        if derived_batch:
+            db.upsert_ohlcv(conn, derived_batch, commit=True)
         _heartbeat(heartbeat)
 
     conn.commit()

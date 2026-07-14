@@ -1,3 +1,15 @@
+## v1.0.60 market-data transaction ordering
+
+The `collector` and `backfill` loops remain independently supervised and retain separate runtime leadership locks, but their shared `ohlcv` write contract is now explicit:
+
+1. network workers may complete in any order;
+2. results are first accumulated in memory;
+3. `db.upsert_ohlcv()` deduplicates and sorts the complete transaction by `(venue, symbol, tf_sec, ts)`;
+4. the write is committed through the lock-retry boundary, which rolls back a PostgreSQL deadlock victim before replay;
+5. decision-log writes use a separate transaction so a noncritical audit-log lock cannot enlarge the OHLCV lock graph.
+
+The hot collector records which source timeframes actually received rows. Derived 15m/30m/4h maintenance runs only for symbols touched at the corresponding source timeframe. In normal lifespan wiring the hot loop fetches 1m only, therefore 4h maintenance belongs to the backfill loop that fetches 1h. This reduces redundant writes without changing candle geometry or persistence schema.
+
 ## v1.0.58 operator evidence boundary
 
 `GET /api/v1/outcomes/stats` accepts `scope=current_policy|current_model|archive` and defaults to `current_policy`. `app/main.py` derives the active fingerprint from current settings plus active risk limits. `app/db.py` filters model lineage, recomputes each persisted policy-contract digest, and aggregates only admitted rows. The frontend requests current-policy and archive payloads independently; only the former drives headline and detailed policy tables. No relational migration is required.

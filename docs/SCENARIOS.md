@@ -1,3 +1,12 @@
+## Scenario: hot collector and warm-up backfill overlap on PostgreSQL (v1.0.60)
+
+1. The hot loop fetches 1m rows while the backfill loop bootstraps or refreshes slower/derived series.
+2. Network futures may finish in arbitrary order, but no OHLCV statement is executed yet.
+3. Each loop aggregates its pending rows; persistence canonicalizes the complete primary-key order.
+4. If PostgreSQL chooses the transaction as a deadlock victim, the connection rolls back and replays the same canonical batch.
+5. A successful OHLCV commit is retained even if a later diagnostic-log write fails; the outer supervisor records any terminal cycle error.
+6. The hot loop derives 15m/30m from touched 1m sources and does not rewrite 4h unless it actually fetched/touched 1h (normal hot wiring does not).
+
 ## Scenario: old outcomes remain in the DB after a policy update (v1.0.58)
 
 1. The database contains 72 outcomes from prior model/policy lineages.

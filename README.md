@@ -1,3 +1,17 @@
+## PostgreSQL OHLCV transaction-order hardening (v1.0.60)
+
+The market-data collector now treats every OHLCV batch as its own retry-capable transaction. This closes a production PostgreSQL deadlock path where the hot collector and backfill worker inserted overlapping `ohlcv` primary-key rows through caller-managed `commit=False` transactions.
+
+Key behavior:
+
+- API, bootstrap and derived OHLCV writes use the existing rollback/retry boundary in `db.upsert_ohlcv(..., commit=True)`;
+- bootstrap results are aggregated before persistence, so `as_completed()` network order cannot become database lock order;
+- derived rows are aggregated and canonically ordered by `(venue, symbol, tf_sec, ts)` per transaction;
+- the hot 1-minute collector derives only timeframes whose source series changed in that cycle and no longer rewrites 4-hour rows owned by the 1-hour backfill path;
+- SQLite/PostgreSQL schemas and the recommendation, risk, outcome and operator contracts are unchanged.
+
+This release improves liveness and market-data integrity. It does not establish strategy profitability: economic viability still requires a frozen-policy runtime evidence cohort with reconciled fills, fees, spread, slippage and funding.
+
 ## Outcome lineage truth and calibration readiness diagnostics (v1.0.58)
 
 Version `1.0.58` fixes the operator-facing evidence view. `GET /api/v1/outcomes/stats` now defaults to `scope=current_policy`; `scope=current_model` and `scope=archive` are explicit alternatives. Current-policy rows must match the active recommendation model and the exact active policy fingerprint, and the persisted policy contract is re-hashed before a row enters the current headline. The UI obtains current-policy and archive statistics separately, uses only the current-policy cohort for the headline/tables, and labels the immutable archive as historical. Old proxy outcomes remain in the database by design; they no longer masquerade as evidence for the running policy.

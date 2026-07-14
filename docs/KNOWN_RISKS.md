@@ -1,3 +1,9 @@
+## Resolved in v1.0.60: PostgreSQL OHLCV deadlock retry was bypassed by collector transactions
+
+**Confirmed HIGH defect.** `db.upsert_ohlcv()` already sorted rows and retried deadlock victims only when called with `commit=True`, but the production hot/backfill paths used `commit=False` and committed later. Backfill bootstrap also persisted per task in completion order, while the hot collector rewrote derived 4-hour rows every minute. Two workers could therefore lock overlapping `ohlcv` primary-key tuples in different order; the deadlock victim surfaced as `COLLECT_ERROR` and the cycle lost its market-data write.
+
+v1.0.60 uses canonical aggregated OHLCV transactions with rollback/retry and derives only from source timeframes touched in the current cycle. Residual risk remains: no disposable live PostgreSQL DSN was supplied, so the fix is proven by deterministic transaction/deadlock simulations and dialect tests, not by a two-session integration run against a real PostgreSQL server. Operational monitoring should still alert on SQLSTATE `40P01`, `40001` and `55P03` rather than treating them as harmless noise.
+
 ## Resolved in v1.0.58: historical outcomes were still presented as current-policy performance
 
 The database intentionally retains immutable outcomes across releases, but the operator endpoint and modal still aggregated the full archive and labelled it as the active headline. A new model/policy could therefore appear to start with dozens of observations and an inherited win rate. v1.0.58 makes `current_policy` the API default, verifies the current model plus exact policy fingerprint by re-hashing the persisted contract, and renders the archive separately. Archive performance is research history only and does not enter the current-policy headline.

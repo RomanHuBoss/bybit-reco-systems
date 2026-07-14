@@ -1,3 +1,14 @@
+## 2026-07-15 - v1.0.60 - PostgreSQL OHLCV transaction-order hardening
+
+- Confirmed that hot/backfill OHLCV call sites bypassed the existing deadlock retry by using `commit=False`, so PostgreSQL deadlock victims escaped as `COLLECT_ERROR` and aborted a collection cycle.
+- Aggregated bootstrap and derived rows before persistence, removing nondeterministic `as_completed()` lock order and per-symbol transaction ordering.
+- Changed all collector/backfill OHLCV persistence boundaries to rollback-and-retry capable commits.
+- Stopped the hot 1-minute worker from rewriting 4-hour rows when its 1-hour source did not change, reducing write amplification and cross-worker contention.
+- Added `tests/test_iteration248_postgres_ohlcv_transaction_order.py` with two independent deadlock-victim regressions; RED: 2 failed, GREEN: 2 passed.
+- Baseline: 1117 collected; exhaustive seven-batch run 1117 passed. Monolithic baseline timed out at 58% without a failure summary and was not counted as a pass.
+- Post-check counts and limitations are recorded in the current iteration audit report.
+- Advanced FastAPI version to `1.0.60`; no schema, API, env, model-lineage or trading-math change.
+
 ## 2026-07-14 - v1.0.59 - bounded censoring sensitivity and liveness
 
 - Fixed the OPEN HIGH liveness/methodology risk where one terminally censored root permanently destroyed an otherwise validated exact-policy model.
