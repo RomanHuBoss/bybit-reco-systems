@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -73,6 +74,11 @@ class PostgresCursor:
     def fetchall(self):
         return self._cursor.fetchall()
 
+    def fetchmany(self, size: int | None = None):
+        if size is None:
+            return self._cursor.fetchmany()
+        return self._cursor.fetchmany(int(size))
+
     def close(self) -> None:
         try:
             self._cursor.close()
@@ -99,6 +105,28 @@ class PostgresConnection:
     def execute(self, sql: str, params: Iterable[Any] | None = None):
         translated_sql, translated_params = translate_sql(sql, params, engine=POSTGRES)
         cur = self._conn.cursor()
+        cur.execute(translated_sql, translated_params)
+        return PostgresCursor(cur)
+
+    def execute_stream(
+        self,
+        sql: str,
+        params: Iterable[Any] | None = None,
+        *,
+        batch_size: int = 256,
+    ):
+        """Execute a bounded server-side cursor for large read-only scans.
+
+        A regular psycopg cursor may materialize the complete result in the client
+        process before ``fetchmany()`` is called.  Calibration and observability
+        scans can contain hundreds of thousands of JSON rows, so they must use a
+        named cursor whose transfer is bounded by ``itersize``.
+        """
+        translated_sql, translated_params = translate_sql(sql, params, engine=POSTGRES)
+        size = max(1, int(batch_size))
+        cursor_name = f"bybit_stream_{uuid.uuid4().hex}"
+        cur = self._conn.cursor(name=cursor_name)
+        cur.itersize = size
         cur.execute(translated_sql, translated_params)
         return PostgresCursor(cur)
 
@@ -146,6 +174,25 @@ def connect(target: str):
     except Exception:
         pass
     return conn
+
+
+def execute_stream(
+    conn: Any,
+    sql: str,
+    params: Iterable[Any] | None = None,
+    *,
+    batch_size: int = 256,
+):
+    """Return a cursor suitable for bounded ``fetchmany`` consumption.
+
+    SQLite cursors already advance lazily.  PostgreSQL uses the explicit
+    server-side cursor above so the driver cannot retain the whole result set in
+    process memory.
+    """
+    stream = getattr(conn, "execute_stream", None)
+    if callable(stream):
+        return stream(sql, params, batch_size=batch_size)
+    return conn.execute(sql, tuple(params or ()))
 
 
 def split_sql_script(script: str) -> list[str]:

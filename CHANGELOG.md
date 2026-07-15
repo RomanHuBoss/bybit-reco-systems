@@ -1,3 +1,20 @@
+## 2026-07-15 - v1.0.66 - ограниченная память калибровки и observability
+
+### Исправлено
+- PostgreSQL large-read paths используют именованный server-side cursor и `fetchmany`, SQLite — ленивый cursor с тем же bounded contract.
+- `get_policy_outcome_observability()` больше не выполняет неограниченный `fetchall()`, не сортирует счётную выборку и передаёт `bot_type` в SQL.
+- Калибровочные outcomes читаются порциями; в памяти сохраняются только `feature_snapshot`, `outcome_policy` и `direction_agg`, а не весь `reasons_json`.
+- Global, bot-specific и direction calibrators повторно используют один exact-policy evidence context в пределах рекомендательного цикла.
+- Outcome-worker liveness для `/metrics` и health/status не материализует весь pending-root набор.
+- `/api/v1/status` рассчитывает historical/current/feature/policy статистику потоково без сохранения всех decoded rows.
+
+### Совместимость
+- Схема SQLite/PostgreSQL и migrations не изменены.
+- Публичные API routes/fields, статусы, policy fingerprint, model/outcome identity и конфигурационные переменные не изменены.
+- Добавлен `tests/test_iteration254_bounded_calibration_memory.py`: RED — 6 failed; GREEN — 6 passed.
+- Post-check: **1153/1153 tests passed** восемью непересекающимися пакетами; targeted calibration/status/API/PostgreSQL selection — 52 passed; fresh/repeated SQLite init — 20/20 tables, integrity ok; compileall и JavaScript syntax — passed.
+- Monolithic pytest не завершился в лимит harness; Ruff недоступен; `pip check` сохраняет исходный внешний конфликт MoviePy/Pillow. Реальный 24-ГБ VM OOM и live PostgreSQL не воспроизводились.
+
 ## 2026-07-15 - v1.0.65 - быстрый старт после простоя и ограниченная память сборщика
 
 - Длительный разрыв минутных свечей больше не разворачивается в десятки запросов внутри горячего цикла: сначала одним явным bounded-запросом записываются последние 360 свечей.

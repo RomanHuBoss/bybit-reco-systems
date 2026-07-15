@@ -1,3 +1,9 @@
+## Bounded calibration evidence pipeline (v1.0.66)
+
+Крупные read-only выборки проходят через `app.db_backend.execute_stream()`. Для SQLite используется естественный ленивый cursor; для PostgreSQL `PostgresConnection.execute_stream()` создаёт именованный server-side cursor и задаёт `itersize`. Consumers обязаны читать результат через `fetchmany()` и закрывать cursor в `finally`.
+
+`app.recommender._CalibrationEvidenceContext` существует только в пределах одного `run_recommender_once()`: memoize-ит observability по scope и лениво загружает один compact exact-policy outcome dataset. После разрешения global/bot/direction calibrators набор явно освобождается. `app.main.api_status()` использует streaming lineage rows и агрегирует счётчики без materialized history. Транзакционная, policy и fail-closed семантика не менялась.
+
 ## Ограниченный restart recovery market-data (v1.0.65)
 
 Поток минутных данных разделён на две независимые обязанности:

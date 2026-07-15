@@ -1,3 +1,11 @@
+## Модули bounded calibration memory (v1.0.66)
+
+- `app/db_backend.py`: `execute_stream`, PostgreSQL named cursor, bounded `fetchmany`.
+- `app/db.py`: потоковые readers для calibration outcomes, observability, outcome-worker liveness и compact lineage rows.
+- `app/recommender.py`: per-cycle `_CalibrationEvidenceContext`, общий exact-policy dataset и streaming lineage aggregation mode.
+- `app/main.py`: `/api/v1/status` больше не хранит полный outcome history в Python.
+- `tests/test_iteration254_bounded_calibration_memory.py`: RED → GREEN contract для bounded cursor, JSON compaction, shared evidence и non-retaining status aggregation.
+
 ## Модули восстановления истории и диагностики памяти (v1.0.65)
 
 - `app/collector.py`: выбирает свежий минутный хвост после длинного простоя, создаёт/продвигает устойчивые gap-backfill jobs, ограничивает размер страницы и число futures в памяти.

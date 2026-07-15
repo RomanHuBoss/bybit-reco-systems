@@ -10,13 +10,28 @@ from typing import Any, Iterable
 from .bot_types import is_supported_bot_type, sql_in_clause
 from .grid_math import strict_integer
 from .policy import canonical_policy_fingerprint, is_sha256_fingerprint
-from .db_backend import connect as backend_connect, describe_target, is_postgres_target, OPERATIONAL_ERRORS, INTEGRITY_ERRORS, POSTGRES, SQLITE
+from .db_backend import (
+    connect as backend_connect,
+    describe_target,
+    execute_stream as backend_execute_stream,
+    is_postgres_target,
+    OPERATIONAL_ERRORS,
+    INTEGRITY_ERRORS,
+    POSTGRES,
+    SQLITE,
+)
 import logging
 
 logger = logging.getLogger(__name__)
 
 MARKET_DATA_MAX_FUTURE_SKEW_SEC = 300
 LATEST_ROW_SCAN_LIMIT = 1024
+LARGE_READ_BATCH_SIZE = 256
+CALIBRATION_REASON_KEYS: tuple[str, ...] = (
+    "feature_snapshot",
+    "outcome_policy",
+    "direction_agg",
+)
 
 ACTIONABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active"})
 VISIBLE_RECOMMENDATION_STATUSES: frozenset[str] = ACTIONABLE_RECOMMENDATION_STATUSES
@@ -2850,67 +2865,175 @@ def get_latest_sentiment(conn: sqlite3.Connection, scope: str, key: str) -> dict
     return _decode_sentiment_row(cur.fetchone())
 
 
-def get_outcomes_with_recs(conn: sqlite3.Connection, limit: int = 6000, *, require_llm_verdict: bool = False) -> list[dict[str, Any]]:
-    """Returns outcomes joined with rec score/bot_type/direction/reasons in one query.
-    Replaces N+1 pattern of get_outcomes_recent + get_recommendation_by_id per row.
+def get_outcomes_with_recs(
+    conn: sqlite3.Connection,
+    limit: int = 6000,
+    *,
+    require_llm_verdict: bool = False,
+    calibration_compact: bool = False,
+    batch_size: int = LARGE_READ_BATCH_SIZE,
+) -> list[dict[str, Any]]:
+    """Return outcomes joined with recommendation evidence in one bounded scan.
+
+    ``calibration_compact`` retains only the reason sections needed by the
+    current calibration lineage and feature/direction models.  The raw JSON row
+    is still validated for LLM eligibility before compaction, but unrelated
+    diagnostics do not remain resident across the complete calibration window.
     """
-    cur = conn.execute(
+    limit_int = strict_integer(limit)
+    if limit_int is None or limit_int <= 0:
+        return []
+    batch_int = strict_integer(batch_size)
+    if batch_int is None or batch_int <= 0:
+        batch_int = LARGE_READ_BATCH_SIZE
+    batch_int = min(int(batch_int), 4096)
+    cur = backend_execute_stream(
+        conn,
         """SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                   o.horizon_sec, o.label_available_ts, o.entry_close, o.exit_close,
                   o.success, o.ret,
-                  r.score, r.status, r.reasons_json, r.model_version, r.publication_root_rec_id, r.is_outcome_label_root
+                  r.score, r.status, r.reasons_json, r.model_version,
+                  r.publication_root_rec_id, r.is_outcome_label_root
            FROM reco_outcomes o
            JOIN recommendations r ON r.rec_id = o.rec_id
            WHERE COALESCE(r.is_outcome_label_root, 1) = 1
            ORDER BY o.ts DESC LIMIT ?""",
-        (limit,),
+        (int(limit_int),),
+        batch_size=int(batch_int),
     )
-    out = []
-    for row in cur.fetchall():
-        if require_llm_verdict and not is_outcome_eligible_under_llm_mode(row["status"], row["reasons_json"]):
-            continue
-        try:
-            reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
-        except Exception:
-            reasons = {}
-        ts = strict_integer(row["ts"])
-        horizon_sec = strict_integer(row["horizon_sec"])
-        label_available_ts = strict_integer(row["label_available_ts"])
-        success = strict_integer(row["success"])
-        ret = _finite_float_or_default(row["ret"], float("nan"))
-        score = _finite_float_or_default(row["score"], float("nan"))
-        root_flag = strict_integer(row["is_outcome_label_root"])
-        if (
-            ts is None or ts <= 0
-            or horizon_sec is None or horizon_sec < 0
-            or success not in (0, 1)
-            or not math.isfinite(ret)
-            or not math.isfinite(score)
-            or root_flag not in (0, 1)
-        ):
-            continue
-        out.append({
-            "rec_id":    row["rec_id"],
-            "ts":        ts,
-            "venue":     row["venue"],
-            "symbol":    row["symbol"],
-            "bot_type":  row["bot_type"],
-            "direction": row["direction"],
-            "horizon_sec": horizon_sec,
-            "label_available_ts": (
-                label_available_ts if label_available_ts is not None and label_available_ts > 0 else None
-            ),
-            "entry_close": _finite_float_or_default(row["entry_close"], float("nan")),
-            "exit_close": _finite_float_or_default(row["exit_close"], float("nan")),
-            "success":   success,
-            "ret":       ret,
-            "score":     score,
-            "reasons":   reasons,
-            "model_version": str(row["model_version"] or ""),
-            "publication_root_rec_id": str(row["publication_root_rec_id"] or row["rec_id"]),
-            "is_outcome_label_root": bool(root_flag),
-        })
+    out: list[dict[str, Any]] = []
+    try:
+        while True:
+            batch = cur.fetchmany(int(batch_int))
+            if not batch:
+                break
+            for row in batch:
+                if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
+                    row["status"], row["reasons_json"]
+                ):
+                    continue
+                try:
+                    reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+                except Exception:
+                    reasons = {}
+                if calibration_compact:
+                    reasons = {
+                        key: reasons[key]
+                        for key in CALIBRATION_REASON_KEYS
+                        if key in reasons
+                    }
+                ts = strict_integer(row["ts"])
+                horizon_sec = strict_integer(row["horizon_sec"])
+                label_available_ts = strict_integer(row["label_available_ts"])
+                success = strict_integer(row["success"])
+                ret = _finite_float_or_default(row["ret"], float("nan"))
+                score = _finite_float_or_default(row["score"], float("nan"))
+                root_flag = strict_integer(row["is_outcome_label_root"])
+                if (
+                    ts is None or ts <= 0
+                    or horizon_sec is None or horizon_sec < 0
+                    or success not in (0, 1)
+                    or not math.isfinite(ret)
+                    or not math.isfinite(score)
+                    or root_flag not in (0, 1)
+                ):
+                    continue
+                out.append({
+                    "rec_id": row["rec_id"],
+                    "ts": ts,
+                    "venue": row["venue"],
+                    "symbol": row["symbol"],
+                    "bot_type": row["bot_type"],
+                    "direction": row["direction"],
+                    "horizon_sec": horizon_sec,
+                    "label_available_ts": (
+                        label_available_ts
+                        if label_available_ts is not None and label_available_ts > 0
+                        else None
+                    ),
+                    "entry_close": _finite_float_or_default(
+                        row["entry_close"], float("nan")
+                    ),
+                    "exit_close": _finite_float_or_default(
+                        row["exit_close"], float("nan")
+                    ),
+                    "success": success,
+                    "ret": ret,
+                    "score": score,
+                    "reasons": reasons,
+                    "model_version": str(row["model_version"] or ""),
+                    "publication_root_rec_id": str(
+                        row["publication_root_rec_id"] or row["rec_id"]
+                    ),
+                    "is_outcome_label_root": bool(root_flag),
+                })
+    finally:
+        close = getattr(cur, "close", None)
+        if callable(close):
+            close()
     return out
+
+
+def iter_calibration_lineage_rows(
+    conn: sqlite3.Connection,
+    *,
+    require_llm_verdict: bool = False,
+    batch_size: int = LARGE_READ_BATCH_SIZE,
+) -> Iterable[dict[str, Any]]:
+    """Yield compact outcome-lineage rows without retaining full diagnostics JSON."""
+    batch_int = strict_integer(batch_size)
+    if batch_int is None or batch_int <= 0:
+        batch_int = LARGE_READ_BATCH_SIZE
+    batch_int = min(int(batch_int), 4096)
+    supported_sql, supported_params = sql_in_clause("o.bot_type")
+    cur = backend_execute_stream(
+        conn,
+        f"""SELECT o.bot_type, o.success, o.ts,
+                    r.status, r.reasons_json, r.model_version,
+                    r.is_outcome_label_root
+               FROM reco_outcomes o
+               JOIN recommendations r ON r.rec_id = o.rec_id
+              WHERE {supported_sql}""",
+        supported_params,
+        batch_size=int(batch_int),
+    )
+    try:
+        while True:
+            batch = cur.fetchmany(int(batch_int))
+            if not batch:
+                break
+            for row in batch:
+                raw_root_flag = row["is_outcome_label_root"]
+                root_flag = strict_integer(raw_root_flag)
+                if raw_root_flag is not None and root_flag not in (0, 1):
+                    continue
+                if root_flag == 0:
+                    continue
+                if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
+                    row["status"], row["reasons_json"]
+                ):
+                    continue
+                success = strict_integer(row["success"])
+                ts = strict_integer(row["ts"])
+                if success not in (0, 1) or ts is None or ts <= 0:
+                    continue
+                reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+                compact_reasons = {
+                    key: reasons[key]
+                    for key in ("feature_snapshot", "outcome_policy")
+                    if key in reasons
+                }
+                yield {
+                    "bot_type": str(row["bot_type"] or ""),
+                    "success": int(success),
+                    "ts": int(ts),
+                    "model_version": str(row["model_version"] or ""),
+                    "reasons": compact_reasons,
+                }
+    finally:
+        close = getattr(cur, "close", None)
+        if callable(close):
+            close()
 
 
 OUTCOME_OBSERVABILITY_STATES: frozenset[str] = frozenset({
@@ -2988,8 +3111,10 @@ def get_policy_outcome_observability(
 ) -> dict[str, Any]:
     """Count every matured root in an immutable policy cohort.
 
-    Calibration rows are an inner join by construction; this outer-join ledger is
-    the independent denominator that exposes censored and unresolved outcomes.
+    The ledger is scanned in bounded batches.  PostgreSQL uses a server-side
+    cursor through ``db_backend.execute_stream``; SQLite advances its native
+    cursor lazily.  Bot-specific filtering is pushed into SQL and no ordering is
+    requested because this operation only aggregates counts.
     """
     now_value = strict_integer(now_ts_value if now_ts_value is not None else now_ts())
     if now_value is None or now_value <= 0:
@@ -2998,11 +3123,18 @@ def get_policy_outcome_observability(
     fingerprint_norm = str(policy_fingerprint or "").strip().lower()
     if not is_sha256_fingerprint(fingerprint_norm):
         raise ValueError("policy_fingerprint must be a sha256 hex digest")
-    cur = conn.execute(
-        """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type,
+
+    bot_filter_sql = ""
+    params: list[Any] = [model_norm, model_norm + "+%"]
+    if bot_type is not None:
+        bot_filter_sql = " AND r.bot_type=?"
+        params.append(str(bot_type or "").strip())
+
+    cur = backend_execute_stream(
+        conn,
+        f"""SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type,
                   r.direction AS recommendation_direction, r.score,
                   r.status, r.reasons_json,
-                  r.model_version, r.is_outcome_label_root,
                   o.rec_id AS outcome_rec_id,
                   o.ts AS outcome_ts, o.venue AS outcome_venue,
                   o.symbol AS outcome_symbol, o.bot_type AS outcome_bot_type,
@@ -3016,8 +3148,9 @@ def get_policy_outcome_observability(
              LEFT JOIN reco_outcome_observability obs ON obs.rec_id=r.rec_id
             WHERE COALESCE(r.is_outcome_label_root, 1)=1
               AND (r.model_version=? OR r.model_version LIKE ?)
-            ORDER BY r.ts DESC, r.rec_id DESC""",
-        (model_norm, model_norm + "+%"),
+              {bot_filter_sql}""",
+        params,
+        batch_size=LARGE_READ_BATCH_SIZE,
     )
     matured_total = 0
     labeled_total = 0
@@ -3034,114 +3167,134 @@ def get_policy_outcome_observability(
         invalid_contract_total += 1
         censor_reasons[reason] = censor_reasons.get(reason, 0) + 1
 
-    for row in cur.fetchall():
-        if bot_type is not None and str(row["bot_type"] or "") != str(bot_type):
-            continue
-        recommendation_ts = strict_integer(row["ts"])
-        horizon_sec = POLICY_LABEL_HORIZONS_SEC.get(str(row["bot_type"] or "").strip())
-        canonical_label_due_ts = (
-            recommendation_ts + horizon_sec + POLICY_LABEL_GRACE_SEC
-            if recommendation_ts is not None
-            and recommendation_ts > 0
-            and horizon_sec is not None
-            else None
-        )
-        is_matured = bool(
-            canonical_label_due_ts is None or canonical_label_due_ts <= now_value
-        )
-        reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
-        outcome_policy = reasons.get("outcome_policy") if isinstance(reasons, dict) else None
-        if not isinstance(outcome_policy, dict):
-            if is_matured:
-                _record_invalid_contract("missing_policy_contract")
-            continue
-        policy_eligible = outcome_policy.get("policy_evaluation_eligible")
-        if policy_eligible is False:
-            continue
-        if policy_eligible is not True:
-            if is_matured:
-                _record_invalid_contract("invalid_policy_eligibility")
-            continue
-        stored_fingerprint = str(
-            outcome_policy.get("policy_fingerprint") or ""
-        ).strip().lower()
-        try:
-            contract_fingerprint = canonical_policy_fingerprint(
-                outcome_policy.get("policy_contract")
-            )
-        except Exception:
-            contract_fingerprint = ""
-        if (
-            not is_sha256_fingerprint(stored_fingerprint)
-            or contract_fingerprint != stored_fingerprint
-        ):
-            if is_matured:
-                _record_invalid_contract("invalid_policy_contract_fingerprint")
-            continue
-        if stored_fingerprint != fingerprint_norm:
-            continue
-        if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
-            row["status"], row["reasons_json"]
-        ):
-            continue
-        if canonical_label_due_ts is None:
-            _record_invalid_contract("invalid_policy_maturity_contract")
-            continue
-        if canonical_label_due_ts > now_value:
-            continue
-        matured_total += 1
-        stored_label_due_ts = strict_integer(outcome_policy.get("label_due_ts"))
-        if stored_label_due_ts != canonical_label_due_ts:
-            unresolved_total += 1
-            invalid_contract_total += 1
-            censor_reasons["invalid_policy_maturity_contract"] = (
-                censor_reasons.get("invalid_policy_maturity_contract", 0) + 1
-            )
-            continue
-        if row["outcome_rec_id"] is not None:
-            outcome_ts = strict_integer(row["outcome_ts"])
-            outcome_horizon = strict_integer(row["horizon_sec"])
-            outcome_available_ts = strict_integer(row["label_available_ts"])
-            outcome_success = strict_integer(row["success"])
-            entry_close = _finite_float_or_default(row["entry_close"], float("nan"))
-            exit_close = _finite_float_or_default(row["exit_close"], float("nan"))
-            outcome_return = _finite_float_or_default(row["ret"], float("nan"))
-            recommendation_score = _finite_float_or_default(row["score"], float("nan"))
-            label_valid = bool(
-                outcome_ts == recommendation_ts
-                and outcome_horizon == horizon_sec
-                and outcome_available_ts is not None
-                and outcome_available_ts >= int(recommendation_ts or 0)
-                and outcome_available_ts <= now_value
-                and str(row["outcome_venue"] or "") == str(row["venue"] or "")
-                and str(row["outcome_symbol"] or "") == str(row["symbol"] or "")
-                and str(row["outcome_bot_type"] or "") == str(row["bot_type"] or "")
-                and str(row["outcome_direction"] or "")
-                == str(row["recommendation_direction"] or "")
-                and outcome_success in (0, 1)
-                and math.isfinite(entry_close)
-                and entry_close > 0.0
-                and math.isfinite(exit_close)
-                and exit_close > 0.0
-                and math.isfinite(outcome_return)
-                and math.isfinite(recommendation_score)
-            )
-            if label_valid:
-                labeled_total += 1
-            else:
-                unresolved_total += 1
-                invalid_labeled_total += 1
-                censor_reasons["invalid_labeled_outcome"] = (
-                    censor_reasons.get("invalid_labeled_outcome", 0) + 1
+    try:
+        while True:
+            batch = cur.fetchmany(LARGE_READ_BATCH_SIZE)
+            if not batch:
+                break
+            for row in batch:
+                recommendation_ts = strict_integer(row["ts"])
+                horizon_sec = POLICY_LABEL_HORIZONS_SEC.get(
+                    str(row["bot_type"] or "").strip()
                 )
-            continue
-        state = str(row["observability_state"] or "").strip().lower()
-        if state == "censored":
-            censored_total += 1
-            reason = str(row["observability_reason"] or "unknown").strip() or "unknown"
-            censor_reasons[reason] = censor_reasons.get(reason, 0) + 1
-        else:
-            unresolved_total += 1
+                canonical_label_due_ts = (
+                    recommendation_ts + horizon_sec + POLICY_LABEL_GRACE_SEC
+                    if recommendation_ts is not None
+                    and recommendation_ts > 0
+                    and horizon_sec is not None
+                    else None
+                )
+                is_matured = bool(
+                    canonical_label_due_ts is None or canonical_label_due_ts <= now_value
+                )
+                reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+                outcome_policy = (
+                    reasons.get("outcome_policy") if isinstance(reasons, dict) else None
+                )
+                if not isinstance(outcome_policy, dict):
+                    if is_matured:
+                        _record_invalid_contract("missing_policy_contract")
+                    continue
+                policy_eligible = outcome_policy.get("policy_evaluation_eligible")
+                if policy_eligible is False:
+                    continue
+                if policy_eligible is not True:
+                    if is_matured:
+                        _record_invalid_contract("invalid_policy_eligibility")
+                    continue
+                stored_fingerprint = str(
+                    outcome_policy.get("policy_fingerprint") or ""
+                ).strip().lower()
+                try:
+                    contract_fingerprint = canonical_policy_fingerprint(
+                        outcome_policy.get("policy_contract")
+                    )
+                except Exception:
+                    contract_fingerprint = ""
+                if (
+                    not is_sha256_fingerprint(stored_fingerprint)
+                    or contract_fingerprint != stored_fingerprint
+                ):
+                    if is_matured:
+                        _record_invalid_contract("invalid_policy_contract_fingerprint")
+                    continue
+                if stored_fingerprint != fingerprint_norm:
+                    continue
+                if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
+                    row["status"], row["reasons_json"]
+                ):
+                    continue
+                if canonical_label_due_ts is None:
+                    _record_invalid_contract("invalid_policy_maturity_contract")
+                    continue
+                if canonical_label_due_ts > now_value:
+                    continue
+                matured_total += 1
+                stored_label_due_ts = strict_integer(outcome_policy.get("label_due_ts"))
+                if stored_label_due_ts != canonical_label_due_ts:
+                    unresolved_total += 1
+                    invalid_contract_total += 1
+                    censor_reasons["invalid_policy_maturity_contract"] = (
+                        censor_reasons.get("invalid_policy_maturity_contract", 0) + 1
+                    )
+                    continue
+                if row["outcome_rec_id"] is not None:
+                    outcome_ts = strict_integer(row["outcome_ts"])
+                    outcome_horizon = strict_integer(row["horizon_sec"])
+                    outcome_available_ts = strict_integer(row["label_available_ts"])
+                    outcome_success = strict_integer(row["success"])
+                    entry_close = _finite_float_or_default(
+                        row["entry_close"], float("nan")
+                    )
+                    exit_close = _finite_float_or_default(
+                        row["exit_close"], float("nan")
+                    )
+                    outcome_return = _finite_float_or_default(row["ret"], float("nan"))
+                    recommendation_score = _finite_float_or_default(
+                        row["score"], float("nan")
+                    )
+                    label_valid = bool(
+                        outcome_ts == recommendation_ts
+                        and outcome_horizon == horizon_sec
+                        and outcome_available_ts is not None
+                        and outcome_available_ts >= int(recommendation_ts or 0)
+                        and outcome_available_ts <= now_value
+                        and str(row["outcome_venue"] or "") == str(row["venue"] or "")
+                        and str(row["outcome_symbol"] or "") == str(row["symbol"] or "")
+                        and str(row["outcome_bot_type"] or "") == str(row["bot_type"] or "")
+                        and str(row["outcome_direction"] or "")
+                        == str(row["recommendation_direction"] or "")
+                        and outcome_success in (0, 1)
+                        and math.isfinite(entry_close)
+                        and entry_close > 0.0
+                        and math.isfinite(exit_close)
+                        and exit_close > 0.0
+                        and math.isfinite(outcome_return)
+                        and math.isfinite(recommendation_score)
+                    )
+                    if label_valid:
+                        labeled_total += 1
+                    else:
+                        unresolved_total += 1
+                        invalid_labeled_total += 1
+                        censor_reasons["invalid_labeled_outcome"] = (
+                            censor_reasons.get("invalid_labeled_outcome", 0) + 1
+                        )
+                    continue
+                state = str(row["observability_state"] or "").strip().lower()
+                if state == "censored":
+                    censored_total += 1
+                    reason = str(
+                        row["observability_reason"] or "unknown"
+                    ).strip() or "unknown"
+                    censor_reasons[reason] = censor_reasons.get(reason, 0) + 1
+                else:
+                    unresolved_total += 1
+    finally:
+        close = getattr(cur, "close", None)
+        if callable(close):
+            close()
+
     return {
         "policy_fingerprint": fingerprint_norm,
         "matured_total": matured_total,
@@ -3185,17 +3338,18 @@ def get_outcome_worker_liveness(
 ) -> dict[str, Any]:
     """Expose a deterministic health invariant for matured outcome roots.
 
-    A matured eligible root without an outcome and without any recorded attempt is
-    evidence that the worker is not advancing, not merely that the label horizon has
-    not elapsed. This query is read-only and works for SQLite and PostgreSQL through
-    the existing compatibility layer.
+    The potentially large pending-root set is consumed in bounded batches so a
+    metrics scrape or health request cannot materialize every ``reasons_json``
+    row in the application process at once.
     """
     now_value = strict_integer(now_ts_value if now_ts_value is not None else now_ts())
     if now_value is None or now_value <= 0:
         raise ValueError("now_ts_value must be a positive integer timestamp")
-    rows = conn.execute(
+    cur = backend_execute_stream(
+        conn,
         """SELECT r.rec_id, r.ts, r.bot_type, r.status, r.reasons_json,
-                  obs.last_attempt_ts, obs.label_due_ts, obs.state AS observability_state
+                  obs.last_attempt_ts, obs.label_due_ts,
+                  obs.state AS observability_state
              FROM recommendations r
              LEFT JOIN reco_outcomes o ON o.rec_id=r.rec_id
              LEFT JOIN reco_outcome_observability obs ON obs.rec_id=r.rec_id
@@ -3205,45 +3359,60 @@ def get_outcome_worker_liveness(
               AND r.ts <= ?
             ORDER BY r.ts ASC, r.rec_id ASC""",
         (int(now_value) - 6 * 3600,),
-    ).fetchall()
+        batch_size=LARGE_READ_BATCH_SIZE,
+    )
     matured_pending_total = 0
     unattempted_total = 0
     attempted_total = 0
     oldest_due_ts: int | None = None
     sample_rec_ids: list[str] = []
-    for row in rows:
-        status_norm = str(row["status"] or "").strip().lower()
-        if status_norm in {"blocked", "suppressed", "pending"}:
-            continue
-        if status_norm == "no_trade" and not _is_explicit_safe_shadow_no_trade(
-            row["status"], row["reasons_json"]
-        ):
-            continue
-        if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
-            row["status"], row["reasons_json"]
-        ):
-            continue
-        rec_ts = strict_integer(row["ts"])
-        horizon = POLICY_LABEL_HORIZONS_SEC.get(str(row["bot_type"] or "").strip())
-        if rec_ts is None or rec_ts <= 0 or horizon is None:
-            continue
-        stored_due = strict_integer(row["label_due_ts"])
-        due_ts = (
-            int(stored_due)
-            if stored_due is not None and stored_due >= rec_ts
-            else int(rec_ts) + int(horizon) + int(POLICY_LABEL_GRACE_SEC)
-        )
-        if due_ts > now_value:
-            continue
-        matured_pending_total += 1
-        oldest_due_ts = due_ts if oldest_due_ts is None else min(oldest_due_ts, due_ts)
-        attempt_ts = strict_integer(row["last_attempt_ts"])
-        if attempt_ts is None or attempt_ts <= 0:
-            unattempted_total += 1
-            if len(sample_rec_ids) < 10:
-                sample_rec_ids.append(str(row["rec_id"]))
-        else:
-            attempted_total += 1
+    try:
+        while True:
+            batch = cur.fetchmany(LARGE_READ_BATCH_SIZE)
+            if not batch:
+                break
+            for row in batch:
+                status_norm = str(row["status"] or "").strip().lower()
+                if status_norm in {"blocked", "suppressed", "pending"}:
+                    continue
+                if status_norm == "no_trade" and not _is_explicit_safe_shadow_no_trade(
+                    row["status"], row["reasons_json"]
+                ):
+                    continue
+                if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
+                    row["status"], row["reasons_json"]
+                ):
+                    continue
+                rec_ts = strict_integer(row["ts"])
+                horizon = POLICY_LABEL_HORIZONS_SEC.get(
+                    str(row["bot_type"] or "").strip()
+                )
+                if rec_ts is None or rec_ts <= 0 or horizon is None:
+                    continue
+                stored_due = strict_integer(row["label_due_ts"])
+                due_ts = (
+                    int(stored_due)
+                    if stored_due is not None and stored_due >= rec_ts
+                    else int(rec_ts) + int(horizon) + int(POLICY_LABEL_GRACE_SEC)
+                )
+                if due_ts > now_value:
+                    continue
+                matured_pending_total += 1
+                oldest_due_ts = (
+                    due_ts if oldest_due_ts is None else min(oldest_due_ts, due_ts)
+                )
+                attempt_ts = strict_integer(row["last_attempt_ts"])
+                if attempt_ts is None or attempt_ts <= 0:
+                    unattempted_total += 1
+                    if len(sample_rec_ids) < 10:
+                        sample_rec_ids.append(str(row["rec_id"]))
+                else:
+                    attempted_total += 1
+    finally:
+        close = getattr(cur, "close", None)
+        if callable(close):
+            close()
+
     if matured_pending_total > 0 and unattempted_total == matured_pending_total:
         state = "stalled"
         code = "OUTCOME_WORKER_STALLED"
@@ -3260,7 +3429,11 @@ def get_outcome_worker_liveness(
         "unattempted_total": unattempted_total,
         "attempted_total": attempted_total,
         "oldest_due_ts": oldest_due_ts,
-        "oldest_due_age_sec": (None if oldest_due_ts is None else max(0, int(now_value) - int(oldest_due_ts))),
+        "oldest_due_age_sec": (
+            None
+            if oldest_due_ts is None
+            else max(0, int(now_value) - int(oldest_due_ts))
+        ),
         "sample_unattempted_rec_ids": sample_rec_ids,
         "require_llm_verdict": bool(require_llm_verdict),
         "checked_ts": int(now_value),
