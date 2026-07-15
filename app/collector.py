@@ -507,6 +507,33 @@ def _fetch_ticker_payloads(
             lst = client.get_tickers(category=category, symbol=sym)
             item = _select_exact_ticker(lst or [], sym)
             if item is None:
+                # A successful exact-symbol ticker response with no row can mean the
+                # configured instrument no longer exists. Confirm via public metadata
+                # before disabling; metadata transport failures remain transient.
+                metadata_getter = getattr(client, "get_instrument_info", None)
+                if not callable(metadata_getter):
+                    missing_symbols.append(sym)
+                    continue
+                metadata = metadata_getter(category=category, symbol=sym)
+                if metadata is None:
+                    retry_at = _disable_symbol(venue, sym, now_ts)
+                    disabled[sym] = retry_at
+                    db.log_decision(
+                        conn,
+                        "SYMBOL_DISABLED",
+                        None,
+                        None,
+                        {
+                            "venue": venue,
+                            "symbol": sym,
+                            "reason_code": "INSTRUMENT_METADATA_ABSENT",
+                            "reason": "exact ticker and instrument metadata are absent",
+                            "retry_after_sec": DISABLED_SYMBOL_RETRY_TTL_SEC,
+                            "retry_at": retry_at,
+                        },
+                        commit=False,
+                    )
+                    continue
                 missing_symbols.append(sym)
                 continue
             snap = _sanitize_ticker_payload(item)

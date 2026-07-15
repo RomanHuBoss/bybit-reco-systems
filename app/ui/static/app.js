@@ -831,13 +831,13 @@ function operatorMetrics(it) {
 function planRrNumber(it) {
   const ctx = decisionContext(it);
   const metrics = operatorMetrics(it);
-  return toFiniteNumber(ctx.plan_rr ?? metrics.plan.rr);
+  return toFiniteNumber(it?.operator_summary?.plan_rr ?? ctx.plan_rr ?? metrics.plan.rr);
 }
 
 function empiricalMeanReturnNumber(it) {
   const ctx = decisionContext(it);
   const metrics = operatorMetrics(it);
-  return toFiniteNumber(ctx.empirical_mean_return ?? metrics.empirical.mean_return);
+  return toFiniteNumber(it?.operator_summary?.empirical_mean_return ?? ctx.empirical_mean_return ?? metrics.empirical.mean_return);
 }
 
 function formatReturnFraction(value, digits = 2, signed = true) {
@@ -1248,6 +1248,7 @@ function buildTechPayload(it) {
     bybit_meta: it.bybit_meta || {},
     bybit_plan_validation: it.bybit_plan_validation || {},
     operator_decision_context: it.operator_decision_context || {},
+    operator_summary: it.operator_summary || {},
     factors: {
       positive: reasons.top_positive_factors || [],
       negative: reasons.top_negative_factors || [],
@@ -2411,6 +2412,22 @@ function updateSortHeaders() {
   });
 }
 
+function operatorDecisionCell(it) {
+  const summary = it?.operator_summary && typeof it.operator_summary === "object" ? it.operator_summary : {};
+  const decision = String(summary.decision || "").toLowerCase();
+  if (decision === "enter_allowed") return `<span class="decision decision-enter">ВХОДИТЬ</span>`;
+  if (decision === "wait") return `<span class="decision decision-wait">ЖДАТЬ</span>`;
+  if (decision === "executed") return `<span class="decision decision-executed">ЗАПУЩЕНО</span>`;
+  return `<span class="decision decision-stop">НЕ ВХОДИТЬ</span>`;
+}
+
+function primaryDecisionReasonCell(it) {
+  const summary = it?.operator_summary && typeof it.operator_summary === "object" ? it.operator_summary : {};
+  const text = String(summary.primary_reason || operatorEffectiveStatus(it) || "—");
+  const code = String(summary.primary_reason_code || "");
+  return `<span class="primary-reason" title="${escapeHtml(code)}">${escapeHtml(text)}</span>`;
+}
+
 function renderRecoTable(items) {
   const sorted = applySort(items);
   updateSortHeaders();
@@ -2422,19 +2439,18 @@ function renderRecoTable(items) {
     const tr = document.createElement("tr");
     { const s = operatorEffectiveStatus(it); if (s === "recommended" || s === "active") tr.classList.add("row-recommended"); }
     tr.innerHTML = `
-      <td>${i + 1}</td>
       <td>
         <div class="symbol-cell">
           <b>${escapeHtml(it.symbol || "—")}</b>
           ${symbolLinksHtml(it)}
+          <button class="btn tiny symbol-details" data-act="details" data-id="${escapeHtml(it.rec_id)}">Детали</button>
         </div>
       </td>
       <td>${directionBadge(it.direction)}</td>
       <td>${planRrCell(it)}</td>
       <td>${empiricalExpectancyCell(it)}</td>
-      <td>${riskBufferCell(it)}</td>
-      <td data-cell="status">${pillStatus(operatorEffectiveStatus(it))}</td>
-      <td><button class="btn tiny" data-act="details" data-id="${escapeHtml(it.rec_id)}">Карточка</button></td>
+      <td data-cell="status">${operatorDecisionCell(it)}</td>
+      <td>${primaryDecisionReasonCell(it)}</td>
     `;
     body.appendChild(tr);
   });

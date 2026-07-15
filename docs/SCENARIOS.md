@@ -1,3 +1,15 @@
+## Scenario: LLM is enabled and all publishable ideas are no_trade (v1.0.62)
+
+1. The publisher marks a deterministic, risk-clean no-trade root as `shadow_no_trade` and outcome-eligible.
+2. The LLM reviewer correctly ignores it because it is not actionable.
+3. After label maturity, the outcome worker labels it without an LLM verdict.
+4. An actionable root without an eligible LLM verdict remains excluded.
+5. Existing matured roots are picked up on subsequent worker cycles; no manual backfill command is required.
+
+## Scenario: operator scans the recommendation table
+
+The operator sees only symbol, direction, Plan RR, empirical expectancy, decision and one reason. Clicking **Details** reveals confidence, risk buffer, price/range, sizing, costs, funding, model diagnostics and guards.
+
 ## Scenario: operator compares a new grid plan with current-policy evidence (v1.0.61)
 
 1. A new recommendation contains complete grid economics, worst-side cross-margin kill-switch stress and current cost/funding diagnostics.

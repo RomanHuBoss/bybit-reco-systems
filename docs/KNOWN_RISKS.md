@@ -1,3 +1,11 @@
+## Resolved in v1.0.62: LLM-enabled shadow outcomes could never mature
+
+The LLM reviewer intentionally accepts only actionable candidates, but the outcome worker previously required `llm_review.status=ok` for every root when the reviewer was enabled. Explicit `shadow_no_trade` roots therefore could never be reviewed or labeled, blocking the evidence needed for calibration. v1.0.62 permits only publisher-opted-in, risk-clean shadow roots to bypass the impossible LLM prerequisite. Actionable, pending, blocked, suppressed and malformed rows remain fail-closed.
+
+## Open limitations in v1.0.62
+
+Outcome labels remain OHLCV-based proxy evidence rather than exchange-attested fills. `OUTCOME_WORKER_STALLED` is a diagnostic, not proof that every unresolved root is defective: attempted roots may still wait for missing closed candles or other explicit contracts. A symbol disabled after ticker and instrument-metadata absence is retried after the existing disable TTL.
+
 ## Resolved in v1.0.61: operator UI treated a bounded heuristic as reward/risk
 
 The legacy `expected_rr` proxy had a structurally compressed scale and did not use the concrete plan's kill-switch monetary loss or current-policy outcome distribution. Even after being relabelled as capture/risk, it occupied the primary decision table and could be mistaken for actionable R/R. v1.0.61 removes it from operator-facing table/history/detail fields, removes raw rank/confidence proxies from the primary table/history, and publishes independent Plan RR plus exact-policy empirical expectancy/CI and risk buffer. The legacy field remains only for compatibility/internal diagnostics.

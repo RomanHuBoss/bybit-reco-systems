@@ -1,3 +1,7 @@
+## v1.0.62: one-glance decision table
+
+Primary table: **symbol · direction · Plan RR · empirical expectancy · decision · one reason**. Everything else belongs in **Details**. Do not enter on `НЕ ВХОДИТЬ`, `ЖДАТЬ`, `blocked`, `no_trade` or incomplete evidence. Shadow no-trade outcomes may mature without an LLM verdict because they are not executable and are never sent to the reviewer; actionable roots remain LLM-gated when enabled.
+
 ## v1.0.61 operator decision metrics
 
 - Main table: **Plan RR**, **Empirical expectancy**, **Risk buffer**, direction and status. Raw rank/confidence/direction-confidence proxies are not primary operator columns.

@@ -164,6 +164,21 @@ class BybitPublicClient:
                 delay = max(delay, max(0.0, header_delay))
         return delay
 
+    def _bybit_reset_delay(self, response: Any, attempt: int) -> float:
+        """Honor Bybit's absolute millisecond reset timestamp for retCode 10006."""
+        delay = self._retry_delay(attempt, _header_value(response, "Retry-After"))
+        raw = _header_value(response, "X-Bapi-Limit-Reset-Timestamp")
+        if raw not in (None, ""):
+            try:
+                reset_ms = float(str(raw).strip())
+            except Exception:
+                reset_ms = float("nan")
+            if math.isfinite(reset_ms):
+                remaining = (reset_ms - (time.time() * 1000.0)) / 1000.0
+                if remaining > 0:
+                    delay = max(delay, min(60.0, remaining))
+        return max(0.0, delay)
+
     def _is_retryable_http_status(self, status_code: int) -> bool:
         return int(status_code) in {408, 429} or 500 <= int(status_code) <= 599
 
@@ -231,7 +246,12 @@ class BybitPublicClient:
                 if ret_code != 0:
                     ret_msg = str(data.get("retMsg") or "")
                     if attempt < self.max_retries and self._is_retryable_bybit_error(ret_code, ret_msg):
-                        time.sleep(self._retry_delay(attempt, _header_value(response, "Retry-After")))
+                        delay = (
+                            self._bybit_reset_delay(response, attempt)
+                            if int(ret_code) == 10006
+                            else self._retry_delay(attempt, _header_value(response, "Retry-After"))
+                        )
+                        time.sleep(delay)
                         continue
                     raise RuntimeError(f"Bybit error {ret_code}: {ret_msg}")
                 return data

@@ -209,7 +209,7 @@ def test_operator_ui_replaces_capture_proxy_with_plan_and_empirical_metrics() ->
     assert "Прокси capture/risk" not in html
     assert ">Plan RR<" in html
     assert ">Emp. expectancy<" in html
-    assert ">Risk buffer<" in html
+    assert ">Risk buffer<" not in html
     assert 'data-sort="score"' not in html
     assert 'data-sort="confidence"' not in html
     assert 'data-sort="dir_conf"' not in html

@@ -1434,6 +1434,71 @@ def _operator_next_actions_for_reco(
     return actions[:5]
 
 
+def _operator_summary_for_reco(
+    rec: dict[str, Any],
+    *,
+    conn: Any | None = None,
+    guard: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stable six-field list contract; full diagnostics remain in Details."""
+    del conn
+    status = str(rec.get("effective_status") or rec.get("status") or "unknown").strip().lower()
+    reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
+    metrics = reasons.get("operator_metrics") if isinstance(reasons.get("operator_metrics"), dict) else {}
+    plan = metrics.get("plan_rr") if isinstance(metrics.get("plan_rr"), dict) else {}
+    empirical = metrics.get("empirical_expectancy") if isinstance(metrics.get("empirical_expectancy"), dict) else {}
+
+    if status in {"recommended", "active"}:
+        decision = "enter_allowed"
+    elif status == "pending":
+        decision = "wait"
+    elif status == "executed":
+        decision = "executed"
+    else:
+        decision = "do_not_enter"
+
+    candidates: list[Any] = []
+    if status == "blocked" and isinstance(guard, dict):
+        candidates.extend(guard.get("errors") if isinstance(guard.get("errors"), list) else [])
+    blocks = rec.get("blocks") if isinstance(rec.get("blocks"), list) else []
+    if status == "blocked":
+        candidates.extend(blocks)
+    layers = reasons.get("decision_layers") if isinstance(reasons.get("decision_layers"), dict) else {}
+    if status == "no_trade":
+        candidates.extend(layers.get("no_trade_reasons") if isinstance(layers.get("no_trade_reasons"), list) else [])
+    if status == "pending":
+        candidates.append({"code": "AWAITING_REVIEW", "msg": "Ожидается обязательная проверка"})
+    if status in {"recommended", "active"}:
+        candidates.append({"code": "ALL_REQUIRED_GATES_PASSED", "msg": "Все обязательные проверки пройдены"})
+    if status == "executed":
+        candidates.append({"code": "OPERATOR_CONFIRMED_EXECUTION", "msg": "Запуск подтверждён оператором"})
+
+    primary_code = "STATUS_ONLY"
+    primary_text = status or "unknown"
+    for item in candidates:
+        if isinstance(item, dict):
+            code = str(item.get("code") or item.get("reason_code") or "").strip()
+            text = str(item.get("msg") or item.get("message") or item.get("reason") or code).strip()
+        else:
+            code = "REASON"
+            text = str(item or "").strip()
+        if text:
+            primary_code = code or "REASON"
+            primary_text = text
+            break
+
+    return {
+        "decision": decision,
+        "effective_status": status,
+        "plan_rr": _finite_float_or_none(plan.get("rr")),
+        "plan_rr_status": str(plan.get("status") or "unavailable"),
+        "empirical_expectancy_status": str(empirical.get("status") or "insufficient"),
+        "empirical_mean_return": _finite_float_or_none(empirical.get("mean_return")),
+        "primary_reason_code": primary_code,
+        "primary_reason": primary_text,
+    }
+
+
 def _operator_decision_context_for_reco(
     rec: dict[str, Any],
     *,
@@ -1659,6 +1724,7 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
         _apply_llm_effective_pending_guard(out)
         _apply_publication_chain_effective_expiry_guard(out)
         _ensure_effective_status(out)
+        out["operator_summary"] = _operator_summary_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
         return out
     out = _snap_reco_payload_to_bybit_meta(out, bybit_meta)
     out["directional_exit_levels"] = _directional_exit_payload_for_reco(out)
@@ -1674,6 +1740,7 @@ def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dic
     _apply_llm_effective_pending_guard(out)
     _apply_publication_chain_effective_expiry_guard(out)
     _ensure_effective_status(out)
+    out["operator_summary"] = _operator_summary_for_reco(out, conn=conn, guard=out.get("bybit_operator_guard"))
     return out
 
 
@@ -4676,7 +4743,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.61", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.62", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6484,6 +6551,13 @@ def _reco_thread():
                                 horizon_sec=settings.outcome_horizon_fallback_sec,
                                 max_to_process=int(getattr(settings, "outcomes_max_to_process", 200) or 200),
                             )
+                            liveness = db.get_outcome_worker_liveness(
+                                conn,
+                                require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)),
+                            )
+                            db.set_app_config_json(conn, "outcome_worker_last_cycle", liveness)
+                            if liveness.get("state") == "stalled":
+                                db.log_decision(conn, "OUTCOME_WORKER_STALLED", None, None, liveness)
                             _last_outcomes = time.time()
                     except Exception as e:
                         leadership_ok = False if _is_runtime_lock_lost_error(e) else leadership_ok
@@ -6581,6 +6655,10 @@ def metrics() -> str:
             "SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?",
             (db.now_ts() - 600,),
         ).fetchone()["c"])
+        outcome_liveness = db.get_outcome_worker_liveness(
+            conn,
+            require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)),
+        )
         lines = [
             "# TYPE bybit_reco_symbols_total gauge",
             f"bybit_reco_symbols_total {len(health)}",
@@ -6596,6 +6674,12 @@ def metrics() -> str:
             f"bybit_reco_collect_errors_10m {collect_errors_10m}",
             "# TYPE bybit_reco_recommendations_active gauge",
             f"bybit_reco_recommendations_active {active_recommendations}",
+            "# TYPE bybit_reco_outcome_matured_pending gauge",
+            f"bybit_reco_outcome_matured_pending {int(outcome_liveness.get('matured_pending_total') or 0)}",
+            "# TYPE bybit_reco_outcome_unattempted gauge",
+            f"bybit_reco_outcome_unattempted {int(outcome_liveness.get('unattempted_total') or 0)}",
+            "# TYPE bybit_reco_outcome_worker_stalled gauge",
+            f"bybit_reco_outcome_worker_stalled {1 if outcome_liveness.get('state') == 'stalled' else 0}",
             "# TYPE bybit_reco_collector_cycle_duration_ms gauge",
             f"bybit_reco_collector_cycle_duration_ms {int(collector_last_cycle.get('duration_ms') or 0)}",
             "# TYPE bybit_reco_collector_max_workers gauge",
@@ -6859,6 +6943,11 @@ def api_status() -> dict[str, Any]:
         sent = compute_sentiment_agg(conn, scope="global", key="crypto")
         market_shock = _get_app_config_mapping(conn, MARKET_SHOCK_APP_KEY, default={"state": "normal", "title": "Нормальный режим", "severity": "normal", "entry_mode": "normal", "operator_note": "Новые входы разрешены в обычном режиме.", "reasons": [], "metrics": {}})
 
+        outcome_worker_liveness = db.get_outcome_worker_liveness(
+            conn,
+            require_llm_verdict=require_llm_outcome_verdict,
+        )
+
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))
         inference_supported_bot_count = len(bot_status)
         if inference_ready_bot_count == 0:
@@ -6902,6 +6991,7 @@ def api_status() -> dict[str, Any]:
             },
             "bot_calibrators": bot_status,
             "outcome_count": outcome_count,
+            "outcome_worker": outcome_worker_liveness,
             "calib_min_samples": min_samples,
             "calib_logreg_min_samples": logreg_min_samples,
             "calibration_gate_contract": {

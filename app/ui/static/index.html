@@ -77,14 +77,12 @@
           <table class="table" id="recoTable">
             <thead>
               <tr>
-                <th>#</th>
                 <th data-sort="symbol">Символ</th>
                 <th data-sort="direction">Направление</th>
                 <th data-sort="plan_rr" title="Сценарное отношение ожидаемой net-прибыли конкретного grid-плана к убытку при достижении худшего kill-switch">Plan RR</th>
                 <th data-sort="empirical_expectancy" title="Средняя net-доходность matured outcomes текущей неизменной policy; учитывайте статус и доверительный интервал">Emp. expectancy</th>
-                <th data-sort="risk_buffer" title="Остаток выделенного капитала после worst-side движения к kill-switch, execution costs и maintenance reserve">Risk buffer</th>
-                <th data-sort="status">Статус</th>
-                <th>Карточка</th>
+                <th data-sort="status">Решение</th>
+                <th>Причина</th>
               </tr>
             </thead>
             <tbody id="recoBody"></tbody>
@@ -119,6 +117,6 @@
     </div>
   </main>
 
-  <script src="/static/app.js?v=manual-ui-v46-operator-plan-empirical-rr"></script>
+  <script src="/static/app.js?v=manual-ui-v47-outcome-liveness-minimum-table"></script>
 </body>
 </html>

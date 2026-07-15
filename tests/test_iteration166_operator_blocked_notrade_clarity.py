@@ -35,4 +35,4 @@ def test_static_asset_cache_key_bumped_after_blocked_notrade_clarity_patch() -> 
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
     assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v46" in index
+    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index

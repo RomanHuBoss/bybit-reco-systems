@@ -1632,12 +1632,21 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
     params: list[object] = [db.now_ts() - min_horizon]
 
     if require_llm_verdict:
-        # Фильтруем outcome-eligible строки сразу в SQL, до ORDER BY/LIMIT.
-        # Иначе oldest-first окно навсегда забивается legacy/root рекомендациями
-        # без финального llm_review.status='ok', и worker бесконечно перечитывает
-        # один и тот же хвост вместо продвижения к более новым созревшим rec.
+        # Actionable roots require a completed LLM verdict. Explicit risk-clean
+        # shadow no_trade roots bypass it because the reviewer intentionally never
+        # processes non-actionable rows; without this branch the learning bootstrap
+        # is permanently stalled. Filter before LIMIT to preserve forward progress.
         base_sql += """
-           AND LOWER(COALESCE(json_extract(r.reasons_json, '$.llm_review.status'), '')) = 'ok'"""
+           AND (
+               LOWER(COALESCE(json_extract(r.reasons_json, '$.llm_review.status'), '')) = 'ok'
+               OR (
+                   r.status = 'no_trade'
+                   AND LOWER(CAST(COALESCE(json_extract(r.reasons_json, '$.outcome_policy.eligible'), 'false') AS TEXT)) IN ('1', 'true')
+                   AND LOWER(CAST(COALESCE(json_extract(r.reasons_json, '$.outcome_policy.policy_evaluation_eligible'), 'false') AS TEXT)) IN ('1', 'true')
+                   AND COALESCE(json_extract(r.reasons_json, '$.outcome_policy.sample_role'), '') = 'shadow_no_trade'
+                   AND LOWER(CAST(COALESCE(json_extract(r.reasons_json, '$.risk_checks.passed'), 'false') AS TEXT)) IN ('1', 'true')
+               )
+           )"""
 
     base_sql += """
            ORDER BY COALESCE(obs.last_attempt_ts, 0) ASC, r.ts ASC LIMIT ?"""

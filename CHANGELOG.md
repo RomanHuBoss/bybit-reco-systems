@@ -1,3 +1,13 @@
+## 2026-07-15 - v1.0.62 - outcome liveness and minimum operator table
+
+- Fixed the LLM/outcome bootstrap deadlock for explicit, risk-clean `shadow_no_trade` roots; actionable roots remain fail-closed behind the LLM verdict.
+- Added automatic processing of already matured shadow roots through the existing worker and an `OUTCOME_WORKER_STALLED` liveness contract in status/decision logs.
+- Added additive `operator_summary` API fields for stable Plan RR, empirical status, decision and one primary reason.
+- Reduced the main table to six agreed fields; all other metrics remain in Details.
+- Bybit `10006` retry now honors `X-Bapi-Limit-Reset-Timestamp`; confirmed absent instruments are temporarily disabled instead of generating endless ticker-missing noise.
+- No database migration, environment change, model-lineage reset, order execution capability or trading-gate relaxation.
+- Regression: `tests/test_iteration250_runtime_liveness_operator_minimum.py`.
+
 ## 2026-07-15 - v1.0.61 - operator Plan RR and empirical expectancy
 
 - Simplified the primary operator table/history to direction, Plan RR, empirical expectancy, risk buffer and status; removed raw rank, raw/model confidence, direction-confidence and the visible minimum-confidence filter. The bounded legacy capture/volatility proxy is also removed from all frontend rendering while `expected_rr` remains backward-compatible backend/internal data.

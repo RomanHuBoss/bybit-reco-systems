@@ -3177,6 +3177,96 @@ def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
     )
     conn.commit()
 
+def get_outcome_worker_liveness(
+    conn: sqlite3.Connection,
+    *,
+    now_ts_value: int | None = None,
+    require_llm_verdict: bool = False,
+) -> dict[str, Any]:
+    """Expose a deterministic health invariant for matured outcome roots.
+
+    A matured eligible root without an outcome and without any recorded attempt is
+    evidence that the worker is not advancing, not merely that the label horizon has
+    not elapsed. This query is read-only and works for SQLite and PostgreSQL through
+    the existing compatibility layer.
+    """
+    now_value = strict_integer(now_ts_value if now_ts_value is not None else now_ts())
+    if now_value is None or now_value <= 0:
+        raise ValueError("now_ts_value must be a positive integer timestamp")
+    rows = conn.execute(
+        """SELECT r.rec_id, r.ts, r.bot_type, r.status, r.reasons_json,
+                  obs.last_attempt_ts, obs.label_due_ts, obs.state AS observability_state
+             FROM recommendations r
+             LEFT JOIN reco_outcomes o ON o.rec_id=r.rec_id
+             LEFT JOIN reco_outcome_observability obs ON obs.rec_id=r.rec_id
+            WHERE COALESCE(r.is_outcome_label_root, 1)=1
+              AND o.rec_id IS NULL
+              AND COALESCE(obs.state, '') <> 'censored'
+              AND r.ts <= ?
+            ORDER BY r.ts ASC, r.rec_id ASC""",
+        (int(now_value) - 6 * 3600,),
+    ).fetchall()
+    matured_pending_total = 0
+    unattempted_total = 0
+    attempted_total = 0
+    oldest_due_ts: int | None = None
+    sample_rec_ids: list[str] = []
+    for row in rows:
+        status_norm = str(row["status"] or "").strip().lower()
+        if status_norm in {"blocked", "suppressed", "pending"}:
+            continue
+        if status_norm == "no_trade" and not _is_explicit_safe_shadow_no_trade(
+            row["status"], row["reasons_json"]
+        ):
+            continue
+        if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
+            row["status"], row["reasons_json"]
+        ):
+            continue
+        rec_ts = strict_integer(row["ts"])
+        horizon = POLICY_LABEL_HORIZONS_SEC.get(str(row["bot_type"] or "").strip())
+        if rec_ts is None or rec_ts <= 0 or horizon is None:
+            continue
+        stored_due = strict_integer(row["label_due_ts"])
+        due_ts = (
+            int(stored_due)
+            if stored_due is not None and stored_due >= rec_ts
+            else int(rec_ts) + int(horizon) + int(POLICY_LABEL_GRACE_SEC)
+        )
+        if due_ts > now_value:
+            continue
+        matured_pending_total += 1
+        oldest_due_ts = due_ts if oldest_due_ts is None else min(oldest_due_ts, due_ts)
+        attempt_ts = strict_integer(row["last_attempt_ts"])
+        if attempt_ts is None or attempt_ts <= 0:
+            unattempted_total += 1
+            if len(sample_rec_ids) < 10:
+                sample_rec_ids.append(str(row["rec_id"]))
+        else:
+            attempted_total += 1
+    if matured_pending_total > 0 and unattempted_total == matured_pending_total:
+        state = "stalled"
+        code = "OUTCOME_WORKER_STALLED"
+    elif matured_pending_total > 0:
+        state = "backlog"
+        code = "OUTCOME_WORKER_BACKLOG"
+    else:
+        state = "ok"
+        code = "OUTCOME_WORKER_OK"
+    return {
+        "state": state,
+        "code": code,
+        "matured_pending_total": matured_pending_total,
+        "unattempted_total": unattempted_total,
+        "attempted_total": attempted_total,
+        "oldest_due_ts": oldest_due_ts,
+        "oldest_due_age_sec": (None if oldest_due_ts is None else max(0, int(now_value) - int(oldest_due_ts))),
+        "sample_unattempted_rec_ids": sample_rec_ids,
+        "require_llm_verdict": bool(require_llm_verdict),
+        "checked_ts": int(now_value),
+    }
+
+
 def outcome_exists(conn: sqlite3.Connection, rec_id: str) -> bool:
     cur = conn.execute("""SELECT 1 FROM reco_outcomes WHERE rec_id=? LIMIT 1""", (rec_id,))
     return cur.fetchone() is not None
@@ -3929,15 +4019,44 @@ def _extract_llm_review_snapshot(reasons_json: str | None) -> dict[str, Any] | N
     }
 
 
-def is_outcome_eligible_under_llm_mode(status: Any, reasons_json: str | None) -> bool:
-    """Accept only rows that already have a completed LLM verdict.
+def _is_explicit_safe_shadow_no_trade(status: Any, reasons_json: str | None) -> bool:
+    """Return true only for publisher-opted-in, risk-clean shadow no-trade roots.
 
-    Async LLM mode temporarily parks actionable recommendations in `pending`. Those
-    rows — and rows whose LLM review never completed successfully — must not enter
-    outcome labeling, UI summaries or calibration datasets.
+    These rows are deliberately non-actionable and therefore never enter the LLM
+    review queue. Requiring an LLM verdict for them creates an impossible bootstrap
+    dependency: the empirical model needs outcomes, while the outcome worker waits
+    for a review that cannot exist.
+    """
+    if str(status or "").strip().lower() != "no_trade":
+        return False
+    reasons = _parse_reasons_json(reasons_json)
+    policy = reasons.get("outcome_policy") if isinstance(reasons, dict) else None
+    if not isinstance(policy, dict):
+        return False
+    if policy.get("eligible") is not True:
+        return False
+    if policy.get("policy_evaluation_eligible") is not True:
+        return False
+    if str(policy.get("sample_role") or "").strip() != "shadow_no_trade":
+        return False
+    risk_checks = reasons.get("risk_checks") if isinstance(reasons, dict) else None
+    if not isinstance(risk_checks, dict) or risk_checks.get("passed") is not True:
+        return False
+    blocks = risk_checks.get("blocks")
+    return isinstance(blocks, list) and len(blocks) == 0
+
+
+def is_outcome_eligible_under_llm_mode(status: Any, reasons_json: str | None) -> bool:
+    """Enforce LLM completion only where an LLM review can actually exist.
+
+    Actionable recommendations remain fail-closed and require a completed verdict.
+    Explicit, risk-clean shadow ``no_trade`` roots bypass that requirement because
+    the reviewer intentionally does not process non-actionable rows.
     """
     status_norm = str(status or "").strip().lower()
-    if status_norm in {"pending", "blocked", "no_trade", "suppressed"}:
+    if status_norm == "no_trade":
+        return _is_explicit_safe_shadow_no_trade(status, reasons_json)
+    if status_norm in {"pending", "blocked", "suppressed"}:
         return False
     llm_review = _extract_llm_review_snapshot(reasons_json)
     if not isinstance(llm_review, dict):

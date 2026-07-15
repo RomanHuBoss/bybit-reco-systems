@@ -50,7 +50,7 @@ def test_expected_rr_preserves_observed_zero_coherence() -> None:
 def test_history_sort_patch_has_distinct_frontend_cache_key() -> None:
     html = (Path(__file__).resolve().parents[1] / "app" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
 
-    assert 'app.js?v=manual-ui-v46-operator-plan-empirical-rr' in html
+    assert 'app.js?v=manual-ui-v47-outcome-liveness-minimum-table' in html
 
 
 def test_outcome_direction_helpers_use_canonical_normalization() -> None:

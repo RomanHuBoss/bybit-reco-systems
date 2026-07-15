@@ -1,3 +1,7 @@
+## v1.0.62 runtime liveness and operator-summary flow
+
+`app/outcomes.py` selects actionable LLM-ready roots plus explicit safe shadow roots. `app/db.py` owns the shared LLM-outcome eligibility predicate and the read-only outcome-worker liveness calculation. `app/main.py` exposes the liveness payload and an additive `operator_summary`; the frontend renders only the six-field decision table and keeps full diagnostics in Details. Collector retries use Bybit reset timing and confirm instrument absence before temporary disablement.
+
 ## v1.0.61 operator-metrics data flow
 
 `app/recommender.py` keeps legacy `_expected_rr()` as a compatibility/internal heuristic, then builds two separate immutable publication diagnostics. `_plan_rr_metrics()` consumes generated `params.economics`, full `cross_margin_stress` and the cost model. `_empirical_expectancy_metrics()` consumes the fitted exact-policy calibrator diagnostics and never reads plan geometry. Both are stored under `reasons.operator_metrics`; plan/empirical summaries are also copied into `params.operator_metrics` and `params.risk_report`.

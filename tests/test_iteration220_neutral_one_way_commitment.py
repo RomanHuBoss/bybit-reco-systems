@@ -262,4 +262,4 @@ def test_neutral_preflight_accepts_full_initial_opening_commitment(tmp_path: Pat
 def test_contract_bumped_for_neutral_one_way_commitment() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.0.61"' in source
+    assert 'version="1.0.62"' in source

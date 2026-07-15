@@ -1,3 +1,9 @@
+## Runtime outcome recovery and minimum operator table (v1.0.62)
+
+v1.0.62 fixes an LLM/outcome bootstrap deadlock: explicitly opted-in, risk-clean `shadow_no_trade` roots can now mature without an LLM verdict, while actionable recommendations still require the completed LLM verdict when that gate is enabled. Existing matured roots are processed automatically by the normal outcome worker; no data rewrite or schema migration is required. `/api/v1/status` now exposes `outcome_worker` liveness and reports `OUTCOME_WORKER_STALLED` when matured eligible roots remain unattempted.
+
+The primary recommendation table is intentionally limited to six decision fields: symbol, direction, Plan RR, empirical expectancy, decision, and one primary reason. All confidence, risk-buffer, price, range, sizing, funding, calibration and diagnostic fields remain in **Details**. The API publishes an additive `operator_summary` contract so Plan RR and the primary reason do not depend on frontend re-parsing of technical payloads. Bybit retCode `10006` retries honor the exchange reset timestamp, and an exact ticker miss is converted into a temporary symbol disable only after public instrument metadata also confirms absence.
+
 ## Operator decision metrics: Plan RR and empirical expectancy (v1.0.61)
 
 The main recommendation table is decision-focused: raw direction-confidence, rank, model-confidence and the visible minimum-confidence filter were removed from the primary surface. It no longer presents legacy `expected_rr` as a trading reward/risk measure. That field remains in stored/API payloads only for backward compatibility and internal heuristic diagnostics; the frontend does not render it. Operator-facing economics are now split into two independent contracts:

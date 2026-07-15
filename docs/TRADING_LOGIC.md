@@ -1,3 +1,9 @@
+## Outcome/LLM contract and operator decision surface (v1.0.62)
+
+When LLM review is enabled, actionable recommendation roots require a completed eligible LLM verdict before outcome labeling. An explicit `no_trade` root may bypass that prerequisite only when `outcome_policy.eligible=true`, `policy_evaluation_eligible=true`, `sample_role=shadow_no_trade`, and deterministic `risk_checks.passed=true` with no blocks. This exception cannot make a recommendation actionable and exists only to prevent research/calibration bootstrap deadlock.
+
+The primary table is not a diagnostic dashboard. It contains only symbol, direction, Plan RR, empirical expectancy, the operator decision and one primary reason. Confidence values, risk buffer and all underlying economics remain available in Details.
+
 ## Operator reward/risk metrics (v1.0.61)
 
 The operator contract separates plan geometry from historical evidence.

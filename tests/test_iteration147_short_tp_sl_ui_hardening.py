@@ -38,7 +38,7 @@ def test_static_asset_cache_key_bumped_after_short_tp_sl_fix() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
     assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v46" in index
+    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
 
 
 def test_directional_grid_range_geometry_keeps_short_profit_side_below_reference() -> None:

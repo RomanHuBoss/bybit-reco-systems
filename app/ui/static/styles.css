@@ -1502,3 +1502,12 @@ body {
 .metric-negative { color: var(--bad); font-weight: 700; }
 .metric-uncertain { color: var(--warn); font-weight: 700; }
 .metric-unavailable { color: var(--muted); }
+
+/* v1.0.62: minimum operator decision table */
+.decision { font-weight: 800; white-space: nowrap; }
+.decision-enter { color: var(--success, #15803d); }
+.decision-wait { color: var(--warning, #a16207); }
+.decision-stop { color: var(--danger, #b91c1c); }
+.decision-executed { color: var(--accent, #2563eb); }
+.primary-reason { display: inline-block; max-width: 34rem; line-height: 1.25; }
+.symbol-details { margin-left: .35rem; }

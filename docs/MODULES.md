@@ -1,3 +1,12 @@
+## v1.0.62 module responsibility update
+
+- `app/outcomes.py`: advances eligible shadow roots without requiring an impossible LLM review.
+- `app/db.py`: canonical LLM/outcome eligibility and worker-liveness invariant.
+- `app/main.py`: FastAPI `1.0.62`, stable `operator_summary`, status liveness and stall logging.
+- `app/bybit_client.py`: reset-aware retry for Bybit `10006`.
+- `app/collector.py`: metadata-confirmed temporary disable for absent instruments.
+- `app/ui/static/`: six-field primary table; complete metrics stay in Details.
+
 ## v1.0.61 module responsibility update
 
 - `app/recommender.py`: computes scenario Plan RR without recurring-fee double counting; publishes exact-policy empirical mean/CI/tail diagnostics; keeps heuristic capture internal.
