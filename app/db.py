@@ -2443,6 +2443,10 @@ def get_recommendation_history(
     for r in reversed(newest_first):
         reasons = _json_loads_mapping_or_default(r["reasons_json"], {})
         llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
+        operator_metrics = reasons.get("operator_metrics") if isinstance(reasons.get("operator_metrics"), dict) else {}
+        plan_rr = operator_metrics.get("plan_rr") if isinstance(operator_metrics.get("plan_rr"), dict) else {}
+        empirical = operator_metrics.get("empirical_expectancy") if isinstance(operator_metrics.get("empirical_expectancy"), dict) else {}
+        empirical_ci = empirical.get("confidence_interval") if isinstance(empirical.get("confidence_interval"), dict) else {}
         rows.append({
             "rec_id": r["rec_id"],
             "ts": r["ts"],
@@ -2453,6 +2457,15 @@ def get_recommendation_history(
             "score": r["score"],
             "confidence": r["confidence"],
             "expected_rr": r["expected_rr"],
+            "plan_rr": plan_rr.get("rr"),
+            "plan_rr_status": plan_rr.get("status") or "unavailable",
+            "empirical_expectancy_status": empirical.get("status") or "insufficient",
+            "empirical_mean_return": empirical.get("mean_return"),
+            "empirical_rr": empirical.get("empirical_rr"),
+            "empirical_confidence_interval_lower": empirical_ci.get("lower"),
+            "empirical_confidence_interval_upper": empirical_ci.get("upper"),
+            "empirical_confidence_level": empirical_ci.get("level"),
+            "empirical_return_samples": empirical.get("return_samples"),
             "risk_score": r["risk_score"],
             "status": r["status"],
             "llm_status": str(llm_review.get("status") or "none").strip().lower() or "none",

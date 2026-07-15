@@ -1,3 +1,9 @@
+## v1.0.61 operator-metrics data flow
+
+`app/recommender.py` keeps legacy `_expected_rr()` as a compatibility/internal heuristic, then builds two separate immutable publication diagnostics. `_plan_rr_metrics()` consumes generated `params.economics`, full `cross_margin_stress` and the cost model. `_empirical_expectancy_metrics()` consumes the fitted exact-policy calibrator diagnostics and never reads plan geometry. Both are stored under `reasons.operator_metrics`; plan/empirical summaries are also copied into `params.operator_metrics` and `params.risk_report`.
+
+`app/main.py::_operator_decision_context_for_reco()` exposes only Plan RR and empirical statistics to the operator context. `app/db.py::get_recommendation_history()` extracts those stored fields for history rows. The frontend renders Plan RR, empirical expectancy and cross-margin risk buffer in the main table and detailed economics card; raw rank/confidence diagnostics are removed from the primary table/history; the heuristic proxy remains in backend storage/API compatibility only and is not copied into the frontend technical payload. Existing rows without the additive JSON fields remain readable and show unavailable. There is no relational schema or migration change.
+
 ## v1.0.60 market-data transaction ordering
 
 The `collector` and `backfill` loops remain independently supervised and retain separate runtime leadership locks, but their shared `ohlcv` write contract is now explicit:
@@ -299,7 +305,7 @@ Duplicated persisted grid/funding fields are one contract. Valid duplicates must
 - realised operator/audit events — `trades`, `decision_log`.
 
 ### Что считается приближением
-- `trade_plan` и `expected_rr`;
+- `trade_plan`, legacy internal `expected_rr` and separated `operator_metrics.plan_rr` / `operator_metrics.empirical_expectancy`;
 - `risk_score`;
 - `reco_outcomes.ret` и `success`;
 - daily PnL / DD при неполных trade rows;

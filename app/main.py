@@ -1451,6 +1451,13 @@ def _operator_decision_context_for_reco(
     params, plan = _rec_params_and_plan(rec)
     economics = _first_mapping(params.get("economics"), plan.get("economics"))
     cost_model = _cost_model_from_rec(rec)
+    reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
+    operator_metrics = _first_mapping(
+        reasons.get("operator_metrics"),
+        params.get("operator_metrics"),
+    )
+    plan_rr_metrics = operator_metrics.get("plan_rr") if isinstance(operator_metrics.get("plan_rr"), dict) else {}
+    empirical_metrics = operator_metrics.get("empirical_expectancy") if isinstance(operator_metrics.get("empirical_expectancy"), dict) else {}
 
     reference_price = ctx.get("reference_price")
     range_lower = ctx.get("range_lower")
@@ -1569,6 +1576,35 @@ def _operator_decision_context_for_reco(
         "gross_profit_bps": gross_profit_bps,
         "execution_cost_bps": execution_cost_bps,
         "funding_cost_bps": funding_cost_bps,
+        "plan_rr": _finite_float_or_none(plan_rr_metrics.get("rr")),
+        "plan_rr_status": str(plan_rr_metrics.get("status") or "unavailable"),
+        "plan_projected_net_reward_usdt": _finite_float_or_none(plan_rr_metrics.get("projected_net_reward_usdt")),
+        "plan_kill_switch_loss_usdt": _finite_float_or_none(plan_rr_metrics.get("kill_switch_loss_usdt")),
+        "plan_projected_completed_pairs": _finite_float_or_none(plan_rr_metrics.get("projected_completed_pairs")),
+        "empirical_expectancy_status": str(empirical_metrics.get("status") or "insufficient"),
+        "empirical_expectancy_available": bool(empirical_metrics.get("available")),
+        "empirical_expectancy_decision_ready": bool(empirical_metrics.get("decision_ready")),
+        "empirical_mean_return": _finite_float_or_none(empirical_metrics.get("mean_return")),
+        "empirical_expected_shortfall": _finite_float_or_none(empirical_metrics.get("expected_shortfall")),
+        "empirical_rr": _finite_float_or_none(empirical_metrics.get("empirical_rr")),
+        "empirical_return_samples": _safe_int_or_none(empirical_metrics.get("return_samples")),
+        "empirical_temporal_cluster_count": _safe_int_or_none(empirical_metrics.get("temporal_cluster_count")),
+        "empirical_minimum_temporal_clusters": _safe_int_or_none(empirical_metrics.get("minimum_temporal_clusters")),
+        "empirical_confidence_level": _finite_float_or_none(
+            (empirical_metrics.get("confidence_interval") or {}).get("level")
+            if isinstance(empirical_metrics.get("confidence_interval"), dict)
+            else None
+        ),
+        "empirical_confidence_interval_lower": _finite_float_or_none(
+            (empirical_metrics.get("confidence_interval") or {}).get("lower")
+            if isinstance(empirical_metrics.get("confidence_interval"), dict)
+            else None
+        ),
+        "empirical_confidence_interval_upper": _finite_float_or_none(
+            (empirical_metrics.get("confidence_interval") or {}).get("upper")
+            if isinstance(empirical_metrics.get("confidence_interval"), dict)
+            else None
+        ),
         "estimated_liquidation_price": liq_price,
         "liquidation_buffer_pct": liq_buffer,
         "risk_profile": risk_profile,
@@ -4640,7 +4676,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.60", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.61", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

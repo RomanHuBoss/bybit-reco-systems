@@ -1,3 +1,19 @@
+## Scenario: operator compares a new grid plan with current-policy evidence (v1.0.61)
+
+1. A new recommendation contains complete grid economics, worst-side cross-margin kill-switch stress and current cost/funding diagnostics.
+2. The table shows Plan RR for that concrete plan and empirical mean return for the exact current policy as separate columns.
+3. Opening the card shows the Plan RR numerator/denominator, empirical Student-t confidence interval, expected shortfall and mean-to-tail ratio.
+4. A positive Plan RR with insufficient empirical evidence does not imply a validated edge; the empirical field says insufficient.
+5. A positive empirical mean with a confidence interval crossing zero remains uncertain and does not override deterministic blockers.
+6. The legacy heuristic capture score remains only in the technical payload and is not used as operator R/R.
+
+## Scenario: an old recommendation lacks v1.0.61 operator metrics
+
+1. The database row was published before Plan RR and empirical metrics were persisted.
+2. History/detail readers do not reconstruct economics from today's state and do not substitute zero.
+3. The UI displays unavailable for the missing metrics while retaining the immutable old recommendation.
+4. A newly published recommendation under v1.0.61 contains the additive fields; no database migration or historical rewrite is required.
+
 ## Scenario: hot collector and warm-up backfill overlap on PostgreSQL (v1.0.60)
 
 1. The hot loop fetches 1m rows while the backfill loop bootstraps or refreshes slower/derived series.

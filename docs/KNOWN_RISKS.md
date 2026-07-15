@@ -1,3 +1,11 @@
+## Resolved in v1.0.61: operator UI treated a bounded heuristic as reward/risk
+
+The legacy `expected_rr` proxy had a structurally compressed scale and did not use the concrete plan's kill-switch monetary loss or current-policy outcome distribution. Even after being relabelled as capture/risk, it occupied the primary decision table and could be mistaken for actionable R/R. v1.0.61 removes it from operator-facing table/history/detail fields, removes raw rank/confidence proxies from the primary table/history, and publishes independent Plan RR plus exact-policy empirical expectancy/CI and risk buffer. The legacy field remains only for compatibility/internal diagnostics.
+
+## Open limitation in v1.0.61: Plan RR and empirical expectancy are different evidence classes
+
+Plan RR is scenario analysis based on generated sizing, a 70% opportunity-capture assumption, current spread/slippage/funding estimates and monotonic kill-switch stress. It is not a probability and is not based on live fills. Empirical expectancy is based on proxy OHLCV outcomes, not exchange-attested execution. Operators must not multiply or average these metrics into a single score. A recommendation remains subject to all deterministic blockers, and positive values do not prove live alpha. Existing pre-v1.0.61 rows may lack stored `operator_metrics` and correctly display unavailable.
+
 ## Resolved in v1.0.60: PostgreSQL OHLCV deadlock retry was bypassed by collector transactions
 
 **Confirmed HIGH defect.** `db.upsert_ohlcv()` already sorted rows and retried deadlock victims only when called with `commit=True`, but the production hot/backfill paths used `commit=False` and committed later. Backfill bootstrap also persisted per task in completion order, while the hot collector rewrote derived 4-hour rows every minute. Two workers could therefore lock overlapping `ohlcv` primary-key tuples in different order; the deadlock victim surfaced as `COLLECT_ERROR` and the cycle lost its market-data write.
@@ -421,7 +429,7 @@ Legacy `range_score` почти полностью равнялся `1 - trend_s
 
 Сохранённые v3 coefficients и legacy outcome snapshots были обучены на прежнем диапазонном proxy. Простая замена inference feature создала бы train/inference skew. Текущая модель получила identity `bybit-taxonomy-v3-mean-reversion`, calibrator keys v4, а fit фильтруется по model version и явному независимому evidence snapshot.
 
-### RESOLVED/MEDIUM: `expected_rr` выглядел как фактический reward:risk
+### SUPERSEDED BY v1.0.61: `expected_rr` выглядел как фактический reward:risk
 
 Поле является эвристическим capture/volatility proxy и не моделирует полную monetary loss distribution, inventory path и liquidation tail. API field сохранён, но UI и reasons теперь явно маркируют его как proxy, не доказательство прибыли.
 

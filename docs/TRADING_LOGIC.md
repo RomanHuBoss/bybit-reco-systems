@@ -1,3 +1,27 @@
+## Operator reward/risk metrics (v1.0.61)
+
+The operator contract separates plan geometry from historical evidence.
+
+### Plan RR
+
+`reasons.operator_metrics.plan_rr` is calculated only from a complete generated plan:
+
+`projected_pairs = estimated_active_orders × fill_efficiency`
+
+`projected_net_reward = net_profit_usdt_per_completed_pair × projected_pairs - one_time_market_friction - adverse_funding`
+
+`kill_switch_loss = qty_per_order × (worst_side_gross_loss_per_qty + worst_side_terminal_execution_cost_per_qty)`
+
+`Plan RR = max(projected_net_reward, 0) / kill_switch_loss`
+
+Recurring pair fees are already included in `net_profit_usdt` and are not deducted twice. `one_time_market_friction_bps` is the separate spread/slippage layer. Positive funding receipts are never credited. Maintenance margin reserve remains a stress/equity requirement and is not called realised loss. Invalid or incomplete numeric inputs produce `status=unavailable`. Plan RR is scenario analysis, not a probability forecast and not an execution attestation.
+
+### Empirical expectancy and tail ratio
+
+`reasons.operator_metrics.empirical_expectancy` uses retained matured outcomes from the exact current policy fingerprint. The mean and standard error prefer non-overlapping temporal cohorts; when that complete diagnostic is unavailable, the existing recency-weighted retained-outcome diagnostic is used and the basis is disclosed. A two-sided Student-t confidence interval is reported. Expected shortfall remains the downside-tail statistic. `empirical_rr` is explicitly a mean-to-tail ratio (`positive mean / abs(negative expected shortfall)`), not trade geometry. It is unavailable when the mean is non-positive, the tail is not negative, or evidence is incomplete.
+
+The old `expected_rr` remains a bounded heuristic capture/volatility score for compatibility/internal ranking. It is stored under `heuristic_capture_score` with `operator_visible=false` and is not rendered as operator R/R. No new metric overrides deterministic hard blocks or changes the current policy fingerprint.
+
 ## Outcome scopes and readiness truth (v1.0.58)
 
 - The default operator scope is `current_policy`: active model lineage + exact active policy fingerprint + successfully re-hashed persisted policy contract.
@@ -400,7 +424,7 @@ Threshold был sanity-checked на детерминированной Monte-Ca
 
 Feature/calibration identity изменена: текущая recommendation model — `bybit-taxonomy-v3-mean-reversion`, а logistic/Platt keys имеют v4. Для fit принимаются только outcomes текущей модели с явным `mean_reversion_evidence_valid=1` и finite `mean_reversion_score`; legacy outcomes не используются даже для score-only fallback.
 
-Поле `expected_rr` исторически вычисляется как bounded capture-to-volatility heuristic. Оно не использует точную monetary loss distribution и не является каноническим reward:risk. UI поэтому показывает «Прокси capture/risk» / «Прокси C/R».
+Поле `expected_rr` исторически вычисляется как bounded capture-to-volatility heuristic. Оно сохранено для совместимости и внутренней диагностики, но основной UI его больше не показывает. Оператор использует отдельные `plan_rr` и `empirical_expectancy`; их семантика определена в разделе v1.0.61 выше.
 
 
 ### Shadow outcomes для no_trade

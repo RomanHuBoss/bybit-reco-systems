@@ -1,3 +1,13 @@
+## v1.0.61 operator decision metrics
+
+- Main table: **Plan RR**, **Empirical expectancy**, **Risk buffer**, direction and status. Raw rank/confidence/direction-confidence proxies are not primary operator columns.
+- Plan RR = projected net result of the concrete grid plan / worst-side kill-switch price-and-exit loss. Recurring pair fees are counted once; spread/slippage and adverse funding are separate horizon costs.
+- Empirical expectancy = exact-current-policy matured proxy return with a two-sided Student-t confidence interval. Detail view also shows expected shortfall and mean/tail ratio.
+- A confidence interval crossing zero means uncertain. Insufficient exact-policy evidence means unavailable, not zero.
+- Legacy `expected_rr` is a backend/internal heuristic capture score and is not rendered anywhere in the operator UI.
+- Plan RR is not a probability; empirical proxy outcomes are not exchange-attested live PnL. Neither overrides NO TRADE/BLOCKED gates.
+- Application `1.0.61`; model/outcome/policy identities are unchanged, so current-policy evidence is not reset.
+
 ## v1.0.58 outcome-scope and readiness rule
 
 - Application `1.0.58`; model `bybit-taxonomy-v8-policy-conditioned-censor-aware`; outcome target `grid_label_v26`.
@@ -162,7 +172,7 @@ This repository is a recommendation/audit service, not OMS/EMS. It does not mana
 - Low trend is not a trade signal. A driftless random walk can also have a flat MA slope and still lose after costs.
 - Grid screening requires independent anti-persistence evidence on at least three closed timeframes and aggregate `mean_reversion_score >= MEAN_REVERSION_MIN_SCORE` (default `0.25`). Passing this screen does not establish positive expectancy.
 - `MEAN_REVERSION_EVIDENCE_INSUFFICIENT` is hard `blocked`; `MEAN_REVERSION_EDGE_UNCONFIRMED` is strategy `no_trade`. Both mean do not launch.
-- The UI field formerly perceived as R/R is a heuristic **capture/risk proxy**, not an actual profit/loss ratio.
+- The heuristic capture score is hidden from operator R/R. Use separate Plan RR and exact-policy empirical expectancy/CI; neither proves live edge.
 
 ## Directional TP/SL model
 

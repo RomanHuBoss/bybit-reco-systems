@@ -1,3 +1,12 @@
+## v1.0.61 module responsibility update
+
+- `app/recommender.py`: computes scenario Plan RR without recurring-fee double counting; publishes exact-policy empirical mean/CI/tail diagnostics; keeps heuristic capture internal.
+- `app/calibration.py`: persists temporal mean return and provides strict two-sided Student-t confidence intervals for operator evidence.
+- `app/main.py`: FastAPI version `1.0.61`; operator decision context exposes plan and empirical metrics, not legacy `expected_rr`.
+- `app/db.py`: recommendation history reads additive operator metrics from stored reasons.
+- `app/ui/static/index.html`, `app/ui/static/app.js`, `styles.css`: primary table/history/detail surfaces Plan RR, empirical expectancy and risk buffer; raw model proxies move out of the primary table/history; technical payload retains compatibility fields.
+- `tests/test_iteration249_operator_rr_metrics.py`: independent Plan RR oracle, fee-layer separation, numeric fail-closed, empirical/CI and UI-contract regressions.
+
 ## v1.0.60 module responsibility update
 
 - `app/collector.py`: accumulates API/bootstrap/derived OHLCV rows before database persistence; uses retry-capable committed batches; tracks source-timeframe touches so hot 1m work cannot rewrite unrelated 4h series.

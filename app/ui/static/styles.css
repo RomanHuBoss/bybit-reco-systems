@@ -1488,3 +1488,17 @@ body {
     flex-direction: column;
   }
 }
+
+.metric-primary,
+.metric-positive,
+.metric-negative,
+.metric-uncertain,
+.metric-unavailable {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.metric-primary { color: var(--accent); font-weight: 700; }
+.metric-positive { color: var(--good); font-weight: 700; }
+.metric-negative { color: var(--bad); font-weight: 700; }
+.metric-uncertain { color: var(--warn); font-weight: 700; }
+.metric-unavailable { color: var(--muted); }

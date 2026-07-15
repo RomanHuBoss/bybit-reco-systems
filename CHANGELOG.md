@@ -1,3 +1,13 @@
+## 2026-07-15 - v1.0.61 - operator Plan RR and empirical expectancy
+
+- Simplified the primary operator table/history to direction, Plan RR, empirical expectancy, risk buffer and status; removed raw rank, raw/model confidence, direction-confidence and the visible minimum-confidence filter. The bounded legacy capture/volatility proxy is also removed from all frontend rendering while `expected_rr` remains backward-compatible backend/internal data.
+- Added scenario Plan RR for the concrete generated grid: projected completed-pair net reward after recurring fees, distinct one-time market friction and adverse funding divided by worst-side kill-switch price/exit loss.
+- Prevented recurring fee double counting and made missing/boolean/non-finite Plan RR inputs fail closed as unavailable.
+- Added exact-current-policy empirical expectancy with a two-sided Student-t confidence interval, expected shortfall and an explicitly labelled mean-to-tail ratio.
+- Persisted additive operator metrics in recommendation JSON and exposed them through detail/history contracts without a database schema migration.
+- Added `tests/test_iteration249_operator_rr_metrics.py`; RED failed on the missing metric/CI contract, targeted GREEN is 7 passed. Final collection is 1126 tests; all 1126 passed in deterministic non-overlapping file batches, and the focused metric/UI suite passed 64 tests.
+- Updated UI, operator DOCX/PDF/PNG and release documentation. Advanced FastAPI version to `1.0.61`; model identity, policy fingerprint, outcome target, schema, env and order-execution boundary are unchanged.
+
 ## 2026-07-15 - v1.0.60 - PostgreSQL OHLCV transaction-order hardening
 
 - Confirmed that hot/backfill OHLCV call sites bypassed the existing deadlock retry by using `commit=False`, so PostgreSQL deadlock victims escaped as `COLLECT_ERROR` and aborted a collection cycle.

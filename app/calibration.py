@@ -355,6 +355,7 @@ class LogRegScaler:
     temporal_cluster_width_sec: int = 0
     minimum_temporal_clusters: int = 0
     weighted_effective_temporal_clusters: float = 0.0
+    weighted_temporal_mean_return: float | None = None
     weighted_temporal_return_std: float | None = None
     weighted_temporal_mean_return_lower_bound: float | None = None
     expectancy_confidence_level: float = 0.95
@@ -641,6 +642,44 @@ def _weighted_return_diagnostics(
     }
 
 
+def return_confidence_interval(
+    mean_return: Any,
+    return_std: Any,
+    effective_samples: Any,
+    *,
+    confidence_level: float = 0.95,
+) -> tuple[float | None, float | None]:
+    """Return a two-sided Student-t interval for a weighted mean return.
+
+    The calibration gate intentionally uses a stricter one-sided lower bound.
+    This helper is for operator-facing uncertainty display only; it does not
+    weaken or replace that fail-closed gate.
+    """
+    mean = _finite_float(mean_return)
+    std = _finite_float(return_std)
+    n_eff = _finite_float(effective_samples)
+    confidence = _finite_float(confidence_level)
+    if (
+        mean is None
+        or std is None
+        or n_eff is None
+        or n_eff <= 1.0
+        or std < 0.0
+    ):
+        return None, None
+    if confidence is None or confidence < 0.50 or confidence >= 1.0:
+        confidence = 0.95
+    critical = _one_sided_student_t_critical((1.0 + confidence) / 2.0, n_eff)
+    if not math.isfinite(critical):
+        return None, None
+    margin = critical * std / math.sqrt(n_eff)
+    lower = mean - margin
+    upper = mean + margin
+    if not math.isfinite(lower) or not math.isfinite(upper):
+        return None, None
+    return float(lower), float(upper)
+
+
 def _temporal_cluster_return_diagnostics(
     rows: list[dict[str, Any]],
     returns: list[float],
@@ -683,6 +722,7 @@ def _temporal_cluster_return_diagnostics(
             "temporal_cluster_count": 0,
             "temporal_cluster_width_sec": 0,
             "weighted_effective_temporal_clusters": 0.0,
+            "weighted_temporal_mean_return": None,
             "weighted_temporal_return_std": None,
             "weighted_temporal_mean_return_lower_bound": None,
         }
@@ -730,6 +770,7 @@ def _temporal_cluster_return_diagnostics(
         "weighted_effective_temporal_clusters": float(
             temporal["weighted_effective_return_samples"] or 0.0
         ),
+        "weighted_temporal_mean_return": temporal["weighted_mean_return"],
         "weighted_temporal_return_std": temporal["weighted_return_std"],
         "weighted_temporal_mean_return_lower_bound": temporal[
             "weighted_mean_return_lower_bound"
@@ -1244,6 +1285,7 @@ def fit_logreg(
     weighted_effective_temporal_clusters = float(
         temporal["weighted_effective_temporal_clusters"] or 0.0
     )
+    weighted_temporal_mean_return = temporal["weighted_temporal_mean_return"]
     weighted_temporal_return_std = temporal["weighted_temporal_return_std"]
     weighted_temporal_mean_return_lower_bound = temporal[
         "weighted_temporal_mean_return_lower_bound"
@@ -1259,6 +1301,7 @@ def fit_logreg(
         "temporal_cluster_width_sec": temporal_cluster_width_sec,
         "minimum_temporal_clusters": minimum_temporal_clusters,
         "weighted_effective_temporal_clusters": weighted_effective_temporal_clusters,
+        "weighted_temporal_mean_return": weighted_temporal_mean_return,
         "weighted_temporal_return_std": weighted_temporal_return_std,
         "weighted_temporal_mean_return_lower_bound": weighted_temporal_mean_return_lower_bound,
         "expectancy_confidence_level": expectancy_confidence_level,
@@ -1541,6 +1584,7 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
             "temporal_cluster_width_sec": model.temporal_cluster_width_sec,
             "minimum_temporal_clusters": model.minimum_temporal_clusters,
             "weighted_effective_temporal_clusters": model.weighted_effective_temporal_clusters,
+            "weighted_temporal_mean_return": model.weighted_temporal_mean_return,
             "weighted_temporal_return_std": model.weighted_temporal_return_std,
             "weighted_temporal_mean_return_lower_bound": model.weighted_temporal_mean_return_lower_bound,
             "confidence_level": model.expectancy_confidence_level,
@@ -1608,6 +1652,7 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         temporal_cluster_width_sec = max(0, _finite_int(expectancy_obj.get("temporal_cluster_width_sec", 0), 0))
         minimum_temporal_clusters = max(0, _finite_int(expectancy_obj.get("minimum_temporal_clusters", 0), 0))
         temporal_eff_raw = expectancy_obj.get("weighted_effective_temporal_clusters", 0.0)
+        temporal_mean_raw = expectancy_obj.get("weighted_temporal_mean_return")
         temporal_std_raw = expectancy_obj.get("weighted_temporal_return_std")
         temporal_lower_raw = expectancy_obj.get("weighted_temporal_mean_return_lower_bound")
         confidence_raw = expectancy_obj.get("confidence_level", 0.95)
@@ -1617,6 +1662,7 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         weighted_effective_return_samples = _finite_float(eff_raw)
         weighted_mean_return_lower_bound = None if lower_raw is None else _finite_float(lower_raw)
         weighted_effective_temporal_clusters = _finite_float(temporal_eff_raw)
+        weighted_temporal_mean_return = None if temporal_mean_raw is None else _finite_float(temporal_mean_raw)
         weighted_temporal_return_std = None if temporal_std_raw is None else _finite_float(temporal_std_raw)
         weighted_temporal_mean_return_lower_bound = None if temporal_lower_raw is None else _finite_float(temporal_lower_raw)
         expectancy_confidence_level = _finite_float(confidence_raw)
@@ -1627,6 +1673,8 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         if std_raw is not None and weighted_return_std is None:
             return None
         if lower_raw is not None and weighted_mean_return_lower_bound is None:
+            return None
+        if temporal_mean_raw is not None and weighted_temporal_mean_return is None:
             return None
         if temporal_std_raw is not None and weighted_temporal_return_std is None:
             return None
@@ -1766,6 +1814,7 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             temporal_cluster_width_sec=temporal_cluster_width_sec,
             minimum_temporal_clusters=minimum_temporal_clusters,
             weighted_effective_temporal_clusters=float(weighted_effective_temporal_clusters),
+            weighted_temporal_mean_return=weighted_temporal_mean_return,
             weighted_temporal_return_std=weighted_temporal_return_std,
             weighted_temporal_mean_return_lower_bound=weighted_temporal_mean_return_lower_bound,
             expectancy_confidence_level=float(expectancy_confidence_level),

@@ -814,6 +814,84 @@ function decisionContext(it) {
   return ctx && typeof ctx === "object" ? ctx : {};
 }
 
+function operatorMetrics(it) {
+  const reasonsMetrics = (it?.reasons || {}).operator_metrics;
+  const paramsMetrics = (it?.params || {}).operator_metrics;
+  const metrics = reasonsMetrics && typeof reasonsMetrics === "object"
+    ? reasonsMetrics
+    : (paramsMetrics && typeof paramsMetrics === "object" ? paramsMetrics : {});
+  return {
+    plan: metrics.plan_rr && typeof metrics.plan_rr === "object" ? metrics.plan_rr : {},
+    empirical: metrics.empirical_expectancy && typeof metrics.empirical_expectancy === "object"
+      ? metrics.empirical_expectancy
+      : {},
+  };
+}
+
+function planRrNumber(it) {
+  const ctx = decisionContext(it);
+  const metrics = operatorMetrics(it);
+  return toFiniteNumber(ctx.plan_rr ?? metrics.plan.rr);
+}
+
+function empiricalMeanReturnNumber(it) {
+  const ctx = decisionContext(it);
+  const metrics = operatorMetrics(it);
+  return toFiniteNumber(ctx.empirical_mean_return ?? metrics.empirical.mean_return);
+}
+
+function formatReturnFraction(value, digits = 2, signed = true) {
+  const v = toFiniteNumber(value);
+  if (v === null) return "—";
+  return formatPercentDot(v * 100.0, digits, signed);
+}
+
+function planRrCell(it) {
+  const value = planRrNumber(it);
+  if (value === null) return `<span class="metric-unavailable" title="Plan RR недоступен: нет полного kill-switch stress/economics payload">—</span>`;
+  const ctx = decisionContext(it);
+  const metrics = operatorMetrics(it);
+  const reward = toFiniteNumber(ctx.plan_projected_net_reward_usdt ?? metrics.plan.projected_net_reward_usdt);
+  const loss = toFiniteNumber(ctx.plan_kill_switch_loss_usdt ?? metrics.plan.kill_switch_loss_usdt);
+  const title = `Projected net: ${reward === null ? "—" : formatUsdValue(reward)}; kill-switch loss: ${loss === null ? "—" : formatUsdValue(loss)}. Сценарная метрика плана, не статистическая вероятность.`;
+  return `<span class="metric-primary" title="${escapeHtml(title)}">${escapeHtml(formatDotNumber(value, 2, false))}</span>`;
+}
+
+function empiricalExpectancyCell(it) {
+  const ctx = decisionContext(it);
+  const metrics = operatorMetrics(it);
+  const empirical = metrics.empirical;
+  const status = String(ctx.empirical_expectancy_status ?? empirical.status ?? "insufficient").toLowerCase();
+  const mean = empiricalMeanReturnNumber(it);
+  const samples = toFiniteNumber(ctx.empirical_return_samples ?? empirical.return_samples) ?? 0;
+  const ci = empirical.confidence_interval && typeof empirical.confidence_interval === "object"
+    ? empirical.confidence_interval
+    : {};
+  const lower = toFiniteNumber(ctx.empirical_confidence_interval_lower ?? ci.lower);
+  const upper = toFiniteNumber(ctx.empirical_confidence_interval_upper ?? ci.upper);
+  const level = toFiniteNumber(ctx.empirical_confidence_level ?? ci.level) ?? 0.95;
+  if (mean === null) {
+    return `<span class="metric-unavailable" title="Matured outcomes текущей policy: n=${escapeHtml(String(samples))}; статистики пока недостаточно">недост.</span>`;
+  }
+  const ciText = lower === null || upper === null
+    ? "CI недоступен"
+    : `${formatReturnFraction(lower)} … ${formatReturnFraction(upper)}`;
+  const title = `Статус: ${status}; n=${samples}; ${(level * 100).toFixed(0)}% CI: ${ciText}. Это proxy-outcome evidence текущей policy, не доказательство live edge.`;
+  const cls = status === "positive" ? "metric-positive" : status === "negative" ? "metric-negative" : "metric-uncertain";
+  return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(formatReturnFraction(mean))}</span>`;
+}
+
+function riskBufferNumber(it) {
+  return toFiniteNumber(decisionContext(it).liquidation_buffer_pct);
+}
+
+function riskBufferCell(it) {
+  const value = riskBufferNumber(it);
+  if (value === null) return `<span class="metric-unavailable" title="Cross-margin equity buffer недоступен">—</span>`;
+  const cls = value >= 20 ? "metric-positive" : value >= 10 ? "metric-uncertain" : "metric-negative";
+  return `<span class="${cls}" title="Остаток выделенного капитала после worst-side kill-switch stress; не является liquidation price">${escapeHtml(formatPercentDot(value, 2, false))}</span>`;
+}
+
 function priceStatusRu(status) {
   if (status === "inside_range") return "внутри диапазона";
   if (status === "outside_range") return "вне диапазона";
@@ -918,6 +996,31 @@ function buildPriceFreshnessFields(it, ov) {
 
 function buildRiskEconomicsFields(it) {
   const ctx = decisionContext(it);
+  const metrics = operatorMetrics(it);
+  const plan = metrics.plan;
+  const empirical = metrics.empirical;
+  const planRr = toFiniteNumber(ctx.plan_rr ?? plan.rr);
+  const planReward = toFiniteNumber(ctx.plan_projected_net_reward_usdt ?? plan.projected_net_reward_usdt);
+  const planLoss = toFiniteNumber(ctx.plan_kill_switch_loss_usdt ?? plan.kill_switch_loss_usdt);
+  const empiricalMean = toFiniteNumber(ctx.empirical_mean_return ?? empirical.mean_return);
+  const empiricalTail = toFiniteNumber(ctx.empirical_expected_shortfall ?? empirical.expected_shortfall);
+  const empiricalRr = toFiniteNumber(ctx.empirical_rr ?? empirical.empirical_rr);
+  const empiricalStatus = String(ctx.empirical_expectancy_status ?? empirical.status ?? "insufficient");
+  const empiricalSamples = toFiniteNumber(ctx.empirical_return_samples ?? empirical.return_samples) ?? 0;
+  const empiricalClusters = toFiniteNumber(ctx.empirical_temporal_cluster_count ?? empirical.temporal_cluster_count) ?? 0;
+  const empiricalMinClusters = toFiniteNumber(ctx.empirical_minimum_temporal_clusters ?? empirical.minimum_temporal_clusters) ?? 0;
+  const empiricalCi = empirical.confidence_interval && typeof empirical.confidence_interval === "object"
+    ? empirical.confidence_interval
+    : {};
+  const empiricalLower = toFiniteNumber(ctx.empirical_confidence_interval_lower ?? empiricalCi.lower);
+  const empiricalUpper = toFiniteNumber(ctx.empirical_confidence_interval_upper ?? empiricalCi.upper);
+  const empiricalLevel = toFiniteNumber(ctx.empirical_confidence_level ?? empiricalCi.level) ?? 0.95;
+  const empiricalValue = empiricalMean === null
+    ? `недостаточно данных · n=${empiricalSamples}`
+    : `${formatReturnFraction(empiricalMean)} · ${(empiricalLevel * 100).toFixed(0)}% CI ${empiricalLower === null || empiricalUpper === null ? "—" : `${formatReturnFraction(empiricalLower)} … ${formatReturnFraction(empiricalUpper)}`}`;
+  const empiricalTailValue = empiricalTail === null
+    ? "—"
+    : `${formatReturnFraction(empiricalTail)}${empiricalRr === null ? "" : ` · RR ${formatDotNumber(empiricalRr, 2, false)}`}`;
   return [
     {
       label: "Предпроверка запуска",
@@ -930,20 +1033,34 @@ function buildRiskEconomicsFields(it) {
       help: "Сводная оценка риска по cross-margin equity buffer на kill-switch. Это консервативный стресс капитала бота, а не точная биржевая ликвидационная цена.",
     },
     {
+      label: "Plan RR",
+      value: planRr === null ? "—" : formatDotNumber(planRr, 2, false),
+      help: "Сценарное отношение ожидаемой net-прибыли именно этого grid-плана к убытку при достижении худшего kill-switch. Не является вероятностью и не использует historical outcomes.",
+    },
+    {
+      label: "Plan net / kill-switch loss",
+      value: `${planReward === null ? "—" : formatUsdValue(planReward)} / ${planLoss === null ? "—" : formatUsdValue(planLoss)}`,
+      help: "Числитель Plan RR: projected completed grid pairs после recurring fees, разовой market friction и adverse funding. Знаменатель: price/exit loss при худшем kill-switch; maintenance reserve не называется убытком.",
+    },
+    {
+      label: "Empirical expectancy",
+      value: empiricalValue,
+      help: `Средняя net-доходность matured outcomes текущей неизменной policy с доверительным интервалом. Статус: ${empiricalStatus}; outcomes n=${empiricalSamples}; независимых временных когорт ${empiricalClusters}/${empiricalMinClusters}.`,
+    },
+    {
+      label: "Empirical tail / RR",
+      value: empiricalTailValue,
+      help: "Expected shortfall — средний результат худшего хвоста matured outcomes. Empirical RR = положительная средняя доходность / модуль отрицательного expected shortfall. При недостаточной или односторонней выборке RR не показывается.",
+    },
+    {
       label: "Cross-margin equity buffer",
       value: ctx.liquidation_buffer_pct === null || ctx.liquidation_buffer_pct === undefined ? "—" : formatPercentDot(ctx.liquidation_buffer_pct, 2, false),
       help: "Остаток выделенного капитала после неблагоприятного движения к kill-switch, execution costs и maintenance reserve. Funding benefit и grid profit не кредитуются.",
     },
     {
-      label: "Isolated liquidation price",
-      value: "не рассчитывается",
-      mono: true,
-      help: "Bybit Futures Grid Bot использует cross margin; одиночная isolated liquidation price неприменима. Используется cross-margin equity buffer на kill-switch.",
-    },
-    {
       label: "Чистая прибыль/сетка",
       value: ctx.net_profit_bps === null || ctx.net_profit_bps === undefined ? "—" : formatBps(ctx.net_profit_bps, 2, true),
-      help: "Ожидаемая прибыль одной сетки после комиссий, спреда, проскальзывания и неблагоприятного funding. bps = базисные пункты: 1 bps = 0,01%.",
+      help: "Прибыль одной завершённой пары соседних уровней после recurring fees двух grid fills. Разовая market friction и horizon funding учитываются отдельно в Plan RR. bps = базисные пункты: 1 bps = 0,01%.",
     },
     {
       label: "Издержки исполнения",
@@ -1058,11 +1175,9 @@ function buildOperatorFieldSpecs(it, ov) {
   const exitMath = directionalExitMathForDisplay(it);
   const tpDistancePct = toFiniteNumber(exitMath.take_profit_distance_pct);
   const slDistancePct = toFiniteNumber(exitMath.stop_loss_distance_pct);
-  const rrValue = toFiniteNumber(exitMath.risk_reward);
   const distanceValue = tpDistancePct === null && slDistancePct === null
     ? "—"
     : `TP ${tpDistancePct === null ? "—" : formatPercentDot(tpDistancePct, 2, false)} / SL ${slDistancePct === null ? "—" : formatPercentDot(slDistancePct, 2, false)}`;
-  const riskRewardValue = rrValue === null ? "—" : formatDotNumber(rrValue, 3, false);
   const fields = [
     { label: "Сторона", value: directionRu((it || {}).direction), mono: false, help: "Направление идеи: лонг зарабатывает на росте, шорт — на снижении. Нейтральная grid-логика не должна подменяться направленным TP/SL." },
     { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Оценочная максимальная экспозиция бота. При наличии worst-case grid-полей UI показывает верхнюю оценку по максимальной цене диапазона, а базовое qty выводит из той же worst-case цены, не из reference-price; legacy reference-price notional не используется для qty при worst-case exposure." },
@@ -1075,7 +1190,6 @@ function buildOperatorFieldSpecs(it, ov) {
     { label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true, help: "Take Profit — уровень фиксации прибыли. Для лонга он выше входа, для шорта ниже входа." },
     { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help: "Stop Loss / kill-switch — защитный уровень остановки убытка. Для лонга ниже входа, для шорта выше входа." },
     { label: "TP/SL дистанция", value: distanceValue, mono: true, help: "Направленные расстояния от расчётного входа до TP и SL. Для short TP считается вниз, SL — вверх; знак не инвертируется форматированием." },
-    { label: "Risk/Reward TP/SL", value: riskRewardValue, mono: true, help: "Отношение потенциальной прибыли к потенциальному убытку по тем же направленным TP/SL уровням, которые валидирует backend." },
   ];
   return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
 }
@@ -1125,7 +1239,6 @@ function buildTechPayload(it) {
     score_raw: it.score,
     score_ui: ensureUiScoreMeta(it),
     confidence: it.confidence,
-    expected_rr: it.expected_rr,
     blocks: it.blocks || [],
     cost_model: reasons.cost_model || {},
     market_shock: reasons.market_shock || {},
@@ -1986,9 +2099,18 @@ function buildRecommendationHistoryHtml(data) {
     { label: "Статус в БД", render: row => pillStatus(row.stored_status || row.status) },
     { label: "LLM", render: row => escapeHtml(row.llm_status || "none") },
     { label: "Тип", render: row => escapeHtml(row.publication_kind === "root" ? "новая идея" : "обновление") },
-    { label: "Уверенность", render: row => escapeHtml(formatProbability(row.confidence)) },
-    { label: "Score", render: row => escapeHtml(fmt(row.score, 3)) },
-    { label: "Прокси C/R", render: row => escapeHtml(fmt(row.expected_rr, 2)) },
+    { label: "Plan RR", render: row => {
+        const value = toFiniteNumber(row.plan_rr);
+        return escapeHtml(value === null ? "—" : formatDotNumber(value, 2, false));
+      }
+    },
+    { label: "Emp. expectancy", render: row => {
+        const mean = toFiniteNumber(row.empirical_mean_return);
+        const status = String(row.empirical_expectancy_status || "insufficient");
+        if (mean === null) return escapeHtml(`недост. (${status})`);
+        return escapeHtml(`${formatReturnFraction(mean)} (${status})`);
+      }
+    },
     { label: "Изменение", className: "wrap", render: row => {
         const marks = [];
         if (row.direction_changed) marks.push("смена направления");
@@ -2262,6 +2384,12 @@ function applySort(items) {
     } else if (sortCol === "score") {
       av = ensureUiScoreMeta(a, items).percentile ?? -1;
       bv = ensureUiScoreMeta(b, items).percentile ?? -1;
+    } else if (sortCol === "plan_rr") {
+      av = planRrNumber(a) ?? -1;
+      bv = planRrNumber(b) ?? -1;
+    } else if (sortCol === "empirical_expectancy") {
+      av = empiricalMeanReturnNumber(a) ?? -1e9;
+      bv = empiricalMeanReturnNumber(b) ?? -1e9;
     } else {
       av = a[sortCol] ?? "";
       bv = b[sortCol] ?? "";
@@ -2291,9 +2419,6 @@ function renderRecoTable(items) {
   let hasActionable = false;
   sorted.forEach((it, i) => {
     { const s = operatorEffectiveStatus(it); if (s === "recommended" || s === "active") hasActionable = true; }
-    const dirAgg = (it.reasons || {}).direction_agg || {};
-    const dirConf = dirAgg.direction_confidence_feature ?? dirAgg.direction_confidence_calibrated ?? dirAgg.direction_confidence;
-    const scoreUi = ensureUiScoreMeta(it, items);
     const tr = document.createElement("tr");
     { const s = operatorEffectiveStatus(it); if (s === "recommended" || s === "active") tr.classList.add("row-recommended"); }
     tr.innerHTML = `
@@ -2305,10 +2430,9 @@ function renderRecoTable(items) {
         </div>
       </td>
       <td>${directionBadge(it.direction)}</td>
-      <td>${dirConfCell(dirConf)}</td>
-      <td>${scoreUiCellHtml(scoreUi)}</td>
-      <td>${confCell(it)}</td>
-      <td>${fmt(it.expected_rr)}</td>
+      <td>${planRrCell(it)}</td>
+      <td>${empiricalExpectancyCell(it)}</td>
+      <td>${riskBufferCell(it)}</td>
       <td data-cell="status">${pillStatus(operatorEffectiveStatus(it))}</td>
       <td><button class="btn tiny" data-act="details" data-id="${escapeHtml(it.rec_id)}">Карточка</button></td>
     `;
@@ -2835,7 +2959,7 @@ document.querySelector("#recoTable thead").addEventListener("click", (e) => {
   } else {
     sortCol = col;
     // numeric columns: default desc (highest first); text columns: default asc
-    sortDir = ["score", "confidence", "dir_conf", "expected_rr"].includes(col) ? "desc" : "asc";
+    sortDir = ["plan_rr", "empirical_expectancy", "risk_buffer"].includes(col) ? "desc" : "asc";
   }
   if (lastItems.length) renderRecoTable(lastItems);
 });

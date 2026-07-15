@@ -32,6 +32,7 @@ from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
     extract_features, FEATURE_NAMES, GLOBAL_LOGREG_KEY, CALIB_REFIT_INTERVAL_SEC,
+    return_confidence_interval,
 )
 # Note: calibrators use db.get_outcomes_with_recs (single JOIN query) to avoid N+1 pattern
 
@@ -2089,6 +2090,243 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
     return float(_clamp(net_capture / risk_proxy, 0.0, 3.0))
 
 
+def _plan_rr_metrics(
+    params: dict[str, Any] | None,
+    cost_model: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Scenario reward/risk for the concrete generated grid plan.
+
+    Reward is the projected net cash result from the plan's executable grid
+    opportunities over the recommendation horizon. It uses the same per-pair
+    fee model as the published grid economics, then subtracts one-time market
+    entry/terminal friction and adverse funding. Risk is the monotonic
+    kill-switch loss for the worst applicable inventory side, including the
+    corresponding exit execution cost. Maintenance reserve is deliberately not
+    called a loss, and no funding benefit or historical outcome is credited.
+    """
+    params = params if isinstance(params, dict) else {}
+    economics = params.get("economics") if isinstance(params.get("economics"), dict) else {}
+    cost_model = cost_model if isinstance(cost_model, dict) else {}
+
+    def first_finite(*values: Any) -> float | None:
+        for value in values:
+            parsed = _finite_or_none(value)
+            if parsed is not None:
+                return parsed
+        return None
+
+    stress = economics.get("cross_margin_stress") if isinstance(economics.get("cross_margin_stress"), dict) else {}
+    worst_side = str(stress.get("worst_side") or "").strip().lower()
+    worst = stress.get(worst_side) if worst_side in {"long", "short"} else None
+    worst = worst if isinstance(worst, dict) else {}
+
+    qty = _finite_or_none(economics.get("qty_per_order"))
+    active_orders = _safe_int_or_none(economics.get("estimated_active_orders"))
+    fill_efficiency = _finite_or_none(economics.get("fill_efficiency"))
+    net_profit_per_pair = _finite_or_none(economics.get("net_profit_usdt"))
+    max_position_notional = first_finite(
+        economics.get("estimated_worst_case_total_order_notional_usdt"),
+        economics.get("estimated_max_position_notional_usdt"),
+    )
+    gross_kill_loss_per_qty = _finite_or_none(worst.get("gross_loss"))
+    kill_execution_cost_per_qty = _finite_or_none(worst.get("execution_cost"))
+    # Recurring grid-pair fees are already deducted in ``net_profit_usdt``.
+    # Only the distinct one-time spread/slippage layer may be deducted again
+    # here; using ``market_round_trip_cost_bps`` would double-count one pair of
+    # trading fees. Current generated plans always persist this explicit field.
+    one_time_market_friction_bps = _finite_or_none(
+        cost_model.get("one_time_market_friction_bps")
+    )
+    signed_funding_bps = _finite_or_none(cost_model.get("expected_funding_bps"))
+
+    required = (
+        qty,
+        fill_efficiency,
+        net_profit_per_pair,
+        max_position_notional,
+        gross_kill_loss_per_qty,
+        kill_execution_cost_per_qty,
+        one_time_market_friction_bps,
+        signed_funding_bps,
+    )
+    if (
+        any(value is None for value in required)
+        or qty is None
+        or qty <= 0.0
+        or active_orders is None
+        or active_orders <= 0
+        or max_position_notional is None
+        or max_position_notional <= 0.0
+    ):
+        return {
+            "status": "unavailable",
+            "rr": None,
+            "projected_net_reward_usdt": None,
+            "kill_switch_loss_usdt": None,
+            "projected_completed_pairs": None,
+            "basis": "generated_grid_plan",
+            "reason": "incomplete_plan_economics_or_kill_switch_stress",
+            "is_empirical": False,
+            "is_heuristic_capture_score": False,
+        }
+
+    fill_eff = _clamp(float(fill_efficiency), 0.0, 1.0)
+    projected_pairs = float(active_orders) * fill_eff
+    recurring_grid_reward = max(0.0, float(net_profit_per_pair)) * projected_pairs
+    one_time_execution_cost = (
+        float(max_position_notional)
+        * max(0.0, float(one_time_market_friction_bps))
+        / 10000.0
+    )
+    adverse_funding_cost = (
+        float(max_position_notional)
+        * max(0.0, float(signed_funding_bps))
+        / 10000.0
+    )
+    projected_net_reward = recurring_grid_reward - one_time_execution_cost - adverse_funding_cost
+    kill_switch_loss = float(qty) * (
+        max(0.0, float(gross_kill_loss_per_qty))
+        + max(0.0, float(kill_execution_cost_per_qty))
+    )
+    rr = None
+    if kill_switch_loss > 0.0:
+        rr = max(0.0, projected_net_reward) / kill_switch_loss
+
+    return {
+        "status": "available" if rr is not None else "unavailable",
+        "rr": float(rr) if rr is not None and math.isfinite(rr) else None,
+        "projected_net_reward_usdt": float(projected_net_reward),
+        "projected_grid_reward_before_horizon_costs_usdt": float(recurring_grid_reward),
+        "one_time_execution_cost_usdt": float(one_time_execution_cost),
+        "one_time_market_friction_bps": float(one_time_market_friction_bps),
+        "adverse_funding_cost_usdt": float(adverse_funding_cost),
+        "kill_switch_loss_usdt": float(kill_switch_loss),
+        "projected_completed_pairs": float(projected_pairs),
+        "fill_efficiency": float(fill_eff),
+        "worst_side": worst_side or None,
+        "basis": "projected_net_grid_reward_to_monotonic_kill_switch_loss",
+        "is_empirical": False,
+        "is_heuristic_capture_score": False,
+        "note": (
+            "Scenario metric for the generated plan, not a probability forecast: "
+            "projected completed grid pairs net of recurring fees, one-time market friction "
+            "and adverse funding divided by price/exit loss at the worst kill-switch side."
+        ),
+    }
+
+
+def _empirical_expectancy_metrics(model: LogRegScaler | None) -> dict[str, Any]:
+    """Current-policy matured-outcome expectancy with uncertainty and tail risk."""
+    if model is None:
+        return {
+            "status": "insufficient",
+            "available": False,
+            "decision_ready": False,
+            "mean_return": None,
+            "confidence_interval": {"lower": None, "upper": None, "level": 0.95},
+            "expected_shortfall": None,
+            "empirical_rr": None,
+            "return_samples": 0,
+            "temporal_cluster_count": 0,
+            "policy_fingerprint": None,
+            "basis": "current_policy_matured_outcomes",
+        }
+
+    confidence_level = _finite_or_none(getattr(model, "expectancy_confidence_level", None)) or 0.95
+    temporal_mean = _finite_or_none(getattr(model, "weighted_temporal_mean_return", None))
+    temporal_std = _finite_or_none(getattr(model, "weighted_temporal_return_std", None))
+    temporal_eff = _finite_or_none(getattr(model, "weighted_effective_temporal_clusters", None))
+    mean_return = temporal_mean
+    return_std = temporal_std
+    effective_samples = temporal_eff
+    mean_basis = "non_overlapping_temporal_cohorts"
+    if mean_return is None or return_std is None or effective_samples is None or effective_samples <= 1.0:
+        mean_return = _finite_or_none(getattr(model, "weighted_mean_return", None))
+        return_std = _finite_or_none(getattr(model, "weighted_return_std", None))
+        effective_samples = _finite_or_none(getattr(model, "weighted_effective_return_samples", None))
+        mean_basis = "recency_weighted_outcomes"
+
+    ci_lower, ci_upper = return_confidence_interval(
+        mean_return,
+        return_std,
+        effective_samples,
+        confidence_level=float(confidence_level),
+    )
+    expected_shortfall = _finite_or_none(getattr(model, "weighted_expected_shortfall", None))
+    empirical_rr = None
+    if mean_return is not None and mean_return > 0.0 and expected_shortfall is not None and expected_shortfall < 0.0:
+        empirical_rr = float(mean_return) / abs(float(expected_shortfall))
+
+    gate_status = str(
+        getattr(model, "expectancy_status", "insufficient") or "insufficient"
+    ).strip().lower()
+    if ci_lower is not None and ci_upper is not None:
+        if ci_lower > 0.0:
+            status = "positive"
+        elif ci_upper < 0.0:
+            status = "negative"
+        else:
+            status = "uncertain"
+    else:
+        status = gate_status
+    unresolved = int(getattr(model, "policy_unresolved_total", 0) or 0)
+    invalid = int(getattr(model, "policy_invalid_labeled_total", 0) or 0)
+    fingerprint = str(getattr(model, "policy_fingerprint", "") or "").strip().lower()
+    available = mean_return is not None and ci_lower is not None and ci_upper is not None
+    decision_ready = bool(
+        available
+        and gate_status in {"positive", "negative", "uncertain"}
+        and unresolved == 0
+        and invalid == 0
+        and is_sha256_fingerprint(fingerprint)
+    )
+    return {
+        "status": status,
+        "gate_status": gate_status,
+        "available": bool(available),
+        "decision_ready": decision_ready,
+        "mean_return": float(mean_return) if mean_return is not None else None,
+        "mean_basis": mean_basis,
+        "confidence_interval": {
+            "lower": float(ci_lower) if ci_lower is not None else None,
+            "upper": float(ci_upper) if ci_upper is not None else None,
+            "level": float(confidence_level),
+        },
+        "conservative_lower_bound": min(
+            value
+            for value in (
+                _finite_or_none(getattr(model, "weighted_mean_return_lower_bound", None)),
+                _finite_or_none(getattr(model, "weighted_temporal_mean_return_lower_bound", None)),
+            )
+            if value is not None
+        ) if any(
+            value is not None
+            for value in (
+                _finite_or_none(getattr(model, "weighted_mean_return_lower_bound", None)),
+                _finite_or_none(getattr(model, "weighted_temporal_mean_return_lower_bound", None)),
+            )
+        ) else None,
+        "expected_shortfall": float(expected_shortfall) if expected_shortfall is not None else None,
+        "empirical_rr": float(empirical_rr) if empirical_rr is not None and math.isfinite(empirical_rr) else None,
+        "return_samples": int(getattr(model, "return_samples", 0) or 0),
+        "effective_samples": float(effective_samples) if effective_samples is not None else None,
+        "temporal_cluster_count": int(getattr(model, "temporal_cluster_count", 0) or 0),
+        "minimum_temporal_clusters": int(getattr(model, "minimum_temporal_clusters", 0) or 0),
+        "policy_matured_total": int(getattr(model, "policy_matured_total", 0) or 0),
+        "policy_labeled_total": int(getattr(model, "policy_labeled_total", 0) or 0),
+        "policy_censored_total": int(getattr(model, "policy_censored_total", 0) or 0),
+        "policy_unresolved_total": unresolved,
+        "policy_invalid_labeled_total": invalid,
+        "policy_fingerprint": fingerprint or None,
+        "basis": "current_policy_matured_outcomes",
+        "is_live_edge_proof": False,
+        "note": (
+            "Proxy outcome evidence from the exact current policy. Confidence interval and tail loss "
+            "describe retained matured outcomes; they do not prove future live execution edge."
+        ),
+    }
+
+
 def _mode(venue: str, direction: str) -> tuple[str, str]:
     if venue == "linear":
         return "unified", "cross"
@@ -2743,6 +2981,11 @@ def _params(
         ),
         "cross_margin_worst_side": (
             cross_margin_stress.get("worst_side") if isinstance(cross_margin_stress, dict) else None
+        ),
+        "cross_margin_stress": (
+            _sanitize_json_numbers(cross_margin_stress)
+            if isinstance(cross_margin_stress, dict)
+            else None
         ),
         "liquidation_model": "bybit_futures_grid_cross_margin_equity_stress",
         "risk_profile": (
@@ -5245,6 +5488,12 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "weighted_return_std": _finite_or_none(getattr(bot_cal, "weighted_return_std", None)) if bot_cal is not None else None,
                 "weighted_effective_return_samples": _finite_or_none(getattr(bot_cal, "weighted_effective_return_samples", None)) if bot_cal is not None else None,
                 "weighted_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "weighted_mean_return_lower_bound", None)) if bot_cal is not None else None,
+                "weighted_temporal_mean_return": _finite_or_none(getattr(bot_cal, "weighted_temporal_mean_return", None)) if bot_cal is not None else None,
+                "weighted_temporal_return_std": _finite_or_none(getattr(bot_cal, "weighted_temporal_return_std", None)) if bot_cal is not None else None,
+                "weighted_effective_temporal_clusters": _finite_or_none(getattr(bot_cal, "weighted_effective_temporal_clusters", None)) if bot_cal is not None else None,
+                "weighted_temporal_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "weighted_temporal_mean_return_lower_bound", None)) if bot_cal is not None else None,
+                "temporal_cluster_count": int(getattr(bot_cal, "temporal_cluster_count", 0) or 0) if bot_cal is not None else 0,
+                "minimum_temporal_clusters": int(getattr(bot_cal, "minimum_temporal_clusters", 0) or 0) if bot_cal is not None else 0,
                 "expectancy_confidence_level": _finite_or_none(getattr(bot_cal, "expectancy_confidence_level", None)) if bot_cal is not None else None,
                 "policy_fingerprint": policy_fingerprint,
                 "policy_matured_total": int(getattr(bot_cal, "policy_matured_total", 0) or 0) if bot_cal is not None else 0,
@@ -5276,6 +5525,30 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     else "Bot-specific LogReg + Platt pipeline trained before the terminal holdout is active."
                 ),
             }
+
+            plan_rr = _plan_rr_metrics(params, cost_model)
+            empirical = _empirical_expectancy_metrics(bot_cal)
+            reasons2["operator_metrics"] = {
+                "plan_rr": plan_rr,
+                "empirical_expectancy": empirical,
+                "heuristic_capture_score": {
+                    "value": float(expected_rr),
+                    "operator_visible": False,
+                    "basis": "legacy_expected_rr_heuristic_capture_to_volatility_proxy",
+                    "note": "Internal ranking diagnostic only; not rendered as operator reward/risk.",
+                },
+            }
+            params["operator_metrics"] = {
+                "plan_rr": plan_rr,
+                "empirical_expectancy": empirical,
+            }
+            if isinstance(params.get("risk_report"), dict):
+                params["risk_report"]["plan_rr"] = plan_rr.get("rr")
+                params["risk_report"]["plan_projected_net_reward_usdt"] = plan_rr.get("projected_net_reward_usdt")
+                params["risk_report"]["plan_kill_switch_loss_usdt"] = plan_rr.get("kill_switch_loss_usdt")
+                params["risk_report"]["empirical_expectancy_status"] = empirical.get("status")
+                params["risk_report"]["empirical_mean_return"] = empirical.get("mean_return")
+                params["risk_report"]["empirical_rr"] = empirical.get("empirical_rr")
 
             recs.append({
                 "rec_id": rec_id,

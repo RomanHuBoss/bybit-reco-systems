@@ -94,14 +94,17 @@ def test_grid_publication_gate_blocks_random_walk_like_range() -> None:
     assert strong == []
 
 
-def test_expected_rr_ui_is_labeled_as_heuristic_proxy() -> None:
+def test_legacy_expected_rr_is_hidden_from_operator_ui_and_replaced_by_decision_metrics() -> None:
     from pathlib import Path
 
     html = Path("app/ui/static/index.html").read_text(encoding="utf-8")
     js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
-    assert "Прокси capture/risk" in html
-    assert "не является фактическим отношением прибыли к убытку" in html
-    assert 'label: "Прокси C/R"' in js
+    assert "Прокси capture/risk" not in html
+    assert ">Plan RR<" in html
+    assert ">Emp. expectancy<" in html
+    assert 'label: "Plan RR"' in js
+    assert 'label: "Empirical expectancy"' in js
+    assert "heuristic_capture_score" in js or "heuristic_capture_score" in Path("app/recommender.py").read_text(encoding="utf-8")
 
 
 def test_new_model_identity_and_calibrators_do_not_reuse_legacy_range_semantics() -> None:

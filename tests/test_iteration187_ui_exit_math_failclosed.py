@@ -102,11 +102,11 @@ const fields = buildOperatorFieldSpecs({
   stopLossValue: '95.0 / 105.0'
 });
 const byLabel = Object.fromEntries(fields.map(f => [f.label, f.value]));
-console.log(JSON.stringify({distance: byLabel['TP/SL дистанция'], rr: byLabel['Risk/Reward TP/SL']}));
+console.log(JSON.stringify({distance: byLabel['TP/SL дистанция'], hasRr: Object.prototype.hasOwnProperty.call(byLabel, 'Risk/Reward TP/SL')}));
 """
     out = _run_js(code)
 
-    assert out == {"distance": "—", "rr": "—"}
+    assert out == {"distance": "—", "hasRr": False}
 
 
 def test_operator_risk_math_is_hidden_when_backend_exit_geometry_is_invalid() -> None:
@@ -153,8 +153,8 @@ const fields = buildOperatorFieldSpecs({
   stopLossValue: '95.0 / 105.0'
 });
 const byLabel = Object.fromEntries(fields.map(f => [f.label, f.value]));
-console.log(JSON.stringify({distance: byLabel['TP/SL дистанция'], rr: byLabel['Risk/Reward TP/SL']}));
+console.log(JSON.stringify({distance: byLabel['TP/SL дистанция'], hasRr: Object.prototype.hasOwnProperty.call(byLabel, 'Risk/Reward TP/SL')}));
 """
     out = _run_js(code)
 
-    assert out == {"distance": "—", "rr": "—"}
+    assert out == {"distance": "—", "hasRr": False}

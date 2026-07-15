@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Futures Grid — Панель оператора</title>
-  <link rel="stylesheet" href="/static/styles.css?v=manual-ui-v45"/>
+  <link rel="stylesheet" href="/static/styles.css?v=manual-ui-v46-operator-metrics"/>
 </head>
 <body>
 
@@ -45,10 +45,7 @@
         <label>Top N</label>
         <input id="topN" type="number" value="50" min="1" max="200"/>
       </div>
-      <div class="control control-conf">
-        <label>Мин. уверенность</label>
-        <input id="minConf" type="number" value="0.52" step="0.05" min="0" max="1"/>
-      </div>
+      <input id="minConf" type="hidden" value="0"/>
       <div class="control control-btns">
         <div class="btn-row">
           <button id="decisionsBtn" class="btn secondary">Журнал</button>
@@ -83,10 +80,9 @@
                 <th>#</th>
                 <th data-sort="symbol">Символ</th>
                 <th data-sort="direction">Направление</th>
-                <th data-sort="dir_conf" title="Уверенность направления">Ув. напр.</th>
-                <th data-sort="score" title="Ранг в текущей выборке — grouped percentile по raw launch-score; не является разрешением запуска">Ранг</th>
-                <th id="confHeader" data-sort="confidence" title="Уверенность модели">Увер.</th>
-                <th data-sort="expected_rr" title="Эвристический capture/risk proxy для ранжирования; не является фактическим отношением прибыли к убытку и не доказывает прибыльность">Прокси capture/risk</th>
+                <th data-sort="plan_rr" title="Сценарное отношение ожидаемой net-прибыли конкретного grid-плана к убытку при достижении худшего kill-switch">Plan RR</th>
+                <th data-sort="empirical_expectancy" title="Средняя net-доходность matured outcomes текущей неизменной policy; учитывайте статус и доверительный интервал">Emp. expectancy</th>
+                <th data-sort="risk_buffer" title="Остаток выделенного капитала после worst-side движения к kill-switch, execution costs и maintenance reserve">Risk buffer</th>
                 <th data-sort="status">Статус</th>
                 <th>Карточка</th>
               </tr>
@@ -123,6 +119,6 @@
     </div>
   </main>
 
-  <script src="/static/app.js?v=manual-ui-v45-signal-identity-1-mean-reversion-edge-2-lineage-v7-policy-censor-heldout-v8"></script>
+  <script src="/static/app.js?v=manual-ui-v46-operator-plan-empirical-rr"></script>
 </body>
 </html>
