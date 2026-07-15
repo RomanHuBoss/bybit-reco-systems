@@ -96,13 +96,13 @@ const fields = buildOperatorFieldSpecs({
   rangeUpper: '104.0',
   entryRef: '100.0',
   leverage: '3',
-  takeProfitLabel: 'Directional TP blocked',
+  takeProfitLabel: 'Направленная цель прибыли заблокирована',
   takeProfitValue: '—',
-  stopLossLabel: 'Stop Loss / Kill-switch',
+  stopLossLabel: 'Ограничение убытка / аварийная граница выхода',
   stopLossValue: '95.0 / 105.0'
 });
 const byLabel = Object.fromEntries(fields.map(f => [f.label, f.value]));
-console.log(JSON.stringify({distance: byLabel['TP/SL дистанция'], hasRr: Object.prototype.hasOwnProperty.call(byLabel, 'Risk/Reward TP/SL')}));
+console.log(JSON.stringify({distance: byLabel['Расстояние до цели / ограничения'], hasRr: Object.prototype.hasOwnProperty.call(byLabel, 'RR защитных уровней')}));
 """
     out = _run_js(code)
 
@@ -147,13 +147,13 @@ const fields = buildOperatorFieldSpecs({
   rangeUpper: '104.0',
   entryRef: '100.0',
   leverage: '3',
-  takeProfitLabel: 'Directional TP blocked',
+  takeProfitLabel: 'Направленная цель прибыли заблокирована',
   takeProfitValue: '—',
-  stopLossLabel: 'Stop Loss / Kill-switch',
+  stopLossLabel: 'Ограничение убытка / аварийная граница выхода',
   stopLossValue: '95.0 / 105.0'
 });
 const byLabel = Object.fromEntries(fields.map(f => [f.label, f.value]));
-console.log(JSON.stringify({distance: byLabel['TP/SL дистанция'], hasRr: Object.prototype.hasOwnProperty.call(byLabel, 'Risk/Reward TP/SL')}));
+console.log(JSON.stringify({distance: byLabel['Расстояние до цели / ограничения'], hasRr: Object.prototype.hasOwnProperty.call(byLabel, 'RR защитных уровней')}));
 """
     out = _run_js(code)
 

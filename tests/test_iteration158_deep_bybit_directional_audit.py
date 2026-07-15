@@ -135,7 +135,7 @@ def test_operator_ui_keeps_directional_distances_but_uses_plan_rr_for_operator_d
     assert "function directionalExitMathForDisplay" in app_js
     assert "const exitMath = directionalExitMathForDisplay(it);" in app_js
     assert "exitLevels.geometry_valid === false" in app_js
-    assert "TP/SL дистанция" in app_js
+    assert "Расстояние до цели / ограничения" in app_js
     assert "Risk/Reward TP/SL" not in app_js
-    assert 'label: "Plan RR"' in app_js
-    assert "Для short TP считается вниз, SL — вверх" in app_js
+    assert 'label: "RR плана"' in app_js
+    assert "Для продажи цель находится ниже, а ограничение — выше" in app_js

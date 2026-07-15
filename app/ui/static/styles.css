@@ -990,6 +990,15 @@ body {
   color: var(--text);
   border-color: #3e6090;
 }
+.field-help:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+  color: var(--text);
+}
+.table-header-help {
+  margin-left: 4px;
+  vertical-align: middle;
+}
 .field-value-row {
   display: flex;
   align-items: center;

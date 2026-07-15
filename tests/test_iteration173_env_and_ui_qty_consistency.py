@@ -26,11 +26,11 @@ def test_operator_ui_derives_worst_case_position_qty_from_worst_grid_price() -> 
     assert "const positionNotionalPick = firstFiniteField" in app_js
     assert "worstCasePositionNotionalKeys.has(positionNotionalPick.key)" in app_js
     assert "gridMaxNotionalPrice(referencePrice, rangeLowerForQty, rangeUpperForQty)" in app_js
-    assert "не из reference-price" in app_js
+    assert "по неблагоприятной цене диапазона" in app_js
 
 
 def test_static_asset_cache_key_bumped_after_worst_case_qty_ui_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index

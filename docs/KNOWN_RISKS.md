@@ -1,3 +1,13 @@
+## Устранено в v1.0.64: смешанная англо-русская лексика затрудняла операторское решение
+
+UI ранее показывал внутренние торговые термины и диагностические фразы (`long/short/neutral`, `funding`, `spread`, `preflight`, `shadow`, `policy`, `kill-switch`, `leverage` и другие) без обязательного объяснения. Это создавало риск неверной интерпретации статуса, направления и причины запрета. v1.0.64 вводит единый русский словарь, преобразует динамические сообщения API и добавляет подсказки к сложным полям. Машинные коды остаются неизменными и доступны в подробной диагностике.
+
+Остаточный риск: неизвестный новый код может получить общее русское описание до добавления отдельного словарного соответствия. Такой текст не разрешает торговлю и не ослабляет fail-closed проверки.
+
+## Resolved in v1.0.63: technical diagnostic text occupied the decision table
+
+The former `Причина` column rendered the first raw gate message, including thresholds and mixed Russian/English implementation terminology. This was not a compact operator signal and could dominate the entire table. v1.0.63 removes that column, maps known reason codes to short Russian hints on the decision label, and uses a bounded status fallback for unknown codes. The full original message remains auditable in Details/API as `primary_reason_detail`.
+
 ## Resolved in v1.0.62: LLM-enabled shadow outcomes could never mature
 
 The LLM reviewer intentionally accepts only actionable candidates, but the outcome worker previously required `llm_review.status=ok` for every root when the reviewer was enabled. Explicit `shadow_no_trade` roots therefore could never be reviewed or labeled, blocking the evidence needed for calibration. v1.0.62 permits only publisher-opted-in, risk-clean shadow roots to bypass the impossible LLM prerequisite. Actionable, pending, blocked, suppressed and malformed rows remain fail-closed.

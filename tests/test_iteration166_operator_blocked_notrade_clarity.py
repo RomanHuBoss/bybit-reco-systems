@@ -25,14 +25,14 @@ def test_blocked_details_show_actual_blocker_before_rank_diagnostics() -> None:
 def test_no_launchable_banner_distinguishes_blocked_from_no_trade() -> None:
     app_js = _app_js()
 
-    assert 'НЕТ ЗАПУСКАЕМЫХ: нет эффективных <b>recommended</b>/<b>active</b>' in app_js
-    assert '<b>blocked</b> = жёсткий риск/Bybit/preflight-блокер' in app_js
-    assert '<b>no_trade</b> = запуск не прошёл launch-score/confidence/economics gates' in app_js
+    assert 'НЕТ РАЗРЕШЁННЫХ СДЕЛОК: по текущим фильтрам нет рекомендаций со статусом <b>«Можно торговать»</b>' in app_js
+    assert 'Заблокировано означает жёсткий запрет по риску, данным Bybit или предзапусковой проверке' in app_js
+    assert 'Не торговать означает, что идея не прошла обязательные условия качества и экономики' in app_js
     assert 'NO-TRADE: нет актуальных рекомендаций со статусом' not in app_js
 
 
 def test_static_asset_cache_key_bumped_after_blocked_notrade_clarity_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index

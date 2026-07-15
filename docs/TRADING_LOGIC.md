@@ -1,3 +1,11 @@
+## Операторская терминология v1.0.64
+
+Торговая семантика не изменена; изменён только язык представления. **Покупка (рост)** соответствует `long`, **Продажа (снижение)** — `short`, **Нейтральная сетка** — `neutral`. Цель прибыли, ограничение убытка и аварийная граница выхода отображаются по канонической directional-модели. **RR плана** остаётся отношением расчётного чистого результата плана к стресс-убытку на аварийной границе; **доходность по наблюдениям** остаётся статистикой созревших наблюдений текущего набора правил. Подсказки прямо предупреждают, что оба показателя не являются вероятностью прибыли и не отменяют итоговое решение.
+
+## Operator decision hint contract (v1.0.63)
+
+The primary table exposes only symbol, direction, Plan RR, empirical expectancy and the final decision. The decision label carries one bounded, human-readable Russian hint on hover/focus. Raw model messages, numeric thresholds, diagnostic codes and full gate traces remain in Details. An unmapped internal code must use a status-level fallback such as `Не пройдены условия запуска`; it must never render the raw diagnostic payload in the table. This presentation change does not alter the underlying status or any deterministic gate.
+
 ## Outcome/LLM contract and operator decision surface (v1.0.62)
 
 When LLM review is enabled, actionable recommendation roots require a completed eligible LLM verdict before outcome labeling. An explicit `no_trade` root may bypass that prerequisite only when `outcome_policy.eligible=true`, `policy_evaluation_eligible=true`, `sample_role=shadow_no_trade`, and deterministic `risk_checks.passed=true` with no blocks. This exception cannot make a recommendation actionable and exists only to prevent research/calibration bootstrap deadlock.

@@ -1,3 +1,18 @@
+## Сценарий чтения интерфейса v1.0.64
+
+1. Оператор смотрит только на пять колонок главной таблицы.
+2. Направление читается как «Покупка (рост)», «Продажа (снижение)» или «Нейтральная сетка».
+3. Хинт у решения даёт краткую русскую причину; хинты у RR плана и доходности по наблюдениям объясняют смысл и ограничения показателей.
+4. Для чисел, порогов, издержек, плеча, маржи, платежа финансирования и внутренних кодов оператор открывает «Детали».
+5. Неизвестный или неполный показатель отображается как «нет данных» и не превращается в разрешение торговли.
+
+## Scenario: operator scans a no-trade row (v1.0.63)
+
+1. The table shows symbol, direction, Plan RR, empirical expectancy and `НЕ ТОРГОВАТЬ`.
+2. Hovering or focusing the decision badge shows a short reason such as `Возвратность цены не подтверждена`.
+3. The table never shows raw thresholds, JSON codes or long mixed-language model diagnostics.
+4. Opening **Details** reveals the full reason code, original message, thresholds and all supporting diagnostics.
+
 ## Scenario: LLM is enabled and all publishable ideas are no_trade (v1.0.62)
 
 1. The publisher marks a deterministic, risk-clean no-trade root as `shadow_no_trade` and outcome-eligible.
@@ -8,7 +23,7 @@
 
 ## Scenario: operator scans the recommendation table
 
-The operator sees only symbol, direction, Plan RR, empirical expectancy, decision and one reason. Clicking **Details** reveals confidence, risk buffer, price/range, sizing, costs, funding, model diagnostics and guards.
+The operator sees only symbol, direction, Plan RR, empirical expectancy and decision. A short reason is attached to the decision badge as a hover/focus hint. Clicking **Details** reveals confidence, risk buffer, price/range, sizing, costs, funding, model diagnostics and guards.
 
 ## Scenario: operator compares a new grid plan with current-policy evidence (v1.0.61)
 

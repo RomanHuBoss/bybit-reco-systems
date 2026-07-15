@@ -1,3 +1,16 @@
+## Обязанности UI-локализации в v1.0.64
+
+- `app/ui/static/app.js`: единый словарь видимых статусов, направлений и торговых терминов; преобразование динамических сообщений; доступные подсказки; сохранение машинных кодов в техническом представлении.
+- `app/ui/static/index.html`: русские названия элементов, пять колонок главной таблицы и клавиатурно доступные подсказки к ключевым показателям.
+- `app/main.py`: русские операторские рекомендации по безопасным следующим действиям; внутренние коды и API-поля не переименовываются.
+
+## v1.0.63 module responsibility update
+
+- `app/main.py`: FastAPI `1.0.63`; maps internal reason codes to bounded operator hints and preserves raw detail additively.
+- `app/ui/static/index.html`: five visible decision columns; no standalone reason column.
+- `app/ui/static/app.js`: decision badge owns the hover/focus hint and accessible label; full diagnostics remain in Details.
+- `tests/test_iteration251_operator_decision_hint.py`: reason translation, safe fallback, table contract and production-JS rendering regression.
+
 ## v1.0.62 module responsibility update
 
 - `app/outcomes.py`: advances eligible shadow roots without requiring an impossible LLM review.

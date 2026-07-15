@@ -1,3 +1,11 @@
+## Слой локализации операторского UI (v1.0.64)
+
+Машинные контракты API, БД и внутренние коды остаются стабильными. Frontend содержит явные функции преобразования статусов, направлений, режимов, ролей выборки, временных интервалов и диагностического текста в русские операторские формулировки. Backend также формирует русские безопасные действия оператора. Неизвестные значения показываются как «не определено» или общая безопасная причина, а исходный код сохраняется в подробной диагностике. Локализация не участвует в расчётах, risk gate, publication lifecycle или outcome labeling.
+
+## v1.0.63 operator-summary presentation boundary
+
+`app/main.py` converts the selected primary gate code into a bounded operator hint while retaining the original diagnostic detail. `app/ui/static/app.js` renders that hint only as the title/accessible label of the final decision badge. The table does not parse or display raw reason payloads. Full diagnostics continue through the existing Details contract.
+
 ## v1.0.62 runtime liveness and operator-summary flow
 
 `app/outcomes.py` selects actionable LLM-ready roots plus explicit safe shadow roots. `app/db.py` owns the shared LLM-outcome eligibility predicate and the read-only outcome-worker liveness calculation. `app/main.py` exposes the liveness payload and an additive `operator_summary`; the frontend renders only the six-field decision table and keeps full diagnostics in Details. Collector retries use Bybit reset timing and confirm instrument absence before temporary disablement.

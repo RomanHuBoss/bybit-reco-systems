@@ -209,10 +209,11 @@ def test_operator_summary_is_stable_and_contains_one_primary_reason() -> None:
     assert summary["plan_rr"] == pytest.approx(0.75)
     assert summary["empirical_expectancy_status"] == "insufficient"
     assert summary["primary_reason_code"] == "PROXY_MONETARY_EXPECTANCY_UNPROVEN"
-    assert summary["primary_reason"] == "empirical expectancy is not proven"
+    assert summary["primary_reason"] == "Недостаточно данных об эффективности"
+    assert summary["primary_reason_detail"] == "empirical expectancy is not proven"
 
 
-def test_primary_table_has_only_six_decision_fields_and_keeps_diagnostics_in_details() -> None:
+def test_primary_table_has_only_five_visible_fields_and_keeps_diagnostics_in_details() -> None:
     root = Path(__file__).resolve().parents[1]
     html = (root / "app/ui/static/index.html").read_text(encoding="utf-8")
     js = (root / "app/ui/static/app.js").read_text(encoding="utf-8")
@@ -220,11 +221,12 @@ def test_primary_table_has_only_six_decision_fields_and_keeps_diagnostics_in_det
     assert table_match is not None
     headers = re.findall(r"<th(?:\s[^>]*)?>(.*?)</th>", table_match.group(1), re.S)
     labels = [re.sub(r"<[^>]+>", "", item).strip() for item in headers]
-    assert labels == ["Символ", "Направление", "Plan RR", "Emp. expectancy", "Решение", "Причина"]
-    assert "Risk buffer" not in table_match.group(1)
+    assert labels == ["Символ", "Направление", "RR плана ?", "Доходность по наблюдениям ?", "Решение"]
+    assert "Запас капитала" not in table_match.group(1)
     assert ">Карточка<" not in table_match.group(1)
     assert "function operatorDecisionCell" in js
-    assert "function primaryDecisionReasonCell" in js
+    assert "primaryDecisionReasonCell" not in js
+    assert "НЕ ТОРГОВАТЬ" in js
     assert 'data-act="details"' in js
 
 

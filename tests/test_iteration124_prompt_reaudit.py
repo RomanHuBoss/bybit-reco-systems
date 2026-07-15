@@ -104,10 +104,10 @@ def test_recommender_blocks_futures_grid_when_mtf_history_is_insufficient(tmp_pa
 def test_ui_exposes_conservative_funding_edge_labels() -> None:
     app_js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "Вероятность LLM" in app_js
-    assert "LLM-рекомендация" in app_js
+    assert "Уверенность LLM" in app_js
+    assert "Рекомендация LLM" in app_js
     assert "Сравнение с алгоритмом" in app_js
-    assert "Техподробности" in app_js
+    assert "Технические данные" in app_js
 
 
 def test_ui_symbol_links_has_single_chart_and_conditional_grid_bot_link() -> None:
@@ -116,4 +116,4 @@ def test_ui_symbol_links_has_single_chart_and_conditional_grid_bot_link() -> Non
     symbol_links_body = app_js.split("function symbolLinksHtml", 1)[1].split("function statusBadgeHtml", 1)[0]
     assert symbol_links_body.count('title="Открыть график Bybit"') == 1
     assert 'const botLink = isLaunchableGridRecommendation(it)' in symbol_links_body
-    assert symbol_links_body.count('title="Открыть страницу создания Futures Grid на Bybit"') == 1
+    assert symbol_links_body.count('title="Открыть страницу создания фьючерсной сетки на Bybit"') == 1

@@ -113,7 +113,7 @@ def test_vote_for_tf_sanitizes_mismatched_vectors_without_using_future_or_bad_ro
 def test_operator_ui_documents_short_tp_sl_directional_distances() -> None:
     app_js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "short: TP ниже диапазона, SL выше диапазона" in app_js
+    assert "Продажа (снижение): цель прибыли ниже диапазона, ограничение убытка выше диапазона" in app_js
     assert "directional_exit_levels" in app_js
-    assert "Для лонга он выше входа, для шорта ниже входа" in app_js
-    assert "Для лонга ниже входа, для шорта выше входа" in app_js
+    assert "Для покупки он выше цены входа, для продажи — ниже" in app_js
+    assert "Для покупки он ниже цены входа, для продажи — выше" in app_js

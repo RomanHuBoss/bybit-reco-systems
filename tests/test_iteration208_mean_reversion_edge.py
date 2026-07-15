@@ -100,10 +100,10 @@ def test_legacy_expected_rr_is_hidden_from_operator_ui_and_replaced_by_decision_
     html = Path("app/ui/static/index.html").read_text(encoding="utf-8")
     js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
     assert "Прокси capture/risk" not in html
-    assert ">Plan RR<" in html
-    assert ">Emp. expectancy<" in html
-    assert 'label: "Plan RR"' in js
-    assert 'label: "Empirical expectancy"' in js
+    assert "RR плана" in html
+    assert "Доходность по наблюдениям" in html
+    assert 'label: "RR плана"' in js
+    assert 'label: "Доходность по наблюдениям"' in js
     assert "heuristic_capture_score" in js or "heuristic_capture_score" in Path("app/recommender.py").read_text(encoding="utf-8")
 
 

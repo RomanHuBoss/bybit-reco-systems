@@ -46,8 +46,8 @@ def test_funding_rate_unknown_details_expose_next_safe_action(app_main) -> None:
     actions = ctx["operator_next_actions"]
 
     assert actions[0]["code"] == "REFRESH_FUNDING_RATE_SNAPSHOT"
-    assert "funding rate" in actions[0]["title"]
-    assert "fail-closed" in actions[0]["detail"]
+    assert "ставку платежа финансирования" in actions[0]["title"]
+    assert "торговля остаётся заблокированной" in actions[0]["detail"]
 
 
 def test_common_data_quality_blockers_have_specific_next_actions(app_main) -> None:
@@ -85,11 +85,11 @@ def test_frontend_auto_expands_non_actionable_diagnostics_when_actionable_filter
     assert "$(\"showBlocked\").checked = true" in app_js
     assert "$(\"showNoTrade\").checked = true" in app_js
     assert "$(\"showPending\").checked = true" in app_js
-    assert "UI автоматически раскрывает диагностические" in app_js
+    assert "UI показывает строки <b>«Ожидает проверки»</b>, <b>«Заблокировано»</b> и <b>«Не торговать»</b>" in app_js
 
 
 def test_static_asset_cache_key_bumped_after_diagnostics_visibility_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index

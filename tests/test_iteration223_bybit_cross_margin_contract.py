@@ -141,9 +141,9 @@ def test_generated_economics_do_not_publish_isolated_liquidation_price() -> None
 
 def test_ui_describes_cross_margin_equity_stress_not_isolated_liquidation() -> None:
     source = Path("app/ui/static/app.js").read_text(encoding="utf-8").lower()
-    assert "cross margin" in source or "cross-margin" in source
-    assert "equity buffer" in source
-    assert "cross margin — не поддерживается" not in source
+    assert "общая маржа" in source or "общая маржа" in source
+    assert "запас капитала" in source
+    assert "общая маржа — не поддерживается" not in source
 
 
 def test_release_docs_use_cross_margin_contract() -> None:
@@ -158,5 +158,5 @@ def test_release_docs_use_cross_margin_contract() -> None:
 def test_release_version_and_outcome_contract_are_bumped() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.0.62"' in source
+    assert 'version="1.0.64"' in source
     assert _generated("long")["margin_mode"] == "cross"

@@ -173,8 +173,8 @@ console.log(JSON.stringify({
         "dotOne": "1",
         "bybitPriceOne": "1.00",
         "percentZero": "0%",
-        "bpsOne": "1 bps",
-        "usdOne": "$1",
+        "bpsOne": "1 б.п.",
+        "usdOne": "1 USDT",
         "probabilityHalf": "50%",
     }
 

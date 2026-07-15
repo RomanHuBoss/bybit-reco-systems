@@ -11,7 +11,7 @@ let currentMeta  = null;   // {venue, symbol, bot_type} — used to find fresh r
 let refreshInFlight = null;
 
 // ── sort state ────────────────────────────────────────────────────────────────
-let sortCol = "confidence";  // default: sort by confidence descending
+let sortCol = "plan_rr";  // по умолчанию: лучшие значения RR плана сверху
 let sortDir = "desc";        // "asc" | "desc"
 let lastItems = [];          // last fetched items — re-sorted on header click without refetch
 let uiScoreMetaById = new Map();
@@ -36,9 +36,9 @@ function timeAgo(ts) {
   if (rawSec < -300) return "некорректное время";
   const sec = Math.max(0, rawSec);
   if (sec < 5)  return "только что";
-  if (sec < 60) return `${sec}с назад`;
-  if (sec < 3600) return `${Math.floor(sec/60)}м назад`;
-  return `${Math.floor(sec/3600)}ч назад`;
+  if (sec < 60) return `${sec} с назад`;
+  if (sec < 3600) return `${Math.floor(sec/60)} мин назад`;
+  return `${Math.floor(sec/3600)} ч назад`;
 }
 
 function escapeHtml(value) {
@@ -181,17 +181,17 @@ function formatPercentDot(value, digits = 4, withSign = false) {
 function formatBps(value, digits = 2, withSign = false) {
   const v = toFiniteNumber(value);
   if (v === null) return "—";
-  return `${withSign && v >= 0 ? "+" : ""}${formatDotNumber(v, digits)} bps`;
+  return `${withSign && v >= 0 ? "+" : ""}${formatDotNumber(v, digits)} б.п.`;
 }
 
 function formatUsdValue(value) {
   const v = toFiniteNumber(value);
   if (v === null) return "—";
   const av = Math.abs(v);
-  if (av >= 1e9) return `$${formatDotNumber(v / 1e9, 2)}B`;
-  if (av >= 1e6) return `$${formatDotNumber(v / 1e6, 2)}M`;
-  if (av >= 1e3) return `$${formatDotNumber(v / 1e3, 1)}K`;
-  return `$${fmtPrice(v)}`;
+  if (av >= 1e9) return `${formatDotNumber(v / 1e9, 2)} млрд USDT`;
+  if (av >= 1e6) return `${formatDotNumber(v / 1e6, 2)} млн USDT`;
+  if (av >= 1e3) return `${formatDotNumber(v / 1e3, 1)} тыс. USDT`;
+  return `${fmtPrice(v)} USDT`;
 }
 
 function formatProbability(value) {
@@ -203,16 +203,324 @@ function formatProbability(value) {
 
 function directionRu(dir) {
   const normalized = String(dir || "").trim().toLowerCase();
-  if (normalized === "long") return "Лонг";
-  if (normalized === "short") return "Шорт";
-  return "Нейтральный";
+  if (normalized === "long") return "Покупка (рост)";
+  if (normalized === "short") return "Продажа (снижение)";
+  return "Нейтральная сетка";
+}
+
+function operatorStatusRu(status) {
+  const value = String(status || "").trim().toLowerCase();
+  const labels = {
+    recommended: "Можно торговать",
+    active: "Можно торговать",
+    pending: "Ожидает проверки",
+    blocked: "Заблокировано",
+    no_trade: "Не торговать",
+    suppressed: "Скрыто системой",
+    expired: "Устарело",
+    executed: "Запущено",
+    ignored: "Отклонено оператором",
+  };
+  return labels[value] || (value ? "Неизвестный статус" : "Нет статуса");
+}
+
+function healthStatusRu(status) {
+  const value = String(status || "").trim().toLowerCase();
+  const labels = {
+    ok: "Норма",
+    ready: "Готово",
+    enabled: "Включено",
+    disabled: "Отключено",
+    missing: "Нет данных",
+    stale: "Устарело",
+    error: "Ошибка",
+    pending: "Ожидает проверки",
+    warming_up: "Накопление данных",
+    backlog: "Есть очередь",
+    stalled: "Работа остановилась",
+    unknown: "Неизвестно",
+  };
+  return labels[value] || humanizeOperatorText(value || "Нет данных");
+}
+
+function llmStatusRu(status) {
+  const value = String(status || "").trim().toLowerCase();
+  const labels = {
+    ok: "Проверка завершена",
+    pending: "Ожидает проверки",
+    error: "Ошибка проверки",
+    skipped: "Проверка пропущена",
+    none: "Проверки не было",
+    disabled: "Проверка отключена",
+    enabled: "Проверка включена",
+    warming_up: "Накопление данных",
+    unknown: "Статус неизвестен",
+  };
+  return labels[value] || "Статус неизвестен";
+}
+
+function gateDecisionRu(value) {
+  const key = String(value || "").trim().toLowerCase();
+  const labels = {
+    pass: "Условие выполнено",
+    allow: "Разрешено",
+    approved: "Разрешено",
+    block: "Заблокировано",
+    blocked: "Заблокировано",
+    reject: "Отклонено",
+    rejected: "Отклонено",
+    hold: "Ожидание",
+    pending: "Ожидает проверки",
+    no_trade: "Не торговать",
+    warning: "Есть предупреждение",
+  };
+  return labels[key] || humanizeOperatorText(value || "Нет решения");
+}
+
+function sampleRoleRu(value) {
+  const key = String(value || "").trim().toLowerCase();
+  const labels = {
+    actionable_root: "Торговое наблюдение",
+    shadow_no_trade: "Учебное наблюдение",
+    shadow: "Учебное наблюдение",
+    current_policy: "Текущий набор правил",
+    archive: "Архивное наблюдение",
+    legacy: "Архивное наблюдение",
+  };
+  return labels[key] || humanizeOperatorText(value || "Не указано");
+}
+
+function empiricalStatusRu(value) {
+  const key = String(value || "").trim().toLowerCase();
+  const labels = {
+    positive: "Положительный результат подтверждён",
+    negative: "Отрицательный результат подтверждён",
+    uncertain: "Результат пока неопределён",
+    insufficient: "Недостаточно данных",
+    unavailable: "Нет данных",
+  };
+  return labels[key] || "Статус не определён";
+}
+
+function neutralSourceRu(value) {
+  const key = String(value || "").trim().toLowerCase();
+  if (key === "futures_neutral" || key === "neutralized_short") return "Нейтральное решение после проверок";
+  if (key === "true_neutral") return "Изначально нейтральный сигнал";
+  return humanizeOperatorText(value || "Не указано");
+}
+
+function marketStateRu(value, kind = "generic") {
+  const key = String(value || "").trim().toLowerCase();
+  const common = {
+    low: "низкая", normal: "нормальная", medium: "средняя", high: "высокая",
+    mixed: "смешанная", flat: "боковое движение", stable: "устойчивое состояние",
+    bullish: "преобладает рост", bearish: "преобладает снижение",
+    positive: "положительный", negative: "отрицательный", neutral: "нейтральный",
+    risk_on: "риск допустим", risk_off: "повышенная осторожность",
+    aggressive: "агрессивный", conservative: "консервативный", advisory: "рекомендательный",
+    cached: "сохранённый ответ", fresh: "актуальные данные",
+    guarded: "усиленный контроль", lockdown: "торговля заблокирована",
+    normal_mode: "нормальный режим", unknown: "не определено",
+  };
+  if (Object.prototype.hasOwnProperty.call(common, key)) return common[key];
+  if (kind === "trend" && key === "none") return "выраженного направления нет";
+  return humanizeOperatorText(value || "не определено");
+}
+
+function timeframeRu(value) {
+  const key = String(value ?? "").trim().toLowerCase();
+  const labels = {
+    "60": "1 мин", "300": "5 мин", "900": "15 мин", "1800": "30 мин",
+    "3600": "1 ч", "14400": "4 ч", "86400": "1 д",
+    "1m": "1 мин", "5m": "5 мин", "15m": "15 мин", "30m": "30 мин",
+    "1h": "1 ч", "4h": "4 ч", "1d": "1 д",
+  };
+  return labels[key] || humanizeOperatorText(value || "—");
+}
+
+function timeframeListRu(value) {
+  if (!Array.isArray(value)) return timeframeRu(value);
+  return value.map(timeframeRu).join(", ");
+}
+
+function calibrationModeRu(value) {
+  const key = String(value || "").trim().toLowerCase();
+  const labels = {
+    raw: "без калибровки", calibrated: "откалибровано", logreg: "вероятностная модель",
+    platt: "устаревшая калибровка", legacy: "устаревшая калибровка",
+    unfitted: "не обучено", fitted: "обучено", pending_refit: "ожидает пересчёта",
+  };
+  return labels[key] || humanizeOperatorText(value || "—");
+}
+
+function sentimentRegimeRu(value) {
+  const key = String(value || "").trim().toLowerCase();
+  const labels = {
+    positive: "положительный", negative: "отрицательный", neutral: "нейтральный",
+    bullish: "в пользу роста", bearish: "в пользу снижения", mixed: "смешанный",
+    euphoria: "эйфория", panic: "паника",
+  };
+  return labels[key] || humanizeOperatorText(value || "не определён");
+}
+
+function humanizeOperatorText(value) {
+  let text = String(value ?? "").trim();
+  if (!text) return "—";
+  const exact = {
+    long: "Покупка (рост)", short: "Продажа (снижение)", neutral: "Нейтральная сетка",
+    recommended: "Можно торговать", active: "Можно торговать", pending: "Ожидает проверки",
+    blocked: "Заблокировано", no_trade: "Не торговать", suppressed: "Скрыто системой",
+    executed: "Запущено", ignored: "Отклонено оператором", expired: "Устарело",
+    true: "Да", false: "Нет", yes: "Да", no: "Нет", none: "Нет данных",
+    pass: "Условие выполнено", fail: "Условие не выполнено", live: "Новый ответ", cache: "Сохранённый ответ",
+    ok: "Норма", ready: "Готово", enabled: "Включено", disabled: "Отключено",
+    low: "низкий", medium: "средний", high: "высокий", mixed: "смешанный",
+    risk_on: "риск допустим", risk_off: "повышенная осторожность",
+    aggressive: "агрессивный", conservative: "консервативный", advisory: "рекомендательный",
+    cached: "сохранённый ответ", fresh: "актуальные данные",
+    guarded: "усиленный контроль", lockdown: "торговля заблокирована",
+    bullish: "преобладает рост", bearish: "преобладает снижение",
+  };
+  const lower = text.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(exact, lower)) return exact[lower];
+  const replacements = [
+    [/preflight blocked due stale ticker and funding rate unavailable/gi, "предзапусковая проверка заблокирована: текущая цена устарела, ставка платежа финансирования недоступна"],
+    [/recommendation remains shadow no[ -]?trade/gi, "рекомендация остаётся учебной и не разрешена к торговле"],
+    [/positive monetary expectancy (?:is )?not proven/gi, "положительная ожидаемая денежная эффективность не подтверждена"],
+    [/repeated anti[ -]?persistence (?:is )?insufficient(?:ly expressed)?/gi, "повторяемое чередование направления цены выражено недостаточно"],
+    [/bot[ -]?specific/gi, "для этого вида стратегии"],
+    [/is not proven positive/gi, "не подтверждена как положительная"],
+    [/not proven positive/gi, "не подтверждена как положительная"],
+    [/not proven/gi, "не подтверждено"],
+    [/under the current independent retained sample/gi, "по текущей независимой выборке"],
+    [/current independent retained sample/gi, "текущая независимая выборка"],
+    [/retained sample/gi, "сохранённая выборка"],
+    [/configured/gi, "заданный"],
+    [/unavailable/gi, "недоступно"],
+    [/unproven/gi, "не подтверждено"],
+    [/status\s*=/gi, "статус="],
+    [/n_eff\s*=/gi, "эффективная выборка="],
+    [/\bn\s*=/gi, "наблюдений="],
+    [/ticker payload empty/gi, "биржа не вернула текущую цену"],
+    [/funding too high/gi, "платёж финансирования слишком велик"],
+    [/preflight blocked/gi, "предзапусковая проверка заблокирована"],
+    [/mean_reversion_score/gi, "оценка возврата цены к среднему"],
+    [/mean[ -]?reversion/gi, "возврат цены к среднему"],
+    [/anti[ -]?persistence/gi, "чередование направления цены"],
+    [/monetary expectancy/gi, "ожидаемая денежная эффективность"],
+    [/empirical expectancy/gi, "доходность по наблюдениям"],
+    [/expected shortfall/gi, "средний результат худших наблюдений"],
+    [/funding/gi, "платёж финансирования"],
+    [/preflight/gi, "предзапусковая проверка"],
+    [/kill[ -]?switch/gi, "аварийная граница выхода"],
+    [/take profit/gi, "цель прибыли"],
+    [/stop loss/gi, "ограничение убытка"],
+    [/spread/gi, "разница цен покупки и продажи"],
+    [/slippage/gi, "проскальзывание"],
+    [/grid/gi, "сетка"],
+    [/reviewer/gi, "проверяющий модуль"],
+    [/policy fingerprint/gi, "идентификатор набора правил"],
+    [/gate/gi, "условие допуска"],
+    [/policy/gi, "набор правил"],
+    [/shadow/gi, "учебное наблюдение"],
+    [/outcomes?/gi, "наблюдения"],
+    [/confidence/gi, "уверенность"],
+    [/launch[ -]?score/gi, "оценка допуска к запуску"],
+    [/candidate floor/gi, "минимальный порог кандидата"],
+    [/blocked/gi, "заблокировано"],
+    [/pending/gi, "ожидает проверки"],
+    [/no_trade/gi, "не торговать"],
+    [/recommended/gi, "можно торговать"],
+    [/active/gi, "можно торговать"],
+    [/raw/gi, "исходный"],
+    [/execution payload/gi, "набор параметров исполнения"],
+    [/execution/gi, "исполнение"],
+    [/runtime/gi, "рабочий контур"],
+    [/payload/gi, "набор параметров"],
+    [/snapshot/gi, "снимок данных"],
+    [/leverage/gi, "кредитное плечо"],
+    [/liquidation/gi, "ликвидация"],
+    [/stress/gi, "стресс-проверка"],
+    [/fills?/gi, "исполнения"],
+    [/net[ -]?edge/gi, "чистое преимущество"],
+    [/edge/gi, "преимущество"],
+    [/range/gi, "диапазон"],
+    [/direction/gi, "направление"],
+    [/risk/gi, "риск"],
+    [/margin/gi, "маржа"],
+    [/perpetual futures/gi, "бессрочные фьючерсы"],
+    [/futures/gi, "фьючерсы"],
+    [/live edge/gi, "преимущество в реальной торговле"],
+    [/model lineage/gi, "версия и происхождение модели"],
+    [/feature[ -]?eligible/gi, "пригодные для расчёта признаков"],
+    [/label horizon/gi, "горизонт наблюдения"],
+    [/temporal floor/gi, "минимальная длительность наблюдения"],
+    [/terminal holdout/gi, "заключительная проверочная выборка"],
+    [/purged OOF/gi, "проверка вне обучения без пересечения временных окон"],
+    [/OOF/gi, "проверка вне обучения"],
+    [/legacy/gi, "устаревший"],
+    [/raw/gi, "исходный"],
+    [/calibrated/gi, "откалиброванный"],
+    [/cross[ -]?margin/gi, "общая маржа"],
+    [/linear USDT/gi, "линейный контракт с расчётом в USDT"],
+    [/worst[ -]?case/gi, "худший сценарий"],
+    [/reference[ -]?price/gi, "расчётная цена"],
+    [/notional/gi, "номинальный объём"],
+    [/quantity|qty/gi, "количество"],
+    [/boolean/gi, "логический"],
+    [/backend/gi, "сервер"],
+    [/too high/gi, "слишком велик"],
+    [/empty/gi, "пусто"],
+    [/too many visits/gi, "превышен лимит запросов к Bybit"],
+    [/rate[ -]?limit/gi, "лимит запросов"],
+    [/instrument metadata absent/gi, "инструмент отсутствует в справочнике биржи"],
+    [/deadlock/gi, "взаимоблокировка базы данных"],
+    [/timeout/gi, "превышено время ожидания"],
+    [/stale/gi, "устаревшие данные"],
+    [/missing/gi, "нет данных"],
+    [/disabled/gi, "отключено"],
+    [/strong[ -]?trend/gi, "сильное направленное движение"],
+    [/trendiness/gi, "выраженность направленного движения"],
+    [/trend/gi, "направленное движение"],
+    [/unfavorable/gi, "неблагоприятно"],
+    [/not[ -]?actionable/gi, "запуск не разрешён"],
+    [/insufficient/gi, "недостаточно данных"],
+    [/unknown/gi, "неизвестно"],
+    [/candidate/gi, "кандидат"],
+    [/score/gi, "оценка"],
+    [/threshold/gi, "порог"],
+    [/freshness/gi, "актуальность"],
+    [/model/gi, "модель"],
+    [/calibration/gi, "калибровка"],
+    [/feature/gi, "признак"],
+    [/\bpositive\b/gi, "положительный"],
+    [/\bnegative\b/gi, "отрицательный"],
+    [/\bfailed\b/gi, "ошибка"],
+    [/\bwarning\b/gi, "предупреждение"],
+    [/\berror\b/gi, "ошибка"],
+    [/no[ -]?trade/gi, "не торговать"],
+    [/\brecommendation\b/gi, "рекомендация"],
+    [/\bremains\b/gi, "остаётся"],
+    [/\bdue to\b/gi, "из-за"],
+    [/\bdue\b/gi, "из-за"],
+    [/\bticker\b/gi, "текущая цена"],
+    [/\brate\b/gi, "ставка"],
+    [/\brepeated\b/gi, "повторное"],
+    [/\band\b/gi, "и"],
+    [/\bcurrent\b/gi, "текущий"],
+    [/\bindependent\b/gi, "независимый"],
+    [/\bsample\b/gi, "выборка"],
+    [/\bbps\b/gi, "базисных пунктов"],
+  ];
+  for (const [pattern, replacement] of replacements) text = text.replace(pattern, replacement);
+  return text.replace(/_/g, " ").replace(/\s+/g, " ").trim();
 }
 
 const SUPPORTED_GRID_BOT_TYPE = "futures_grid";
 const SUPPORTED_GRID_VENUE = "linear";
 
 function botTypeLabel(botType) {
-  return botType === SUPPORTED_GRID_BOT_TYPE ? "Futures Grid" : "—";
+  return botType === SUPPORTED_GRID_BOT_TYPE ? "Фьючерсная сетка" : "—";
 }
 
 function operatorEffectiveStatus(it) {
@@ -235,7 +543,7 @@ function isLaunchableGridRecommendation(it) {
 }
 
 function venueLabel(venue) {
-  if (venue === "linear") return "Bybit Linear USDT Perpetual";
+  if (venue === "linear") return "Bybit: бессрочный фьючерс USDT";
   return venue || "—";
 }
 
@@ -247,8 +555,8 @@ function liquidityTierRu(tier) {
 }
 
 function marginModeRu(mode) {
-  if (mode === "cross") return "Кросс-маржа Bybit Grid Bot";
-  if (mode === "isolated") return "Изолированная — не соответствует Bybit Grid Bot";
+  if (mode === "cross") return "Общая маржа сеточного бота Bybit";
+  if (mode === "isolated") return "Изолированная маржа — не соответствует выбранному режиму Bybit";
   return mode || "—";
 }
 
@@ -309,7 +617,7 @@ function iconSvg(kind) {
 function symbolLinksHtml(it, compact = false) {
   const chartUrl = bybitChartUrl(it.venue, it.symbol);
   const botLink = isLaunchableGridRecommendation(it)
-    ? `<a class="icon-link" href="${escapeHtml(futuresGridBotCreateUrl())}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания Futures Grid на Bybit">${iconSvg("bot")}</a>`
+    ? `<a class="icon-link" href="${escapeHtml(futuresGridBotCreateUrl())}" target="_blank" rel="noopener noreferrer" title="Открыть страницу создания фьючерсной сетки на Bybit">${iconSvg("bot")}</a>`
     : "";
   const cls = compact ? "symbol-links compact" : "symbol-links";
   return `
@@ -325,13 +633,13 @@ function statusBadgeHtml(status) {
   if (status === "recommended" || status === "active") cls = "badge-inline badge-good";
   else if (status === "blocked") cls = "badge-inline badge-bad";
   else if (status === "no_trade" || status === "pending") cls = "badge-inline badge-warn";
-  return `<span class="${cls}">${escapeHtml(status || "—")}</span>`;
+  return `<span class="${cls}">${escapeHtml(operatorStatusRu(status))}</span>`;
 }
 
 function shockBadgeHtml(shock) {
   const severity = (shock || {}).severity || "normal";
   const cls = severity === "lockdown" ? "shock-badge shock-lockdown" : severity === "guarded" ? "shock-badge shock-guarded" : "shock-badge shock-normal";
-  const text = (shock || {}).title || "Нормальный режим";
+  const text = humanizeOperatorText((shock || {}).title || "Нормальный режим");
   return `<span class="${cls}">${escapeHtml(text)}</span>`;
 }
 
@@ -340,7 +648,7 @@ function btcRelationMetric(betaInfo, symbol) {
   const corrRaw = safeSymbol === "BTCUSDT" ? 1.0 : toFiniteNumber(betaInfo?.correlation);
   if (corrRaw === null) {
     return {
-      label: "BTC-завис.",
+      label: "Связь с BTC",
       value: "—",
       iconClass: "unknown",
       title: "Недостаточно данных для расчёта связи с BTC",
@@ -349,7 +657,7 @@ function btcRelationMetric(betaInfo, symbol) {
   const corr = Math.max(-1, Math.min(1, corrRaw));
   const absCorr = Math.abs(corr);
   let iconClass = "independent";
-  let titlePrefix = "Независимый сигнал";
+  let titlePrefix = "Сигнал слабо связан с BTC";
   if (absCorr >= 0.70) {
     iconClass = "strong";
     titlePrefix = safeSymbol === "BTCUSDT" ? "Базовый BTC-инструмент" : "Сильная корреляция с BTC";
@@ -358,10 +666,10 @@ function btcRelationMetric(betaInfo, symbol) {
     titlePrefix = "Частичная корреляция с BTC";
   }
   return {
-    label: "BTC-завис.",
+    label: "Связь с BTC",
     value: `r=${formatDotNumber(corr, 2, false)}`,
     iconClass,
-    title: `${titlePrefix}; окно ${toFiniteNumber(betaInfo?.window) ?? 24}h`,
+    title: `${titlePrefix}; окно ${toFiniteNumber(betaInfo?.window) ?? 24} ч`,
   };
 }
 
@@ -408,8 +716,8 @@ function computeUiScoreMetaMap(items) {
     const groupSize = groupEnd - groupStart + 1;
     const groupSpread = Math.abs(rows[groupStart].score - rows[groupEnd].score);
     const tieNote = groupSize > 1
-      ? `; near-tie группа=${groupSize}, Δraw=${formatDotNumber(groupSpread, 4)}, порог=${formatDotNumber(SCORE_UI_NEAR_TIE_DELTA, 4)}`
-      : `; material gap > ${formatDotNumber(SCORE_UI_NEAR_TIE_DELTA, 4)}`;
+      ? `; почти равные оценки: группа=${groupSize}, разница исходных оценок=${formatDotNumber(groupSpread, 4)}, порог=${formatDotNumber(SCORE_UI_NEAR_TIE_DELTA, 4)}`
+      : `; заметная разница > ${formatDotNumber(SCORE_UI_NEAR_TIE_DELTA, 4)}`;
 
     for (let i = groupStart; i <= groupEnd; i += 1) {
       out.set(rows[i].id, {
@@ -420,7 +728,7 @@ function computeUiScoreMetaMap(items) {
         groupSize,
         groupSpread,
         tieThreshold: SCORE_UI_NEAR_TIE_DELTA,
-        title: `Ранг в выборке: ${percentile}/100 — ${zone.label}; raw launch-score=${formatDotNumber(rows[i].score, 4)}${tieNote}; не является разрешением запуска`,
+        title: `Ранг в выборке: ${percentile}/100 — ${zone.label}; исходная оценка допуска=${formatDotNumber(rows[i].score, 4)}${tieNote}; не является разрешением запуска`,
       });
     }
     groupStart = groupEnd + 1;
@@ -439,7 +747,7 @@ function ensureUiScoreMeta(item, poolItems = lastItems) {
     grade: "E",
     zoneLabel: "слабый",
     raw: toFiniteNumber(item.score),
-    title: `Ранг недоступен; raw launch-score=${formatDotNumber(item.score, 4)}`,
+    title: `Ранг недоступен; исходная оценка допуска=${formatDotNumber(item.score, 4)}`,
   };
 }
 
@@ -530,7 +838,7 @@ function noTradeDecisionMessage(it, scoreMeta) {
   if (confidenceRow && !confidenceRow.value.includes("не включ")) parts.push(`уверенность ${confidenceRow.value}`);
   if (gateRow && gateRow.value !== "—") parts.push(`проверки: ${gateRow.value}`);
   const gateSummary = parts.length ? ` ${parts.join("; ")}.` : "";
-  return `Запуск grid сейчас не рекомендован. Ранг ${scoreMeta?.percentile ?? 0}/100 (${scoreMeta?.grade || "E"} · ${scoreMeta?.zoneLabel || ""}) — это только относительное место в текущей выборке, не разрешение запуска.${gateSummary}`;
+  return `Запуск сетки сейчас не рекомендован. Ранг ${scoreMeta?.percentile ?? 0}/100 (${scoreMeta?.grade || "E"} · ${scoreMeta?.zoneLabel || ""}) — это только относительное место в текущей выборке, не разрешение запуска.${gateSummary}`;
 }
 
 function operatorNextActionsHtml(it) {
@@ -545,8 +853,8 @@ function operatorNextActionsHtml(it) {
         ${actions.map(a => `
           <div class="small-block ${a.severity === "danger" ? "small-block-critical" : ""}">
             <code>${escapeHtml(a.code || "ACTION")}</code><br>
-            <b>${escapeHtml(a.title || "Действие")}</b><br>
-            ${escapeHtml(a.detail || "")}
+            <b>${escapeHtml(humanizeOperatorText(a.title || "Действие"))}</b><br>
+            ${escapeHtml(humanizeOperatorText(a.detail || ""))}
           </div>
         `).join("")}
       </div>
@@ -565,7 +873,7 @@ function fieldBox(label, value, copyValue = null, extraClass = "", helpText = ""
   const inputValue = escapeHtml(String(safeValue));
   const inputClass = extraClass ? `field-input ${extraClass}` : "field-input";
   const help = helpText
-    ? `<span class="field-help" title="${escapeHtml(helpText)}" aria-label="${escapeHtml(helpText)}">?</span>`
+    ? `<span class="field-help" tabindex="0" title="${escapeHtml(helpText)}" aria-label="${escapeHtml(helpText)}">?</span>`
     : "";
   return `
     <div class="field-box">
@@ -589,12 +897,12 @@ function updateDetailsHeaderLinks(it) {
   if (isLaunchableGridRecommendation(it)) {
     bot.href = futuresGridBotCreateUrl();
     bot.innerHTML = iconSvg("bot");
-    bot.title = "Открыть страницу создания Futures Grid на Bybit";
+    bot.title = "Открыть страницу создания фьючерсной сетки на Bybit";
     bot.classList.remove("hidden");
   } else {
     bot.removeAttribute("href");
     bot.innerHTML = "";
-    bot.title = "Создание grid-бота скрыто: рекомендация сейчас не исполнима";
+    bot.title = "Создание сеточного бота скрыто: рекомендация сейчас не разрешена к запуску";
     bot.classList.add("hidden");
   }
 }
@@ -612,26 +920,26 @@ function operatorExitLevels(direction, killLower, killUpper) {
     return {
       takeProfitValue: killLower,
       stopLossValue: killUpper,
-      takeProfitLabel: "Take Profit",
-      stopLossLabel: "Stop Loss",
-      exitGeometry: "short: TP ниже диапазона, SL выше диапазона",
+      takeProfitLabel: "Цель прибыли",
+      stopLossLabel: "Ограничение убытка",
+      exitGeometry: "Продажа (снижение): цель прибыли ниже диапазона, ограничение убытка выше диапазона",
     };
   }
   if (dir === "long") {
     return {
       takeProfitValue: killUpper,
       stopLossValue: killLower,
-      takeProfitLabel: "Take Profit",
-      stopLossLabel: "Stop Loss",
-      exitGeometry: "long: TP выше диапазона, SL ниже диапазона",
+      takeProfitLabel: "Цель прибыли",
+      stopLossLabel: "Ограничение убытка",
+      exitGeometry: "Покупка (рост): цель прибыли выше диапазона, ограничение убытка ниже диапазона",
     };
   }
   return {
     takeProfitValue: "—",
     stopLossValue: `${killLower} / ${killUpper}`,
-    takeProfitLabel: "Directional TP unavailable",
-    stopLossLabel: "Stop Loss / Kill-switch",
-    exitGeometry: "neutral: нет направленного TP; контроль выхода по нижнему/верхнему kill-switch",
+    takeProfitLabel: "Направленная цель прибыли не применяется",
+    stopLossLabel: "Ограничение убытка / аварийная граница выхода",
+    exitGeometry: "Нейтральная сетка: направленная цель прибыли не применяется; выход контролируется нижней и верхней аварийными границами",
   };
 }
 
@@ -673,9 +981,9 @@ function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}, expected
     return {
       takeProfitValue: "—",
       stopLossValue: `${lower} / ${upper}`,
-      takeProfitLabel: "Directional TP blocked",
-      stopLossLabel: "Stop Loss / Kill-switch",
-      exitGeometry: `backend directional TP/SL direction mismatch; item=${expectedDir || "unknown"}, payload=${dir || "missing"}; rendering kill-switch only · ${fallback.exitGeometry || ""}`.trim(),
+      takeProfitLabel: "Направленная цель прибыли заблокирована",
+      stopLossLabel: "Ограничение убытка / аварийная граница выхода",
+      exitGeometry: `Направление защитных уровней не совпадает с рекомендацией; показаны только аварийные границы выхода · ${fallback.exitGeometry || ""}`.trim(),
     };
   }
   const backendGeometryOk = exitLevels.geometry_valid !== false && directionalExitGeometryOk(dir, exitLevels.take_profit, exitLevels.stop_loss, exitLevels.reference_price);
@@ -683,9 +991,9 @@ function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}, expected
     return {
       takeProfitValue: "—",
       stopLossValue: `${lower} / ${upper}`,
-      takeProfitLabel: "Directional TP blocked",
-      stopLossLabel: "Stop Loss / Kill-switch",
-      exitGeometry: `backend directional TP/SL invalid; rendering kill-switch only · ${fallback.exitGeometry || ""}`.trim(),
+      takeProfitLabel: "Направленная цель прибыли заблокирована",
+      stopLossLabel: "Ограничение убытка / аварийная граница выхода",
+      exitGeometry: `Защитные уровни имеют неверную геометрию; показаны только аварийные границы выхода · ${fallback.exitGeometry || ""}`.trim(),
     };
   }
   const takeProfitValue = hasDirectionalTp
@@ -697,9 +1005,9 @@ function operatorExitLevelsFromBackend(exitLevels, fallback, meta = {}, expected
   return {
     takeProfitValue,
     stopLossValue,
-    takeProfitLabel: exitLevels.take_profit_label || fallback.takeProfitLabel || (hasDirectionalTp ? "Take Profit" : "Directional TP unavailable"),
-    stopLossLabel: exitLevels.stop_loss_label || fallback.stopLossLabel || "Stop Loss",
-    exitGeometry: exitLevels.geometry || fallback.exitGeometry || "",
+    takeProfitLabel: hasDirectionalTp ? "Цель прибыли" : "Направленная цель прибыли не применяется",
+    stopLossLabel: hasDirectionalTp ? "Ограничение убытка" : "Ограничение убытка / аварийная граница выхода",
+    exitGeometry: fallback.exitGeometry || "",
   };
 }
 
@@ -743,9 +1051,9 @@ function buildOperatorValues(it) {
     ? {
         takeProfitValue: "—",
         stopLossValue: `${killLower} / ${killUpper}`,
-        takeProfitLabel: "Directional TP blocked",
-        stopLossLabel: "Stop Loss / Kill-switch",
-        exitGeometry: `backend directional TP/SL payload missing; rendering kill-switch only · ${exits.exitGeometry || ""}`.trim(),
+        takeProfitLabel: "Направленная цель прибыли заблокирована",
+        stopLossLabel: "Ограничение убытка / аварийная граница выхода",
+        exitGeometry: `Нет полного набора защитных уровней; показаны только аварийные границы выхода · ${exits.exitGeometry || ""}`.trim(),
       }
     : operatorExitLevelsFromBackend(rawBackendExits, exits, meta, dirNorm);
   return {
@@ -848,12 +1156,12 @@ function formatReturnFraction(value, digits = 2, signed = true) {
 
 function planRrCell(it) {
   const value = planRrNumber(it);
-  if (value === null) return `<span class="metric-unavailable" title="Plan RR недоступен: нет полного kill-switch stress/economics payload">—</span>`;
+  if (value === null) return `<span class="metric-unavailable" title="RR плана недоступен: не хватает данных о прибыли и убытке у аварийной границы выхода">—</span>`;
   const ctx = decisionContext(it);
   const metrics = operatorMetrics(it);
   const reward = toFiniteNumber(ctx.plan_projected_net_reward_usdt ?? metrics.plan.projected_net_reward_usdt);
   const loss = toFiniteNumber(ctx.plan_kill_switch_loss_usdt ?? metrics.plan.kill_switch_loss_usdt);
-  const title = `Projected net: ${reward === null ? "—" : formatUsdValue(reward)}; kill-switch loss: ${loss === null ? "—" : formatUsdValue(loss)}. Сценарная метрика плана, не статистическая вероятность.`;
+  const title = `Ожидаемая прибыль: ${reward === null ? "—" : formatUsdValue(reward)}; убыток у аварийной границы: ${loss === null ? "—" : formatUsdValue(loss)}. Сценарная метрика плана, не статистическая вероятность.`;
   return `<span class="metric-primary" title="${escapeHtml(title)}">${escapeHtml(formatDotNumber(value, 2, false))}</span>`;
 }
 
@@ -871,12 +1179,12 @@ function empiricalExpectancyCell(it) {
   const upper = toFiniteNumber(ctx.empirical_confidence_interval_upper ?? ci.upper);
   const level = toFiniteNumber(ctx.empirical_confidence_level ?? ci.level) ?? 0.95;
   if (mean === null) {
-    return `<span class="metric-unavailable" title="Matured outcomes текущей policy: n=${escapeHtml(String(samples))}; статистики пока недостаточно">недост.</span>`;
+    return `<span class="metric-unavailable" title="Завершённые наблюдения текущего набора правил: ${escapeHtml(String(samples))}; статистики пока недостаточно">мало данных</span>`;
   }
   const ciText = lower === null || upper === null
-    ? "CI недоступен"
+    ? "доверительный интервал недоступен"
     : `${formatReturnFraction(lower)} … ${formatReturnFraction(upper)}`;
-  const title = `Статус: ${status}; n=${samples}; ${(level * 100).toFixed(0)}% CI: ${ciText}. Это proxy-outcome evidence текущей policy, не доказательство live edge.`;
+  const title = `Статус: ${empiricalStatusRu(status)}; наблюдений: ${samples}; ${(level * 100).toFixed(0)}% доверительный интервал: ${ciText}. Это оценка по наблюдениям текущего набора правил, а не доказательство преимущества в реальной торговле.`;
   const cls = status === "positive" ? "metric-positive" : status === "negative" ? "metric-negative" : "metric-uncertain";
   return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(formatReturnFraction(mean))}</span>`;
 }
@@ -887,9 +1195,9 @@ function riskBufferNumber(it) {
 
 function riskBufferCell(it) {
   const value = riskBufferNumber(it);
-  if (value === null) return `<span class="metric-unavailable" title="Cross-margin equity buffer недоступен">—</span>`;
+  if (value === null) return `<span class="metric-unavailable" title="Запас капитала недоступен">—</span>`;
   const cls = value >= 20 ? "metric-positive" : value >= 10 ? "metric-uncertain" : "metric-negative";
-  return `<span class="${cls}" title="Остаток выделенного капитала после worst-side kill-switch stress; не является liquidation price">${escapeHtml(formatPercentDot(value, 2, false))}</span>`;
+  return `<span class="${cls}" title="Остаток выделенного капитала после худшего сценария у аварийной границы выхода; это не точная цена ликвидации">${escapeHtml(formatPercentDot(value, 2, false))}</span>`;
 }
 
 function priceStatusRu(status) {
@@ -900,7 +1208,7 @@ function priceStatusRu(status) {
 }
 
 function preflightStatusRu(status) {
-  if (status === "ok") return "OK — запуск технически допустим";
+  if (status === "ok") return "Проверка пройдена — запуск технически допустим";
   if (status === "blocked") return "Блокировка";
   if (status === "warning") return "Есть предупреждения";
   if (status === "not_checked") return "не проверено";
@@ -935,26 +1243,26 @@ function buildPriceFreshnessFields(it, ov) {
       ? `истекла ${formatDurationValue(Math.abs(expiresIn ?? 0))} назад`
       : expiresIn !== null && expiresIn !== undefined
         ? `осталось ${formatDurationValue(expiresIn)}`
-        : "TTL не задан";
+        : "Срок действия не задан";
   const chainTtlText = !chainTimestampValid
     ? "Некорректная метка времени цепочки — запуск заблокирован"
     : ctx.is_publication_chain_expired === true
       ? `цепочка истекла ${formatDurationValue(Math.abs(chainExpiresIn ?? 0))} назад`
       : chainExpiresIn !== null && chainExpiresIn !== undefined
         ? `цепочка: осталось ${formatDurationValue(chainExpiresIn)}`
-        : "TTL цепочки не задан";
+        : "Срок действия цепочки не задан";
   return [
     {
       label: "Цена входа",
       value: ov.entryRef,
       mono: true,
-      help: "Расчётная цена входа из рекомендации. Используется оператором при создании grid-бота и не должна удаляться из панели.",
+      help: "Расчётная цена входа из рекомендации. Используется оператором при создании сеточного бота и не должна удаляться из панели.",
     },
     {
       label: "Текущая цена",
       value: formatBybitPrice(currentPrice, meta, "nearest"),
       mono: true,
-      help: "Последняя доступная биржевая цена или середина bid/ask. Нужна, чтобы понять, не устарели ли уровни сетки.",
+      help: "Последняя доступная биржевая цена или середина между ценой покупки и продажи. Нужна, чтобы понять, не устарели ли уровни сетки.",
     },
     {
       label: "Отклонение от входа",
@@ -989,7 +1297,7 @@ function buildPriceFreshnessFields(it, ov) {
     {
       label: "Возраст идеи с первого сигнала",
       value: `${chainAge === null || chainAge === undefined ? "—" : formatDurationValue(chainAge)} · обновлений: ${chainUpdates ?? "—"} · ${chainTtlText}`,
-      help: `Сколько прошло с первого root-сигнала этой публикационной цепочки. Старт цепочки: ${formatTs(chainStartedTs)}. Если это сильно больше возраста текущей строки, рекомендация может выглядеть свежей, хотя идея уже долго живёт.`,
+      help: `Сколько прошло с первичного сигнала этой публикационной цепочки. Старт цепочки: ${formatTs(chainStartedTs)}. Если это сильно больше возраста текущей строки, рекомендация может выглядеть свежей, хотя идея уже долго живёт.`,
     },
   ];
 }
@@ -1016,61 +1324,61 @@ function buildRiskEconomicsFields(it) {
   const empiricalUpper = toFiniteNumber(ctx.empirical_confidence_interval_upper ?? empiricalCi.upper);
   const empiricalLevel = toFiniteNumber(ctx.empirical_confidence_level ?? empiricalCi.level) ?? 0.95;
   const empiricalValue = empiricalMean === null
-    ? `недостаточно данных · n=${empiricalSamples}`
-    : `${formatReturnFraction(empiricalMean)} · ${(empiricalLevel * 100).toFixed(0)}% CI ${empiricalLower === null || empiricalUpper === null ? "—" : `${formatReturnFraction(empiricalLower)} … ${formatReturnFraction(empiricalUpper)}`}`;
+    ? `недостаточно данных · наблюдений: ${empiricalSamples}`
+    : `${formatReturnFraction(empiricalMean)} · ${(empiricalLevel * 100).toFixed(0)}% доверительный интервал ${empiricalLower === null || empiricalUpper === null ? "—" : `${formatReturnFraction(empiricalLower)} … ${formatReturnFraction(empiricalUpper)}`}`;
   const empiricalTailValue = empiricalTail === null
     ? "—"
     : `${formatReturnFraction(empiricalTail)}${empiricalRr === null ? "" : ` · RR ${formatDotNumber(empiricalRr, 2, false)}`}`;
   return [
     {
-      label: "Предпроверка запуска",
+      label: "Предзапусковая проверка",
       value: preflightStatusRu(ctx.preflight_status),
-      help: "Результат технической проверки перед запуском: Bybit-метаданные, диапазон, размеры, tick/qty/min-notional и защитные уровни.",
+      help: "Результат технической проверки перед запуском: данные инструмента Bybit, диапазон, размеры заявки, шаг цены, шаг количества, минимальная сумма и защитные уровни.",
     },
     {
       label: "Профиль риска",
       value: riskProfileRu(ctx.risk_profile),
-      help: "Сводная оценка риска по cross-margin equity buffer на kill-switch. Это консервативный стресс капитала бота, а не точная биржевая ликвидационная цена.",
+      help: "Сводная оценка запаса капитала при движении цены к аварийной границе выхода. Это консервативный стресс-сценарий, а не точная биржевая цена ликвидации.",
     },
     {
-      label: "Plan RR",
+      label: "RR плана",
       value: planRr === null ? "—" : formatDotNumber(planRr, 2, false),
-      help: "Сценарное отношение ожидаемой net-прибыли именно этого grid-плана к убытку при достижении худшего kill-switch. Не является вероятностью и не использует historical outcomes.",
+      help: "Сценарное отношение ожидаемой чистой прибыли именно этого плана сетки к убытку при достижении худшей аварийной границы выхода. Это не вероятность прибыли и не статистика прошлых наблюдений.",
     },
     {
-      label: "Plan net / kill-switch loss",
+      label: "Прибыль плана / убыток у аварийной границы",
       value: `${planReward === null ? "—" : formatUsdValue(planReward)} / ${planLoss === null ? "—" : formatUsdValue(planLoss)}`,
-      help: "Числитель Plan RR: projected completed grid pairs после recurring fees, разовой market friction и adverse funding. Знаменатель: price/exit loss при худшем kill-switch; maintenance reserve не называется убытком.",
+      help: "Числитель RR плана — ожидаемая прибыль завершённых пар уровней после комиссий, разовых расходов на исполнение и неблагоприятного платежа финансирования. Знаменатель — ценовой убыток при худшей аварийной границе выхода. Резерв поддерживающей маржи в убыток не включается.",
     },
     {
-      label: "Empirical expectancy",
+      label: "Доходность по наблюдениям",
       value: empiricalValue,
-      help: `Средняя net-доходность matured outcomes текущей неизменной policy с доверительным интервалом. Статус: ${empiricalStatus}; outcomes n=${empiricalSamples}; независимых временных когорт ${empiricalClusters}/${empiricalMinClusters}.`,
+      help: `Средний чистый результат завершённых наблюдений текущего неизменного набора правил с доверительным интервалом. Статус: ${empiricalStatusRu(empiricalStatus)}; наблюдений: ${empiricalSamples}; независимых временных групп: ${empiricalClusters}/${empiricalMinClusters}.`,
     },
     {
-      label: "Empirical tail / RR",
+      label: "Худшие наблюдения и RR",
       value: empiricalTailValue,
-      help: "Expected shortfall — средний результат худшего хвоста matured outcomes. Empirical RR = положительная средняя доходность / модуль отрицательного expected shortfall. При недостаточной или односторонней выборке RR не показывается.",
+      help: "Средний результат худших наблюдений — средний результат худшего хвоста завершённых наблюдений. RR по наблюдениям = положительная средняя доходность / модуль среднего результата худших наблюдений. При недостаточной или односторонней выборке RR не показывается.",
     },
     {
-      label: "Cross-margin equity buffer",
+      label: "Запас капитала",
       value: ctx.liquidation_buffer_pct === null || ctx.liquidation_buffer_pct === undefined ? "—" : formatPercentDot(ctx.liquidation_buffer_pct, 2, false),
-      help: "Остаток выделенного капитала после неблагоприятного движения к kill-switch, execution costs и maintenance reserve. Funding benefit и grid profit не кредитуются.",
+      help: "Остаток выделенного капитала после неблагоприятного движения к аварийной границе выхода, расходов на исполнение и резерва поддерживающей маржи. Возможная выгода от платежа финансирования и прибыль сетки не засчитываются заранее.",
     },
     {
-      label: "Чистая прибыль/сетка",
+      label: "Чистая прибыль одной пары уровней",
       value: ctx.net_profit_bps === null || ctx.net_profit_bps === undefined ? "—" : formatBps(ctx.net_profit_bps, 2, true),
-      help: "Прибыль одной завершённой пары соседних уровней после recurring fees двух grid fills. Разовая market friction и horizon funding учитываются отдельно в Plan RR. bps = базисные пункты: 1 bps = 0,01%.",
+      help: "Прибыль одной завершённой пары соседних уровней после комиссий двух исполнений. Разовые расходы на исполнение и платёж финансирования за весь горизонт учитываются отдельно в RR плана. 1 б.п. = 0,01%.",
     },
     {
-      label: "Издержки исполнения",
+      label: "Расходы на исполнение",
       value: ctx.execution_cost_bps === null || ctx.execution_cost_bps === undefined ? "—" : formatBps(ctx.execution_cost_bps, 2, false),
-      help: "Оценка расходов на вход/выход: комиссия, спред и возможное проскальзывание. bps = 0,01%.",
+      help: "Оценка расходов на вход и выход: комиссия, разница цен покупки и продажи и возможное проскальзывание. 1 б.п. = 0,01%.",
     },
     {
-      label: "Funding-риск",
+      label: "Платёж финансирования",
       value: ctx.funding_cost_bps === null || ctx.funding_cost_bps === undefined ? "—" : formatBps(ctx.funding_cost_bps, 2, false),
-      help: "Ожидаемый неблагоприятный funding за горизонт удержания. Funding — периодические платежи между long и short на perpetual futures.",
+      help: "Ожидаемый неблагоприятный платёж финансирования за горизонт удержания. Это периодический платёж между участниками, рассчитывающими на рост и снижение цены бессрочного фьючерса.",
     },
   ];
 }
@@ -1177,19 +1485,19 @@ function buildOperatorFieldSpecs(it, ov) {
   const slDistancePct = toFiniteNumber(exitMath.stop_loss_distance_pct);
   const distanceValue = tpDistancePct === null && slDistancePct === null
     ? "—"
-    : `TP ${tpDistancePct === null ? "—" : formatPercentDot(tpDistancePct, 2, false)} / SL ${slDistancePct === null ? "—" : formatPercentDot(slDistancePct, 2, false)}`;
+    : `Цель ${tpDistancePct === null ? "—" : formatPercentDot(tpDistancePct, 2, false)} / ограничение ${slDistancePct === null ? "—" : formatPercentDot(slDistancePct, 2, false)}`;
   const fields = [
-    { label: "Сторона", value: directionRu((it || {}).direction), mono: false, help: "Направление идеи: лонг зарабатывает на росте, шорт — на снижении. Нейтральная grid-логика не должна подменяться направленным TP/SL." },
-    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Оценочная максимальная экспозиция бота. При наличии worst-case grid-полей UI показывает верхнюю оценку по максимальной цене диапазона, а базовое qty выводит из той же worst-case цены, не из reference-price; legacy reference-price notional не используется для qty при worst-case exposure." },
+    { label: "Направление", value: directionRu((it || {}).direction), mono: false, help: "Покупка рассчитана на рост цены, продажа — на снижение. Нейтральная сетка работает внутри диапазона и не должна подменяться направленной целью прибыли." },
+    { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Наибольший оценочный номинальный объём позиции в худшем сценарии. Количество рассчитывается по неблагоприятной цене диапазона, чтобы не занизить риск." },
     { label: "Время работы", value: botLifetimeValue, copyValue: botLifetimeValue, help: "Рекомендуемый горизонт удержания бота, а не срок действия самой рекомендации." },
-    { label: "Маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под бота с указанным плечом. При наличии worst-case margin UI не должен откатываться к менее консервативной legacy-марже." },
+    { label: "Требуемая маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под сетку с указанным плечом. Используется более консервативная оценка для худшего сценария." },
     { label: "Диапазон входа", value: rangeValue, mono: true, help: "Нижняя и верхняя границы основного диапазона сетки, которые оператор переносит в Bybit." },
     { label: "Цена входа", value: ov.entryRef, mono: true, help: "Расчётная цена входа из рекомендации. Используется при создании бота и остаётся обязательным полем основной панели." },
-    { label: "Кол-во сеток", value: ov.gridCount === null ? "—" : ov.gridCount, help: "Количество ценовых интервалов сетки. Конфликтующие, дробные и boolean-алиасы не отображаются как исполнимое значение и блокируются backend preflight." },
-    { label: "Плечо", value: ov.leverage, help: "Кредитное плечо linear USDT futures. Увеличивает и прибыль, и риск ликвидации." },
-    { label: ov.takeProfitLabel || "Take Profit", value: ov.takeProfitValue, mono: true, help: "Take Profit — уровень фиксации прибыли. Для лонга он выше входа, для шорта ниже входа." },
-    { label: ov.stopLossLabel || "Stop Loss", value: ov.stopLossValue, mono: true, help: "Stop Loss / kill-switch — защитный уровень остановки убытка. Для лонга ниже входа, для шорта выше входа." },
-    { label: "TP/SL дистанция", value: distanceValue, mono: true, help: "Направленные расстояния от расчётного входа до TP и SL. Для short TP считается вниз, SL — вверх; знак не инвертируется форматированием." },
+    { label: "Число интервалов сетки", value: ov.gridCount === null ? "—" : ov.gridCount, help: "Количество ценовых интервалов сетки. Противоречивое, дробное или логическое значение блокируется предзапусковой проверкой." },
+    { label: "Кредитное плечо", value: ov.leverage, help: "Кредитное плечо линейного фьючерса с расчётом в USDT. Увеличивает и возможную прибыль, и риск потери капитала." },
+    { label: ov.takeProfitLabel || "Цель прибыли", value: ov.takeProfitValue, mono: true, help: "Уровень фиксации прибыли. Для покупки он выше цены входа, для продажи — ниже." },
+    { label: ov.stopLossLabel || "Ограничение убытка", value: ov.stopLossValue, mono: true, help: "Защитный уровень остановки убытка. Для покупки он ниже цены входа, для продажи — выше. У нейтральной сетки используются две аварийные границы." },
+    { label: "Расстояние до цели / ограничения", value: distanceValue, mono: true, help: "Расстояния от расчётной цены входа до цели прибыли и ограничения убытка. Для продажи цель находится ниже, а ограничение — выше." },
   ];
   return fields.filter(f => f.value !== undefined && f.value !== null && f.value !== "");
 }
@@ -1199,12 +1507,12 @@ function factorNameRu(name) {
     range_score: "Диапазонность",
     coherence: "Согласованность таймфреймов",
     regime_confidence: "Уверенность режима",
-    effective_sentiment: "Сентимент",
+    effective_sentiment: "Новостной фон",
     direction_strength: "Сила направления",
     trend_strength: "Трендовость",
-    atr_pct: "Волатильность ATR",
+    atr_pct: "Средний диапазон колебаний цены",
     execution_cost_bps: "Издержки исполнения",
-    spread_bps: "Спред",
+    spread_bps: "Разница цен покупки и продажи",
   };
   return mapping[name] || name || "factor";
 }
@@ -1219,7 +1527,7 @@ function factorItemHtml(factor, tone = "positive") {
     <div class="${cls}">
       <div class="factor-sign">${tone === "positive" ? "+" : "−"}</div>
       <div class="factor-body">
-        <div class="factor-msg">${escapeHtml(msg)}</div>
+        <div class="factor-msg">${escapeHtml(humanizeOperatorText(msg))}</div>
         <div class="factor-meta">${escapeHtml(factorNameRu(factor.name))} · вес ${escapeHtml(weightText)}</div>
       </div>
     </div>
@@ -1317,17 +1625,17 @@ function buildDetailsHtml(it) {
       : noTradeDecision
         ? "Не запускать сейчас"
         : pendingDecision
-          ? "Ждать LLM-проверку"
+          ? "Ждать проверку LLM"
           : "Ждать / перепроверить";
   const decisionText = launchable
     ? "Проверьте цену, актуальность, риск и экономику; затем используйте блок параметров запуска для создания бота."
     : explicitHardBlocked
-      ? "Есть жёсткий блокер, запрещающий ручное создание grid-бота. Фактическая причина показана сразу под этим решением."
+      ? "Есть жёсткая причина, запрещающая ручное создание сеточного бота. Фактическая причина показана сразу под этим решением."
       : noTradeDecision
-        ? "no_trade означает: grid сейчас не запускать. Это не технический блокер Bybit; причина показана сразу под этим решением и отделена от относительного ранга в таблице."
+        ? "«Не торговать» означает: сетку сейчас не запускать. Это не техническая блокировка Bybit; причина показана сразу под этим решением и отделена от относительного ранга в таблице."
         : pendingDecision
-          ? "Рекомендация удержана до завершения LLM-проверки. Это не no_trade и не Bybit/preflight-блокер; дождитесь финального статуса recommended/active либо отказа."
-          : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или live-предпроверки.";
+          ? "Рекомендация ожидает завершения проверки LLM. Это не отказ и не техническая блокировка Bybit; дождитесь статуса «Можно торговать» либо окончательного запрета."
+          : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или новой предзапусковой проверки.";
 
   const llmDirection = llmReview?.execution_direction || llmReview?.thesis_direction || "neutral";
   const llmRecommendation = llmReview ? directionRu(llmDirection) : "нет данных";
@@ -1371,7 +1679,7 @@ function buildDetailsHtml(it) {
       <div class="operator-card ${blockersCardClass}">
         <h3>${escapeHtml(blockersTitle)}</h3>
         <div class="small-blocks">
-          ${blockerItems.map(b => `<div class="small-block ${b.critical ? "small-block-critical" : ""}"><code>${escapeHtml(b.code)}</code><br>${escapeHtml(b.msg)}</div>`).join("")}
+          ${blockerItems.map(b => `<div class="small-block ${b.critical ? "small-block-critical" : ""}"><span class="diagnostic-code" title="Технический код для журнала">${escapeHtml(b.code)}</span><br>${escapeHtml(humanizeOperatorText(b.msg))}</div>`).join("")}
         </div>
       </div>
     `
@@ -1386,7 +1694,7 @@ function buildDetailsHtml(it) {
             <h3>${escapeHtml(it.symbol)} · ${escapeHtml(decisionTitle)}</h3>
             <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(operatorEffectiveStatus(it))}</div>
           </div>
-          <button class="ghost-chip" data-act="show-tech">Техподробности</button>
+          <button class="ghost-chip" data-act="show-tech">Технические данные</button>
         </div>
         <div class="decision-text">${escapeHtml(decisionText)}</div>
       </div>
@@ -1422,20 +1730,20 @@ function buildDetailsHtml(it) {
       </div>
 
       <div class="operator-card primary-launch-card">
-        <h3>Параметры запуска Bybit Futures Grid</h3>
+        <h3>Параметры запуска фьючерсной сетки Bybit</h3>
         <div class="operator-grid two minimal-launch-grid">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
         </div>
       </div>
 
       <div class="operator-card llm-operator-card">
-        <h3>LLM-рекомендация</h3>
+        <h3>Проверка LLM</h3>
         <div class="operator-grid three minimal-llm-grid">
-          ${fieldBox("Рекомендация LLM", llmRecommendation, null, "", "LLM — языковая модель, которая дополнительно проверяет идею. Это не самостоятельное разрешение запуска без серверных и предпусковых риск-проверок.")}
-          ${fieldBox("Вероятность LLM", llmProbability, null, "", "Уверенность LLM в собственном выводе. Это не биржевая вероятность прибыли и не замена риск-проверкам.")}
+          ${fieldBox("Рекомендация LLM", llmRecommendation, null, "", "LLM — языковая модель, которая дополнительно проверяет идею. Это не самостоятельное разрешение запуска без серверных и предзапусковых риск-проверок.")}
+          ${fieldBox("Уверенность LLM", llmProbability, null, "", "Внутренняя уверенность LLM в собственном выводе. Это не вероятность прибыли и не замена RR, проверкам риска и статистике наблюдений.")}
           ${fieldBox("Сравнение с алгоритмом", llmAgreement, null, "", "Показывает, совпадает ли вывод LLM с направлением и исполнением алгоритма.")}
         </div>
-        ${llmSummary ? `<div class="llm-summary-box compact-llm-summary">${escapeHtml(llmSummary)}</div>` : `<div class="helper-text">LLM-проверка отсутствует для этой рекомендации.</div>`}
+        ${llmSummary ? `<div class="llm-summary-box compact-llm-summary">${escapeHtml(humanizeOperatorText(llmSummary))}</div>` : `<div class="helper-text">LLM-проверка отсутствует для этой рекомендации.</div>`}
       </div>
 
     </div>
@@ -1447,7 +1755,7 @@ function pillStatus(status) {
   if (status === "recommended" || status === "active") cls += " good";
   else if (status === "blocked") cls += " bad";
   else cls += " warn";
-  return `<span class="${cls}">${escapeHtml(status || "—")}</span>`;
+  return `<span class="${cls}">${escapeHtml(operatorStatusRu(status))}</span>`;
 }
 
 function getConfModel(item) {
@@ -1473,12 +1781,12 @@ function confCell(item) {
     const src = confModel.source || "raw";
     const cap = toFiniteNumber(confModel.heuristic_cap);
     const capText = cap === null ? "" : `; cap≤${cap.toFixed(2)}`;
-    marker = ` <span class='conf-mode-tag conf-mode-raw' title='Не откалибровано: ${src}${capText}'>raw</span>`;
+    marker = ` <span class='conf-mode-tag conf-mode-raw' title='Уверенность не откалибрована; источник: ${calibrationModeRu(src)}${capText}'>без калибровки</span>`;
   } else if (logregActive) {
-    marker = " <span class='conf-mode-tag conf-mode-cal' title='Откалибровано: LogReg + Platt'>cal</span>";
+    marker = " <span class='conf-mode-tag conf-mode-cal' title='Уверенность откалибрована на отдельной проверочной выборке'>откалибровано</span>";
   } else {
     const nSamples = toFiniteNumber(confModel.n_samples) ?? 0;
-    marker = ` <span class='conf-mode-tag conf-mode-platt' title='Legacy Platt не допускается текущим held-out контрактом (n=${nSamples})'>legacy</span>`;
+    marker = ` <span class='conf-mode-tag conf-mode-platt' title='Устаревшая калибровка не соответствует текущим правилам проверки; наблюдений: ${nSamples}'>устаревшая</span>`;
   }
 
   return `<span class="${cls}">${v.toFixed(2)}${marker}</span>`;
@@ -1497,20 +1805,15 @@ function summariseCalibState(items) {
 }
 
 function buildBotCalibText(botType, info, totalOutcomeCount) {
+  const product = botTypeLabel(botType) || "Фьючерсная сетка";
   const archiveTotal = Number(info?.historical_outcomes_total ?? totalOutcomeCount ?? 0);
   const currentModelTotal = Number(info?.current_model_outcomes_total || 0);
-  const featureEligibleTotal = Number(info?.feature_eligible_outcomes_total || 0);
   const policyEligibleTotal = Number(info?.policy_eligible_outcomes_total ?? info?.outcomes_total ?? 0);
-  const total = policyEligibleTotal;
   const wins = Number(info?.wins || 0);
-  const losses = Number(info?.losses || Math.max(0, total - wins));
+  const losses = Number(info?.losses || Math.max(0, policyEligibleTotal - wins));
   const effective = Number(info?.effective_samples || (2 * Math.min(wins, losses)) || 0);
   const monetaryNeeded = Number(info?.monetary_min_samples || info?.min_samples || 80);
   const probabilityNeeded = Number(info?.probability_min_samples || info?.logreg_min_samples || 300);
-  const winRate = info?.win_rate;
-  const winRateText = (winRate === null || winRate === undefined) ? "—" : Number(winRate).toFixed(2);
-  const calibratorKey = String(info?.calibrator_key || "unknown-calibrator");
-  const expectancyStatus = String(info?.expectancy_status || "insufficient");
   const temporalClusters = Number(info?.temporal_cluster_count || 0);
   const minimumTemporalClusters = Number(info?.minimum_temporal_clusters || 0);
   const matured = Number(info?.policy_matured_total || 0);
@@ -1518,39 +1821,26 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
   const censored = Number(info?.policy_censored_total || 0);
   const unresolved = Number(info?.policy_unresolved_total || 0);
   const invalidLabeled = Number(info?.policy_invalid_labeled_total || 0);
-  const skill = String(info?.purged_oof_skill_status || "not_evaluated");
-  const lineageText = `lineage ${calibratorKey}: архив=${archiveTotal}, текущая модель=${currentModelTotal}, feature=${featureEligibleTotal}, eligible=${policyEligibleTotal}`;
-  const temporalText = minimumTemporalClusters > 0
-    ? `; time_clusters=${temporalClusters}/${minimumTemporalClusters}`
-    : "";
-  const observabilityText = `; policy outcomes: matured=${matured}, labeled=${labeled}, censored=${censored}, unresolved=${unresolved}, invalid_labeled=${invalidLabeled}`;
-  const readinessText = `Денежная доказательность: eligible=${total}/${monetaryNeeded}. Вероятностная калибровка: eligible=${total}/${probabilityNeeded} + accepted purged OOF/terminal holdout.`;
+  const readiness = `Для денежной оценки: ${policyEligibleTotal}/${monetaryNeeded}; для вероятностной калибровки: ${policyEligibleTotal}/${probabilityNeeded}.`;
+  const lineage = `Архив: ${archiveTotal}; текущая версия модели: ${currentModelTotal}; завершено: ${matured}; размечено: ${labeled}.`;
+  const clusters = minimumTemporalClusters > 0 ? ` Независимые временные группы: ${temporalClusters}/${minimumTemporalClusters}.` : "";
 
   if (censored > 0 || unresolved > 0 || invalidLabeled > 0) {
-    return `${botType}: калибровка заблокирована неполной наблюдаемостью (${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText}`;
+    return `${product}: калибровка заблокирована неполными наблюдениями (незавершённых: ${unresolved}, ограниченно наблюдаемых: ${censored}, некорректных: ${invalidLabeled}). ${readiness} ${lineage}${clusters}`;
   }
-
+  if (info?.fitted && info?.logreg_active) {
+    return `${product}: вероятностная калибровка активна. Наблюдений: ${policyEligibleTotal}; успешных: ${wins}; неуспешных: ${losses}; эффективная выборка: ${effective}. ${lineage}${clusters}`;
+  }
   if (info?.fitted) {
-    if (info?.logreg_active) {
-      const fitRows = Number(info?.n_samples || 0);
-      const dropped = Number(info?.rows_dropped_for_fit || Math.max(0, total - fitRows) || 0);
-      const droppedText = dropped > 0 ? `; не вошло в feature-fit=${dropped}` : "";
-      return `${botType}: калибратор активен (terminal-holdout LogReg + Platt, fit_rows=${fitRows}/${total}; побед=${wins}, поражений=${losses}${droppedText}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText}`;
-    }
-    return `${botType}: legacy Platt state отклонён текущим held-out контрактом (${lineageText}${observabilityText}).`;
+    return `${product}: сохранённая старая калибровка не соответствует текущим правилам проверки и не используется. ${readiness} ${lineage}${clusters}`;
   }
-
   if ((info?.unfitted_reason || "") === "degenerate_win_rate") {
-    const minority = Number(info?.minority_class_count || Math.min(wins, losses) || 0);
-    const recent7d = Number(info?.outcomes_7d || 0) > 0
-      ? ` За 7д eligible: побед=${Number(info?.wins_7d || 0)}, поражений=${Number(info?.losses_7d || 0)}.`
-      : "";
-    return `${botType}: raw-only, вырожденные eligible-метки (minority=${minority}, effective=${effective}/${monetaryNeeded}, win-rate=${winRateText}, entropy=${fmt(info?.class_entropy_bits, 3)}, expectancy=${expectancyStatus}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText}${recent7d}`;
+    return `${product}: в выборке пока недостаточно результатов одного из классов, поэтому вероятностная калибровка невозможна. Успешных: ${wins}; неуспешных: ${losses}; эффективная выборка: ${effective}. ${readiness} ${lineage}${clusters}`;
   }
   if ((info?.unfitted_reason || "") === "pending_refit") {
-    return `${botType}: eligible-исходов достаточно (effective=${effective}/${monetaryNeeded}, всего=${total}, побед=${wins}, поражений=${losses}, win-rate=${winRateText}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText} Refit ещё не завершён.`;
+    return `${product}: данных уже достаточно, но пересчёт калибратора ещё не завершён. ${readiness} ${lineage}${clusters}`;
   }
-  return `${botType}: effective для fit ${effective}/${monetaryNeeded} (eligible=${total}, побед=${wins}, поражений=${losses}, expectancy=${expectancyStatus}; ${lineageText}${observabilityText}; skill=${skill}${temporalText}). ${readinessText}`;
+  return `${product}: калибратор ещё не обучен. ${readiness} ${lineage}${clusters}`;
 }
 
 function updateCalibrationUi(items) {
@@ -1572,7 +1862,7 @@ function updateCalibrationUi(items) {
     } else {
       header.textContent = fittedBots.length > 0 ? "Увер ~" : "Увер ?";
       header.title = fittedBots.length > 0
-        ? `Калибровка готова частично (${fittedBots.length}/${botCalibs.length}); глобальная модель считается диагностической и не используется как fallback.`
+        ? `Калибровка готова частично (${fittedBots.length}/${botCalibs.length}); общая модель используется только для диагностики и не подставляется вместо модели конкретного вида стратегии.`
         : "Калибровка продукта ещё не готова.";
       banner.classList.remove("hidden");
       const archiveCount = Number(statusPayload?.historical_outcome_count ?? statusPayload?.outcome_count ?? 0);
@@ -1583,10 +1873,10 @@ function updateCalibrationUi(items) {
       const fullNeeded = statusPayload?.calibration_gate_contract?.require_conf_gate === false ? monetaryNeeded : probabilityNeeded;
       const pct = fullNeeded > 0 ? Math.min(100, Math.round(eligibleCount / fullNeeded * 100)) : 0;
       const readiness = botCalibs.length > 0
-        ? `Готово: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (LogReg: ${logregBots.length})` : ""}. `
+        ? `Готово: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (вероятностная модель: ${logregBots.length})` : ""}. `
         : "";
       const temporalDays = Number(statusPayload?.calibration_gate_contract?.minimum_temporal_span_days || 10);
-      $("calibProgress").textContent = `${readiness}Исторический архив=${archiveCount}; текущая model lineage=${currentModelCount}; feature-eligible=${eligibleCount}. Денежная доказательность: ${eligibleCount}/${monetaryNeeded}. Вероятностная калибровка: ${eligibleCount}/${probabilityNeeded} + accepted purged OOF/terminal holdout. Полная готовность не наступает на пороге 80 при REQUIRE_CONF_GATE=1. При 12-часовом label horizon temporal floor физически требует не менее ${temporalDays} суток неизменной policy; смена policy fingerprint начинает новую evidence-когорту.`;
+      $("calibProgress").textContent = `${readiness}Исторический архив: ${archiveCount}; наблюдения текущей версии модели: ${currentModelCount}; пригодные для обучения: ${eligibleCount}. Для денежной оценки требуется ${eligibleCount}/${monetaryNeeded}. Для вероятностной калибровки требуется ${eligibleCount}/${probabilityNeeded}, а также отдельная проверка вне обучения без пересечения временных окон. При обязательной проверке уверенности 80 наблюдений недостаточно. При 12-часовом горизонте требуется не менее ${temporalDays} суток работы неизменного набора правил. Смена идентификатора набора правил начинает новую выборку наблюдений; старые наблюдения сохраняются только в архиве.`;
       $("calibBarFill").style.width = `${pct}%`;
     }
     return;
@@ -1594,19 +1884,19 @@ function updateCalibrationUi(items) {
 
   if (summary.unfitted === 0 && summary.legacy === 0) {
     header.textContent = "Увер ✓";
-    header.title = `Все строки откалиброваны: LogReg + Platt (${summary.logreg}/${summary.total}).`;
+    header.title = `Все строки откалиброваны: вероятностная калибровка (${summary.logreg}/${summary.total}).`;
     banner.classList.add("hidden");
     return;
   }
   if (summary.unfitted === 0) {
     header.textContent = summary.logreg > 0 ? "Увер ~" : "Увер ~";
-    header.title = `Обнаружено legacy Platt-состояние, не соответствующее terminal-holdout контракту (LogReg: ${summary.logreg}, legacy: ${summary.legacy}).`;
+    header.title = `Обнаружена устаревшая калибровка, не соответствующая текущим правилам проверки (текущая вероятностная модель: ${summary.logreg}; устаревших состояний: ${summary.legacy}).`;
     banner.classList.remove("hidden");
     return;
   }
 
   header.textContent = summary.logreg > 0 ? "Увер ?" : "Увер ⚠";
-  header.title = `Есть неоткалиброванные строки: raw=${summary.unfitted}, legacy=${summary.legacy}, LogReg=${summary.logreg}.`;
+  header.title = `Есть строки с неподтверждённой уверенностью: без калибровки — ${summary.unfitted}; устаревших — ${summary.legacy}; с текущей вероятностной моделью — ${summary.logreg}.`;
 
   const botTypes = [...new Set((items || []).map(it => it.bot_type).filter(Boolean))];
   const botCalibs = statusPayload?.bot_calibrators || {};
@@ -1627,15 +1917,15 @@ function updateCalibrationUi(items) {
   if (primaryBot) {
     const title = primaryInfo?.fitted
       ? (primaryInfo?.logreg_active
-        ? `Futures Grid: калибратор активен`
-        : `Futures Grid: legacy калибратор отклонён`) 
-      : `Futures Grid: калибратор не обучен`;
+        ? `Фьючерсная сетка: калибратор активен`
+        : `Фьючерсная сетка: старая калибровка отклонена`) 
+      : `Фьючерсная сетка: калибратор не обучен`;
     document.querySelector(".calib-title").innerHTML = `${title} — уверенность <b>${primaryInfo?.fitted ? "частично/полностью откалибрована" : "не откалибрована"}</b>`;
   } else {
     document.querySelector(".calib-title").innerHTML = `Калибровка по текущему набору <b>смешанная</b>`;
   }
   const temporalDays = Number(statusPayload?.calibration_gate_contract?.minimum_temporal_span_days || 10);
-  $("calibProgress").textContent = `${messages.join(" ")} Полная готовность не наступает на пороге 80: при REQUIRE_CONF_GATE=1 требуется минимум ${probabilityNeeded} exact-policy labels, accepted purged OOF и terminal holdout. При 12-часовом label horizon temporal floor требует не менее ${temporalDays} суток неизменной policy; смена policy fingerprint начинает новую evidence-когорту. raw-confidence остаётся audit-only и публикацию не разблокирует.`;
+  $("calibProgress").textContent = `${messages.join(" ")} Для полной готовности недостаточно только 80 наблюдений: требуется не менее ${probabilityNeeded} наблюдений текущего набора правил, проверка на данных вне обучения и итоговая отложенная выборка. При 12-часовом горизонте наблюдения необходимы как минимум ${temporalDays} суток неизменных правил. После изменения правил статистика собирается заново. Исходная уверенность алгоритма остаётся только технической диагностикой и не разрешает торговлю.`;
   $("calibBarFill").style.width = `${pct}%`;
 }
 
@@ -1681,18 +1971,17 @@ function renderDirectionBadge(dir) {
 
 function renderOutcomeResult(success) {
   const ok = Number(success) === 1;
-  return `<span class="outcome-result ${ok ? "outcome-result-win" : "outcome-result-loss"}">${ok ? "Win" : "Loss"}</span>`;
+  return `<span class="outcome-result ${ok ? "outcome-result-win" : "outcome-result-loss"}">${ok ? "Успех" : "Неуспех"}</span>`;
 }
 
 function renderNeutralSourceTag(source) {
   if (!source) return "—";
-  if (source === "futures_neutral") {
-    return `<span class="neutral-note neutral-note-neutralized">futures-neutral</span>`;
-  }
-  if (source === "true_neutral") {
-    return `<span class="neutral-note neutral-note-true">true neutral</span>`;
-  }
-  return `<span class="neutral-note">${escapeHtml(source)}</span>`;
+  const cls = source === "futures_neutral"
+    ? "neutral-note neutral-note-neutralized"
+    : source === "true_neutral"
+      ? "neutral-note neutral-note-true"
+      : "neutral-note";
+  return `<span class="${cls}">${escapeHtml(neutralSourceRu(source))}</span>`;
 }
 
 function renderLlmStatusBadge(status) {
@@ -1703,7 +1992,7 @@ function renderLlmStatusBadge(status) {
   else if (value === "error") cls = "llm-badge llm-badge-error";
   else if (value === "skipped") cls = "llm-badge llm-badge-skipped";
   else if (value === "none") cls = "llm-badge llm-badge-none";
-  return `<span class="${cls}">${escapeHtml(value)}</span>`;
+  return `<span class="${cls}">${escapeHtml(llmStatusRu(value))}</span>`;
 }
 
 function renderAgreementBadge(agree) {
@@ -1714,8 +2003,8 @@ function renderAgreementBadge(agree) {
 
 function renderLlmFlagList(flags) {
   const items = Array.isArray(flags) ? flags.filter(Boolean) : [];
-  if (!items.length) return '<div class="helper-text">Риск-флаги не указаны.</div>';
-  return `<div class="tag-list">${items.map(flag => `<span class="tag-chip">${escapeHtml(flag)}</span>`).join("")}</div>`;
+  if (!items.length) return '<div class="helper-text">Признаки риска не указаны.</div>';
+  return `<div class="tag-list">${items.map(flag => `<span class="tag-chip">${escapeHtml(humanizeOperatorText(flag))}</span>`).join("")}</div>`;
 }
 
 function formatReviewerModel(llm) {
@@ -1730,8 +2019,8 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
   if (!llm || typeof llm !== "object") {
     return `
       <div class="operator-card">
-        <h3>LLM reviewer</h3>
-        <div class="helper-text">По этой рекомендации reviewer не запускался или данные ревью недоступны.</div>
+        <h3>Проверка LLM</h3>
+        <div class="helper-text">По этой рекомендации проверка LLM не запускалась или её данные недоступны.</div>
       </div>
     `;
   }
@@ -1741,31 +2030,31 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
   const mode = llm.mode || "—";
   const gateDecision = llm.gate_decision || "—";
   const regimeView = llm.regime_view || "—";
-  const summary = llm.summary || llm.error || "—";
+  const summary = humanizeOperatorText(llm.summary || llm.error || "—");
   const source = llm.source || (llm.cached ? "cache" : "live");
   const freshness = llm.cache_age_sec === null || llm.cache_age_sec === undefined ? "—" : formatAgeHuman(llm.cache_age_sec);
   const reviewTs = llm.review_ts ? formatTs(llm.review_ts) : "—";
   const inheritedFrom = llm.inherited_from_rec_id || "—";
-  const errorLine = llm.error ? `<div class="helper-text llm-error-text">Ошибка reviewer: ${escapeHtml(String(llm.error))}</div>` : "";
+  const errorLine = llm.error ? `<div class="helper-text llm-error-text">Ошибка проверки LLM: ${escapeHtml(humanizeOperatorText(llm.error))}</div>` : "";
 
   return `
     <div class="operator-card llm-review-card">
-      <h3>LLM reviewer</h3>
+      <h3>Проверка LLM</h3>
       <div class="operator-grid">
-        ${fieldBox("Статус", status, null)}
-        ${fieldBox("Провайдер / модель", formatReviewerModel(llm), null)}
-        ${fieldBox("Источник", source, null)}
-        ${fieldBox("Режим", mode, null)}
-        ${fieldBox("Gate decision", gateDecision, null)}
-        ${fieldBox("Время review", reviewTs, null)}
-        ${fieldBox("Свежесть review", freshness, null)}
-        ${fieldBox("Наследовано от rec_id", inheritedFrom, null)}
-        ${fieldBox("Engine direction", directionRu(engineDirection || "neutral"), null)}
-        ${fieldBox("LLM thesis", directionRu(llm.thesis_direction || "neutral"), null)}
-        ${fieldBox("LLM execution", directionRu(llm.execution_direction || "neutral"), null)}
-        ${fieldBox("Совпадение с движком", llm.agree_with_engine === true ? "Да" : llm.agree_with_engine === false ? "Нет" : "Н/Д", null)}
-        ${fieldBox("Уверенность LLM", confidence, null)}
-        ${fieldBox("Regime view", regimeView, null)}
+        ${fieldBox("Статус", llmStatusRu(status), null)}
+        ${fieldBox("Сервис / модель", formatReviewerModel(llm), null)}
+        ${fieldBox("Источник", humanizeOperatorText(source), null, "", "Новый ответ LLM или ранее сохранённый ответ, повторно использованный для той же неизменной рекомендации.")}
+        ${fieldBox("Режим", humanizeOperatorText(mode), null)}
+        ${fieldBox("Результат проверки допуска", gateDecisionRu(gateDecision), null, "", "Показывает, разрешила ли проверка LLM продолжить рассмотрение идеи. LLM не может отменить жёсткую риск-блокировку.")}
+        ${fieldBox("Время проверки", reviewTs, null)}
+        ${fieldBox("Возраст проверки", freshness, null)}
+        ${fieldBox("Наследовано от рекомендации", inheritedFrom, null)}
+        ${fieldBox("Направление алгоритма", directionRu(engineDirection || "neutral"), null)}
+        ${fieldBox("Вывод LLM", directionRu(llm.thesis_direction || "neutral"), null)}
+        ${fieldBox("Решение LLM", directionRu(llm.execution_direction || "neutral"), null)}
+        ${fieldBox("Совпадение с алгоритмом", llm.agree_with_engine === true ? "Да" : llm.agree_with_engine === false ? "Нет" : "Н/Д", null, "", "Сравнение направления после обязательных проверок с направлением, предложенным LLM.")}
+        ${fieldBox("Уверенность LLM", confidence, null, "", "Внутренняя оценка уверенности LLM. Она не является вероятностью прибыли и не заменяет RR, риск и доходность по наблюдениям.")}
+        ${fieldBox("Оценка состояния рынка LLM", marketStateRu(regimeView), null, "", "Краткое описание того, как LLM оценивает текущее состояние рынка. Это вспомогательное мнение, а не разрешение на вход.")}
       </div>
       <div class="llm-review-row">
         <div class="llm-review-badges">
@@ -1773,11 +2062,11 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
           ${renderAgreementBadge(llm.agree_with_engine)}
           ${renderDirectionBadge(llm.execution_direction || "neutral")}
         </div>
-        <div class="helper-text">Если LLM-reviewer включён, запуск удерживается в pending до OK-вердикта; при таймауте идея переводится в no_trade fail-closed.</div>
+        <div class="helper-text">Если проверка LLM включена, запуск ожидает её завершения; при превышении времени ожидания торговля запрещается.</div>
       </div>
       <div class="llm-summary-box">${escapeHtml(summary)}</div>
       ${errorLine}
-      <div class="modal-section-title" style="margin-top:10px">Risk flags</div>
+      <div class="modal-section-title" style="margin-top:10px">Признаки риска</div>
       ${renderLlmFlagList(llm.risk_flags)}
     </div>
   `;
@@ -1787,12 +2076,10 @@ function renderHealthStatus(status) {
   const value = String(status || "missing").toLowerCase();
   const cls = value === "ok"
     ? "health-status-ok"
-    : value === "stale"
+    : value === "stale" || value === "disabled"
       ? "health-status-stale"
-      : value === "disabled"
-        ? "health-status-stale"
-        : "health-status-missing";
-  return `<span class="health-status ${cls}">${escapeHtml(value)}</span>`;
+      : "health-status-missing";
+  return `<span class="health-status ${cls}">${escapeHtml(healthStatusRu(value))}</span>`;
 }
 
 function renderModalSummaryCards(items = []) {
@@ -1816,7 +2103,7 @@ function renderSampleSizeBadge(total) {
     cls = "sample-badge sample-badge-mid";
     label = "умеренно";
   }
-  return `<span class="${cls}">n=${escapeHtml(String(n))} · ${escapeHtml(label)}</span>`;
+  return `<span class="${cls}" title="Количество независимых завершённых наблюдений в этой группе">наблюдений: ${escapeHtml(String(n))} · ${escapeHtml(label)}</span>`;
 }
 
 function formatShare(part, total, digits = 1) {
@@ -1871,8 +2158,8 @@ function buildOutcomeDiagnostics(llmByEngine = [], neutralBreakdown = [], summar
     const better = delta > 0 ? "расхождения" : "совпадения";
     insights.push({
       kind: delta > 0 ? "warn" : "good",
-      title: `LLM vs algo: ${directionRu(engineDir)}`,
-      body: `${better} выглядят сильнее: ${(agree.winRate * 100).toFixed(1)}% vs ${(disagree.winRate * 100).toFixed(1)}% WR при n=${agree.total}/${disagree.total}. Стоит проверить, не смешаны ли разные подтипы внутри ${directionRu(engineDir).toLowerCase()}.`,
+      title: `LLM и алгоритм: ${directionRu(engineDir)}`,
+      body: `${better} выглядят сильнее: ${(agree.winRate * 100).toFixed(1)}% против ${(disagree.winRate * 100).toFixed(1)}% успешных при числе наблюдений ${agree.total}/${disagree.total}. Стоит проверить, не смешаны ли разные подтипы внутри ${directionRu(engineDir).toLowerCase()}.`,
     });
   }
 
@@ -1885,8 +2172,8 @@ function buildOutcomeDiagnostics(llmByEngine = [], neutralBreakdown = [], summar
     if (Math.abs(delta) >= 0.12) {
       insights.push({
         kind: delta < 0 ? "warn" : "neutral",
-        title: "Neutral нужно делить на классы",
-        body: `Истинный neutral и neutralized-short ведут себя по-разному: ${(tn.winRate * 100).toFixed(1)}% vs ${(sn.winRate * 100).toFixed(1)}% WR при n=${tn.total}/${sn.total}. Их нельзя держать в одной строке.`,
+        title: "Нейтральные сигналы нужно разделять по происхождению",
+        body: `Изначально нейтральный сигнал и нейтральное решение после проверок ведут себя по-разному: ${(tn.winRate * 100).toFixed(1)}% против ${(sn.winRate * 100).toFixed(1)}% успешных при числе наблюдений ${tn.total}/${sn.total}. Их нельзя держать в одной строке.`,
       });
     }
   }
@@ -1897,7 +2184,7 @@ function buildOutcomeDiagnostics(llmByEngine = [], neutralBreakdown = [], summar
     insights.push({
       kind: "neutral",
       title: "Повторы публикаций отфильтрованы",
-      body: `${duplicates} из ${rawTotal} сырьевых строк исключены из win-rate как подтверждения уже открытой publication-chain. Для оператора это правильно: иначе окно завышало бы уверенность.`,
+      body: `${duplicates} из ${rawTotal} исходных строк исключены из доли успешных как подтверждения уже открытой цепочки публикаций. Для оператора это правильно: иначе окно завышало бы уверенность.`,
     });
   }
 
@@ -1979,9 +2266,9 @@ function buildRecommendationTimelineSvg(items) {
   };
 
   const horizontalLines = [
-    { direction: "long", label: "LONG" },
-    { direction: "neutral", label: "NEUTRAL" },
-    { direction: "short", label: "SHORT" },
+    { direction: "long", label: "ПОКУПКА" },
+    { direction: "neutral", label: "НЕЙТРАЛЬНО" },
+    { direction: "short", label: "ПРОДАЖА" },
   ].map(row => {
     const y = yFor(row.direction);
     return `
@@ -2027,8 +2314,8 @@ function buildRecommendationTimelineSvg(items) {
     const title = [
       formatTs(row.ts),
       directionRu(row.direction),
-      `статус: ${row.stored_status || row.status || "unknown"}`,
-      `LLM: ${row.llm_status || "none"}`,
+      `статус: ${operatorStatusRu(row.stored_status || row.status || "unknown")}`,
+      `LLM: ${llmStatusRu(row.llm_status || "none")}`,
       row.publication_kind === "root" ? "новая цепочка" : "обновление цепочки",
     ].join(" · ");
     return `
@@ -2051,10 +2338,10 @@ function buildRecommendationTimelineSvg(items) {
       </svg>
     </div>
     <div class="timeline-legend">
-      <span><i class="timeline-legend-dot timeline-point-actionable"></i> recommended/active</span>
-      <span><i class="timeline-legend-dot timeline-point-pending"></i> pending</span>
-      <span><i class="timeline-legend-dot timeline-point-blocked"></i> blocked/expired</span>
-      <span>крупная точка = новая publication-chain; вертикальная отметка = смена направления</span>
+      <span><i class="timeline-legend-dot timeline-point-actionable"></i> можно торговать</span>
+      <span><i class="timeline-legend-dot timeline-point-pending"></i> ожидает проверки</span>
+      <span><i class="timeline-legend-dot timeline-point-blocked"></i> заблокировано или устарело</span>
+      <span>крупная точка — новая цепочка публикаций; вертикальная отметка — смена направления</span>
     </div>
   `;
 }
@@ -2098,18 +2385,18 @@ function buildRecommendationHistoryHtml(data) {
     { label: "Возраст", render: row => escapeHtml(row.timestamp_valid === false ? "Некорректная метка времени" : formatAgeHuman(row.age_sec)) },
     { label: "Направление", render: row => directionBadge(row.direction) },
     { label: "Статус в БД", render: row => pillStatus(row.stored_status || row.status) },
-    { label: "LLM", render: row => escapeHtml(row.llm_status || "none") },
+    { label: "Проверка LLM", render: row => renderLlmStatusBadge(row.llm_status || "none") },
     { label: "Тип", render: row => escapeHtml(row.publication_kind === "root" ? "новая идея" : "обновление") },
-    { label: "Plan RR", render: row => {
+    { label: "RR плана", render: row => {
         const value = toFiniteNumber(row.plan_rr);
         return escapeHtml(value === null ? "—" : formatDotNumber(value, 2, false));
       }
     },
-    { label: "Emp. expectancy", render: row => {
+    { label: "Доходность по наблюдениям", render: row => {
         const mean = toFiniteNumber(row.empirical_mean_return);
         const status = String(row.empirical_expectancy_status || "insufficient");
-        if (mean === null) return escapeHtml(`недост. (${status})`);
-        return escapeHtml(`${formatReturnFraction(mean)} (${status})`);
+        if (mean === null) return escapeHtml(`недостаточно данных (${empiricalStatusRu(status)})`);
+        return escapeHtml(`${formatReturnFraction(mean)} (${empiricalStatusRu(status)})`);
       }
     },
     { label: "Изменение", className: "wrap", render: row => {
@@ -2123,7 +2410,7 @@ function buildRecommendationHistoryHtml(data) {
   ], tableItems, { emptyText: "Публикаций по этой паре пока нет.", compact: true, maxHeight: 420 });
 
   return `
-    <p class="modal-note">График показывает каждую сохранённую публикацию для ${escapeHtml(data?.symbol || "пары")}. Исторический статус и LLM-состояние берутся из БД; текущие Bybit/preflight-гейты достоверно пересчитываются только для последней строки и не приписываются задним числом старым точкам.</p>
+    <p class="modal-note">График показывает каждую сохранённую публикацию для ${escapeHtml(data?.symbol || "пары")}. Исторический статус и состояние LLM берутся из базы данных; текущие проверки Bybit и предзапусковые условия достоверно пересчитываются только для последней строки и не приписываются задним числом старым точкам.</p>
     ${renderModalSummaryCards(summary)}
     <div class="modal-section">
       <div class="modal-section-title">Динамика направления и моменты публикаций</div>
@@ -2160,7 +2447,61 @@ async function loadRecommendationHistory(meta = currentMeta) {
   }
 }
 
+function localizeObjectForDisplay(value, key = "") {
+  if (Array.isArray(value)) return value.map(item => localizeObjectForDisplay(item, key));
+  if (value && typeof value === "object") {
+    const keyLabels = {
+      ts: "Время", action: "Действие", operator: "Оператор", status: "Статус",
+      effective_status: "Итоговый статус", symbol: "Символ", direction: "Направление",
+      message: "Сообщение", msg: "Сообщение", reason: "Причина", code: "Технический код",
+      details: "Сведения", severity: "Важность", count: "Количество", total: "Всего",
+      state: "Состояние", enabled: "Включено", ready: "Готово", error: "Ошибка",
+      risk_state: "Состояние риска", decision: "Решение", limits: "Ограничения",
+      venue: "Рынок", bot_type: "Вид стратегии", margin_mode: "Режим маржи",
+      risk_profile: "Профиль риска", preflight_status: "Предзапусковая проверка",
+      funding_rate: "Ставка платежа финансирования", funding_interval: "Период платежа финансирования",
+      spread_bps: "Разница цен покупки и продажи", slippage_bps: "Проскальзывание",
+      execution_cost_bps: "Расходы на исполнение", plan_rr: "RR плана",
+      empirical_expectancy_status: "Статус доходности по наблюдениям",
+      policy_fingerprint: "Идентификатор набора правил", sample_role: "Роль наблюдения",
+      llm_status: "Статус LLM", gate_decision: "Результат проверки допуска",
+      raw_direction: "Исходное направление", execution_direction: "Направление после проверок",
+      confidence: "Уверенность", calibrated_confidence: "Откалиброванная уверенность",
+      timeframe: "Временной интервал", tf_sec: "Временной интервал",
+    };
+    const out = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      const label = keyLabels[childKey] || humanizeOperatorText(childKey);
+      out[label] = localizeObjectForDisplay(childValue, childKey);
+    }
+    return out;
+  }
+  if (typeof value === "string") {
+    if (key.includes("status")) return operatorStatusRu(value);
+    if (key === "direction" || key === "raw_direction" || key === "execution_direction") return directionRu(value);
+    if (key === "action") return humanizeOperatorText(value);
+    if (key === "llm_status") return llmStatusRu(value);
+    if (key === "sample_role") return sampleRoleRu(value);
+    if (key === "gate_decision") return gateDecisionRu(value);
+    if (key === "timeframe" || key === "tf_sec") return timeframeRu(value);
+    if (key === "bot_type") return botTypeLabel(value);
+    if (key === "margin_mode") return marginModeRu(value);
+    return humanizeOperatorText(value);
+  }
+  return value;
+}
+
 function showModal(title, obj) {
+  const body = $("modalBody");
+  $("modalTitle").textContent = title;
+  body.classList.remove("modal-html");
+  body.classList.add("pre");
+  const displayValue = typeof obj === "string" ? humanizeOperatorText(obj) : localizeObjectForDisplay(obj);
+  body.textContent = typeof displayValue === "string" ? displayValue : JSON.stringify(displayValue, null, 2);
+  $("modal").classList.remove("hidden");
+}
+
+function showRawTechnicalModal(title, obj) {
   const body = $("modalBody");
   $("modalTitle").textContent = title;
   body.classList.remove("modal-html");
@@ -2219,14 +2560,14 @@ async function loadStatus() {
     if (shockEl) {
       const severity = shock.severity || "normal";
       shockEl.className = severity === "lockdown" ? "shock-badge shock-lockdown" : severity === "guarded" ? "shock-badge shock-guarded" : "shock-badge shock-normal";
-      shockEl.textContent = `Guard: ${shock.title || "Нормальный режим"}`;
-      shockEl.title = shock.operator_note || "";
+      shockEl.textContent = `Защита: ${humanizeOperatorText(shock.title || "Нормальный режим")}`;
+      shockEl.title = humanizeOperatorText(shock.operator_note || "");
     }
 
     // sentiment badge
     const sent = s.sentiment || {};
     const ewma = sent.ewma_6h;
-    const regime = sent.regime || "—";
+    const regime = sentimentRegimeRu(sent.regime || "—");
     if (ewma !== null && ewma !== undefined) {
       const v = Number(ewma);
       let cls = "sentiment-badge";
@@ -2237,8 +2578,8 @@ async function loadStatus() {
       const flag = flags.panic ? " 🚨" : flags.euphoria ? " 🔥" : "";
       $("sentiment-badge").className = cls;
       $("sentiment-badge").textContent =
-        `Сент.* ${v >= 0 ? "+" : ""}${v.toFixed(2)} (${regime})${flag}`;
-      $("sentiment-badge").title = "Эвристический сентимент: RSS/Reddit/market context. Это не полноценный semantic news-анализ статей.";
+        `Новостной фон* ${v >= 0 ? "+" : ""}${v.toFixed(2)} (${regime})${flag}`;
+      $("sentiment-badge").title = "Оценочный новостной фон: новостные ленты, Reddit и рыночный контекст. Это не полный смысловой анализ текстов новостей.";
     }
 
     // last reco timestamp
@@ -2342,7 +2683,7 @@ async function loadRecommendations() {
 
   const regime = data.regime || {};
   $("regime").textContent =
-    `Режим: ${regime.risk_state || "?"} | vol=${regime.vol_state || "?"} | trend=${regime.trend_state || "?"}`;
+    `Рынок: риск — ${marketStateRu(regime.risk_state, "risk")} | колебания — ${marketStateRu(regime.vol_state, "vol")} | направление — ${marketStateRu(regime.trend_state, "trend")}`;
 
   const body = $("recoBody");
   body.innerHTML = "";
@@ -2415,17 +2756,27 @@ function updateSortHeaders() {
 function operatorDecisionCell(it) {
   const summary = it?.operator_summary && typeof it.operator_summary === "object" ? it.operator_summary : {};
   const decision = String(summary.decision || "").toLowerCase();
-  if (decision === "enter_allowed") return `<span class="decision decision-enter">ВХОДИТЬ</span>`;
-  if (decision === "wait") return `<span class="decision decision-wait">ЖДАТЬ</span>`;
-  if (decision === "executed") return `<span class="decision decision-executed">ЗАПУЩЕНО</span>`;
-  return `<span class="decision decision-stop">НЕ ВХОДИТЬ</span>`;
-}
+  const effectiveStatus = String(summary.effective_status || operatorEffectiveStatus(it) || "").toLowerCase();
+  const reason = String(summary.primary_reason || "Решение требует проверки");
 
-function primaryDecisionReasonCell(it) {
-  const summary = it?.operator_summary && typeof it.operator_summary === "object" ? it.operator_summary : {};
-  const text = String(summary.primary_reason || operatorEffectiveStatus(it) || "—");
-  const code = String(summary.primary_reason_code || "");
-  return `<span class="primary-reason" title="${escapeHtml(code)}">${escapeHtml(text)}</span>`;
+  let label = "НЕ ТОРГОВАТЬ";
+  let className = "decision-stop";
+  if (decision === "enter_allowed") {
+    label = "ВХОДИТЬ";
+    className = "decision-enter";
+  } else if (decision === "wait") {
+    label = "ЖДАТЬ";
+    className = "decision-wait";
+  } else if (decision === "executed") {
+    label = "ЗАПУЩЕНО";
+    className = "decision-executed";
+  } else if (effectiveStatus === "blocked") {
+    label = "ЗАБЛОКИРОВАНО";
+    className = "decision-stop";
+  }
+
+  const ariaLabel = `${label}: ${reason}`;
+  return `<span class="decision ${className}" tabindex="0" title="${escapeHtml(reason)}" aria-label="${escapeHtml(ariaLabel)}">${label}</span>`;
 }
 
 function renderRecoTable(items) {
@@ -2450,7 +2801,6 @@ function renderRecoTable(items) {
       <td>${planRrCell(it)}</td>
       <td>${empiricalExpectancyCell(it)}</td>
       <td data-cell="status">${operatorDecisionCell(it)}</td>
-      <td>${primaryDecisionReasonCell(it)}</td>
     `;
     body.appendChild(tr);
   });
@@ -2458,9 +2808,9 @@ function renderRecoTable(items) {
   if (!hasActionable) {
     const shock = (statusPayload || {}).market_shock || {};
     if (shock && shock.state && shock.state !== "normal") {
-      banner.innerHTML = `НЕТ ЗАПУСКАЕМЫХ: <b>${escapeHtml(shock.title || "Guard")}</b>. ${escapeHtml(shock.operator_note || "Новые входы заблокированы.")}`;
+      banner.innerHTML = `НЕТ РАЗРЕШЁННЫХ СДЕЛОК: <b>${escapeHtml(humanizeOperatorText(shock.title || "Защитный режим"))}</b>. ${escapeHtml(humanizeOperatorText(shock.operator_note || "Новые входы заблокированы."))}`;
     } else {
-      banner.innerHTML = 'НЕТ ЗАПУСКАЕМЫХ: нет эффективных <b>recommended</b>/<b>active</b> по текущим фильтрам. Если запускных строк нет, UI автоматически раскрывает диагностические <b>pending</b>/<b>blocked</b>/<b>no_trade</b> строки. <b>blocked</b> = жёсткий риск/Bybit/preflight-блокер; <b>no_trade</b> = запуск не прошёл launch-score/confidence/economics gates; это может означать неподтверждённый торговый тезис, а не техническую ошибку. Ненастроенный калибратор сам по себе запуск не блокирует.';
+      banner.innerHTML = 'НЕТ РАЗРЕШЁННЫХ СДЕЛОК: по текущим фильтрам нет рекомендаций со статусом <b>«Можно торговать»</b>. Поэтому UI показывает строки <b>«Ожидает проверки»</b>, <b>«Заблокировано»</b> и <b>«Не торговать»</b>. Заблокировано означает жёсткий запрет по риску, данным Bybit или предзапусковой проверке. Не торговать означает, что идея не прошла обязательные условия качества и экономики; это не обязательно техническая ошибка.';
     }
     banner.classList.remove("hidden");
   } else {
@@ -2468,10 +2818,10 @@ function renderRecoTable(items) {
   }
 }
 function directionBadge(dir) {
-  if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">• neutral</span>`;
-  if (dir === "long")  return `<span class="dir-badge dir-long">▲ long</span>`;
-  if (dir === "short") return `<span class="dir-badge dir-short">▼ short</span>`;
-  return `<span class="dir-badge dir-neu">• ${escapeHtml(String(dir))}</span>`;
+  if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">• Нейтральная сетка</span>`;
+  if (dir === "long")  return `<span class="dir-badge dir-long">▲ Покупка (рост)</span>`;
+  if (dir === "short") return `<span class="dir-badge dir-short">▼ Продажа (снижение)</span>`;
+  return `<span class="dir-badge dir-neu">• ${escapeHtml(directionRu(dir))}</span>`;
 }
 
 // ── details panel ─────────────────────────────────────────────────────────────
@@ -2496,7 +2846,7 @@ async function loadDetails(recId) {
         btn.classList.add("hidden");
         $("details").textContent = "Карточка больше не существует в текущей БД. Выберите рекомендацию заново.";
       } else {
-        $("details").textContent = `Ошибка загрузки деталей (HTTP ${res.status}).`;
+        $("details").textContent = `Ошибка загрузки деталей (код ответа сервера ${res.status}).`;
         btn.disabled = false;
         btn.textContent = "Обновить";
       }
@@ -2543,7 +2893,7 @@ async function loadHealth() {
   const llm = data.llm_reviewer || {};
   const warmup = data.warmup || {};
   const llmTfText = Array.isArray(llm.tf_secs) && llm.tf_secs.length
-    ? llm.tf_secs.map(tf => tf >= 3600 ? `${Math.round(tf / 3600)}h` : `${Math.round(tf / 60)}m`).join(", ")
+    ? llm.tf_secs.map(timeframeRu).join(", ")
     : "—";
   const warmupRatio = Number(warmup.ready_ratio || 0);
   const warmupMinRatio = Number(warmup.min_ready_ratio || 0);
@@ -2561,50 +2911,50 @@ async function loadHealth() {
 
   const html = `
     ${renderModalSummaryCards([
-      { label: "OK", value: Number(sum.ok || 0) },
-      { label: "Stale", value: Number(sum.stale || 0) },
-      { label: "Missing", value: Number(sum.missing || 0) },
-      { label: "Disabled", value: Number(sum.disabled || 0) },
-      { label: "Ready symbols", value: `${warmupReadySymbols}/${warmupSymbolsTotal}` },
-      { label: "Ready ratio", value: warmupSymbolsTotal > 0 ? warmupRatio.toFixed(4) : "—" },
-      { label: "Min ready ratio", value: warmupMinRatio > 0 ? warmupMinRatio.toFixed(4) : "—" },
+      { label: "Норма", value: Number(sum.ok || 0) },
+      { label: "Устаревшие", value: Number(sum.stale || 0) },
+      { label: "Нет данных", value: Number(sum.missing || 0) },
+      { label: "Отключённые", value: Number(sum.disabled || 0) },
+      { label: "Готовые инструменты", value: `${warmupReadySymbols}/${warmupSymbolsTotal}` },
+      { label: "Доля готовых", value: warmupSymbolsTotal > 0 ? warmupRatio.toFixed(4) : "—" },
+      { label: "Минимальная доля готовых", value: warmupMinRatio > 0 ? warmupMinRatio.toFixed(4) : "—" },
       { label: "Ошибки / 10 мин", value: Number(sum.errors_10m || 0) },
-      { label: "LLM reviewer", html: renderLlmStatusBadge(llm.enabled ? (llm.mode || "enabled") : "disabled") },
-      { label: "Модель", value: llm.model || "—" },
+      { label: "Проверка LLM", html: renderLlmStatusBadge(llm.enabled ? (llm.mode || "enabled") : "disabled") },
+      { label: "Модель LLM", value: llm.model || "—" },
     ])}
-    <p class="modal-note">OK в этом окне означает свежие ticker + 1m. Готовность recommender считается отдельно по warmup/readiness и требует достаточной multi-timeframe history.</p>
+    <p class="modal-note">«Норма» в этом окне означает свежую текущую цену и минутные свечи. Готовность алгоритма рассчитывается отдельно и требует достаточной истории на нескольких временных интервалах.</p>
     <div class="modal-section">
-      <div class="modal-section-title">Warm-up / readiness</div>
+      <div class="modal-section-title">Накопление данных и готовность</div>
       ${buildModalTable([
         { label: "Параметр", render: row => escapeHtml(row.name) },
-        { label: "Значение", render: row => row.html !== undefined ? row.html : `<span class="wrap">${escapeHtml(row.value ?? "—")}</span>` },
+        { label: "Значение", render: row => row.html !== undefined ? row.html : `<span class="wrap">${escapeHtml(humanizeOperatorText(row.value ?? "—"))}</span>` },
       ], [
-        { name: "Ready", html: renderLlmStatusBadge(warmup.ready ? "ok" : "warming_up") },
-        { name: "Ready symbols", value: `${warmupReadySymbols}/${warmupSymbolsTotal}` },
-        { name: "Ready ratio", value: warmupSymbolsTotal > 0 ? warmupRatio.toFixed(4) : "—" },
-        { name: "Min ready ratio", value: warmupMinRatio > 0 ? warmupMinRatio.toFixed(4) : "—" },
-        { name: "Min ready symbols", value: warmup.min_ready_symbols ?? "—" },
-        { name: "Required TFs", value: Array.isArray(warmup.required_tfs) ? warmup.required_tfs.join(", ") : "—" },
-        { name: "Min rows / TF", value: warmup.min_rows_per_tf ?? "—" },
-        { name: "Derived on read", value: warmup.derived_on_read ? "yes" : "no" },
-      ], { emptyText: "Warm-up status недоступен." })}
+        { name: "Общая готовность", html: renderLlmStatusBadge(warmup.ready ? "ok" : "warming_up") },
+        { name: "Готовые инструменты", value: `${warmupReadySymbols}/${warmupSymbolsTotal}` },
+        { name: "Доля готовых", value: warmupSymbolsTotal > 0 ? warmupRatio.toFixed(4) : "—" },
+        { name: "Минимальная доля готовых", value: warmupMinRatio > 0 ? warmupMinRatio.toFixed(4) : "—" },
+        { name: "Минимум готовых инструментов", value: warmup.min_ready_symbols ?? "—" },
+        { name: "Обязательные интервалы", value: Array.isArray(warmup.required_tfs) ? timeframeListRu(warmup.required_tfs) : "—" },
+        { name: "Минимум строк на интервал", value: warmup.min_rows_per_tf ?? "—" },
+        { name: "Расчёт при чтении", value: warmup.derived_on_read ? "Да" : "Нет" },
+      ], { emptyText: "Состояние накопления данных недоступно." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">Конфигурация LLM reviewer</div>
+      <div class="modal-section-title">Настройки проверки LLM</div>
       ${buildModalTable([
         { label: "Параметр", render: row => escapeHtml(row.name) },
-        { label: "Значение", render: row => row.html !== undefined ? row.html : `<span class="wrap">${escapeHtml(row.value ?? "—")}</span>` },
+        { label: "Значение", render: row => row.html !== undefined ? row.html : `<span class="wrap">${escapeHtml(humanizeOperatorText(row.value ?? "—"))}</span>` },
       ], [
-        { name: "Enabled", html: renderLlmStatusBadge(llm.enabled ? "ok" : "disabled") },
-        { name: "Mode", value: llm.mode || "—" },
-        { name: "Provider / model", value: [llm.provider, llm.model].filter(Boolean).join(" / ") || "—" },
-        { name: "Таймфреймы", value: llmTfText },
-        { name: "Свечей на ТФ", value: llm.candles_per_tf ?? "—" },
-        { name: "Max кандидатов", value: llm.max_candidates ?? "—" },
+        { name: "Включена", html: renderLlmStatusBadge(llm.enabled ? "ok" : "disabled") },
+        { name: "Режим", value: humanizeOperatorText(llm.mode || "—") },
+        { name: "Сервис / модель", value: [llm.provider, llm.model].filter(Boolean).join(" / ") || "—" },
+        { name: "Временные интервалы", value: timeframeListRu(Array.isArray(llm.timeframes) ? llm.timeframes : llmTfText) },
+        { name: "Свечей на каждый интервал", value: llm.candles_per_tf ?? "—" },
+        { name: "Максимум кандидатов", value: llm.max_candidates ?? "—" },
         { name: "Мин. уверенность", value: llm.min_confidence ?? "—" },
         { name: "Каденс по символу", value: llm.cadence_sec == null ? "—" : `${llm.cadence_sec} сек` },
-        { name: "Таймаут pending", value: llm.pending_timeout_sec == null ? "—" : `${llm.pending_timeout_sec} сек` },
-      ], { emptyText: "Конфигурация reviewer недоступна." })}
+        { name: "Предельное время ожидания", value: llm.pending_timeout_sec == null ? "—" : `${llm.pending_timeout_sec} сек` },
+      ], { emptyText: "Настройки проверки LLM недоступны." })}
     </div>
     <div class="modal-section">
       <div class="modal-section-title">Журнал здоровья символов</div>
@@ -2615,9 +2965,9 @@ async function loadHealth() {
         { label: "Последняя свеча", render: row => escapeHtml(formatTs(row.last_candle_ts)) },
         { label: "Последний тикер", render: row => escapeHtml(formatTs(row.last_ticker_ts)) },
         { label: "Ошибки/10м", render: row => escapeHtml(String(Number(row.error_count_10m || 0))) },
-        { label: "Stale skip/1ч", render: row => escapeHtml(String(Number(row.stale_skips_1h || 0))) },
-        { label: "Disabled", render: row => row.disabled ? '<span class="neutral-note neutral-note-neutralized">yes</span>' : '—' },
-      ], symbols, { emptyText: "Нет данных по символам." })}
+        { label: "Пропусков устаревших данных за час", render: row => escapeHtml(String(Number(row.stale_skips_1h || 0))) },
+        { label: "Отключён", render: row => row.disabled ? '<span class="neutral-note neutral-note-neutralized">Да</span>' : 'Нет' },
+      ], symbols, { emptyText: "Данные по инструментам пока отсутствуют." })}
     </div>
   `;
 
@@ -2677,153 +3027,153 @@ async function loadOutcomes() {
 
   const html = `
     ${renderModalSummaryCards([
-      { label: "Текущая policy · исполнимые", value: actionableTotal },
-      { label: "Текущая policy · WR", value: headlineSummary.win_rate !== null && headlineSummary.win_rate !== undefined ? `${(Number(headlineSummary.win_rate) * 100).toFixed(1)}%` : "—" },
-      { label: "Текущая policy · avg ret", value: `${Number(headlineSummary.avg_ret || 0).toFixed(2)}%` },
-      { label: "Текущая policy · avg |ret|", value: `${Number(headlineSummary.avg_abs_ret || 0).toFixed(2)}%` },
-      { label: "Текущая policy-когорта", value: total },
-      { label: "Текущая policy · все WR", value: allRootsSummary.win_rate !== null && allRootsSummary.win_rate !== undefined ? `${(Number(allRootsSummary.win_rate) * 100).toFixed(1)}%` : "—" },
-      { label: "Текущая policy · shadow", value: Number(shadowSummary.total || 0) },
+      { label: "Текущие правила · торговые", value: actionableTotal },
+      { label: "Текущие правила · доля успешных", value: headlineSummary.win_rate !== null && headlineSummary.win_rate !== undefined ? `${(Number(headlineSummary.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Текущие правила · средний результат", value: `${Number(headlineSummary.avg_ret || 0).toFixed(2)}%` },
+      { label: "Текущие правила · среднее абсолютное изменение", value: `${Number(headlineSummary.avg_abs_ret || 0).toFixed(2)}%` },
+      { label: "Выборка текущего набора правил", value: total },
+      { label: "Текущие правила · общая доля успешных", value: allRootsSummary.win_rate !== null && allRootsSummary.win_rate !== undefined ? `${(Number(allRootsSummary.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Текущие правила · учебные наблюдения", value: Number(shadowSummary.total || 0) },
       { label: "Исторический архив", value: archiveTotal },
-      { label: "Архивный WR", value: archiveRoots.win_rate !== null && archiveRoots.win_rate !== undefined ? `${(Number(archiveRoots.win_rate) * 100).toFixed(1)}%` : "—" },
+      { label: "Архивная доля успешных", value: archiveRoots.win_rate !== null && archiveRoots.win_rate !== undefined ? `${(Number(archiveRoots.win_rate) * 100).toFixed(1)}%` : "—" },
       { label: "Повторов убрано", value: Number(s.deduped_duplicates || 0) },
-      { label: "Истинный neutral", value: Number(s.true_neutral_total || 0) },
-      { label: "Short → neutral", value: Number(s.futures_neutral_total || 0) },
-      { label: "LLM reviewed", value: llmReviewed },
-      { label: "LLM disagree", value: `${llmDisagree} · ${llmDisagreeShare}` },
-      { label: "LLM errors", value: `${Number(llmSummary.error_total || 0)} · ${llmErrorShare}` },
+      { label: "Изначально нейтральные", value: Number(s.true_neutral_total || 0) },
+      { label: "Продажа → нейтральное решение", value: Number(s.futures_neutral_total || 0) },
+      { label: "Проверено с помощью LLM", value: llmReviewed },
+      { label: "Расхождение с LLM", value: `${llmDisagree} · ${llmDisagreeShare}` },
+      { label: "Ошибки LLM", value: `${Number(llmSummary.error_total || 0)} · ${llmErrorShare}` },
     ])}
-    <p class="modal-note"><b>${escapeHtml(currentScope.label || "Текущая policy-когорта")}</b> — единственный источник headline и детальных таблиц. Исторический архив показан отдельными плитками и отдельным журналом; он не входит в текущий win-rate. Policy fingerprint: <span class="wrap">${escapeHtml(String(currentScope.policy_fingerprint || "—").slice(0, 16))}</span>. Это OHLCV proxy-оценка, а не подтверждение биржевого исполнения или live edge.</p>
+    <p class="modal-note"><b>${escapeHtml(currentScope.label || "Выборка текущего набора правил")}</b> — единственный источник основной и подробной статистики. Исторический архив показан отдельными плитками и отдельным журналом; он не входит в текущую долю успешных. Идентификатор набора правил: <span class="wrap">${escapeHtml(String(currentScope.policy_fingerprint || "—").slice(0, 16))}</span>. Это оценка по свечам цены и объёма, а не подтверждение реального исполнения сделок или преимущества в реальной торговле.</p>
     <div class="modal-section">
       <div class="modal-section-title">На что стоит смотреть в первую очередь</div>
       ${renderOutcomeInsightCards(insights)}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">1. Proxy-исходы по кандидатам</div>
+      <div class="modal-section-title">1. Результаты по торговым кандидатам</div>
       ${buildModalTable([
         { label: "Исполнимое направление", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
         { label: "Доля", render: row => escapeHtml(formatShare(row.total, total)) },
         { label: "Побед", render: row => escapeHtml(String(row.wins)) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
         { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], byExecution, { emptyText: "Исходов пока нет." })}
+      ], byExecution, { emptyText: "Завершённых наблюдений пока нет." })}
     </div>
     <div class="modal-section">
       <div class="modal-section-title">2. Что хотел алгоритм и во что это превратилось</div>
       ${buildModalTable([
-        { label: "Algo raw", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Algo exec", render: row => renderDirectionBadge(row.execution_direction) },
-        { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Тип нейтрального сигнала", render: row => renderNeutralSourceTag(row.neutral_source) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
         { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], directionPairs, { emptyText: "Исходов пока нет." })}
+      ], directionPairs, { emptyText: "Завершённых наблюдений пока нет." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">3. Neutral нужно читать раздельно</div>
+      <div class="modal-section-title">3. Нейтральные сигналы нужно рассматривать раздельно</div>
       ${buildModalTable([
         { label: "Класс", render: row => renderNeutralSourceTag(row.neutral_source) },
-        { label: "Raw", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Exec", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "После проверок", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
         { label: "Побед", render: row => escapeHtml(String(row.wins)) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
         { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], neutralBreakdown, { emptyText: "Подклассы neutral пока не накопились." })}
+      ], neutralBreakdown, { emptyText: "Типы нейтральных сигналов пока не накопились." })}
     </div>
     <div class="modal-section">
       <div class="modal-section-title">4. LLM против исполнимого направления алгоритма</div>
       ${buildModalTable([
-        { label: "Algo exec", render: row => renderDirectionBadge(row.engine_execution_direction) },
+        { label: "Направление после проверок", render: row => renderDirectionBadge(row.engine_execution_direction) },
         { label: "Статус", render: row => renderLlmStatusBadge(row.llm_status) },
         { label: "Совпадение", render: row => renderAgreementBadge(row.llm_alignment === "agree" ? true : row.llm_alignment === "disagree" ? false : null) },
-        { label: "Gate", render: row => `<span class="neutral-note">${escapeHtml(row.llm_gate_decision || "pass")}</span>` },
+        { label: "Условие допуска", render: row => `<span class="neutral-note">${escapeHtml(gateDecisionRu(row.llm_gate_decision || "pass"))}</span>` },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
-        { label: "Доля внутри algo exec", render: row => escapeHtml(formatShare(row.total, (llmByEngine || []).filter(x => x.engine_execution_direction === row.engine_execution_direction).reduce((acc, x) => acc + Number(x.total || 0), 0))) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Доля внутри направления после проверок", render: row => escapeHtml(formatShare(row.total, (llmByEngine || []).filter(x => x.engine_execution_direction === row.engine_execution_direction).reduce((acc, x) => acc + Number(x.total || 0), 0))) },
+        { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
         { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], llmByEngine, { emptyText: "LLM reviewer ещё не оставил следов в созревших исходах." })}
+      ], llmByEngine, { emptyText: "В завершённых наблюдениях пока нет результатов проверки LLM." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">5. LLM: детальная матрица algo exec → llm exec</div>
+      <div class="modal-section-title">5. LLM: детальная матрица: решение алгоритма → решение LLM</div>
       ${buildModalTable([
-        { label: "Algo exec", render: row => renderDirectionBadge(row.engine_execution_direction) },
-        { label: "LLM exec", render: row => renderDirectionBadge(row.llm_execution_direction) },
+        { label: "Направление после проверок", render: row => renderDirectionBadge(row.engine_execution_direction) },
+        { label: "Решение LLM", render: row => renderDirectionBadge(row.llm_execution_direction) },
         { label: "Совпадение", render: row => renderAgreementBadge(row.llm_alignment === "agree" ? true : row.llm_alignment === "disagree" ? false : null) },
         { label: "Статус", render: row => renderLlmStatusBadge(row.llm_status) },
-        { label: "Gate", render: row => `<span class="neutral-note">${escapeHtml(row.llm_gate_decision || "pass")}</span>` },
-        { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Условие допуска", render: row => `<span class="neutral-note">${escapeHtml(gateDecisionRu(row.llm_gate_decision || "pass"))}</span>` },
+        { label: "Тип нейтрального сигнала", render: row => renderNeutralSourceTag(row.neutral_source) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
         { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], llmMatrix, { emptyText: "Детальная матрица LLM пока пуста." })}
+      ], llmMatrix, { emptyText: "Сопоставление решений алгоритма и LLM пока не накоплено." })}
     </div>
     <div class="modal-section">
       <div class="modal-section-title">6. Сырой тезис алгоритма</div>
       ${buildModalTable([
-        { label: "Algo raw", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
         { label: "Доля", render: row => escapeHtml(formatShare(row.total, total)) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
         { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], byRaw, { emptyText: "Нет сводки по raw direction." })}
+      ], byRaw, { emptyText: "Сводка по исходному направлению алгоритма пока не накоплена." })}
     </div>
     <div class="modal-section">
       <div class="modal-section-title">7. По символу (топ 30)</div>
       ${buildModalTable([
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
-        { label: "Raw direction", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Execution direction", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
-        { label: "WR", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
-        { label: "Avg ret", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+        { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
+        { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
         { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], bySymbol, { emptyText: "Нет данных по символам." })}
+      ], bySymbol, { emptyText: "Данные по инструментам пока отсутствуют." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">8. Журнал текущей policy-когорты (последние 80)</div>
+      <div class="modal-section-title">8. Журнал текущего набора правил (последние 80)</div>
       ${buildModalTable([
         { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
-        { label: "Algo raw", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Algo exec", render: row => renderDirectionBadge(row.execution_direction) },
-        { label: "LLM status", render: row => renderLlmStatusBadge(row.llm_review?.status || "none") },
-        { label: "LLM thesis", render: row => renderDirectionBadge(row.llm_review?.thesis_direction || "neutral") },
-        { label: "LLM exec", render: row => renderDirectionBadge(row.llm_review?.execution_direction || "neutral") },
+        { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Статус LLM", render: row => renderLlmStatusBadge(row.llm_review?.status || "none") },
+        { label: "Вывод LLM", render: row => renderDirectionBadge(row.llm_review?.thesis_direction || "neutral") },
+        { label: "Решение LLM", render: row => renderDirectionBadge(row.llm_review?.execution_direction || "neutral") },
         { label: "Совпадение", render: row => renderAgreementBadge(row.llm_review?.agree_with_engine) },
-        { label: "LLM conf", render: row => row.llm_review?.confidence === null || row.llm_review?.confidence === undefined ? '—' : escapeHtml(formatDotNumber(row.llm_review.confidence, 2)) },
-        { label: "Neutral class", render: row => renderNeutralSourceTag(row.neutral_source) },
+        { label: "Уверенность LLM", render: row => row.llm_review?.confidence === null || row.llm_review?.confidence === undefined ? '—' : escapeHtml(formatDotNumber(row.llm_review.confidence, 2)) },
+        { label: "Тип нейтрального сигнала", render: row => renderNeutralSourceTag(row.neutral_source) },
         { label: "Исход", render: row => renderOutcomeResult(row.success) },
-        { label: "Ret", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
+        { label: "Результат", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
         { label: "Горизонт", render: row => escapeHtml(formatAgeHuman(row.horizon_sec)) },
-        { label: "LLM summary", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.llm_review?.summary || row.llm_review?.error || "—")}</span>` },
-        { label: "Policy", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
-        { label: "rec_id", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
-      ], recent, { emptyText: "В текущей policy-когорте исходов пока нет. Данные появятся после созревания label horizon.", compact: true, maxHeight: 420 })}
+        { label: "Пояснение LLM", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.llm_review?.summary || row.llm_review?.error || "—"))}</span>` },
+        { label: "Набор правил", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
+        { label: "Идентификатор рекомендации", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
+      ], recent, { emptyText: "В текущем наборе правил завершённых наблюдений пока нет. Данные появятся после окончания установленного горизонта наблюдения.", compact: true, maxHeight: 420 })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">9. Исторический архив (последние 20; не входит в headline)</div>
+      <div class="modal-section-title">9. Исторический архив (последние 20; не входит в основную статистику)</div>
       ${buildModalTable([
         { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
         { label: "Модель", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.model_version || "—")}</span>` },
-        { label: "Policy", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
-        { label: "Роль", render: row => `<span class="neutral-note">${escapeHtml(row.sample_role || row.reco_status || "legacy")}</span>` },
+        { label: "Набор правил", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
+        { label: "Роль", render: row => `<span class="neutral-note">${escapeHtml(sampleRoleRu(row.sample_role || row.reco_status || "legacy"))}</span>` },
         { label: "Исход", render: row => renderOutcomeResult(row.success) },
-        { label: "Ret", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
-        { label: "rec_id", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
+        { label: "Результат", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
+        { label: "Идентификатор рекомендации", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
       ], archiveRecent, { emptyText: "Исторический архив пуст.", compact: true, maxHeight: 300 })}
     </div>
   `;
 
-  showModalHtml("Экран исходов / Журнал исходов", html);
+  showModalHtml("Результаты наблюдений", html);
 }
 
 async function loadDecisions() {
@@ -2845,13 +3195,13 @@ async function loadRisk() {
 function startCountdown() {
   if (countdownTimer) clearInterval(countdownTimer);
   countdownVal = 10;
-  $("refreshCountdown").textContent = `↻ ${countdownVal}s`;
+  $("refreshCountdown").textContent = `↻ ${countdownVal}с`;
   countdownTimer = setInterval(() => {
     countdownVal--;
     if (countdownVal <= 0) {
       $("refreshCountdown").textContent = "↻ …";
     } else {
-      $("refreshCountdown").textContent = `↻ ${countdownVal}s`;
+      $("refreshCountdown").textContent = `↻ ${countdownVal}с`;
     }
   }, 1000);
 }
@@ -2903,7 +3253,7 @@ document.addEventListener("click", async (e) => {
 
   if (act === "show-tech") {
     const tech = $("details").dataset.tech;
-    if (tech) showModal("Техподробности", tech);
+    if (tech) showRawTechnicalModal("Технические данные", tech);
     return;
   }
 
@@ -2913,7 +3263,7 @@ document.addEventListener("click", async (e) => {
       const res = await fetch(`/api/v1/recommendations/${id}`);
       data = await res.json();
     } catch (e) { return; }
-    showModal("Recommendation JSON", data);
+    showRawTechnicalModal("Технические данные рекомендации", data);
   }
 
   if (act === "execute" || act === "ignore") {
@@ -2942,7 +3292,7 @@ document.addEventListener("click", async (e) => {
           if (statusCell) {
             const statusClass = action === "executed" ? "op-executed" : "op-ignored";
             statusCell.innerHTML =
-              `<span class="op-status-label ${statusClass}">${escapeHtml(action)}</span>`;
+              `<span class="op-status-label ${statusClass}">${escapeHtml(operatorStatusRu(action))}</span>`;
           }
 
           // Remove execute/ignore buttons but keep Детали and JSON

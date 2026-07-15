@@ -79,8 +79,8 @@ console.log(JSON.stringify({
 
     assert out["tp"] == "—"
     assert out["sl"] == "95.0 / 105.0"
-    assert out["label"] == "Directional TP blocked"
-    assert "payload missing" in out["geometry"]
+    assert out["label"] == "Направленная цель прибыли заблокирована"
+    assert "Нет полного набора защитных уровней" in out["geometry"]
 
 
 def test_linear_directional_ui_still_uses_backend_exit_payload_when_present() -> None:
@@ -95,8 +95,8 @@ const result = buildOperatorValues({
     stop_loss: 105,
     kill_switch_lower: 95,
     kill_switch_upper: 105,
-    take_profit_label: 'Take Profit',
-    stop_loss_label: 'Stop Loss',
+    take_profit_label: 'Цель прибыли',
+    stop_loss_label: 'Ограничение убытка',
     has_directional_take_profit: true,
     geometry_valid: true,
     reference_price: 100
@@ -115,4 +115,4 @@ console.log(JSON.stringify({tp: result.takeProfitValue, sl: result.stopLossValue
 """
     out = _run_js(code)
 
-    assert out == {"tp": "95.0", "sl": "105.0", "label": "Take Profit"}
+    assert out == {"tp": "95.0", "sl": "105.0", "label": "Цель прибыли"}

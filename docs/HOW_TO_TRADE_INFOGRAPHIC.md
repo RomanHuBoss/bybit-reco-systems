@@ -1,6 +1,24 @@
+## v1.0.64 — русский словарь интерфейса
+
+Главная таблица: **Символ · Направление · RR плана · Доходность по наблюдениям · Решение**.
+
+- Покупка (рост) = направление, которое выигрывает при росте цены.
+- Продажа (снижение) = направление, которое выигрывает при снижении цены.
+- Нейтральная сетка = работа внутри диапазона без единственной направленной цели прибыли.
+- RR плана = расчётная награда конкретного плана / стресс-убыток на аварийной границе. Это не вероятность прибыли.
+- Доходность по наблюдениям = результат созревших наблюдений текущего набора правил с оценкой неопределённости.
+- Платёж финансирования = периодический платёж между участниками бессрочного фьючерса.
+- Разница цен покупки и продажи и проскальзывание = издержки исполнения.
+- Предзапусковая проверка = последняя проверка цены, геометрии, размера и риска перед операторским подтверждением.
+- Значок `?` открывает подсказку; полные технические сведения находятся в «Деталях».
+
+## v1.0.63: decision reason is a hint, not a column
+
+Primary table: **symbol · direction · Plan RR · empirical expectancy · decision**. Hover or focus the decision badge to see one short human-readable reason. Open **Details** for the original diagnostic code, thresholds and complete explanation. Never interpret a long technical message as an extra decision metric.
+
 ## v1.0.62: one-glance decision table
 
-Primary table: **symbol · direction · Plan RR · empirical expectancy · decision · one reason**. Everything else belongs in **Details**. Do not enter on `НЕ ВХОДИТЬ`, `ЖДАТЬ`, `blocked`, `no_trade` or incomplete evidence. Shadow no-trade outcomes may mature without an LLM verdict because they are not executable and are never sent to the reviewer; actionable roots remain LLM-gated when enabled.
+Primary table: **symbol · direction · Plan RR · empirical expectancy · decision**. The one short reason is a hint on the decision badge; everything else belongs in **Details**. Do not enter on `НЕ ВХОДИТЬ`, `ЖДАТЬ`, `blocked`, `no_trade` or incomplete evidence. Shadow no-trade outcomes may mature without an LLM verdict because they are not executable and are never sent to the reviewer; actionable roots remain LLM-gated when enabled.
 
 ## v1.0.61 operator decision metrics
 

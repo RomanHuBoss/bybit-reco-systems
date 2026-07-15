@@ -33,10 +33,10 @@ def test_operator_ui_prefers_worst_case_total_notional_before_reference_notional
     assert '"worst_case_total_order_notional_usdt"' in app_js
     assert app_js.index('"estimated_worst_case_total_order_notional_usdt"') < app_js.index('"estimated_max_position_notional_usdt"')
     assert app_js.index('"worst_case_total_order_notional_usdt"') < app_js.index('"estimated_total_order_notional_usdt"')
-    assert "legacy reference-price notional" in app_js
+    assert "Наибольший оценочный номинальный объём позиции в худшем сценарии" in app_js
 
 
 def test_static_asset_cache_key_bumped_after_worst_case_margin_ui_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index

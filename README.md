@@ -1,8 +1,22 @@
+## Русский операторский интерфейс (v1.0.64)
+
+Интерфейс оператора переведён на однозначную русскую терминологию. В видимых названиях, статусах, подсказках, карточках, журналах, экране наблюдений, экране состояния и сообщениях больше не используются англоязычные торговые термины, если для них существует понятный русский эквивалент. Исключения: **LLM**, **UI**, **RR**, собственное имя **Bybit**, обозначение расчётной валюты **USDT** и машинные идентификаторы, которые нужны для аудита.
+
+Основные соответствия: `long` → **Покупка (рост)**; `short` → **Продажа (снижение)**; `neutral` → **Нейтральная сетка**; `funding` → **платёж финансирования**; `spread` → **разница цен покупки и продажи**; `slippage` → **проскальзывание**; `preflight` → **предзапусковая проверка**; `kill-switch` → **аварийная граница выхода**; `policy` → **набор правил**; `shadow outcome` → **учебное наблюдение**.
+
+Главная таблица остаётся минимальной: **символ · направление · RR плана · доходность по наблюдениям · решение**. Сложные показатели снабжены подсказками, доступными при наведении мыши и клавиатурном фокусе. Полные значения, пороги, внутренние коды и исходные диагностические поля находятся в **«Деталях»**; машинные коды API и БД не переименованы, чтобы не нарушить совместимость.
+
+## Compact decision hints (v1.0.63)
+
+The primary recommendation table now has five visible columns: symbol, direction, Plan RR, empirical expectancy and decision. The former separate reason column was removed. Hovering or focusing the decision label shows one short Russian operator hint, while raw diagnostic text, codes, thresholds and model details remain only in **Details**. Unknown internal reason codes fall back to a bounded status-level phrase and can no longer leak long mixed-language diagnostic payloads into the table.
+
+The additive `operator_summary` keeps `primary_reason_code`, publishes the short `primary_reason`, and retains the original message as `primary_reason_detail`. No trading gate, database schema, policy fingerprint, outcome lineage or execution boundary changed.
+
 ## Runtime outcome recovery and minimum operator table (v1.0.62)
 
 v1.0.62 fixes an LLM/outcome bootstrap deadlock: explicitly opted-in, risk-clean `shadow_no_trade` roots can now mature without an LLM verdict, while actionable recommendations still require the completed LLM verdict when that gate is enabled. Existing matured roots are processed automatically by the normal outcome worker; no data rewrite or schema migration is required. `/api/v1/status` now exposes `outcome_worker` liveness and reports `OUTCOME_WORKER_STALLED` when matured eligible roots remain unattempted.
 
-The primary recommendation table is intentionally limited to six decision fields: symbol, direction, Plan RR, empirical expectancy, decision, and one primary reason. All confidence, risk-buffer, price, range, sizing, funding, calibration and diagnostic fields remain in **Details**. The API publishes an additive `operator_summary` contract so Plan RR and the primary reason do not depend on frontend re-parsing of technical payloads. Bybit retCode `10006` retries honor the exchange reset timestamp, and an exact ticker miss is converted into a temporary symbol disable only after public instrument metadata also confirms absence.
+The primary recommendation table is intentionally limited to five visible decision fields: symbol, direction, Plan RR, empirical expectancy and decision. One short reason is available as a tooltip on the decision label. All confidence, risk-buffer, price, range, sizing, funding, calibration and diagnostic fields remain in **Details**. The API publishes an additive `operator_summary` contract so Plan RR and the primary reason do not depend on frontend re-parsing of technical payloads. Bybit retCode `10006` retries honor the exchange reset timestamp, and an exact ticker miss is converted into a temporary symbol disable only after public instrument metadata also confirms absence.
 
 ## Operator decision metrics: Plan RR and empirical expectancy (v1.0.61)
 

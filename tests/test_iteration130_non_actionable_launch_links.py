@@ -16,7 +16,7 @@ def test_operator_ui_hides_create_bot_link_for_non_actionable_recommendations() 
     assert 'const botLink = isLaunchableGridRecommendation(it)' in app_js
     assert 'if (isLaunchableGridRecommendation(it)) {' in app_js
     assert 'bot.removeAttribute("href")' in app_js
-    assert "Создание grid-бота скрыто" in app_js
+    assert "Создание сеточного бота скрыто" in app_js
 
 
 def test_operator_ui_no_longer_builds_bybit_create_url_from_arbitrary_bot_type() -> None:

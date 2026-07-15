@@ -9,16 +9,16 @@ ROOT = Path(__file__).resolve().parent.parent
 def test_details_panel_keeps_only_operator_launch_fields_and_llm() -> None:
     app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "Параметры запуска Bybit Futures Grid" in app_js
-    assert "LLM-рекомендация" in app_js
+    assert "Параметры запуска фьючерсной сетки Bybit" in app_js
     assert "Рекомендация LLM" in app_js
-    assert "Вероятность LLM" in app_js
-    assert "Сторона" in app_js
+    assert "Рекомендация LLM" in app_js
+    assert "Уверенность LLM" in app_js
+    assert "Направление" in app_js
     assert "Диапазон входа" in app_js
-    assert "Кол-во сеток" in app_js
-    assert "Плечо" in app_js
-    assert "Take Profit" in app_js
-    assert "Stop Loss" in app_js
+    assert "Число интервалов сетки" in app_js
+    assert "Кредитное плечо" in app_js
+    assert "Цель прибыли" in app_js
+    assert "Ограничение убытка" in app_js
 
     # The top-level Details panel must not be a diagnostic dump.
     assert "<h3>Контроль запуска</h3>" not in app_js
@@ -39,11 +39,11 @@ def test_details_panel_shows_blockers_only_when_they_matter() -> None:
     assert "Фактическая причина блокировки / предупреждения" in app_js
     assert "bybitErrors.length" in app_js
     assert "riskReportRejected.length" in app_js
-    assert "Есть жёсткий блокер, запрещающий ручное создание grid-бота" in app_js
+    assert "Есть жёсткая причина, запрещающая ручное создание сеточного бота" in app_js
 
 
 def test_static_asset_cache_key_bumped_after_minimal_llm_details() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index

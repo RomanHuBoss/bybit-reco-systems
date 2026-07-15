@@ -657,7 +657,7 @@ const r = operatorExitLevels('neutral', 95, 105);
 console.log(JSON.stringify({label: r.takeProfitLabel}));
 """
     out = _run_js(code)
-    assert "unavailable" in out["label"].lower() or "neutral" in out["label"].lower(), (
+    assert "не применяется" in out["label"].lower(), (
         f"neutral must not show directional TP: {out}"
     )
 

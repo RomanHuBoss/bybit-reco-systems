@@ -159,6 +159,7 @@ def test_explicit_shadow_no_trade_outcome_matures_but_excluded_row_does_not(
 def test_operator_ui_does_not_call_proxy_outcomes_real_execution() -> None:
     js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "raw-confidence остаётся audit-only и публикацию не разблокирует" in js
-    assert "Proxy-исходы по кандидатам" in js
+    assert "Уверенность не откалибрована" in js
+    assert "а не подтверждение реального исполнения сделок" in js
+    assert "Результаты по торговым кандидатам" in js
     assert "Что реально торговалось" not in js

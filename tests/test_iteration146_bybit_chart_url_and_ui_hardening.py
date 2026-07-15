@@ -26,7 +26,7 @@ def test_operator_table_escapes_symbol_status_and_rec_id_in_rendered_html() -> N
 
     assert '<b>${escapeHtml(it.symbol || "—")}</b>' in app_js
     assert 'data-id="${escapeHtml(it.rec_id)}"' in app_js
-    assert 'return `<span class="${cls}">${escapeHtml(status || "—")}</span>`;' in app_js
+    assert 'return `<span class="${cls}">${escapeHtml(operatorStatusRu(status))}</span>`;' in app_js
 
 
 def test_operator_action_status_update_no_longer_depends_on_stale_column_index() -> None:
@@ -41,5 +41,5 @@ def test_operator_action_status_update_no_longer_depends_on_stale_column_index()
 def test_static_asset_cache_key_bumped_after_bybit_chart_url_fix() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index

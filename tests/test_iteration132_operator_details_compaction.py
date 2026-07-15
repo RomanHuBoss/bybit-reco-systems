@@ -10,10 +10,10 @@ def test_details_panel_is_operator_first_not_diagnostic_dump() -> None:
     app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
 
     assert "Можно запускать после предпроверки" in app_js
-    assert "Параметры запуска Bybit Futures Grid" in app_js
-    assert "Параметры запуска Bybit Futures Grid" in app_js
-    assert "LLM-рекомендация" in app_js
-    assert "Техподробности" in app_js
+    assert "Параметры запуска фьючерсной сетки Bybit" in app_js
+    assert "Параметры запуска фьючерсной сетки Bybit" in app_js
+    assert "Рекомендация LLM" in app_js
+    assert "Технические данные" in app_js
 
     # Diagnostics remain available through the tech modal, but are no longer
     # rendered as top-level operator cards in the narrow Details panel.
@@ -30,12 +30,12 @@ def test_details_panel_keeps_launch_blockers_visible() -> None:
     assert "riskReportRejected.length" in app_js
     assert "bybitErrors.length" in app_js
     assert "blocks.length" in app_js
-    assert "Есть жёсткий блокер, запрещающий ручное создание grid-бота" in app_js
-    assert "Есть жёсткий блокер, запрещающий ручное создание grid-бота" in app_js
+    assert "Есть жёсткая причина, запрещающая ручное создание сеточного бота" in app_js
+    assert "Есть жёсткая причина, запрещающая ручное создание сеточного бота" in app_js
 
 
 def test_static_asset_cache_key_bumped_after_details_compaction() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index

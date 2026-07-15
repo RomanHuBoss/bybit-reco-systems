@@ -40,7 +40,7 @@ def test_score_ui_groups_nearly_identical_raw_scores_instead_of_hard_rank_percen
     assert {row["percentile"] for row in meta} == {50}
     assert {row["grade"] for row in meta} == {"C"}
     assert {row["groupSize"] for row in meta} == {3}
-    assert all("near-tie" in row["title"] for row in meta)
+    assert all("почти равные оценки" in row["title"] for row in meta)
 
 
 def test_score_ui_still_separates_materially_different_score_groups() -> None:
@@ -62,7 +62,7 @@ def test_score_ui_copy_explains_near_tie_semantics() -> None:
     index_html = Path("app/ui/static/index.html").read_text(encoding="utf-8")
 
     assert "SCORE_UI_NEAR_TIE_DELTA" in app_js
-    assert "near-tie группа" in app_js
+    assert "почти равные оценки" in app_js
     assert 'data-sort="score"' not in index_html
-    assert ">Plan RR<" in index_html
-    assert "near-tie группа" in app_js
+    assert "RR плана" in index_html
+    assert "почти равные оценки" in app_js

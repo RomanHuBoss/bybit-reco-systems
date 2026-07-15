@@ -1,3 +1,24 @@
+## 2026-07-15 - v1.0.64 - русский операторский интерфейс и понятные подсказки
+
+- Переведены на русский видимые названия, статусы, направления, торговые термины и сообщения во всех основных окнах UI: рекомендации, детали, журнал, наблюдения, состояние и риски.
+- Добавлен единый слой преобразования значений API и диагностических сообщений: машинные коды сохраняются, но оператор видит понятное русское объяснение.
+- Исключены англоязычные торговые слова `long`, `short`, `neutral`, `funding`, `spread`, `slippage`, `preflight`, `shadow`, `policy`, `outcome`, `kill-switch`, `leverage` и аналогичные термины из операторских формулировок.
+- Сохранены только явно разрешённые сокращения **LLM**, **UI**, **RR**, а также Bybit, USDT, обозначения торговых пар и технические идентификаторы в режиме подробной диагностики.
+- Добавлены доступные с клавиатуры подсказки к RR плана, доходности по наблюдениям, плечу, марже, запасу капитала, издержкам, платежу финансирования и другим неоднозначным полям.
+- Главная таблица не расширена и по-прежнему содержит пять полей: символ, направление, RR плана, доходность по наблюдениям и решение.
+- Торговая математика, пороги, статусы API, схема БД, набор правил, происхождение наблюдений и recommendation/audit-only граница не изменялись.
+- Post-check: 1143/1143 тестов прошли исчерпывающими непересекающимися пакетами; новый regression-набор — 7/7.
+- Regression: `tests/test_iteration252_russian_operator_ui.py`.
+
+## 2026-07-15 - v1.0.63 - compact operator decision hints
+
+- Removed the separate reason column from the primary recommendation table; the table now has five visible decision columns.
+- Added a short Russian hover/focus hint directly to the decision label (`ВХОДИТЬ`, `НЕ ТОРГОВАТЬ`, `ЖДАТЬ`, `ЗАБЛОКИРОВАНО`, `ЗАПУЩЕНО`).
+- Added backend reason-code translation with safe status-level fallback so long technical or mixed-language diagnostics cannot leak into the primary table.
+- Preserved the original diagnostic message as additive `operator_summary.primary_reason_detail`; complete codes, thresholds and explanations remain in Details.
+- No database migration, environment change, policy/model/outcome reset, risk-gate relaxation or order-execution capability.
+- Regression: `tests/test_iteration251_operator_decision_hint.py`.
+
 ## 2026-07-15 - v1.0.62 - outcome liveness and minimum operator table
 
 - Fixed the LLM/outcome bootstrap deadlock for explicit, risk-clean `shadow_no_trade` roots; actionable roots remain fail-closed behind the LLM verdict.

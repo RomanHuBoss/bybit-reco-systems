@@ -155,7 +155,7 @@ def test_ui_has_modal_timeline_and_preserves_selected_recommendation_identity():
     assert "refreshInFlight" in js
     assert "effective_status_counts" in js
     assert ".recommendation-timeline" in css
-    assert "manual-ui-v46" in html
+    assert "manual-ui-v49-russian-operator-language" in html
 
 
 def test_future_recommendation_timestamp_is_not_reported_as_zero_age(history_client):

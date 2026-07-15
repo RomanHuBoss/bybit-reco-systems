@@ -3,18 +3,18 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Futures Grid — Панель оператора</title>
-  <link rel="stylesheet" href="/static/styles.css?v=manual-ui-v46-operator-metrics"/>
+  <title>Фьючерсная сетка — Панель оператора</title>
+  <link rel="stylesheet" href="/static/styles.css?v=manual-ui-v49-russian-operator-language"/>
 </head>
 <body>
 
   <header class="header">
-    <div class="title">Futures Grid — Панель оператора</div>
+    <div class="title">Фьючерсная сетка — Панель оператора</div>
     <div class="meta">
       <div id="regime" class="regime-badge"></div>
       <div id="shock-badge" class="shock-badge"></div>
       <div id="sentiment-badge" class="sentiment-badge"></div>
-      <div class="mode-badge">manual</div>
+      <div class="mode-badge" title="Рекомендации исполняются только вручную оператором">Ручной режим</div>
       <div id="lastUpdated" class="muted" style="font-size:12px"></div>
       <div id="refreshCountdown" class="countdown"></div>
       <button id="refreshBtn" class="btn">Обновить</button>
@@ -26,7 +26,7 @@
       <span class="calib-icon">⚠</span>
       <div>
         <div class="calib-title">Калибратор не обучен — уверенность <b>не откалибрована</b></div>
-        <div class="calib-sub" id="calibProgress">Доказательность не рассчитана: требуется monetary floor, bounded censoring и валидированный OOF.</div>
+        <div class="calib-sub" id="calibProgress">Доказательность не рассчитана: требуется подтверждение денежной эффективности, корректный учёт незавершённых наблюдений и проверка на данных вне обучения.</div>
       </div>
     </div>
     <div id="calibBar" class="calib-bar-wrap">
@@ -42,7 +42,7 @@
   <section class="controls">
     <div class="controls-left">
       <div class="control control-topn">
-        <label>Top N</label>
+        <label title="Максимальное количество строк в таблице">Показывать строк</label>
         <input id="topN" type="number" value="50" min="1" max="200"/>
       </div>
       <input id="minConf" type="hidden" value="0"/>
@@ -60,15 +60,15 @@
 
   <div class="filter-bar">
     <span class="filter-label">Показ:</span>
-    <label class="filter-pill"><input type="checkbox" id="showRecommended" checked><span class="fpill fpill-recommended">recommended+active</span></label>
-    <label class="filter-pill"><input type="checkbox" id="showPending"><span class="fpill fpill-pending">pending</span></label>
-    <label class="filter-pill"><input type="checkbox" id="showBlocked"><span class="fpill fpill-blocked">blocked</span></label>
-    <label class="filter-pill"><input type="checkbox" id="showNoTrade"><span class="fpill fpill-notrade">no_trade</span></label>
-    <label class="filter-pill"><input type="checkbox" id="showSuppressed"><span class="fpill fpill-suppressed">suppressed</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showRecommended" checked><span class="fpill fpill-recommended" title="Все обязательные проверки пройдены; оператор может рассмотреть вход">Можно торговать</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showPending"><span class="fpill fpill-pending" title="Решение ещё не завершено; входить нельзя">Ожидает проверки</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showBlocked"><span class="fpill fpill-blocked" title="Обнаружена жёсткая техническая или риск-блокировка">Заблокировано</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showNoTrade"><span class="fpill fpill-notrade" title="Торговая идея не прошла условия эффективности или подтверждения">Не торговать</span></label>
+    <label class="filter-pill"><input type="checkbox" id="showSuppressed"><span class="fpill fpill-suppressed" title="Строка исключена внутренними правилами отбора">Скрыто системой</span></label>
   </div>
 
   <main class="main">
-    <div id="noTrade" class="banner hidden">NO-TRADE: нет актуальных рекомендаций со статусом <b>recommended</b> или <b>active</b> по текущим фильтрам/гейтам.</div>
+    <div id="noTrade" class="banner hidden">Нет рекомендаций, разрешённых к торговле по текущим фильтрам и обязательным проверкам.</div>
 
     <div class="grid">
       <div class="panel panel-flex">
@@ -79,10 +79,9 @@
               <tr>
                 <th data-sort="symbol">Символ</th>
                 <th data-sort="direction">Направление</th>
-                <th data-sort="plan_rr" title="Сценарное отношение ожидаемой net-прибыли конкретного grid-плана к убытку при достижении худшего kill-switch">Plan RR</th>
-                <th data-sort="empirical_expectancy" title="Средняя net-доходность matured outcomes текущей неизменной policy; учитывайте статус и доверительный интервал">Emp. expectancy</th>
+                <th data-sort="plan_rr">RR плана <span class="field-help table-header-help" tabindex="0" title="Отношение ожидаемой чистой прибыли плана к убытку у аварийной границы выхода. Это сценарная оценка, а не вероятность прибыли." aria-label="Подсказка по RR плана">?</span></th>
+                <th data-sort="empirical_expectancy">Доходность по наблюдениям <span class="field-help table-header-help" tabindex="0" title="Средний чистый результат завершённых наблюдений текущего набора правил. Оценку следует читать вместе с объёмом выборки и доверительным интервалом." aria-label="Подсказка по доходности по наблюдениям">?</span></th>
                 <th data-sort="status">Решение</th>
-                <th>Причина</th>
               </tr>
             </thead>
             <tbody id="recoBody"></tbody>
@@ -107,7 +106,7 @@
     <div class="modal hidden" id="modal">
       <div class="modal-card">
         <div class="modal-header">
-          <div id="modalTitle" class="modal-title">Modal</div>
+          <div id="modalTitle" class="modal-title">Окно</div>
           <button id="modalClose" class="btn tiny">Закрыть</button>
         </div>
         <div class="modal-scroll">
@@ -117,6 +116,6 @@
     </div>
   </main>
 
-  <script src="/static/app.js?v=manual-ui-v47-outcome-liveness-minimum-table"></script>
+  <script src="/static/app.js?v=manual-ui-v49-russian-operator-language"></script>
 </body>
 </html>

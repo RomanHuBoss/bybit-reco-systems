@@ -71,9 +71,9 @@ def test_low_liquidation_buffer_details_expose_next_safe_actions(app_main) -> No
 
     assert actions[0]["code"] == "DO_NOT_LAUNCH_LOW_LIQUIDATION_BUFFER"
     assert "5.53%" in actions[0]["detail"]
-    assert "isolated liquidation price" in actions[0]["detail"]
+    assert "цена ликвидации изолированной позиции" in actions[0]["detail"]
     assert actions[1]["code"] == "RECALCULATE_WITH_LOWER_LEVERAGE_OR_NARROWER_RANGE"
-    assert "cross-margin stress" in actions[1]["detail"]
+    assert "проверку общей маржи" in actions[1]["detail"]
 
 
 def test_frontend_renders_next_actions_after_blockers_before_rank_diagnostics() -> None:
@@ -94,8 +94,8 @@ def test_frontend_renders_next_actions_after_blockers_before_rank_diagnostics() 
 def test_static_asset_cache_key_bumped_after_next_actions_patch() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index
 
 
 def test_no_trade_profile_reason_exposes_next_safe_actions(app_main) -> None:

@@ -1289,25 +1289,25 @@ def _operator_next_actions_for_reco(
 
     if "LIQUIDATION_BUFFER_TOO_LOW" in error_codes:
         buffer_txt = f"{liq_buffer:.2f}%" if liq_buffer is not None else "не оценён"
-        lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущее плечо"
+        lev_txt = f"{leverage:.8g}×" if leverage is not None else "текущее значение"
         policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
         diagnostics = policy.get("diagnostics") if isinstance(policy.get("diagnostics"), dict) else {}
         safe_lev = _safe_int_or_none(diagnostics.get("liquidation_safe_max_leverage"))
         safe_lev_txt = (
-            f"Максимум, прошедший текущий cross-margin stress: ≤{safe_lev}x."
+            f"Максимальное плечо, прошедшее текущую проверку общей маржи: ≤{safe_lev}×."
             if safe_lev is not None and leverage is not None and safe_lev < leverage
-            else "Нужен новый расчёт диапазона, kill-switch, капитала или плеча; isolated liquidation price здесь не является допустимым oracle."
+            else "Нужен новый расчёт диапазона, аварийной границы выхода, капитала или плеча; цена ликвидации изолированной позиции здесь не является надёжным ориентиром."
         )
         add(
             "DO_NOT_LAUNCH_LOW_LIQUIDATION_BUFFER",
-            "Не запускать текущий grid",
-            f"Cross-margin equity buffer {buffer_txt} ниже обязательного пола {liq_floor:.0f}% при {lev_txt}. Это корректная fail-closed блокировка. {safe_lev_txt}",
+            "Не запускать текущую сетку",
+            f"Запас капитала при общей марже {buffer_txt} ниже обязательного минимума {liq_floor:.0f}% при плече {lev_txt}. Это безопасная блокировка при недостатке подтверждённых данных. {safe_lev_txt}",
             "danger",
         )
         add(
             "RECALCULATE_WITH_LOWER_LEVERAGE_OR_NARROWER_RANGE",
             "Пересчитать профиль риска",
-            "Снизьте leverage либо измените диапазон/kill-switch и дождитесь новой публикации. Не подменяйте cross-margin stress одиночной isolated-liquidation формулой.",
+            "Снизьте плечо либо измените диапазон и аварийную границу выхода, затем дождитесь новой публикации. Не подменяйте проверку общей маржи расчётом ликвидации одной изолированной позиции.",
             "warning",
         )
 
@@ -1315,23 +1315,23 @@ def _operator_next_actions_for_reco(
         add(
             "WAIT_FOR_WIDER_NET_EDGE",
             "Ждать более широкой сеточной прибыли",
-            "Комиссии двух grid fills съедают прибыль интервала. Spread/slippage и funding проверяются отдельными launch/total-PnL guards; запуск оставлять no_trade/blocked до нового расчёта.",
+            "Комиссии двух исполнений сетки поглощают прибыль интервала. Разница цен покупки и продажи, проскальзывание и платёж финансирования проверяются отдельно; до нового расчёта торговлю не начинать.",
             "warning",
         )
 
     if "FUNDING_RATE_UNKNOWN" in error_codes:
         add(
             "REFRESH_FUNDING_RATE_SNAPSHOT",
-            "Обновить funding rate",
-            "Для Linear USDT futures funding rate является обязательной частью net-edge. Перезапустите collector/Bybit ticker сбор, проверьте свежесть funding_rate и дождитесь новой публикации; запуск без funding остаётся fail-closed.",
+            "Обновить ставку платежа финансирования",
+            "Для бессрочных фьючерсов с расчётом в USDT ставка платежа финансирования является обязательной частью чистого результата. Перезапустите сбор данных Bybit, проверьте свежесть ставки и дождитесь новой публикации; без этих данных торговля остаётся заблокированной.",
             "warning",
         )
 
     if "FUNDING_INTERVAL_UNCONFIRMED" in error_codes or "FUNDING_SNAPSHOT_STALE" in error_codes or "EXECUTION_FUNDING_WORSE_THAN_PUBLICATION" in error_codes:
         add(
             "REFRESH_FUNDING_AND_RECOMMENDER",
-            "Обновить funding snapshot",
-            "Перезапустите collector/futures metadata и дождитесь новой рекомендации; запуск по устаревшему funding остаётся заблокированным.",
+            "Обновить данные платежа финансирования",
+            "Перезапустите сбор рыночных данных и сведений об инструменте, затем дождитесь новой рекомендации; торговля по устаревшей ставке платежа финансирования остаётся заблокированной.",
             "warning",
         )
 
@@ -1339,99 +1339,163 @@ def _operator_next_actions_for_reco(
         add(
             "REFRESH_STALE_PRICE_PLAN",
             "Дождаться нового расчёта уровней",
-            "Цена уже ушла из рекомендованного диапазона/kill-switch. Не переносите уровни вручную; нужна новая рекомендация на текущем market snapshot.",
+            "Цена уже вышла из рекомендованного диапазона или за аварийную границу. Не переносите уровни вручную; нужна новая рекомендация по свежим рыночным данным.",
             "danger",
         )
 
     if status_norm == "no_trade" and ("operator_leverage_profile_not_actionable" in no_trade_blob or "operator_minimum" in no_trade_blob):
-        lev_txt = f"{leverage:.8g}x" if leverage is not None else "текущем 3-5x leverage profile"
+        lev_txt = f"{leverage:.8g}×" if leverage is not None else "текущем профиле плеча 3–5×"
         add(
             "DO_NOT_LAUNCH_PROFILE_NOT_ACTIONABLE",
-            "Не запускать при текущем 3-5x leverage profile",
-            f"Идея оценена на {lev_txt}, но не прошла операторский профиль без ослабления risk policy. Оставьте no_trade: ручной запуск такого grid будет обходом safety-gate.",
+            "Не запускать при текущем профиле плеча 3–5×",
+            f"Идея оценена при {lev_txt}, но не прошла операторский профиль без ослабления правил риска. Оставьте решение «Не торговать»: ручной запуск такой сетки обойдёт обязательное условие безопасности.",
             "warning",
         )
     if "signal_quality_too_low_for_operator_minimum" in no_trade_blob:
         add(
             "WAIT_FOR_STRONGER_SIGNAL_OR_RANGE",
-            "Ждать более сильного сигнала или range-режима",
-            "Для 3-5x-профиля текущая directional/range quality недостаточна. Нужна новая публикация с более сильным directional bias либо устойчивым боковиком; не повышайте статус вручную из-за высокого относительного ранга.",
+            "Ждать более сильного сигнала или устойчивого бокового режима",
+            "Для профиля плеча 3–5× качество направления или бокового режима недостаточно. Нужна новая публикация с более выраженным направлением либо устойчивым боковым движением; не повышайте статус вручную из-за высокого относительного ранга.",
             "warning",
         )
     if "atr_too_high_for_operator_minimum" in no_trade_blob or "unsafe_volatility_or_execution_cost" in no_trade_blob or "высокая волатильность" in warning_blob:
         add(
             "WAIT_FOR_LOWER_VOLATILITY",
             "Ждать снижения волатильности",
-            "Высокий ATR/volatility повышает риск range break и ликвидационного сценария для grid. Без новой публикации с меньшей волатильностью запуск оставлять no_trade.",
+            "Высокая волатильность повышает риск выхода из диапазона и ликвидационного сценария для сетки. Без новой публикации при более спокойном рынке торговлю не начинать.",
             "warning",
         )
     if "insufficient_net_edge_for_operator_minimum" in no_trade_blob:
         add(
             "WAIT_FOR_WIDER_NET_EDGE",
             "Ждать более широкой сеточной прибыли",
-            "Совокупная экономика горизонта недостаточна для 3-5x leverage profile после recurring fees, разовой market friction и adverse funding. Нужен новый расчёт, а не ручной запуск.",
+            "Совокупный результат на расчётном горизонте недостаточен для профиля плеча 3–5× после повторяющихся комиссий, разовых издержек исполнения и неблагоприятного платежа финансирования. Нужен новый расчёт, а не ручной запуск.",
             "warning",
         )
     if "funding" in warning_blob or "издержки" in warning_blob:
         add(
             "CHECK_COSTS_AND_FUNDING_BEFORE_NEXT_PUBLICATION",
-            "Проверить costs/funding перед следующим запуском",
-            "Издержки исполнения и adverse funding давят на net result. Дождитесь свежего funding/cost snapshot; funding receipt не считать гарантированным edge.",
+            "Проверить издержки и платёж финансирования",
+            "Издержки исполнения и неблагоприятный платёж финансирования ухудшают чистый результат. Дождитесь свежих данных об издержках и ставке; возможное получение платежа не считать гарантированным преимуществом.",
             "info",
         )
     if "тренд" in warning_blob or "trend" in warning_blob:
         add(
             "AVOID_GRID_IN_STRONG_TREND",
-            "Не запускать grid против сильного тренда",
-            "Сильный тренд ломает сеточную гипотезу и может накапливать позицию против движения. Ждите ослабления trendiness или смены режима на range.",
+            "Не запускать сетку против сильного тренда",
+            "Сильный тренд нарушает сеточную гипотезу и может накапливать позицию против движения. Ждите ослабления тренда или перехода к устойчивому боковому движению.",
             "warning",
         )
     if "спред" in warning_blob or "spread" in warning_blob:
         add(
             "WAIT_FOR_TIGHTER_SPREAD",
             "Ждать улучшения ликвидности",
-            "Широкий spread ухудшает fills и быстро съедает grid edge. Запускать только после свежей публикации с приемлемым execution-cost профилем.",
+            "Большая разница цен покупки и продажи ухудшает исполнение и быстро поглощает преимущество сетки. Торговать можно только после свежей публикации с приемлемыми издержками исполнения.",
             "info",
         )
 
     if "INSUFFICIENT_MTF_HISTORY_FOR_GRID" in error_codes:
         add(
             "WAIT_FOR_MTF_HISTORY",
-            "Дождаться закрытых MTF-свечей",
-            "Futures grid не публикуется без минимум 3 закрытых таймфреймов. Продолжайте сбор OHLCV и дождитесь новой публикации; не заполняйте MTF вручную будущими/неполными свечами.",
+            "Дождаться закрытых свечей на нескольких интервалах",
+            "Фьючерсная сетка не публикуется без как минимум трёх закрытых временных интервалов. Продолжайте сбор свечей и дождитесь новой публикации; не добавляйте вручную будущие или незакрытые свечи.",
             "info",
         )
     if "RANGE_EDGE_TOO_WEAK_FOR_GRID" in error_codes or "MARKET_TOO_TRENDY_FOR_GRID" in error_codes:
         add(
             "WAIT_FOR_RANGE_REGIME",
-            "Ждать range-режима",
-            "Текущий рынок слишком трендовый или range-edge слабый для grid. Без нового market snapshot с устойчивым диапазоном запуск оставлять blocked/no_trade.",
+            "Ждать устойчивого бокового режима",
+            "Текущий рынок слишком трендовый либо преимущество бокового режима недостаточно для сетки. Без свежих рыночных данных с устойчивым диапазоном торговлю не начинать.",
             "warning",
         )
     if "LIQUIDITY_UNKNOWN" in error_codes or "LIQUIDITY_TOO_LOW" in error_codes or "LIQUIDITY_LOW_FUTURES" in error_codes:
         add(
             "WAIT_FOR_CONFIRMED_LIQUIDITY",
             "Проверить ликвидность",
-            "Turnover/spread/liquidity не подтверждают безопасный futures grid. Дождитесь свежих ticker/liquidity данных или исключите символ из executable universe.",
+            "Оборот, разница цен покупки и продажи и ликвидность не подтверждают безопасность фьючерсной сетки. Дождитесь свежих рыночных данных либо исключите инструмент из списка доступных для торговли.",
             "warning",
         )
 
     if not actions and (guard_errors or guard_warnings):
         add(
             "READ_GUARD_AND_REFRESH",
-            "Разобрать blocker и пересчитать",
-            "Сохранена fail-closed проверка. Откройте технические подробности, устраните указанную причину и дождитесь свежей публикации, а не переводите blocked в recommended вручную.",
+            "Разобрать причину блокировки и пересчитать",
+            "Сохранена безопасная блокировка при неопределённости. Откройте технические подробности, устраните указанную причину и дождитесь свежей публикации; не меняйте решение на «Можно торговать» вручную.",
             "info",
         )
     if not actions and status_norm == "no_trade" and (no_trade_reason_texts or risk_warning_texts):
         add(
             "KEEP_NO_TRADE_AND_REFRESH",
-            "Оставить no_trade и ждать свежей публикации",
-            "Причина не является технической ошибкой UI: идея не прошла launch-score/confidence/economics gates. Следующее безопасное действие — пересбор market snapshot и новая рекомендация, а не ручной запуск.",
+            "Оставить «Не торговать» и ждать свежей публикации",
+            "Причина не является ошибкой UI: идея не прошла проверку допуска, уверенности или экономической целесообразности. Безопасное действие — обновить рыночные данные и дождаться новой рекомендации, а не запускать торговлю вручную.",
             "info",
         )
 
     return actions[:5]
+
+
+_OPERATOR_REASON_HINTS: dict[str, str] = {
+    "MEAN_REVERSION_EDGE_UNCONFIRMED": "Возвратность цены не подтверждена",
+    "MEAN_REVERSION_EVIDENCE_INSUFFICIENT": "Недостаточно рыночных данных",
+    "PROXY_MONETARY_EXPECTANCY_UNPROVEN": "Недостаточно данных об эффективности",
+    "PROXY_MONETARY_EXPECTANCY_NON_POSITIVE": "Ожидание стратегии неположительное",
+    "CALIBRATED_CONFIDENCE_UNAVAILABLE": "Недостаточно данных для калибровки",
+    "FUNDING_EXTREME": "Платёж финансирования слишком неблагоприятен",
+    "FUNDING_RATE_UNKNOWN": "Нет надёжных данных о платеже финансирования",
+    "FUNDING_INTERVAL_UNKNOWN": "Неизвестен интервал платежа финансирования",
+    "WAIT_FOR_TIGHTER_SPREAD": "Спред слишком широк",
+    "SPREAD_TOO_WIDE": "Спред слишком широк",
+    "AVOID_GRID_IN_STRONG_TREND": "Слишком сильный тренд",
+    "STRONG_TREND": "Слишком сильный тренд",
+    "INVALID_MARKET_REFERENCE_PRICE": "Нет корректной рыночной цены",
+    "CURRENT_PRICE_OUTSIDE_RANGE": "Цена вышла из диапазона",
+    "CURRENT_PRICE_OUTSIDE_KILL_SWITCH": "Цена вышла за защитную границу",
+    "RECOMMENDATION_EXPIRED": "Рекомендация устарела",
+    "PUBLICATION_CHAIN_EXPIRED": "Рекомендация устарела",
+    "STALE_RECOMMENDATION": "Рекомендация устарела",
+    "STALE_MARKET_DATA": "Рыночные данные устарели",
+    "TICKER_STALE": "Рыночные данные устарели",
+    "DAILY_LOSS_BUDGET_EXCEEDED": "Превышен дневной лимит риска",
+    "INSUFFICIENT_RISK_BUFFER": "Недостаточный запас капитала",
+    "MIN_NOTIONAL_NOT_MET": "Объём ниже минимума биржи",
+    "MIN_QTY_NOT_MET": "Количество ниже минимума биржи",
+    "BYBIT_METADATA_MISSING": "Не подтверждены параметры инструмента",
+    "INSTRUMENT_METADATA_ABSENT": "Инструмент недоступен на бирже",
+    "AWAITING_REVIEW": "Ожидается обязательная проверка",
+    "ALL_REQUIRED_GATES_PASSED": "Все проверки пройдены",
+    "OPERATOR_CONFIRMED_EXECUTION": "Запуск подтверждён оператором",
+}
+
+
+def _operator_reason_hint(code: str, status: str) -> str:
+    normalized_code = str(code or "").strip().upper()
+    if normalized_code in _OPERATOR_REASON_HINTS:
+        return _OPERATOR_REASON_HINTS[normalized_code]
+    if normalized_code.startswith("LIVE_VALIDATION_"):
+        return "Негативная статистика реальных запусков"
+    if "SPREAD" in normalized_code:
+        return "Спред слишком широк"
+    if "FUNDING" in normalized_code:
+        return "Проверка funding не пройдена"
+    if "STALE" in normalized_code or "EXPIRED" in normalized_code:
+        return "Рекомендация или данные устарели"
+    if "PRICE" in normalized_code and ("RANGE" in normalized_code or "BOUND" in normalized_code):
+        return "Цена вне допустимого диапазона"
+    if "BYBIT" in normalized_code or "INSTRUMENT" in normalized_code:
+        return "Параметры инструмента не подтверждены"
+
+    normalized_status = str(status or "unknown").strip().lower()
+    return {
+        "recommended": "Все проверки пройдены",
+        "active": "Все проверки пройдены",
+        "executed": "Запуск подтверждён оператором",
+        "pending": "Ожидается обязательная проверка",
+        "blocked": "Есть блокирующая проверка",
+        "no_trade": "Не пройдены условия запуска",
+        "suppressed": "Рекомендация временно скрыта",
+        "expired": "Рекомендация устарела",
+        "ignored": "Отклонено оператором",
+    }.get(normalized_status, "Решение требует проверки")
 
 
 def _operator_summary_for_reco(
@@ -1495,7 +1559,8 @@ def _operator_summary_for_reco(
         "empirical_expectancy_status": str(empirical.get("status") or "insufficient"),
         "empirical_mean_return": _finite_float_or_none(empirical.get("mean_return")),
         "primary_reason_code": primary_code,
-        "primary_reason": primary_text,
+        "primary_reason": _operator_reason_hint(primary_code, status),
+        "primary_reason_detail": primary_text,
     }
 
 
@@ -4743,7 +4808,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.62", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.64", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

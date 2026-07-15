@@ -207,9 +207,9 @@ def test_operator_ui_replaces_capture_proxy_with_plan_and_empirical_metrics() ->
     js = (root / "app/ui/static/app.js").read_text(encoding="utf-8")
 
     assert "Прокси capture/risk" not in html
-    assert ">Plan RR<" in html
-    assert ">Emp. expectancy<" in html
-    assert ">Risk buffer<" not in html
+    assert "RR плана" in html
+    assert "Доходность по наблюдениям" in html
+    assert ">Запас капитала<" not in html
     assert 'data-sort="score"' not in html
     assert 'data-sort="confidence"' not in html
     assert 'data-sort="dir_conf"' not in html
@@ -219,6 +219,6 @@ def test_operator_ui_replaces_capture_proxy_with_plan_and_empirical_metrics() ->
     assert "function riskBufferCell" in js
     assert "${fmt(it.expected_rr)}" not in js
     assert "expected_rr: it.expected_rr" not in js
-    assert 'label: "Empirical expectancy"' in js
-    assert 'label: "Empirical tail / RR"' in js
+    assert 'label: "Доходность по наблюдениям"' in js
+    assert 'label: "Худшие наблюдения и RR"' in js
     assert 'label: "Risk/Reward TP/SL"' not in js

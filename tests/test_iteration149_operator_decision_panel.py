@@ -111,10 +111,10 @@ def test_details_panel_keeps_entry_price_and_adds_price_actuality_and_risk_block
     assert "Цена входа" in app_js
     assert "Текущая цена" in app_js
     assert "Отклонение от входа" in app_js
-    assert "Cross-margin equity buffer" in app_js
-    assert "Чистая прибыль/сетка" in app_js
+    assert "Запас капитала" in app_js
+    assert "Чистая прибыль одной пары уровней" in app_js
     assert "Издержки исполнения" in app_js
-    assert "Funding-риск" in app_js
+    assert "Платёж финансирования" in app_js
 
 
 def test_details_panel_tooltips_explain_abbreviations_and_english_exchange_terms() -> None:
@@ -123,15 +123,15 @@ def test_details_panel_tooltips_explain_abbreviations_and_english_exchange_terms
 
     assert "field-help" in app_js
     assert "field-help" in styles
-    assert "bps = базисные пункты: 1 bps = 0,01%" in app_js
-    assert "Funding — периодические платежи между long и short" in app_js
-    assert "Take Profit — уровень фиксации прибыли" in app_js
-    assert "Stop Loss / kill-switch — защитный уровень остановки убытка" in app_js
+    assert "1 б.п. = 0,01%" in app_js
+    assert "Это периодический платёж между участниками, рассчитывающими на рост и снижение цены" in app_js
+    assert "Уровень фиксации прибыли" in app_js
+    assert "Защитный уровень остановки убытка" in app_js
     assert "LLM — языковая модель" in app_js
 
 
 def test_static_asset_cache_key_bumped_after_decision_panel_update() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index

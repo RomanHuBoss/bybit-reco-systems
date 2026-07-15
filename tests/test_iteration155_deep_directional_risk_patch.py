@@ -205,5 +205,5 @@ def test_operator_ui_rejects_invalid_backend_exit_payload_before_rendering_short
     app_js = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
     assert "function directionalExitGeometryOk(direction, takeProfit, stopLoss, referencePrice = null)" in app_js
-    assert "backend directional TP/SL invalid; rendering kill-switch only" in app_js
-    assert "Directional TP blocked" in app_js
+    assert "Защитные уровни имеют неверную геометрию; показаны только аварийные границы выхода" in app_js
+    assert "Направленная цель прибыли заблокирована" in app_js

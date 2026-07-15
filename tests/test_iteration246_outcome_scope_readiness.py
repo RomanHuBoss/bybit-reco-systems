@@ -164,7 +164,7 @@ def test_operator_ui_requests_current_policy_and_labels_archive_separately() -> 
 
     assert "/api/v1/outcomes/stats?scope=current_policy" in source
     assert "/api/v1/outcomes/stats?scope=archive" in source
-    assert "Текущая policy-когорта" in source
+    assert "Текущий набор правил" in source
     assert "Исторический архив" in source
     assert "Actionable roots" not in source
 
@@ -173,9 +173,9 @@ def test_calibration_ui_distinguishes_monetary_and_probability_sample_floors() -
     source = Path("app/ui/static/app.js").read_text(encoding="utf-8")
 
     assert "logreg_min_samples" in source
-    assert "Денежная доказательность" in source
-    assert "Вероятностная калибровка" in source
-    assert "Полная готовность не наступает на пороге 80" in source
+    assert "Для денежной оценки" in source
+    assert "вероятностной калибровки" in source
+    assert "для вероятностной калибровки" in source
 
 
 def test_current_policy_recent_is_not_hidden_by_newer_same_model_old_policies(tmp_path: Path) -> None:
@@ -258,4 +258,4 @@ def test_status_and_ui_expose_theoretical_temporal_readiness_floor() -> None:
     assert '"minimum_temporal_span_days"' in backend
     assert '"policy_fingerprint_change_starts_new_cohort": True' in backend
     assert "temporal floor" in frontend
-    assert "смена policy fingerprint начинает новую evidence-когорту" in frontend
+    assert "Смена идентификатора набора правил начинает новую выборку наблюдений" in frontend

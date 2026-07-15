@@ -182,9 +182,10 @@ def test_frontend_explains_archive_vs_current_lineage_counts() -> None:
     source = Path("app/ui/static/app.js").read_text(encoding="utf-8")
     harness = "\n".join([
         _extract_js_function(source, "fmt"),
+        _extract_js_function(source, "botTypeLabel"),
         _extract_js_function(source, "buildBotCalibText"),
     ])
-    code = harness + """
+    code = 'const SUPPORTED_GRID_BOT_TYPE = "futures_grid";\n' + harness + """
 const text = buildBotCalibText('futures_grid', {
   fitted: false,
   historical_outcomes_total: 120,
@@ -205,7 +206,7 @@ console.log(JSON.stringify({text}));
 """
     result = subprocess.run(["node", "-e", code], check=True, capture_output=True, text=True)
     text = json.loads(result.stdout)["text"]
-    assert "архив=120" in text
-    assert "текущая модель=0" in text
-    assert "eligible=0" in text
-    assert "logreg_futures_grid_v18" in text
+    assert "Архив: 120" in text
+    assert "текущая версия модели: 0" in text
+    assert "Для денежной оценки: 0/80" in text
+    assert "калибратор ещё не обучен" in text

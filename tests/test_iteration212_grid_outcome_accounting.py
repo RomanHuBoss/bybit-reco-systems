@@ -255,5 +255,5 @@ def test_outcome_stats_expose_actionable_and_shadow_cohorts_separately(tmp_path:
 def test_operator_headline_uses_current_policy_actionable_cohort() -> None:
     source = Path("app/ui/static/app.js").read_text(encoding="utf-8")
     assert "data.cohorts?.actionable" in source
-    assert "Текущая policy · WR" in source
+    assert "Текущие правила · доля успешных" in source
     assert "/api/v1/outcomes/stats?scope=current_policy" in source

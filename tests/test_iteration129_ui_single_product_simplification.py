@@ -10,11 +10,11 @@ def test_operator_ui_uses_single_product_title_without_long_bot_label() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
     app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "Futures Grid — Панель оператора" in index
+    assert "Фьючерсная сетка — Панель оператора" in index
     assert "Bybit Linear USDT Futures Grid" not in index
     assert "Bybit Linear USDT Futures Grid" not in app_js
     assert "Linear USDT Grid" not in app_js
-    assert '? "Futures Grid" : "—"' in app_js
+    assert '? "Фьючерсная сетка" : "—"' in app_js
 
 
 def test_main_recommendations_table_has_no_bot_type_column() -> None:
@@ -50,5 +50,5 @@ def test_subwindow_tables_hide_redundant_product_and_venue_dimensions() -> None:
 def test_static_asset_cache_key_bumped_after_single_product_ui_change() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
 
-    assert "styles.css?v=manual-ui-v46" in index
-    assert "app.js?v=manual-ui-v47-outcome-liveness-minimum-table" in index
+    assert "styles.css?v=manual-ui-v49-russian-operator-language" in index
+    assert "app.js?v=manual-ui-v49-russian-operator-language" in index
