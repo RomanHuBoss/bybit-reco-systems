@@ -2892,6 +2892,9 @@ async function loadHealth() {
   const sum = data.summary || {};
   const llm = data.llm_reviewer || {};
   const warmup = data.warmup || {};
+  const runtime = data.runtime || {};
+  const collector = data.collector || {};
+  const backfill = data.backfill || {};
   const llmTfText = Array.isArray(llm.tf_secs) && llm.tf_secs.length
     ? llm.tf_secs.map(timeframeRu).join(", ")
     : "—";
@@ -2919,6 +2922,8 @@ async function loadHealth() {
       { label: "Доля готовых", value: warmupSymbolsTotal > 0 ? warmupRatio.toFixed(4) : "—" },
       { label: "Минимальная доля готовых", value: warmupMinRatio > 0 ? warmupMinRatio.toFixed(4) : "—" },
       { label: "Ошибки / 10 мин", value: Number(sum.errors_10m || 0) },
+      { label: "Память Python", value: runtime.rss_mb == null ? "—" : `${Number(runtime.rss_mb).toFixed(1)} МБ` },
+      { label: "Пиковая память Python", value: runtime.peak_rss_mb == null ? "—" : `${Number(runtime.peak_rss_mb).toFixed(1)} МБ` },
       { label: "Проверка LLM", html: renderLlmStatusBadge(llm.enabled ? (llm.mode || "enabled") : "disabled") },
       { label: "Модель LLM", value: llm.model || "—" },
     ])}
@@ -2938,6 +2943,24 @@ async function loadHealth() {
         { name: "Минимум строк на интервал", value: warmup.min_rows_per_tf ?? "—" },
         { name: "Расчёт при чтении", value: warmup.derived_on_read ? "Да" : "Нет" },
       ], { emptyText: "Состояние накопления данных недоступно." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Сбор данных и восстановление после простоя</div>
+      ${buildModalTable([
+        { label: "Параметр", render: row => escapeHtml(row.name) },
+        { label: "Значение", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.value ?? "—"))}</span>` },
+      ], [
+        { name: "Идентификатор процесса", value: runtime.pid ?? "—" },
+        { name: "Потоков Python", value: runtime.thread_count ?? "—" },
+        { name: "Свежих минутных свечей при быстром старте", value: collector.recent_tail_bars ?? 360 },
+        { name: "Переключений на свежий хвост", value: collector.recent_tail_resets ?? 0 },
+        { name: "Максимум строк в буфере сборщика", value: collector.max_buffered_ohlcv_rows ?? "—" },
+        { name: "Порция фонового восстановления", value: backfill.chunk_bars == null ? "—" : `${backfill.chunk_bars} свечей` },
+        { name: "Инструментов за цикл на интервал", value: backfill.budget_per_tf ?? "—" },
+        { name: "Заполнено порций пропуска", value: backfill.gap_backfill_fetches ?? 0 },
+        { name: "Записано свечей пропуска", value: backfill.gap_backfill_rows ?? 0 },
+        { name: "Оставшихся заданий восстановления", value: backfill.gap_backfill_jobs_remaining ?? 0 },
+      ], { emptyText: "Диагностика сборщика недоступна." })}
     </div>
     <div class="modal-section">
       <div class="modal-section-title">Настройки проверки LLM</div>

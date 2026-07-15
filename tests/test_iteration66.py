@@ -11,7 +11,7 @@ from app import collector, db
 
 
 
-def test_collect_once_backfills_long_kline_gap_without_losing_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_collect_once_loads_recent_tail_and_schedules_long_gap_without_losing_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     collector._DISABLED_SYMBOLS["linear"].clear()
     collector._LAST_TF_FETCH_ATTEMPT_TS.clear()
 
@@ -72,15 +72,22 @@ def test_collect_once_backfills_long_kline_gap_without_losing_history(tmp_path: 
     stats = collector.collect_once(conn, client, "linear", ["BTCUSDT"])
 
     assert stats["api_tf_fetches"] == {"60": 1}
-    assert len(client.kline_calls) >= 3
-    assert all(call["end"] is not None for call in client.kline_calls)
+    assert stats["recent_tail_resets"] == 1
+    assert len(client.kline_calls) == 1
+    assert client.kline_calls[0]["limit"] == 360
+    assert client.kline_calls[0]["start"] == (now_ts - 359 * 60) * 1000
+    assert client.kline_calls[0]["end"] == (now_ts + 60) * 1000
 
     rows = list(reversed(db.get_latest_ohlcv(conn, "linear", "BTCUSDT", 60, limit=900)))
     ts_values = [int(r["ts"]) for r in rows if int(r["ts"]) >= base_ts]
     assert ts_values[0] == base_ts
     assert ts_values[-1] == now_ts
-    assert len(ts_values) == 841
-    assert all((b - a) == 60 for a, b in zip(ts_values, ts_values[1:]))
+    assert len(ts_values) == 361
+
+    job = db.get_app_config_json(conn, collector._gap_backfill_config_key("linear", "BTCUSDT", 60))
+    assert job["status"] == "pending"
+    assert job["next_start_ts"] == base_ts + 60
+    assert job["target_end_ts"] == now_ts - 360 * 60
     conn.close()
 
 

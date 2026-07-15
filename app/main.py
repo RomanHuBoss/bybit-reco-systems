@@ -141,6 +141,29 @@ def _join_background_threads(timeout_sec: float = 1.0) -> None:
             logger.debug("background thread join failed: %s", getattr(thread, "name", "unknown"), exc_info=True)
 
 
+def _process_memory_snapshot() -> dict[str, Any]:
+    """Return Linux process-memory diagnostics without adding a psutil dependency."""
+    snapshot: dict[str, Any] = {
+        "pid": int(os.getpid()),
+        "runtime_owner": RUNTIME_OWNER,
+        "thread_count": int(threading.active_count()),
+        "rss_mb": None,
+        "peak_rss_mb": None,
+    }
+    try:
+        status_text = Path("/proc/self/status").read_text(encoding="utf-8", errors="replace")
+        for line in status_text.splitlines():
+            if line.startswith("VmRSS:"):
+                snapshot["rss_mb"] = round(int(line.split()[1]) / 1024.0, 2)
+            elif line.startswith("VmHWM:"):
+                snapshot["peak_rss_mb"] = round(int(line.split()[1]) / 1024.0, 2)
+            elif line.startswith("Threads:"):
+                snapshot["thread_count"] = int(line.split()[1])
+    except Exception:
+        logger.debug("process memory snapshot unavailable", exc_info=True)
+    return snapshot
+
+
 def _bootstrap_db() -> None:
     with closing(_get_conn()) as conn:
         db.init_db(conn)
@@ -4635,7 +4658,9 @@ def _warmup_status_payload(conn) -> dict[str, Any]:
 
 def _collect_backfill_cycle(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat, max_workers: int) -> dict[str, Any]:
     per_tf_budget = int(getattr(settings, "backfill_per_tf_budget", 0) or 0)
-    if per_tf_budget <= 0 and bool(getattr(settings, "backfill_full_sweep_on_warmup", True)):
+    if per_tf_budget > 0:
+        per_tf_budget = min(per_tf_budget, max(1, len(symbols)))
+    if per_tf_budget <= 0 and bool(getattr(settings, "backfill_full_sweep_on_warmup", False)):
         try:
             warmup = _warmup_status_payload(conn)
         except Exception:
@@ -4808,7 +4833,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.64", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.65", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6275,6 +6300,8 @@ def api_outcomes_stats(scope: str = "current_policy") -> dict[str, Any]:
 def api_symbol_health() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
         items, meta = _load_symbol_health(conn)
+        collector_last_cycle = _get_app_config_mapping(conn, "collector_last_cycle", default={})
+        backfill_last_cycle = _get_app_config_mapping(conn, "backfill_last_cycle", default={})
         n_ok = sum(1 for i in items if i["status"] == "ok")
         n_stale = sum(1 for i in items if i["status"] == "stale")
         n_missing = sum(1 for i in items if i["status"] == "missing")
@@ -6289,6 +6316,18 @@ def api_symbol_health() -> dict[str, Any]:
                 "active": meta["boot_grace_active"],
                 "grace_sec": meta["boot_grace_sec"],
                 "process_started_ts": meta["process_started_ts"],
+            },
+            "runtime": _process_memory_snapshot(),
+            "collector": {
+                **collector_last_cycle,
+                "max_workers": int(getattr(settings, "collector_max_workers", 1) or 1),
+                "recent_tail_bars": 360,
+            },
+            "backfill": {
+                **backfill_last_cycle,
+                "full_sweep_on_warmup": bool(getattr(settings, "backfill_full_sweep_on_warmup", False)),
+                "budget_per_tf": int(getattr(settings, "backfill_per_tf_budget", 8) or 8),
+                "chunk_bars": 360,
             },
             "llm_reviewer": {
                 "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),

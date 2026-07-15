@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import math
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from typing import Any, Callable, Iterator
 
 from .bybit_client import BybitPublicClient
 from . import db
@@ -28,29 +28,56 @@ class RuntimeLockLostError(RuntimeError):
     """Raised when the active collector loses the runtime leadership lock mid-cycle."""
 
 
-def _run_tasks_bounded(tasks: list[Any], worker: Callable[[Any], Any], max_workers: int) -> list[tuple[Any, Any | None, Exception | None]]:
+def _run_tasks_bounded(
+    tasks: list[Any],
+    worker: Callable[[Any], Any],
+    max_workers: int,
+) -> Iterator[tuple[Any, Any | None, Exception | None]]:
+    """Yield task results while retaining at most ``max_workers`` futures.
+
+    The previous implementation submitted the whole universe and returned a list
+    only after every future finished. During a long restart catch-up, each future
+    could retain tens of thousands of raw kline rows, while the caller built a
+    second sanitized list. Keeping only the active worker set in flight makes the
+    collector memory bound proportional to configured parallelism, not symbol
+    count multiplied by downtime depth.
+    """
     if not tasks:
-        return []
-    workers = max(1, int(max_workers or 1))
-    if workers <= 1 or len(tasks) <= 1:
-        out: list[tuple[Any, Any | None, Exception | None]] = []
+        return
+    workers = max(1, min(int(max_workers or 1), len(tasks)))
+    if workers <= 1:
         for task in tasks:
             try:
-                out.append((task, worker(task), None))
+                yield task, worker(task), None
             except Exception as exc:
-                out.append((task, None, exc))
-        return out
+                yield task, None, exc
+        return
 
-    out: list[tuple[Any, Any | None, Exception | None]] = []
-    with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as executor:
-        future_map = {executor.submit(worker, task): task for task in tasks}
-        for future in as_completed(future_map):
-            task = future_map[future]
+    task_iter = iter(tasks)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        pending: dict[Any, Any] = {}
+        for _ in range(workers):
             try:
-                out.append((task, future.result(), None))
-            except Exception as exc:
-                out.append((task, None, exc))
-    return out
+                task = next(task_iter)
+            except StopIteration:
+                break
+            pending[executor.submit(worker, task)] = task
+
+        while pending:
+            completed, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+            for future in completed:
+                task = pending.pop(future)
+                try:
+                    result = future.result()
+                    yield task, result, None
+                except Exception as exc:
+                    yield task, None, exc
+
+                try:
+                    next_task = next(task_iter)
+                except StopIteration:
+                    continue
+                pending[executor.submit(worker, next_task)] = next_task
 
 # Per-timeframe policy for REST collection.
 # High-frequency bars are updated aggressively; slow bars are throttled and/or derived locally.
@@ -86,6 +113,78 @@ _DERIVED_TF_BOOTSTRAP_RETRY_SEC = 6 * 60 * 60
 # active leader from hammering Bybit, while warm DB state still survives process restarts.
 _LAST_TF_FETCH_ATTEMPT_TS: dict[tuple[str, str, int], int] = {}
 _BACKFILL_ROUND_ROBIN_CURSOR: dict[tuple[str, str, int], int] = {}
+
+# A restart must restore a usable recent market window before repairing a long
+# historical hole. Both constants are deliberately capped below Bybit's 1000-row
+# REST maximum so one task cannot allocate an unbounded response after downtime.
+_HOT_RECENT_TAIL_BARS = 360
+_GAP_BACKFILL_CHUNK_BARS = 360
+_GAP_BACKFILL_KEY_PREFIX = "collector_gap_backfill"
+
+
+def _gap_backfill_config_key(venue: str, symbol: str, tf_sec: int) -> str:
+    return f"{_GAP_BACKFILL_KEY_PREFIX}:{str(venue).lower()}:{str(symbol).upper()}:{int(tf_sec)}"
+
+
+def _long_gap_requires_recent_tail(last_local_ts: int | None, now_ts: int, tf_sec: int) -> bool:
+    if last_local_ts is None:
+        return False
+    tf_value = max(1, int(tf_sec))
+    gap_bars = max(0, (int(now_ts) - int(last_local_ts)) // tf_value)
+    return gap_bars > _HOT_RECENT_TAIL_BARS
+
+
+def _schedule_gap_backfill(
+    conn,
+    *,
+    venue: str,
+    symbol: str,
+    tf_sec: int,
+    next_start_ts: int,
+    target_end_ts: int,
+    scheduled_ts: int,
+) -> dict[str, Any] | None:
+    next_start = int(next_start_ts)
+    target_end = int(target_end_ts)
+    if next_start > target_end:
+        return None
+    key = _gap_backfill_config_key(venue, symbol, tf_sec)
+    existing = db.get_app_config_json(conn, key, default={})
+    if isinstance(existing, dict) and str(existing.get("status") or "") == "pending":
+        next_start = min(next_start, int(existing.get("next_start_ts") or next_start))
+        target_end = max(target_end, int(existing.get("target_end_ts") or target_end))
+    job = {
+        "status": "pending",
+        "venue": str(venue),
+        "symbol": str(symbol).upper(),
+        "tf_sec": int(tf_sec),
+        "next_start_ts": next_start,
+        "target_end_ts": target_end,
+        "scheduled_ts": int(scheduled_ts),
+        "updated_ts": int(scheduled_ts),
+    }
+    db.set_app_config_json(conn, key, job, commit=False)
+    return job
+
+
+def _load_gap_backfill_job(conn, venue: str, symbol: str, tf_sec: int) -> dict[str, Any] | None:
+    try:
+        value = db.get_app_config_json(conn, _gap_backfill_config_key(venue, symbol, tf_sec), default=None)
+    except Exception:
+        # Some isolated unit-test DB doubles intentionally implement only the
+        # OHLCV write surface. Missing app_config support means there is no
+        # persisted gap job to process, not that the normal backfill must fail.
+        return None
+    if not isinstance(value, dict) or str(value.get("status") or "") != "pending":
+        return None
+    try:
+        next_start_ts = int(value.get("next_start_ts"))
+        target_end_ts = int(value.get("target_end_ts"))
+    except Exception:
+        return None
+    if next_start_ts <= 0 or target_end_ts <= 0 or next_start_ts > target_end_ts:
+        return None
+    return dict(value)
 
 
 def _to_float(x: Any, *, minimum: float | None = None) -> float | None:
@@ -634,7 +733,13 @@ def _should_fetch_api_tf(conn, venue: str, symbol: str, tf_sec: int, now_ts: int
 
 
 
-def _kline_fetch_windows(last_local_ts: int | None, now_ts: int, tf_sec: int) -> list[tuple[int, int | None, int | None]]:
+def _kline_fetch_windows(
+    last_local_ts: int | None,
+    now_ts: int,
+    tf_sec: int,
+    *,
+    prefer_recent_tail: bool = False,
+) -> list[tuple[int, int | None, int | None]]:
     policy = _API_TF_POLICY[tf_sec]
     if last_local_ts is None:
         return [(int(policy["cold_limit"]), None, None)]
@@ -647,6 +752,13 @@ def _kline_fetch_windows(last_local_ts: int | None, now_ts: int, tf_sec: int) ->
     start_sec = max(0, int(last_local_ts) - overlap_bars * int(tf_sec))
     end_sec = max(start_sec, int(now_ts) + int(tf_sec))
     bars_needed = max(2, math.ceil((end_sec - start_sec) / max(1, int(tf_sec))) + 1)
+    if prefer_recent_tail and bars_needed > _HOT_RECENT_TAIL_BARS:
+        # Request only the newest bounded window, but keep explicit timestamps.
+        # This works consistently with Bybit and deterministic test clients while
+        # preventing a multi-page replay of the entire outage on the hot path.
+        recent_start_sec = max(0, int(now_ts) - (_HOT_RECENT_TAIL_BARS - 1) * int(tf_sec))
+        recent_end_sec = max(recent_start_sec, int(now_ts) + int(tf_sec))
+        return [(_HOT_RECENT_TAIL_BARS, recent_start_sec * 1000, recent_end_sec * 1000)]
 
     windows: list[tuple[int, int | None, int | None]] = []
     offset_bars = 0
@@ -666,11 +778,13 @@ def _fetch_api_kline_rows(
     tf_sec: int,
     last_local_ts: int | None,
     now_ts: int,
+    *,
+    prefer_recent_tail: bool = False,
 ) -> list[list[Any]]:
     policy = _API_TF_POLICY[tf_sec]
     interval = str(policy["interval"])
     rows_raw_all: list[list[Any]] = []
-    for limit, start_ms, end_ms in _kline_fetch_windows(last_local_ts, now_ts, tf_sec):
+    for limit, start_ms, end_ms in _kline_fetch_windows(last_local_ts, now_ts, tf_sec, prefer_recent_tail=prefer_recent_tail):
         try:
             rows_raw = client.get_kline(category=category, symbol=symbol, interval=interval, limit=limit, start=start_ms, end=end_ms)
         except TypeError:
@@ -912,6 +1026,9 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         "api_tf_fetches": {},
         "derived_tf_bootstrap_fetches": {},
         "derived_tf_writes": {},
+        "recent_tail_resets": 0,
+        "gap_backfill_jobs_scheduled": 0,
+        "max_buffered_ohlcv_rows": 0,
     }
 
     ticker_rows, funding_rows, missing_symbols = _fetch_ticker_payloads(conn, client, venue, category, symbols2, disabled, now_ts)
@@ -973,10 +1090,19 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
     derived_write_counts: dict[int, int] = {}
     touched_by_source_tf: dict[int, set[str]] = {}
 
-    def _api_task_worker(task: tuple[str, int, int | None]) -> tuple[str, int, list[list[Any]]]:
+    def _api_task_worker(task: tuple[str, int, int | None]) -> tuple[str, int, list[list[Any]], bool]:
         sym, tf_sec, last_local_ts = task
-        rows_raw = _fetch_api_kline_rows(client, category, sym, tf_sec, last_local_ts, now_ts)
-        return sym, tf_sec, rows_raw
+        recent_tail_reset = int(tf_sec) == 60 and _long_gap_requires_recent_tail(last_local_ts, now_ts, tf_sec)
+        rows_raw = _fetch_api_kline_rows(
+            client,
+            category,
+            sym,
+            tf_sec,
+            last_local_ts,
+            now_ts,
+            prefer_recent_tail=recent_tail_reset,
+        )
+        return sym, tf_sec, rows_raw, recent_tail_reset
 
     # Keep 1m in the hot path. A fresh DB used to interleave 1m/1h/1d fetches across the
     # whole universe, which delayed the first usable 1m layer and made the recommender hit
@@ -1014,17 +1140,37 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
                 else:
                     api_log_events.append(("COLLECT_ERROR", {"venue": venue, "symbol": sym, "field": f"kline_{tf_sec}", "err": str(err)}))
             else:
-                _sym_out, _tf_out, rows_raw = result
+                _sym_out, _tf_out, rows_raw, recent_tail_reset = result
                 appended = 0
+                appended_rows: list[dict[str, Any]] = []
                 for row in rows_raw:
                     payload = _sanitize_ohlcv_row(venue, sym, tf_sec, row)
                     if payload is None:
                         continue
                     ohlcv_rows.append(payload)
+                    appended_rows.append(payload)
                     appended += 1
+                stats["max_buffered_ohlcv_rows"] = max(
+                    int(stats.get("max_buffered_ohlcv_rows") or 0),
+                    len(ohlcv_rows),
+                )
                 if appended > 0:
                     api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
                     touched_by_source_tf.setdefault(tf_sec, set()).add(sym)
+                    if recent_tail_reset:
+                        oldest_recent_ts = min(int(item["ts"]) for item in appended_rows)
+                        scheduled = _schedule_gap_backfill(
+                            conn,
+                            venue=venue,
+                            symbol=sym,
+                            tf_sec=tf_sec,
+                            next_start_ts=int(_last_local_ts) + int(tf_sec),
+                            target_end_ts=oldest_recent_ts - int(tf_sec),
+                            scheduled_ts=now_ts,
+                        )
+                        if scheduled is not None:
+                            stats["recent_tail_resets"] += 1
+                            stats["gap_backfill_jobs_scheduled"] += 1
             if idx % max(1, max_workers) == 0:
                 _heartbeat(heartbeat)
         if ohlcv_rows:
@@ -1151,6 +1297,11 @@ def collect_backfill_once(
         "api_tf_fetches": {},
         "derived_tf_bootstrap_fetches": {},
         "derived_tf_writes": {},
+        "gap_backfill_fetches": 0,
+        "gap_backfill_rows": 0,
+        "gap_backfill_jobs_completed": 0,
+        "gap_backfill_jobs_remaining": 0,
+        "max_buffered_ohlcv_rows": 0,
     }
 
     api_fetch_counts: dict[int, int] = {}
@@ -1162,6 +1313,113 @@ def collect_backfill_once(
         sym, tf_sec, last_local_ts = task
         rows_raw = _fetch_api_kline_rows(client, category, sym, tf_sec, last_local_ts, now_ts)
         return sym, tf_sec, rows_raw
+
+    gap_candidates: list[tuple[str, dict[str, Any]]] = []
+    for sym in symbols2:
+        job = _load_gap_backfill_job(conn, venue, sym, 60)
+        if job is not None:
+            gap_candidates.append((sym, job))
+    gap_tasks = _round_robin_take(gap_candidates, budget, ("gap", venue, 60))
+    gap_rows: list[dict[str, Any]] = []
+    gap_updates: list[tuple[str, dict[str, Any], int]] = []
+    gap_log_events: list[tuple[str, dict[str, Any]]] = []
+
+    def _gap_task_worker(task: tuple[str, dict[str, Any]]) -> tuple[str, dict[str, Any], list[list[Any]]]:
+        sym, job = task
+        start_ts = int(job["next_start_ts"])
+        target_end_ts = int(job["target_end_ts"])
+        remaining_bars = max(1, ((target_end_ts - start_ts) // 60) + 1)
+        limit = min(_GAP_BACKFILL_CHUNK_BARS, remaining_bars)
+        end_ts = start_ts + (limit - 1) * 60
+        try:
+            rows_raw = client.get_kline(
+                category=category,
+                symbol=sym,
+                interval="1",
+                limit=limit,
+                start=start_ts * 1000,
+                end=end_ts * 1000,
+            )
+        except TypeError:
+            rows_raw = client.get_kline(
+                category=category,
+                symbol=sym,
+                interval="1",
+                limit=limit,
+                start=start_ts * 1000,
+            )
+        return sym, job, list(rows_raw or [])
+
+    for idx, (task, result, err) in enumerate(_run_tasks_bounded(gap_tasks, _gap_task_worker, max_workers), start=1):
+        sym, job = task
+        if err is not None:
+            gap_log_events.append(("COLLECT_ERROR", {
+                "venue": venue,
+                "symbol": sym,
+                "field": "kline_60_gap_backfill",
+                "err": str(err),
+            }))
+        else:
+            _sym_out, job_out, rows_raw = result
+            accepted: list[dict[str, Any]] = []
+            start_ts = int(job_out["next_start_ts"])
+            target_end_ts = int(job_out["target_end_ts"])
+            for row in rows_raw:
+                payload = _sanitize_ohlcv_row(venue, sym, 60, row)
+                if payload is None:
+                    continue
+                row_ts = int(payload["ts"])
+                if row_ts < start_ts or row_ts > target_end_ts:
+                    continue
+                accepted.append(payload)
+            if accepted:
+                gap_rows.extend(accepted)
+                next_start_ts = max(int(item["ts"]) for item in accepted) + 60
+                gap_updates.append((sym, job_out, next_start_ts))
+                stats["gap_backfill_fetches"] += 1
+                stats["gap_backfill_rows"] += len(accepted)
+                touched_by_source_tf.setdefault(60, set()).add(sym)
+                stats["max_buffered_ohlcv_rows"] = max(
+                    int(stats.get("max_buffered_ohlcv_rows") or 0),
+                    len(gap_rows),
+                )
+            else:
+                gap_log_events.append(("COLLECT_ERROR", {
+                    "venue": venue,
+                    "symbol": sym,
+                    "field": "kline_60_gap_backfill_empty",
+                    "err": "bounded gap page returned no valid rows",
+                }))
+        if idx % max(1, max_workers) == 0:
+            _heartbeat(heartbeat)
+
+    if gap_rows:
+        db.upsert_ohlcv(conn, gap_rows, commit=True)
+        stats["ohlcv_written"] += len(gap_rows)
+    for sym, original_job, next_start_ts in gap_updates:
+        key = _gap_backfill_config_key(venue, sym, 60)
+        current = db.get_app_config_json(conn, key, default={})
+        if not isinstance(current, dict):
+            continue
+        if int(current.get("scheduled_ts") or 0) != int(original_job.get("scheduled_ts") or 0):
+            continue
+        target_end_ts = int(current.get("target_end_ts") or original_job["target_end_ts"])
+        updated = dict(current)
+        updated["next_start_ts"] = int(next_start_ts)
+        updated["updated_ts"] = int(now_ts)
+        if int(next_start_ts) > target_end_ts:
+            updated["status"] = "complete"
+            updated["completed_ts"] = int(now_ts)
+            stats["gap_backfill_jobs_completed"] += 1
+        db.set_app_config_json(conn, key, updated, commit=False)
+    for action, details in gap_log_events:
+        db.log_decision(conn, action, None, None, details, commit=False)
+    if gap_updates or gap_log_events:
+        conn.commit()
+    stats["gap_backfill_jobs_remaining"] = sum(
+        1 for sym in symbols2 if _load_gap_backfill_job(conn, venue, sym, 60) is not None
+    )
+    _heartbeat(heartbeat)
 
     for tf_sec in tuple(tf for tf in _API_FETCH_TFS if tf != 60):
         api_tasks: list[tuple[str, int, int | None]] = []
@@ -1214,6 +1472,10 @@ def collect_backfill_once(
                         continue
                     ohlcv_rows.append(payload)
                     appended += 1
+                    stats["max_buffered_ohlcv_rows"] = max(
+                        int(stats.get("max_buffered_ohlcv_rows") or 0),
+                        len(ohlcv_rows),
+                    )
                 if appended > 0:
                     api_fetch_counts[tf_sec] = api_fetch_counts.get(tf_sec, 0) + 1
                     touched_by_source_tf.setdefault(tf_sec, set()).add(sym)
@@ -1273,6 +1535,10 @@ def collect_backfill_once(
             if bootstrap_rows:
                 bootstrap_ohlcv_rows.extend(bootstrap_rows)
                 stats["ohlcv_written"] += len(bootstrap_rows)
+                stats["max_buffered_ohlcv_rows"] = max(
+                    int(stats.get("max_buffered_ohlcv_rows") or 0),
+                    len(bootstrap_ohlcv_rows),
+                )
                 derived_bootstrap_fetch_counts[target_tf_sec] = derived_bootstrap_fetch_counts.get(target_tf_sec, 0) + 1
                 source_tf = _DERIVED_TF_SOURCES.get(target_tf_sec)
                 if source_tf is not None:
@@ -1300,6 +1566,10 @@ def collect_backfill_once(
                 continue
             derived_batch.extend(derived_rows)
             stats["ohlcv_written"] += len(derived_rows)
+            stats["max_buffered_ohlcv_rows"] = max(
+                int(stats.get("max_buffered_ohlcv_rows") or 0),
+                len(derived_batch),
+            )
             derived_write_counts[target_tf_sec] = derived_write_counts.get(target_tf_sec, 0) + len(derived_rows)
         if derived_batch:
             db.upsert_ohlcv(conn, derived_batch, commit=True)
