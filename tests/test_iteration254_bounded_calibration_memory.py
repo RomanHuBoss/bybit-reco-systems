@@ -252,27 +252,50 @@ def test_postgres_large_read_uses_named_server_cursor() -> None:
     assert raw.raw_cursor.closed is True
 
 
-def test_outcome_worker_liveness_uses_bounded_batches() -> None:
+def test_outcome_worker_liveness_aggregates_in_sql_without_loading_reasons(tmp_path) -> None:
     now = int(time.time())
     ts = now - 13 * 3600
-    conn = _StreamingGuardConnection([{
-        "rec_id": "R-254-live",
-        "ts": ts,
-        "bot_type": "futures_grid",
-        "status": "executed",
-        "reasons_json": "{}",
-        "last_attempt_ts": None,
-        "label_due_ts": ts + 12 * 3600 + 120,
-        "observability_state": "waiting",
-    }])
+    conn = db.connect(str(tmp_path / "iteration254-liveness.db"))
+    statements: list[str] = []
+    try:
+        db.init_db(conn)
+        db.insert_recommendations(conn, [{
+            "rec_id": "R-254-live",
+            "ts": ts,
+            "venue": "linear",
+            "symbol": "BTCUSDT",
+            "bot_type": "futures_grid",
+            "direction": "neutral",
+            "account_mode": "unified",
+            "margin_mode": "isolated",
+            "score": 0.2,
+            "confidence": 0.5,
+            "expected_rr": 0.1,
+            "risk_score": 0.2,
+            "params": {},
+            "reasons": {},
+            "blocks": [],
+            "status": "executed",
+            "ttl_sec": 900,
+            "model_version": "test-model",
+            "features_ref_ts": ts,
+            "publication_root_rec_id": "R-254-live",
+            "is_outcome_label_root": True,
+        }])
+        raw = getattr(conn, "_conn", conn)
+        if hasattr(raw, "set_trace_callback"):
+            raw.set_trace_callback(statements.append)
 
-    status = db.get_outcome_worker_liveness(conn, now_ts_value=now)
+        status = db.get_outcome_worker_liveness(conn, now_ts_value=now)
 
-    assert status["state"] == "stalled"
-    assert status["matured_pending_total"] == 1
-    assert status["unattempted_total"] == 1
-    assert conn.cursor.fetchmany_sizes
-    assert conn.cursor.closed is True
+        assert status["state"] == "stalled"
+        assert status["matured_pending_total"] == 1
+        assert status["unattempted_total"] == 1
+        normalized = [" ".join(item.split()).lower() for item in statements]
+        assert any("count(*) as matured_pending_total" in item for item in normalized)
+        assert not any("select r.rec_id, r.ts, r.bot_type, r.status, r.reasons_json" in item for item in normalized)
+    finally:
+        conn.close()
 
 
 def test_lineage_status_mode_aggregates_without_retaining_rows(monkeypatch) -> None:

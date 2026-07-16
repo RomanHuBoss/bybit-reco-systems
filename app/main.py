@@ -28,7 +28,7 @@ from .bybit_client import BybitPublicClient
 from .collector import collect_once, collect_backfill_once, collect_futures_once, RuntimeLockLostError
 from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
-from .outcomes import BOT_HORIZONS, compute_outcomes_once
+from .outcomes import BOT_HORIZONS, compute_outcomes_cycle
 from .recommender import (
     DIRECTION_CALIBRATION_KEY,
     LLM_REVIEW_ASYNC_STATUS_APP_KEY,
@@ -83,9 +83,11 @@ RECOMMENDATION_MAX_FUTURE_SKEW_SEC = 300
 EXECUTION_GROSS_COST_COVERAGE_MULTIPLIER = 1.10
 BACKGROUND_THREAD_STATE_APP_KEY_PREFIX = "runtime_thread_state:"
 BACKGROUND_THREAD_RESTART_DELAY_SEC = 5.0
+OUTCOME_BACKLOG_CATCHUP_SEC = 5
 BACKGROUND_THREAD_ERROR_ACTIONS = {
     "collector": "COLLECT_ERROR",
     "reco": "RECO_ERROR",
+    "outcomes": "OUTCOME_WORKER_ERROR",
     "sentiment": "SENTIMENT_ERROR",
     "llm_reviewer": "LLM_REVIEW_SWEEP_ERROR",
     "backfill": "COLLECT_ERROR",
@@ -4810,6 +4812,7 @@ async def lifespan(app: FastAPI):
     _start_background_thread("futures_meta", partial(_run_supervised_background_target, "futures_meta", _futures_meta_thread))
     _start_background_thread("sentiment", partial(_run_supervised_background_target, "sentiment", _sentiment_thread))
     _start_background_thread("reco", partial(_run_supervised_background_target, "reco", _reco_thread))
+    _start_background_thread("outcomes", partial(_run_supervised_background_target, "outcomes", _outcome_thread))
     if bool(getattr(settings, "llm_reviewer_enabled", False)):
         _start_background_thread("llm_reviewer", partial(_run_supervised_background_target, "llm_reviewer", _llm_reviewer_thread))
     else:
@@ -4833,7 +4836,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.66", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.67", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6610,7 +6613,6 @@ def _sentiment_thread():
 
 def _reco_thread():
     _last_prune = 0.0
-    _last_outcomes = 0.0
     _last_warmup_log = 0.0
     PRUNE_INTERVAL = 3600
     lock_key = "runtime:reco"
@@ -6649,20 +6651,6 @@ def _reco_thread():
                         )
                         if not heartbeat():
                             raise RuntimeLockLostError("reco runtime lock lost")
-                        if time.time() - _last_outcomes >= int(getattr(settings, "outcomes_interval_sec", 60) or 60):
-                            compute_outcomes_once(
-                                conn,
-                                horizon_sec=settings.outcome_horizon_fallback_sec,
-                                max_to_process=int(getattr(settings, "outcomes_max_to_process", 200) or 200),
-                            )
-                            liveness = db.get_outcome_worker_liveness(
-                                conn,
-                                require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)),
-                            )
-                            db.set_app_config_json(conn, "outcome_worker_last_cycle", liveness)
-                            if liveness.get("state") == "stalled":
-                                db.log_decision(conn, "OUTCOME_WORKER_STALLED", None, None, liveness)
-                            _last_outcomes = time.time()
                     except Exception as e:
                         leadership_ok = False if _is_runtime_lock_lost_error(e) else leadership_ok
                         _rollback_quietly(conn)
@@ -6703,6 +6691,145 @@ def _reco_thread():
                         logger.debug("telegram alert error", exc_info=True)
 
         next_run = _interval_loop_wait(next_run, settings.reco_interval_sec)
+
+
+def _outcome_worker_stale_after_sec() -> int:
+    return max(180, int(getattr(settings, "outcomes_interval_sec", 60) or 60) * 3)
+
+
+def _run_outcome_cycle_once(conn, *, heartbeat=None) -> dict[str, Any]:
+    """Execute and persist one independently observable outcome-maintenance cycle."""
+    started_ts = int(time.time())
+    stale_after_sec = _outcome_worker_stale_after_sec()
+    require_llm_verdict = bool(getattr(settings, "llm_reviewer_enabled", False))
+    before = db.get_outcome_worker_liveness(
+        conn,
+        now_ts_value=started_ts,
+        require_llm_verdict=require_llm_verdict,
+        worker_stale_after_sec=stale_after_sec,
+    )
+    running = {
+        "state": "running",
+        "cycle_started_ts": started_ts,
+        "cycle_finished_ts": None,
+        "updated_ts": started_ts,
+        "rows_selected": 0,
+        "rows_examined": 0,
+        "rows_labeled": 0,
+        "rows_waiting": 0,
+        "rows_censored": 0,
+        "rows_failed": 0,
+        "matured_pending_before": int(before.get("matured_pending_total") or 0),
+        "matured_pending_after": None,
+        "oldest_pending_before": before.get("oldest_due_ts"),
+        "oldest_pending_after": None,
+        "last_processed_rec_id": None,
+        "duration_ms": 0,
+    }
+    db.set_app_config_json(conn, db.OUTCOME_WORKER_CYCLE_APP_KEY, running)
+    try:
+        if heartbeat is not None and not heartbeat():
+            raise RuntimeLockLostError("outcome runtime lock lost")
+        last_progress_persisted = [time.monotonic()]
+
+        def persist_running_progress(snapshot: dict[str, object]) -> None:
+            now_monotonic = time.monotonic()
+            is_terminal_snapshot = int(snapshot.get("rows_examined") or 0) >= int(snapshot.get("rows_selected") or 0)
+            if not is_terminal_snapshot and now_monotonic - last_progress_persisted[0] < 5.0:
+                return
+            last_progress_persisted[0] = now_monotonic
+            db.set_app_config_json(
+                conn,
+                db.OUTCOME_WORKER_CYCLE_APP_KEY,
+                {
+                    **running,
+                    **dict(snapshot),
+                    "state": "running",
+                    "updated_ts": int(time.time()),
+                },
+            )
+
+        stats = compute_outcomes_cycle(
+            conn,
+            horizon_sec=settings.outcome_horizon_fallback_sec,
+            max_to_process=int(getattr(settings, "outcomes_max_to_process", 200) or 200),
+            heartbeat=heartbeat,
+            progress_callback=persist_running_progress,
+        )
+        if heartbeat is not None and not heartbeat():
+            raise RuntimeLockLostError("outcome runtime lock lost")
+        finished_ts = int(time.time())
+        after = db.get_outcome_worker_liveness(
+            conn,
+            now_ts_value=finished_ts,
+            require_llm_verdict=require_llm_verdict,
+            worker_stale_after_sec=stale_after_sec,
+        )
+        completed = {
+            **running,
+            **dict(stats),
+            "state": "completed",
+            "cycle_finished_ts": finished_ts,
+            "updated_ts": finished_ts,
+            "matured_pending_after": int(after.get("matured_pending_total") or 0),
+            "oldest_pending_after": after.get("oldest_due_ts"),
+        }
+        db.set_app_config_json(conn, db.OUTCOME_WORKER_CYCLE_APP_KEY, completed)
+        completed["liveness"] = db.get_outcome_worker_liveness(
+            conn,
+            now_ts_value=finished_ts,
+            require_llm_verdict=require_llm_verdict,
+            worker_stale_after_sec=stale_after_sec,
+        )
+        db.set_app_config_json(conn, db.OUTCOME_WORKER_CYCLE_APP_KEY, completed)
+        return completed
+    except Exception as exc:
+        failed_ts = int(time.time())
+        failed = {
+            **running,
+            "state": "error",
+            "cycle_finished_ts": failed_ts,
+            "updated_ts": failed_ts,
+            "rows_failed": 1,
+            "duration_ms": max(0, int((failed_ts - started_ts) * 1000)),
+            "error": str(exc),
+            "error_type": exc.__class__.__name__,
+        }
+        try:
+            db.set_app_config_json(conn, db.OUTCOME_WORKER_CYCLE_APP_KEY, failed)
+        except Exception:
+            logger.warning("outcome worker error state persist failed", exc_info=True)
+        raise
+
+
+def _outcome_thread():
+    lock_key = "runtime:outcomes"
+    base_interval = max(1, int(getattr(settings, "outcomes_interval_sec", 60) or 60))
+    lock_ttl = max(120, base_interval * 4)
+    next_run = time.monotonic()
+    interval_sec = base_interval
+    while not _BACKGROUND_STOP_EVENT.is_set():
+        with closing(_get_lock_conn()) as lock_conn:
+            has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
+        interval_sec = base_interval
+        if has_lock:
+            heartbeat = _make_runtime_lock_heartbeat(lock_key)
+            with closing(_get_conn()) as conn:
+                cycle = _run_outcome_cycle_once(conn, heartbeat=heartbeat)
+                liveness = cycle.get("liveness") if isinstance(cycle.get("liveness"), dict) else {}
+                state = str(liveness.get("state") or "")
+                if state == "stalled":
+                    db.log_decision(conn, "OUTCOME_WORKER_STALLED", None, None, liveness)
+                pending_before = int(cycle.get("matured_pending_before") or 0)
+                pending_after = int(cycle.get("matured_pending_after") or 0)
+                terminal_progress = (
+                    int(cycle.get("rows_labeled") or 0) > 0
+                    or int(cycle.get("rows_censored") or 0) > 0
+                    or pending_after < pending_before
+                )
+                if pending_after > 0 and terminal_progress:
+                    interval_sec = min(base_interval, OUTCOME_BACKLOG_CATCHUP_SEC)
+        next_run = _interval_loop_wait(next_run, interval_sec)
 
 
 def _llm_reviewer_thread():
@@ -6762,6 +6889,7 @@ def metrics() -> str:
         outcome_liveness = db.get_outcome_worker_liveness(
             conn,
             require_llm_verdict=bool(getattr(settings, "llm_reviewer_enabled", False)),
+            worker_stale_after_sec=_outcome_worker_stale_after_sec(),
         )
         lines = [
             "# TYPE bybit_reco_symbols_total gauge",
@@ -6784,6 +6912,24 @@ def metrics() -> str:
             f"bybit_reco_outcome_unattempted {int(outcome_liveness.get('unattempted_total') or 0)}",
             "# TYPE bybit_reco_outcome_worker_stalled gauge",
             f"bybit_reco_outcome_worker_stalled {1 if outcome_liveness.get('state') == 'stalled' else 0}",
+            "# TYPE bybit_reco_outcome_worker_processing gauge",
+            f"bybit_reco_outcome_worker_processing {1 if outcome_liveness.get('state') == 'processing' else 0}",
+            "# TYPE bybit_reco_outcome_worker_backlog gauge",
+            f"bybit_reco_outcome_worker_backlog {1 if outcome_liveness.get('state') == 'backlog' else 0}",
+            "# TYPE bybit_reco_outcome_worker_error gauge",
+            f"bybit_reco_outcome_worker_error {1 if outcome_liveness.get('state') == 'error' else 0}",
+            "# TYPE bybit_reco_outcome_cycle_duration_ms gauge",
+            f"bybit_reco_outcome_cycle_duration_ms {int((outcome_liveness.get('worker_cycle') or {}).get('duration_ms') or 0)}",
+            "# TYPE bybit_reco_outcome_cycle_rows_examined gauge",
+            f"bybit_reco_outcome_cycle_rows_examined {int((outcome_liveness.get('worker_cycle') or {}).get('rows_examined') or 0)}",
+            "# TYPE bybit_reco_outcome_cycle_rows_labeled gauge",
+            f"bybit_reco_outcome_cycle_rows_labeled {int((outcome_liveness.get('worker_cycle') or {}).get('rows_labeled') or 0)}",
+            "# TYPE bybit_reco_outcome_cycle_rows_waiting gauge",
+            f"bybit_reco_outcome_cycle_rows_waiting {int((outcome_liveness.get('worker_cycle') or {}).get('rows_waiting') or 0)}",
+            "# TYPE bybit_reco_outcome_cycle_rows_censored gauge",
+            f"bybit_reco_outcome_cycle_rows_censored {int((outcome_liveness.get('worker_cycle') or {}).get('rows_censored') or 0)}",
+            "# TYPE bybit_reco_outcome_cycle_rows_failed gauge",
+            f"bybit_reco_outcome_cycle_rows_failed {int((outcome_liveness.get('worker_cycle') or {}).get('rows_failed') or 0)}",
             "# TYPE bybit_reco_collector_cycle_duration_ms gauge",
             f"bybit_reco_collector_cycle_duration_ms {int(collector_last_cycle.get('duration_ms') or 0)}",
             "# TYPE bybit_reco_collector_max_workers gauge",
@@ -6813,7 +6959,7 @@ def api_status() -> dict[str, Any]:
         collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         background_threads = {
             name: _get_background_thread_state(conn, name)
-            for name in ("collector", "backfill", "futures_meta", "sentiment", "reco", "llm_reviewer")
+            for name in ("collector", "backfill", "futures_meta", "sentiment", "reco", "outcomes", "llm_reviewer")
         }
         now_ts_int = db.now_ts()
         collector_cycle_started_ts = int(collector_last_cycle.get("started_ts") or 0)
@@ -6998,6 +7144,7 @@ def api_status() -> dict[str, Any]:
         outcome_worker_liveness = db.get_outcome_worker_liveness(
             conn,
             require_llm_verdict=require_llm_outcome_verdict,
+            worker_stale_after_sec=_outcome_worker_stale_after_sec(),
         )
 
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))

@@ -7,6 +7,8 @@ from .settings import load_settings
 from .trading_semantics import normalize_execution_direction
 import logging
 import math
+import time
+from typing import Callable
 from decimal import Decimal, InvalidOperation
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,7 @@ BOT_HORIZONS: dict[str, int] = {
     "futures_grid": 12 * 3600,
 }
 HORIZON_SEC_DEFAULT = 30 * 60
+OUTCOME_MAX_ROWS_EXAMINED_PER_CYCLE = 2000
 
 GRID_BOTS = set(GRID_BOT_TYPES)
 
@@ -684,6 +687,24 @@ def _record_outcome_failure(
     diagnostics.update(details)
 
 
+def _ensure_outcome_failure(
+    diagnostics: dict[str, object] | None,
+    reason: str,
+    *,
+    transient: bool = False,
+    **details: object,
+) -> None:
+    """Set a fallback reason only when a more specific helper did not already do so."""
+    if diagnostics is None or diagnostics.get("reason"):
+        return
+    _record_outcome_failure(
+        diagnostics,
+        reason,
+        transient=transient,
+        **details,
+    )
+
+
 def _log_outcome_decision_once(
     conn,
     action: str,
@@ -1046,6 +1067,14 @@ def _grid_outcome(
                 # Opposing resting orders at one level would imply self-trading
                 # or an unresolved cancel/replace chronology. Do not fabricate a
                 # label.
+                _record_outcome_failure(
+                    diagnostics,
+                    "conflicting_active_pending_orders",
+                    grid_index=int(index),
+                    active_signed_slot_quantity=int(active_quantity),
+                    pending_signed_slot_quantity=int(pending_quantity),
+                    new_signed_slot_quantity=int(signed_quantity),
+                )
                 ledger_invalid = True
                 return
         combined = pending_quantity + int(signed_quantity)
@@ -1061,6 +1090,13 @@ def _grid_outcome(
         for index, signed_quantity in list(pending_orders.items()):
             existing = int(orders.get(index, 0))
             if existing != 0 and (existing > 0) != (signed_quantity > 0):
+                _record_outcome_failure(
+                    diagnostics,
+                    "conflicting_pending_activation_orders",
+                    grid_index=int(index),
+                    active_signed_slot_quantity=int(existing),
+                    pending_signed_slot_quantity=int(signed_quantity),
+                )
                 ledger_invalid = True
                 return
             combined = existing + int(signed_quantity)
@@ -1311,11 +1347,23 @@ def _grid_outcome(
             or None in (row_open, row_high, row_low, row_close)
             or row_volume < 0.0
         ):
+            _record_outcome_failure(
+                diagnostics,
+                "invalid_ohlcv_row",
+                row_index=int(row_index),
+                event_ts=row.get("ts"),
+                open=row.get("open"),
+                high=row.get("high"),
+                low=row.get("low"),
+                close=row.get("close"),
+                volume=row.get("volume"),
+            )
             return None
         candle_volume_capacity_qty = float(row_volume)
         candle_volume_used_qty = 0.0
         activate_pending_orders()
         if ledger_invalid:
+            _ensure_outcome_failure(diagnostics, "invalid_grid_ledger_after_activation", event_ts=int(row_ts))
             return None
 
         # Directional grids enter their initial inventory at the first tradeable
@@ -1337,6 +1385,7 @@ def _grid_outcome(
             apply_funding_event(settled_rate, float(row_open), _event_ts)
             event_index += 1
             if ledger_invalid:
+                _ensure_outcome_failure(diagnostics, "invalid_grid_ledger_after_funding", event_ts=int(row_ts))
                 return None
 
         # A close->open jump beyond a protective boundary has no observable
@@ -1344,12 +1393,20 @@ def _grid_outcome(
         # stop triggering and cancellation can occur in different orders and the
         # protective order cannot be assumed to execute at the skipped boundary.
         if gap_crosses_kill_switch(float(row_open)):
+            _record_outcome_failure(
+                diagnostics,
+                "gap_crosses_kill_switch_unobservable",
+                event_ts=int(row_ts),
+                previous_price=float(previous_price),
+                target_price=float(row_open),
+            )
             return None
 
         # Previous close -> current open is observable and may cross narrow grid
         # levels even when the candle later closes back at the previous price.
         process_segment(float(row_open), event_ts=row_ts)
         if ledger_invalid:
+            _ensure_outcome_failure(diagnostics, "invalid_grid_ledger_after_gap", event_ts=int(row_ts))
             return None
         if stopped:
             break
@@ -1359,6 +1416,15 @@ def _grid_outcome(
         if upper_breach and lower_breach:
             # OHLC does not reveal which protective boundary was reached first.
             # Any chosen chronology would fabricate a different stopped bot.
+            _record_outcome_failure(
+                diagnostics,
+                "dual_kill_switch_breach_order_unobservable",
+                event_ts=int(row_ts),
+                candle_high=float(row_high),
+                candle_low=float(row_low),
+                kill_switch_lower=float(ks_lower_f),
+                kill_switch_upper=float(ks_upper_f),
+            )
             return None
         if upper_breach:
             base_state = snapshot_ledger()
@@ -1368,6 +1434,12 @@ def _grid_outcome(
             )
             if not equivalent_ledger(stop_first, opposite_first):
                 restore_ledger(base_state)
+                _record_outcome_failure(
+                    diagnostics,
+                    "kill_switch_intrabar_order_unobservable",
+                    event_ts=int(row_ts),
+                    breach_side="upper",
+                )
                 return None
             restore_ledger(stop_first)
             break
@@ -1379,6 +1451,12 @@ def _grid_outcome(
             )
             if not equivalent_ledger(stop_first, opposite_first):
                 restore_ledger(base_state)
+                _record_outcome_failure(
+                    diagnostics,
+                    "kill_switch_intrabar_order_unobservable",
+                    event_ts=int(row_ts),
+                    breach_side="lower",
+                )
                 return None
             restore_ledger(stop_first)
             break
@@ -1410,16 +1488,25 @@ def _grid_outcome(
             )
             if not equivalent_ledger(high_first, low_first):
                 restore_ledger(base_state)
+                _record_outcome_failure(
+                    diagnostics,
+                    "intrabar_extreme_order_unobservable",
+                    event_ts=int(row_ts),
+                    candle_high=float(row_high),
+                    candle_low=float(row_low),
+                )
                 return None
             restore_ledger(high_first)
         else:
             process_segment(close_f, event_ts=row_ts)
         if ledger_invalid:
+            _ensure_outcome_failure(diagnostics, "invalid_grid_ledger_after_intrabar_path", event_ts=int(row_ts))
             return None
         if stopped:
             break
 
     if ledger_invalid:
+        _ensure_outcome_failure(diagnostics, "invalid_grid_ledger_after_window")
         return None
 
     if not stopped:
@@ -1428,6 +1515,7 @@ def _grid_outcome(
             apply_funding_event(settled_rate, exit_f, _event_ts)
             event_index += 1
             if ledger_invalid:
+                _ensure_outcome_failure(diagnostics, "invalid_grid_ledger_after_terminal_funding", event_ts=int(_event_ts))
                 return None
 
         # The exact horizon open belongs to a new one-minute candle. Any gap
@@ -1463,12 +1551,21 @@ def _grid_outcome(
         # A gap through the kill-switch is path-ambiguous and cannot be priced at
         # the skipped protective boundary.
         if gap_crosses_kill_switch(exit_f):
+            _record_outcome_failure(
+                diagnostics,
+                "terminal_gap_crosses_kill_switch_unobservable",
+                event_ts=int(ts_end),
+                previous_price=float(previous_price),
+                target_price=float(exit_f),
+            )
             return None
         activate_pending_orders()
         if ledger_invalid:
+            _ensure_outcome_failure(diagnostics, "invalid_grid_ledger_at_terminal_activation", event_ts=int(ts_end))
             return None
         process_segment(exit_f, event_ts=ts_end)
         if ledger_invalid:
+            _ensure_outcome_failure(diagnostics, "invalid_grid_ledger_at_terminal_segment", event_ts=int(ts_end))
             return None
 
     liquidation_price = float(stop_price) if stopped and stop_price is not None else exit_f
@@ -1500,6 +1597,11 @@ def _grid_outcome(
     # reference lay between levels.
     capital_reference = float(topology["committed_notional_per_qty"])
     if not math.isfinite(capital_reference) or capital_reference <= 0.0:
+        _record_outcome_failure(
+            diagnostics,
+            "invalid_committed_notional_reference",
+            committed_notional_per_qty=capital_reference,
+        )
         return None
     if isinstance(diagnostics, dict):
         diagnostics.update({
@@ -1611,10 +1713,40 @@ def _record_outcome_observability_attempt(
     )
 
 
-def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_process: int = 500) -> int:
+def compute_outcomes_cycle(
+    conn,
+    horizon_sec: int = HORIZON_SEC_DEFAULT,
+    max_to_process: int = 500,
+    *,
+    heartbeat: Callable[[], bool] | None = None,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
+) -> dict[str, object]:
     min_horizon = min(BOT_HORIZONS.values())
-    fetch_limit = max(int(max_to_process), min(2000, int(max_to_process) * 12))
+    process_limit = max(1, int(max_to_process))
+    fetch_limit = max(
+        process_limit,
+        min(OUTCOME_MAX_ROWS_EXAMINED_PER_CYCLE, process_limit * 12),
+    )
     require_llm_verdict = bool(getattr(settings, "llm_reviewer_enabled", False))
+    started_monotonic = time.monotonic()
+    stats: dict[str, object] = {
+        "rows_selected": 0,
+        "rows_examined": 0,
+        "rows_labeled": 0,
+        "rows_waiting": 0,
+        "rows_censored": 0,
+        "rows_failed": 0,
+        "last_processed_rec_id": None,
+        "duration_ms": 0,
+    }
+
+    def record_observability(_conn, **kwargs: object) -> None:
+        _record_outcome_observability_attempt(_conn, **kwargs)
+        state = str(kwargs.get("state") or "").strip().lower()
+        if state == "waiting":
+            stats["rows_waiting"] = int(stats["rows_waiting"]) + 1
+        elif state == "censored":
+            stats["rows_censored"] = int(stats["rows_censored"]) + 1
 
     base_sql = """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
                   r.params_json, r.features_ref_ts, r.status, r.reasons_json, r.model_version
@@ -1627,7 +1759,12 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
            AND r.status NOT IN ('blocked', 'suppressed', 'pending')
            AND (
                r.status <> 'no_trade'
-               OR LOWER(CAST(COALESCE(json_extract(r.reasons_json, '$.outcome_policy.eligible'), 'false') AS TEXT)) IN ('1', 'true')
+               OR (
+                   r.outcome_eligible = 1
+                   AND r.outcome_sample_role = 'shadow_no_trade'
+                   AND r.risk_checks_passed = 1
+                   AND r.risk_blocks_empty = 1
+               )
            )"""
     params: list[object] = [db.now_ts() - min_horizon]
 
@@ -1638,13 +1775,14 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         # is permanently stalled. Filter before LIMIT to preserve forward progress.
         base_sql += """
            AND (
-               LOWER(COALESCE(json_extract(r.reasons_json, '$.llm_review.status'), '')) = 'ok'
+               r.llm_review_status = 'ok'
                OR (
                    r.status = 'no_trade'
-                   AND LOWER(CAST(COALESCE(json_extract(r.reasons_json, '$.outcome_policy.eligible'), 'false') AS TEXT)) IN ('1', 'true')
-                   AND LOWER(CAST(COALESCE(json_extract(r.reasons_json, '$.outcome_policy.policy_evaluation_eligible'), 'false') AS TEXT)) IN ('1', 'true')
-                   AND COALESCE(json_extract(r.reasons_json, '$.outcome_policy.sample_role'), '') = 'shadow_no_trade'
-                   AND LOWER(CAST(COALESCE(json_extract(r.reasons_json, '$.risk_checks.passed'), 'false') AS TEXT)) IN ('1', 'true')
+                   AND r.outcome_eligible = 1
+                   AND r.policy_evaluation_eligible = 1
+                   AND r.outcome_sample_role = 'shadow_no_trade'
+                   AND r.risk_checks_passed = 1
+                   AND r.risk_blocks_empty = 1
                )
            )"""
 
@@ -1654,14 +1792,19 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
 
     cur = conn.execute(base_sql, tuple(params))
     rows = cur.fetchall()
+    stats["rows_selected"] = len(rows)
     done = 0
 
     for r in rows:
-        if done >= int(max_to_process):
-            break
+        if heartbeat is not None and not heartbeat():
+            raise RuntimeError("outcome runtime lock lost")
         rec_id = r["rec_id"]
+        stats["rows_examined"] = int(stats["rows_examined"]) + 1
+        stats["last_processed_rec_id"] = str(rec_id)
+        if progress_callback is not None:
+            progress_callback(dict(stats))
         if require_llm_verdict and not db.is_outcome_eligible_under_llm_mode(r["status"], r["reasons_json"]):
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=r["ts"],
@@ -1673,7 +1816,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         if str(r["status"] or "").strip().lower() == "no_trade" and not _shadow_no_trade_outcome_eligible(
             r["status"], r["reasons_json"]
         ):
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=r["ts"],
@@ -1685,7 +1828,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         bot_type = r["bot_type"]
         if bot_type not in SUPPORTED_BOT_TYPES:
             db.log_decision(conn, "OUTCOME_SKIP_UNSUPPORTED_BOT_TYPE", rec_id, None, {"bot_type": bot_type})
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=r["ts"],
@@ -1708,7 +1851,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "recommendation_ts": r["ts"],
                 "features_ref_ts": r["features_ref_ts"],
             })
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=r["ts"],
@@ -1726,7 +1869,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "symbol": symbol,
                 "direction": direction,
             })
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=ts0,
@@ -1744,7 +1887,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             params = None
         tradeable = _get_first_tradeable_candle_after(conn, venue, symbol, signal_ref_ts, ts0)
         if tradeable is None:
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=ts0,
@@ -1765,7 +1908,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         ts_exit = entry_ts + effective_horizon
         label_available_ts = ts_exit + 60
         if db.now_ts() < label_available_ts:
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=ts0,
@@ -1783,7 +1926,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 "label_available_ts": ts_exit,
                 "horizon_sec": effective_horizon,
             })
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=ts0,
@@ -1807,7 +1950,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 },
                 cooldown_sec=3600,
             )
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=ts0,
@@ -1819,7 +1962,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             continue
 
         if entry is None or entry == 0:
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=ts0,
@@ -1836,7 +1979,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
         if bot_type in GRID_BOTS:
             ep = _get_open_at_exact(conn, venue, symbol, ts_exit)
             if ep is None:
-                _record_outcome_observability_attempt(
+                record_observability(
                     conn,
                     rec_id=rec_id,
                     recommendation_ts=ts0,
@@ -1862,7 +2005,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                 require_terminal_boundary_candle=True,
             )
             if grid_result is None:
-                reason = str(diagnostics.get("reason") or "unknown_grid_outcome_failure")
+                reason = str(diagnostics.get("reason") or "grid_outcome_unavailable_without_diagnostic")
                 transient = diagnostics.get("transient") is True
                 details: dict[str, object] = {
                     "venue": venue,
@@ -1895,6 +2038,8 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
                     details=details,
                     commit=True,
                 )
+                state_key = "rows_waiting" if transient else "rows_censored"
+                stats[state_key] = int(stats[state_key]) + 1
                 _log_outcome_decision_once(
                     conn,
                     action,
@@ -1906,7 +2051,7 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             success, ret_proxy = grid_result
 
         else:
-            _record_outcome_observability_attempt(
+            record_observability(
                 conn,
                 rec_id=rec_id,
                 recommendation_ts=ts0,
@@ -1935,5 +2080,24 @@ def compute_outcomes_once(conn, horizon_sec: int = HORIZON_SEC_DEFAULT, max_to_p
             },
         )
         done += 1
+        stats["rows_labeled"] = int(done)
 
-    return done
+    stats["rows_labeled"] = int(done)
+    stats["duration_ms"] = max(0, int(round((time.monotonic() - started_monotonic) * 1000.0)))
+    if progress_callback is not None:
+        progress_callback(dict(stats))
+    return stats
+
+
+def compute_outcomes_once(
+    conn,
+    horizon_sec: int = HORIZON_SEC_DEFAULT,
+    max_to_process: int = 500,
+) -> int:
+    """Backward-compatible count-only wrapper around the observable cycle API."""
+    stats = compute_outcomes_cycle(
+        conn,
+        horizon_sec=horizon_sec,
+        max_to_process=max_to_process,
+    )
+    return int(stats.get("rows_labeled") or 0)

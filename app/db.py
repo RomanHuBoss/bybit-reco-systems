@@ -143,6 +143,123 @@ def _ensure_recommendation_publication_columns(conn: sqlite3.Connection) -> None
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reco_outcome_root_ts ON recommendations(is_outcome_label_root, ts DESC)")
 
 
+OUTCOME_POLICY_MATERIALIZED_COLUMNS: tuple[str, ...] = (
+    "outcome_eligible",
+    "policy_evaluation_eligible",
+    "outcome_sample_role",
+    "risk_checks_passed",
+    "risk_blocks_empty",
+    "llm_review_status",
+)
+
+
+def _materialize_outcome_policy_fields(reasons: Any) -> tuple[int, int, str | None, int, int, str | None]:
+    payload = reasons if isinstance(reasons, dict) else {}
+    policy = payload.get("outcome_policy") if isinstance(payload.get("outcome_policy"), dict) else {}
+    risk_checks = payload.get("risk_checks") if isinstance(payload.get("risk_checks"), dict) else {}
+    llm_review = payload.get("llm_review") if isinstance(payload.get("llm_review"), dict) else {}
+    sample_role = str(policy.get("sample_role") or "").strip() or None
+    llm_status = str(llm_review.get("status") or "").strip().lower() or None
+    risk_blocks = risk_checks.get("blocks")
+    return (
+        int(policy.get("eligible") is True),
+        int(policy.get("policy_evaluation_eligible") is True),
+        sample_role,
+        int(risk_checks.get("passed") is True),
+        int(isinstance(risk_blocks, list) and len(risk_blocks) == 0),
+        llm_status,
+    )
+
+
+def _ensure_recommendation_outcome_policy_columns(conn: sqlite3.Connection) -> bool:
+    cols = _table_columns(conn, "recommendations")
+    definitions = {
+        "outcome_eligible": "INTEGER",
+        "policy_evaluation_eligible": "INTEGER",
+        "outcome_sample_role": "TEXT",
+        "risk_checks_passed": "INTEGER",
+        "risk_blocks_empty": "INTEGER",
+        "llm_review_status": "TEXT",
+    }
+    added = False
+    for name, sql_type in definitions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE recommendations ADD COLUMN {name} {sql_type}")
+            added = True
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reco_outcome_liveness "
+        "ON recommendations(is_outcome_label_root, bot_type, status, outcome_eligible, "
+        "policy_evaluation_eligible, risk_checks_passed, risk_blocks_empty, ts)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reco_llm_outcome_liveness "
+        "ON recommendations(llm_review_status, outcome_sample_role, ts)"
+    )
+    return added
+
+
+def _recommendation_outcome_policy_backfill_needed(conn: sqlite3.Connection) -> bool:
+    cur = conn.execute(
+        """SELECT 1
+               FROM recommendations
+              WHERE outcome_eligible IS NULL
+                 OR policy_evaluation_eligible IS NULL
+                 OR risk_checks_passed IS NULL
+                 OR risk_blocks_empty IS NULL
+              LIMIT 1"""
+    )
+    return cur.fetchone() is not None
+
+
+def backfill_recommendation_outcome_policy_fields(
+    conn: sqlite3.Connection,
+    *,
+    batch_size: int = LARGE_READ_BATCH_SIZE,
+) -> int:
+    """One-time bounded upgrade of indexable outcome eligibility fields.
+
+    The scan runs only while legacy rows have NULL materialized values. Primary-
+    key keyset pagination bounds memory and avoids rescanning already upgraded
+    rows; each batch commits independently on SQLite and PostgreSQL.
+    """
+    size = max(1, int(batch_size))
+    updated = 0
+    last_rec_id = ""
+    while True:
+        rows = conn.execute(
+            """SELECT rec_id, reasons_json
+                   FROM recommendations
+                  WHERE rec_id > ?
+                    AND (
+                        outcome_eligible IS NULL
+                        OR policy_evaluation_eligible IS NULL
+                        OR risk_checks_passed IS NULL
+                        OR risk_blocks_empty IS NULL
+                    )
+                  ORDER BY rec_id ASC
+                  LIMIT ?""",
+            (last_rec_id, size),
+        ).fetchall()
+        if not rows:
+            break
+        updates: list[tuple[Any, ...]] = []
+        for row in rows:
+            reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+            rec_id = str(row["rec_id"])
+            updates.append((*_materialize_outcome_policy_fields(reasons), rec_id))
+            last_rec_id = rec_id
+        conn.executemany(
+            """UPDATE recommendations
+                  SET outcome_eligible=?, policy_evaluation_eligible=?, outcome_sample_role=?,
+                      risk_checks_passed=?, risk_blocks_empty=?, llm_review_status=?
+                WHERE rec_id=?""",
+            updates,
+        )
+        conn.commit()
+        updated += len(updates)
+    return updated
+
+
 def _normalize_bot_publication_root(value: Any) -> str | None:
     root = str(value or "").strip()
     return root or None
@@ -520,6 +637,9 @@ def init_db(conn: sqlite3.Connection) -> None:
       heartbeat_ts INTEGER NOT NULL
     )""")
     _ensure_recommendation_publication_columns(conn)
+    _ensure_recommendation_outcome_policy_columns(conn)
+    if _recommendation_outcome_policy_backfill_needed(conn):
+        backfill_recommendation_outcome_policy_fields(conn)
     _ensure_funding_rate_columns(conn)
     _ensure_trade_cost_columns(conn)
     _ensure_execution_evidence_columns(conn)
@@ -848,6 +968,8 @@ _RECOMMENDATION_COLUMNS: tuple[str, ...] = (
     "score", "confidence", "expected_rr", "risk_score",
     "params_json", "reasons_json", "blocks_json", "status", "ttl_sec", "model_version", "features_ref_ts",
     "publication_root_rec_id", "is_outcome_label_root",
+    "outcome_eligible", "policy_evaluation_eligible", "outcome_sample_role",
+    "risk_checks_passed", "risk_blocks_empty", "llm_review_status",
 )
 
 
@@ -907,6 +1029,7 @@ def _normalize_recommendation_payload(r: dict[str, Any]) -> tuple[Any, ...]:
     is_outcome_label_root = _normalize_outcome_root_flag(
         r.get("is_outcome_label_root", publication_root_rec_id == rec_id)
     )
+    materialized_outcome_policy = _materialize_outcome_policy_fields(r["reasons"])
     return (
         rec_id,
         _normalize_recommendation_integer("recommendation.ts", r["ts"]),
@@ -929,6 +1052,7 @@ def _normalize_recommendation_payload(r: dict[str, Any]) -> tuple[Any, ...]:
         _normalize_recommendation_integer("recommendation.features_ref_ts", r["features_ref_ts"]),
         publication_root_rec_id,
         is_outcome_label_root,
+        *materialized_outcome_policy,
     )
 
 
@@ -942,6 +1066,10 @@ def _normalize_stored_recommendation_payload(row: Any) -> tuple[Any, ...]:
     values[16] = _normalize_recommendation_integer("recommendation.ttl_sec", values[16])
     values[18] = _normalize_recommendation_integer("recommendation.features_ref_ts", values[18])
     values[20] = int(values[20])
+    for idx in (21, 22, 24, 25):
+        values[idx] = int(values[idx] or 0)
+    values[23] = str(values[23]).strip() if values[23] not in (None, "") else None
+    values[26] = str(values[26]).strip().lower() if values[26] not in (None, "") else None
     return tuple(values)
 
 
@@ -2546,9 +2674,14 @@ def update_recommendation_review(
         allowed = _ALLOWED_STATUS_TRANSITIONS.get(current, {current})
         if status in allowed:
             new_status = status
+    materialized = _materialize_outcome_policy_fields(reasons)
     conn.execute(
-        "UPDATE recommendations SET reasons_json=?, status=? WHERE rec_id=?",
-        (_json_dumps_safe(reasons), new_status, rec_id),
+        """UPDATE recommendations
+              SET reasons_json=?, status=?,
+                  outcome_eligible=?, policy_evaluation_eligible=?, outcome_sample_role=?,
+                  risk_checks_passed=?, risk_blocks_empty=?, llm_review_status=?
+            WHERE rec_id=?""",
+        (_json_dumps_safe(reasons), new_status, *materialized, rec_id),
     )
     conn.commit()
     return True
@@ -3045,6 +3178,7 @@ POLICY_LABEL_HORIZONS_SEC: dict[str, int] = {
     "futures_grid": 12 * 3600,
 }
 POLICY_LABEL_GRACE_SEC = 120
+OUTCOME_WORKER_CYCLE_APP_KEY = "outcome_worker_cycle"
 
 
 def upsert_outcome_observability(
@@ -3335,96 +3469,144 @@ def get_outcome_worker_liveness(
     *,
     now_ts_value: int | None = None,
     require_llm_verdict: bool = False,
+    worker_stale_after_sec: int = 300,
 ) -> dict[str, Any]:
-    """Expose a deterministic health invariant for matured outcome roots.
+    """Return outcome-worker health without transferring large recommendation JSON.
 
-    The potentially large pending-root set is consumed in bounded batches so a
-    metrics scrape or health request cannot materialize every ``reasons_json``
-    row in the application process at once.
+    Eligibility and maturity are filtered in SQL. Only one aggregate row and at
+    most ten sample identifiers cross the DB/application boundary. Worker state
+    is derived from the durable cycle heartbeat rather than from the misleading
+    assumption that an all-unattempted *remaining* queue proves that no work ran.
     """
     now_value = strict_integer(now_ts_value if now_ts_value is not None else now_ts())
+    stale_after = strict_integer(worker_stale_after_sec)
     if now_value is None or now_value <= 0:
         raise ValueError("now_ts_value must be a positive integer timestamp")
-    cur = backend_execute_stream(
-        conn,
-        """SELECT r.rec_id, r.ts, r.bot_type, r.status, r.reasons_json,
-                  obs.last_attempt_ts, obs.label_due_ts,
-                  obs.state AS observability_state
+    if stale_after is None or stale_after <= 0:
+        raise ValueError("worker_stale_after_sec must be a positive integer")
+
+    horizon = int(POLICY_LABEL_HORIZONS_SEC["futures_grid"])
+    grace = int(POLICY_LABEL_GRACE_SEC)
+    due_expr = (
+        f"CASE WHEN obs.label_due_ts IS NOT NULL AND obs.label_due_ts >= r.ts "
+        f"THEN obs.label_due_ts ELSE r.ts + {horizon + grace} END"
+    )
+    safe_shadow_expr = """(
+        r.status = 'no_trade'
+        AND r.outcome_eligible = 1
+        AND r.outcome_sample_role = 'shadow_no_trade'
+        AND r.risk_checks_passed = 1
+        AND r.risk_blocks_empty = 1
+    )"""
+    llm_shadow_expr = """(
+        r.status = 'no_trade'
+        AND r.outcome_eligible = 1
+        AND r.policy_evaluation_eligible = 1
+        AND r.outcome_sample_role = 'shadow_no_trade'
+        AND r.risk_checks_passed = 1
+        AND r.risk_blocks_empty = 1
+    )"""
+    eligibility = f"""
              FROM recommendations r
              LEFT JOIN reco_outcomes o ON o.rec_id=r.rec_id
              LEFT JOIN reco_outcome_observability obs ON obs.rec_id=r.rec_id
             WHERE COALESCE(r.is_outcome_label_root, 1)=1
+              AND r.ts > 0
+              AND r.bot_type='futures_grid'
               AND o.rec_id IS NULL
               AND COALESCE(obs.state, '') <> 'censored'
-              AND r.ts <= ?
-            ORDER BY r.ts ASC, r.rec_id ASC""",
-        (int(now_value) - 6 * 3600,),
-        batch_size=LARGE_READ_BATCH_SIZE,
-    )
-    matured_pending_total = 0
-    unattempted_total = 0
-    attempted_total = 0
-    oldest_due_ts: int | None = None
-    sample_rec_ids: list[str] = []
-    try:
-        while True:
-            batch = cur.fetchmany(LARGE_READ_BATCH_SIZE)
-            if not batch:
-                break
-            for row in batch:
-                status_norm = str(row["status"] or "").strip().lower()
-                if status_norm in {"blocked", "suppressed", "pending"}:
-                    continue
-                if status_norm == "no_trade" and not _is_explicit_safe_shadow_no_trade(
-                    row["status"], row["reasons_json"]
-                ):
-                    continue
-                if require_llm_verdict and not is_outcome_eligible_under_llm_mode(
-                    row["status"], row["reasons_json"]
-                ):
-                    continue
-                rec_ts = strict_integer(row["ts"])
-                horizon = POLICY_LABEL_HORIZONS_SEC.get(
-                    str(row["bot_type"] or "").strip()
-                )
-                if rec_ts is None or rec_ts <= 0 or horizon is None:
-                    continue
-                stored_due = strict_integer(row["label_due_ts"])
-                due_ts = (
-                    int(stored_due)
-                    if stored_due is not None and stored_due >= rec_ts
-                    else int(rec_ts) + int(horizon) + int(POLICY_LABEL_GRACE_SEC)
-                )
-                if due_ts > now_value:
-                    continue
-                matured_pending_total += 1
-                oldest_due_ts = (
-                    due_ts if oldest_due_ts is None else min(oldest_due_ts, due_ts)
-                )
-                attempt_ts = strict_integer(row["last_attempt_ts"])
-                if attempt_ts is None or attempt_ts <= 0:
-                    unattempted_total += 1
-                    if len(sample_rec_ids) < 10:
-                        sample_rec_ids.append(str(row["rec_id"]))
-                else:
-                    attempted_total += 1
-    finally:
-        close = getattr(cur, "close", None)
-        if callable(close):
-            close()
+              AND r.status NOT IN ('blocked', 'suppressed', 'pending')
+              AND (r.status <> 'no_trade' OR {safe_shadow_expr})
+              AND {due_expr} <= ?
+    """
+    if require_llm_verdict:
+        eligibility += f"""
+              AND (r.llm_review_status = 'ok' OR {llm_shadow_expr})
+        """
 
-    if matured_pending_total > 0 and unattempted_total == matured_pending_total:
-        state = "stalled"
-        code = "OUTCOME_WORKER_STALLED"
-    elif matured_pending_total > 0:
-        state = "backlog"
-        code = "OUTCOME_WORKER_BACKLOG"
-    else:
+    summary = conn.execute(
+        f"""SELECT COUNT(*) AS matured_pending_total,
+                   COALESCE(SUM(CASE WHEN obs.last_attempt_ts IS NULL OR obs.last_attempt_ts <= 0 THEN 1 ELSE 0 END), 0) AS unattempted_total,
+                   COALESCE(SUM(CASE WHEN obs.last_attempt_ts IS NOT NULL AND obs.last_attempt_ts > 0 THEN 1 ELSE 0 END), 0) AS attempted_total,
+                   MIN({due_expr}) AS oldest_due_ts
+              {eligibility}""",
+        (int(now_value),),
+    ).fetchone()
+    matured_pending_total = int(summary["matured_pending_total"] or 0) if summary else 0
+    unattempted_total = int(summary["unattempted_total"] or 0) if summary else 0
+    attempted_total = int(summary["attempted_total"] or 0) if summary else 0
+    oldest_raw = summary["oldest_due_ts"] if summary else None
+    oldest_due_ts = strict_integer(oldest_raw)
+
+    sample_rows = conn.execute(
+        f"""SELECT r.rec_id
+              {eligibility}
+               AND (obs.last_attempt_ts IS NULL OR obs.last_attempt_ts <= 0)
+             ORDER BY {due_expr} ASC, r.rec_id ASC
+             LIMIT 10""",
+        (int(now_value),),
+    ).fetchall()
+    sample_rec_ids = [str(row["rec_id"]) for row in sample_rows]
+
+    raw_cycle = get_app_config_json(conn, OUTCOME_WORKER_CYCLE_APP_KEY, default={})
+    worker_cycle = dict(raw_cycle) if isinstance(raw_cycle, dict) else {}
+    cycle_state = str(worker_cycle.get("state") or "").strip().lower()
+    cycle_updated_ts = strict_integer(
+        worker_cycle.get("updated_ts")
+        or worker_cycle.get("cycle_finished_ts")
+        or worker_cycle.get("cycle_started_ts")
+    )
+    cycle_age_sec = (
+        None
+        if cycle_updated_ts is None or cycle_updated_ts <= 0
+        else max(0, int(now_value) - int(cycle_updated_ts))
+    )
+    cycle_recent = cycle_age_sec is not None and cycle_age_sec <= int(stale_after)
+    pending_before = strict_integer(worker_cycle.get("matured_pending_before"))
+    pending_after = strict_integer(worker_cycle.get("matured_pending_after"))
+    rows_examined = strict_integer(worker_cycle.get("rows_examined")) or 0
+    rows_labeled = strict_integer(worker_cycle.get("rows_labeled")) or 0
+    rows_censored = strict_integer(worker_cycle.get("rows_censored")) or 0
+    progress_recorded = bool(
+        rows_examined > 0
+        or rows_labeled > 0
+        or rows_censored > 0
+        or (
+            pending_before is not None
+            and pending_after is not None
+            and pending_after < pending_before
+        )
+    )
+
+    if cycle_recent and cycle_state == "error":
+        state = "error"
+        code = "OUTCOME_WORKER_ERROR"
+        state_reason = "recent_cycle_error"
+    elif matured_pending_total <= 0:
         state = "ok"
         code = "OUTCOME_WORKER_OK"
+        state_reason = "no_matured_pending_roots"
+    elif cycle_recent and cycle_state == "running":
+        state = "processing"
+        code = "OUTCOME_WORKER_PROCESSING"
+        state_reason = "cycle_heartbeat_recent"
+    elif cycle_recent and cycle_state == "completed" and progress_recorded:
+        state = "backlog"
+        code = "OUTCOME_WORKER_BACKLOG"
+        state_reason = "recent_cycle_progress_with_pending_roots"
+    else:
+        state = "stalled"
+        code = "OUTCOME_WORKER_STALLED"
+        state_reason = (
+            "cycle_heartbeat_stale"
+            if cycle_updated_ts is not None
+            else "no_cycle_heartbeat"
+        )
+
     return {
         "state": state,
         "code": code,
+        "state_reason": state_reason,
         "matured_pending_total": matured_pending_total,
         "unattempted_total": unattempted_total,
         "attempted_total": attempted_total,
@@ -3437,8 +3619,10 @@ def get_outcome_worker_liveness(
         "sample_unattempted_rec_ids": sample_rec_ids,
         "require_llm_verdict": bool(require_llm_verdict),
         "checked_ts": int(now_value),
+        "worker_stale_after_sec": int(stale_after),
+        "worker_cycle_age_sec": cycle_age_sec,
+        "worker_cycle": worker_cycle,
     }
-
 
 def outcome_exists(conn: sqlite3.Connection, rec_id: str) -> bool:
     cur = conn.execute("""SELECT 1 FROM reco_outcomes WHERE rec_id=? LIMIT 1""", (rec_id,))

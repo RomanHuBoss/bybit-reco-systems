@@ -69,7 +69,13 @@ CREATE TABLE IF NOT EXISTS recommendations (
   model_version TEXT NOT NULL,
   features_ref_ts BIGINT NOT NULL,
   publication_root_rec_id TEXT,
-  is_outcome_label_root INTEGER NOT NULL DEFAULT 1
+  is_outcome_label_root INTEGER NOT NULL DEFAULT 1,
+  outcome_eligible INTEGER,
+  policy_evaluation_eligible INTEGER,
+  outcome_sample_role TEXT,
+  risk_checks_passed INTEGER,
+  risk_blocks_empty INTEGER,
+  llm_review_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_reco_ts ON recommendations(ts DESC);

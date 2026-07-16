@@ -1,3 +1,9 @@
+## v1.0.67: обязанности outcome-контура
+
+- `app/outcomes.py`: `compute_outcomes_cycle()` обрабатывает ограниченный пакет, поддерживает runtime heartbeat и возвращает структурированные показатели цикла; `compute_outcomes_once()` сохранён как count-only compatibility wrapper.
+- `app/db.py`: persistence boundary материализует индексируемые outcome-policy/LLM поля; runtime migration выполняет bounded legacy backfill. `get_outcome_worker_liveness()` агрегирует eligibility/maturity только по колонкам и классифицирует состояние по durable cycle progress.
+- `app/main.py`: `_outcome_thread()` владеет отдельной блокировкой, `_run_outcome_cycle_once()` сохраняет running/completed/error snapshots, supervisor перезапускает контур при исключении. Рекомендательный поток больше не выполняет outcome maintenance.
+
 ## Модули bounded calibration memory (v1.0.66)
 
 - `app/db_backend.py`: `execute_stream`, PostgreSQL named cursor, bounded `fetchmany`.

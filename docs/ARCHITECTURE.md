@@ -1,3 +1,9 @@
+## Outcome maintenance runtime — v1.0.67
+
+Outcome/calibration maintenance является самостоятельным фоновым контуром. `outcomes` запускается через общий supervisor, получает собственную атомарную runtime-блокировку `runtime:outcomes` и не выполняется внутри рекомендательного цикла. Потеря блокировки проверяется heartbeat перед циклом, по строкам и после цикла; ошибка сохраняется в `app_config[outcome_worker_cycle]` и приводит к безопасному рестарту supervisor.
+
+`outcome_worker_cycle` — устойчивый runtime contract со состояниями `running`, `completed`, `error` и показателями прогресса. Liveness сопоставляет его с фактическим SQL-агрегатом созревшей очереди и публикует операторские состояния `ok`, `processing`, `backlog`, `stalled`, `error`. SQL читает агрегаты и до десяти идентификаторов, а не полный JSON-набор. Runtime snapshot хранится в существующем `app_config`. Таблица `recommendations` получает шесть индексируемых materialized-полей outcome policy/LLM. Новые публикации заполняют их на persistence boundary, LLM-review синхронизирует их с `reasons_json`, а legacy-строки проходят одноразовый bounded keyset backfill при обнаружении NULL.
+
 ## Bounded calibration evidence pipeline (v1.0.66)
 
 Крупные read-only выборки проходят через `app.db_backend.execute_stream()`. Для SQLite используется естественный ленивый cursor; для PostgreSQL `PostgresConnection.execute_stream()` создаёт именованный server-side cursor и задаёт `itersize`. Consumers обязаны читать результат через `fetchmany()` и закрывать cursor в `finally`.

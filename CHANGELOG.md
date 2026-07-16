@@ -1,3 +1,20 @@
+## 2026-07-16 - v1.0.67 - восстановление и наблюдаемость outcome worker
+
+### Исправлено
+- Обработка созревших результатов отделена от `_reco_thread` и выполняется отдельным supervised worker с собственной runtime-блокировкой.
+- Проверка liveness больше не переносит полный набор `reasons_json` в Python: eligibility, maturity и счётчики агрегируются в SQL, а выборка примеров ограничена десятью `rec_id`.
+- Устранён ложный `OUTCOME_WORKER_STALLED` после успешной пакетной обработки: состояния разделены на `processing`, `backlog`, `stalled`, `error` и `ok` по устойчивому heartbeat/progress contract.
+- Каждый цикл сохраняет длительность, число выбранных/просмотренных/размеченных/ожидающих/цензурированных/ошибочных строк, размер и возраст backlog до/после, а также последний обработанный `rec_id`.
+- Backlog ускоренно разгружается только после подтверждённого терминального прогресса; при отсутствии прогресса сохраняется штатный интервал без tight loop.
+- Неоднозначные ветви сеточного proxy-outcome получают явные machine-readable причины; неизвестный fallback заменён безопасной диагностикой.
+- В `/metrics` и `/api/v1/status` добавлены обратно совместимые показатели состояния и прогресса worker.
+
+### Совместимость
+- SQLite/PostgreSQL schema расширена nullable materialized-полями `outcome_eligible`, `policy_evaluation_eligible`, `outcome_sample_role`, `risk_checks_passed`, `risk_blocks_empty`, `llm_review_status` и индексами liveness. Runtime migration добавляет их идемпотентно и выполняет одноразовый bounded keyset backfill; оба reference migration SQL обновлены.
+- Ручных действий с БД и `.env` не требуется. Публичные API/status contracts не ломаются; добавлены только диагностические поля/метрики.
+- Торговая геометрия, outcome target `grid_label_v26`, policy/model lineage, риск-gates и запрет реального выставления ордеров сохранены.
+- Regression: `tests/test_iteration255_outcome_worker_recovery.py` — RED 5/6 failures на исходном коде; GREEN 11/11 дважды. Baseline: 1153/1153 nodes в 47 непересекающихся пакетах. Post-check: 1164/1164 nodes в 47 пакетах, targeted 11/11 дважды, релевантный suite 113/113. Монолитный pytest напечатал `1164 passed in 34.26s`, но процесс не завершился до внешнего лимита; Ruff недоступен, `pip check` сохраняет исходный MoviePy/Pillow conflict.
+
 ## 2026-07-15 - v1.0.66 - ограниченная память калибровки и observability
 
 ### Исправлено
