@@ -38,6 +38,7 @@ VISIBLE_RECOMMENDATION_STATUSES: frozenset[str] = ACTIONABLE_RECOMMENDATION_STAT
 ACTIVE_PUBLICATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "executed"})
 EXPIRABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "pending"})
 LLM_OUTCOME_READY_STATUSES: frozenset[str] = frozenset({"ok"})
+DATABASE_INSTANCE_ID_APP_KEY = "database_instance_id_v1"
 
 
 def is_actionable_recommendation_status(status: Any) -> bool:
@@ -681,6 +682,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         # операцией через `repair_async_llm_pending_publication_chains()`.
         backfill_recommendation_publication_lineage(conn)
     _ensure_bot_publication_root_columns(conn)
+    ensure_database_instance_id(conn, commit=False)
     conn.commit()
 
 def init_runtime_lock_db(conn: sqlite3.Connection) -> None:
@@ -938,6 +940,51 @@ def get_app_config_json(conn: sqlite3.Connection, key: str, default: Any = None)
         return _json_loads_or_default(row["value_json"], default)
     except Exception:
         return default
+
+def ensure_database_instance_id(conn: sqlite3.Connection, *, commit: bool = True) -> str:
+    """Return a stable, non-secret identity for the connected persistence store."""
+    value = get_app_config_json(conn, DATABASE_INSTANCE_ID_APP_KEY, default=None)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if len(normalized) == 32 and all(ch in "0123456789abcdef" for ch in normalized):
+            return normalized
+    generated = secrets.token_hex(16)
+    set_app_config_json(conn, DATABASE_INSTANCE_ID_APP_KEY, generated, commit=commit)
+    return generated
+
+
+def _table_count_and_range(conn: sqlite3.Connection, table: str) -> dict[str, int | None]:
+    if table not in {"recommendations", "reco_outcomes", "decision_log"}:
+        raise ValueError("unsupported continuity table")
+    row = conn.execute(
+        f"SELECT COUNT(*) AS c, MIN(ts) AS first_ts, MAX(ts) AS latest_ts FROM {table}"
+    ).fetchone()
+    return {
+        "count": int(row["c"] or 0) if row else 0,
+        "first_ts": int(row["first_ts"]) if row and row["first_ts"] is not None else None,
+        "latest_ts": int(row["latest_ts"]) if row and row["latest_ts"] is not None else None,
+    }
+
+
+def get_database_continuity_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Expose safe continuity evidence without returning a path, DSN or secret."""
+    recs = _table_count_and_range(conn, "recommendations")
+    outcomes = _table_count_and_range(conn, "reco_outcomes")
+    decisions = _table_count_and_range(conn, "decision_log")
+    return {
+        "database_instance_id": ensure_database_instance_id(conn),
+        "engine": str(getattr(conn, "db_engine", SQLITE) or SQLITE),
+        "recommendations_total": recs["count"],
+        "first_recommendation_ts": recs["first_ts"],
+        "latest_recommendation_ts": recs["latest_ts"],
+        "outcomes_total": outcomes["count"],
+        "first_outcome_ts": outcomes["first_ts"],
+        "latest_outcome_ts": outcomes["latest_ts"],
+        "decision_log_total": decisions["count"],
+        "first_decision_ts": decisions["first_ts"],
+        "latest_decision_ts": decisions["latest_ts"],
+        "calibration_archive_empty": int(outcomes["count"] or 0) == 0,
+    }
 
 def _canonical_ohlcv_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: dict[tuple[str, str, int, int], dict[str, Any]] = {}

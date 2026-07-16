@@ -4838,7 +4838,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.68", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.69", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6985,7 +6985,7 @@ def _latest_recommendation_readiness(conn) -> dict[str, Any]:
     rows = conn.execute(
         """SELECT status, reasons_json
                FROM recommendations
-              WHERE ts=? AND is_outcome_label_root=1
+              WHERE ts=?
               ORDER BY rec_id ASC
               LIMIT 1000""",
         (int(latest_ts),),
@@ -7090,6 +7090,36 @@ def _latest_recommendation_readiness(conn) -> dict[str, Any]:
     }
 
 
+def _runtime_provenance_status(
+    *,
+    now_ts: int,
+    collector_last_cycle: dict[str, Any],
+    recommendation_readiness: dict[str, Any],
+) -> dict[str, Any]:
+    collector_started_ts = int(collector_last_cycle.get("started_ts") or 0)
+    collector_owner = str(collector_last_cycle.get("owner") or "").strip()
+    latest_snapshot_ts = int(recommendation_readiness.get("latest_snapshot_ts") or 0)
+    collector_cycle_current_process = collector_started_ts >= int(PROCESS_STARTED_TS)
+    publication_current_process = latest_snapshot_ts >= int(PROCESS_STARTED_TS)
+    collector_owner_matches_runtime = bool(collector_owner) and collector_owner == RUNTIME_OWNER
+    boot_grace_sec = _symbol_health_boot_grace_sec()
+    boot_grace_active = int(now_ts) < int(PROCESS_STARTED_TS) + int(boot_grace_sec)
+    return {
+        "runtime_owner": RUNTIME_OWNER,
+        "process_started_ts": int(PROCESS_STARTED_TS),
+        "process_age_sec": max(0, int(now_ts) - int(PROCESS_STARTED_TS)),
+        "boot_grace_sec": int(boot_grace_sec),
+        "boot_grace_active": bool(boot_grace_active),
+        "collector_cycle_started_ts": collector_started_ts or None,
+        "collector_cycle_owner": collector_owner or None,
+        "collector_cycle_current_process": bool(collector_cycle_current_process),
+        "collector_owner_matches_runtime": bool(collector_owner_matches_runtime),
+        "publication_ts": latest_snapshot_ts or None,
+        "publication_current_process": bool(publication_current_process),
+        "current_process_ready": bool(collector_cycle_current_process and publication_current_process),
+    }
+
+
 def _operator_runtime_readiness(
     *,
     schema_status: dict[str, Any],
@@ -7097,6 +7127,7 @@ def _operator_runtime_readiness(
     outcome_worker: dict[str, Any],
     collector_state: str,
     background_threads: dict[str, Any],
+    runtime_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     if not bool(schema_status.get("migration_applied")):
@@ -7120,8 +7151,18 @@ def _operator_runtime_readiness(
 
     actionable_count = int(recommendation_readiness.get("actionable_count") or 0)
     snapshot_total = int(recommendation_readiness.get("latest_snapshot_total") or 0)
+    provenance = runtime_provenance if isinstance(runtime_provenance, dict) else {}
+    current_process_ready = bool(provenance.get("current_process_ready")) if provenance else True
+    boot_grace_active = bool(provenance.get("boot_grace_active")) if provenance else False
+    if provenance and not current_process_ready and not boot_grace_active:
+        issues.append({
+            "code": "CURRENT_PROCESS_CYCLE_STALLED",
+            "message": "текущий процесс не завершил собственный цикл сбора и публикации после периода запуска",
+        })
     if issues:
         state = "degraded"
+    elif provenance and not current_process_ready:
+        state = "starting"
     elif snapshot_total <= 0:
         state = "starting"
     elif actionable_count > 0:
@@ -7130,13 +7171,18 @@ def _operator_runtime_readiness(
         state = "healthy_not_actionable"
 
     explanations = list(issues)
+    if not issues and provenance and not current_process_ready:
+        explanations.append({
+            "code": "CURRENT_PROCESS_CYCLE_PENDING",
+            "message": "после перезапуска ожидается первый собственный цикл сбора данных и публикации текущего процесса",
+        })
     dominant = str(recommendation_readiness.get("dominant_state") or "")
-    if not issues and dominant == "calibration_evidence_pending":
+    if state != "starting" and not issues and dominant == "calibration_evidence_pending":
         explanations.append({
             "code": "CALIBRATION_EVIDENCE_PENDING",
             "message": "система работает, но текущий набор правил ещё не доказал положительную ожидаемость и/или вероятность вне обучения",
         })
-    elif not issues and actionable_count == 0 and snapshot_total > 0:
+    elif state != "starting" and not issues and actionable_count == 0 and snapshot_total > 0:
         explanations.append({
             "code": "NO_ACTIONABLE_RECOMMENDATIONS",
             "message": "инфраструктура работает, но текущие сигналы не прошли модельные, экономические или риск-условия",
@@ -7351,13 +7397,20 @@ def api_status() -> dict[str, Any]:
             worker_stale_after_sec=_outcome_worker_stale_after_sec(),
         )
         database_schema = db.get_outcome_policy_schema_status(conn)
+        database_continuity = db.get_database_continuity_status(conn)
         recommendation_readiness = _latest_recommendation_readiness(conn)
+        runtime_provenance = _runtime_provenance_status(
+            now_ts=now_ts_int,
+            collector_last_cycle=collector_last_cycle,
+            recommendation_readiness=recommendation_readiness,
+        )
         operator_readiness = _operator_runtime_readiness(
             schema_status=database_schema,
             recommendation_readiness=recommendation_readiness,
             outcome_worker=outcome_worker_liveness,
             collector_state=collector_runtime_state,
             background_threads=background_threads,
+            runtime_provenance=runtime_provenance,
         )
 
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))
@@ -7373,7 +7426,9 @@ def api_status() -> dict[str, Any]:
             "app_version": app.version,
             "operator_readiness": operator_readiness,
             "recommendation_readiness": recommendation_readiness,
+            "runtime_provenance": runtime_provenance,
             "database_schema": database_schema,
+            "database_continuity": database_continuity,
             "calibrator_fitted": calib_fitted,
             "calibrator_logreg": calib_logreg,
             "calibrator_n": calib_n,

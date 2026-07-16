@@ -2948,6 +2948,8 @@ async function loadHealth() {
   const recommendationReadiness = systemStatus.recommendation_readiness || {};
   const outcomeWorker = systemStatus.outcome_worker || {};
   const databaseSchema = systemStatus.database_schema || {};
+  const databaseContinuity = systemStatus.database_continuity || {};
+  const runtimeProvenance = systemStatus.runtime_provenance || {};
   const botCalibrator = systemStatus.bot_calibrators?.futures_grid || {};
   const backgroundThreads = Object.entries(systemStatus.background_threads || {}).map(([name, info]) => ({
     name,
@@ -3042,6 +3044,12 @@ async function loadHealth() {
         { name: "Возраст старейшего просроченного", value: formatAgeHuman(outcomeWorker.oldest_due_age_sec) },
         { name: "Outcome-поля БД", value: databaseSchema.migration_applied ? "присутствуют" : `отсутствуют: ${(databaseSchema.missing_columns || []).join(", ")}` },
         { name: "Старых строк без материализации", value: databaseSchema.materialization_pending ?? "—" },
+        { name: "Идентификатор БД", value: databaseContinuity.database_instance_id || "—" },
+        { name: "Тип БД", value: databaseContinuity.engine || "—" },
+        { name: "Рекомендаций в БД", value: databaseContinuity.recommendations_total ?? "—" },
+        { name: "Исходов в БД", value: databaseContinuity.outcomes_total ?? "—" },
+        { name: "Первая рекомендация", value: formatTs(databaseContinuity.first_recommendation_ts) },
+        { name: "Последняя рекомендация", value: formatTs(databaseContinuity.latest_recommendation_ts) },
         { name: "Денежная ожидаемость", value: empiricalStatusRu(botCalibrator.expectancy_status || "insufficient") },
         { name: "Наблюдений текущих правил", value: botCalibrator.policy_eligible_outcomes_total ?? 0 },
         { name: "До денежного минимума", value: botCalibrator.monetary_sample_gap ?? "—" },
@@ -3081,7 +3089,13 @@ async function loadHealth() {
         { label: "Значение", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.value ?? "—"))}</span>` },
       ], [
         { name: "Идентификатор процесса", value: runtime.pid ?? "—" },
+        { name: "Владелец процесса", value: runtimeProvenance.runtime_owner || runtime.runtime_owner || "—" },
         { name: "Потоков Python", value: runtime.thread_count ?? "—" },
+        { name: "Цикл сборщика текущего процесса", value: runtimeProvenance.collector_cycle_current_process ? "Да" : "Нет" },
+        { name: "Владелец последнего цикла сборщика", value: runtimeProvenance.collector_cycle_owner || "—" },
+        { name: "Владелец цикла совпадает", value: runtimeProvenance.collector_owner_matches_runtime ? "Да" : "Нет" },
+        { name: "Публикация текущего процесса", value: runtimeProvenance.publication_current_process ? "Да" : "Нет" },
+        { name: "Период запуска активен", value: runtimeProvenance.boot_grace_active ? "Да" : "Нет" },
         { name: "Свежих минутных свечей при быстром старте", value: collector.recent_tail_bars ?? 360 },
         { name: "Переключений на свежий хвост", value: collector.recent_tail_resets ?? 0 },
         { name: "Максимум строк в буфере сборщика", value: collector.max_buffered_ohlcv_rows ?? "—" },

@@ -1,3 +1,7 @@
+## Диагностика публикации не меняет торговый допуск — v1.0.69
+
+Outcome-root является identity для labeling, но не фильтром операторской сводки. Строка, повторно использующая прежний root, остаётся частью текущей публикации и должна учитываться в `no_trade`/`blocked` статистике. Изменение не снижает evidence thresholds, не включает LLM в deterministic gate и не делает рекомендацию actionable.
+
 ## Разделение технической готовности и торгового допуска — v1.0.68
 
 `operator_readiness.runtime_healthy` отвечает только за инфраструктурную готовность: применена ли outcome-схема, завершён ли materialization, живы ли обязательные фоновые контуры и не находится ли outcome-worker в `stalled/error`. `operator_readiness.trading_actionable` отвечает только на наличие `recommended/active` в последней публикации.

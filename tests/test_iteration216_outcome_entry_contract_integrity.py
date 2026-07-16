@@ -294,4 +294,4 @@ def test_malformed_explicit_range_alias_does_not_fall_through_to_another_geometr
 def test_outcome_contract_is_bumped_for_post_publication_entry_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.0.68"' in source
+    assert 'version="1.0.69"' in source

@@ -1,3 +1,7 @@
+## Restart provenance and persistence continuity — v1.0.69
+
+`/api/v1/status` различает heartbeat supervised thread и завершённый цикл именно текущего процесса. `runtime_provenance.current_process_ready` требует одновременно собственного collector cycle и собственной recommendation publication. Старые persisted cycle metrics допустимы только во время boot grace. `database_continuity.database_instance_id` хранится в `app_config` и не содержит путь, DSN или credentials.
+
 ## Operator readiness observability — v1.0.68
 
 `GET /api/v1/status` теперь объединяет четыре независимых слоя наблюдаемости:
