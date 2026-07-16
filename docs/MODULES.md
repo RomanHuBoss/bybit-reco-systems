@@ -1,3 +1,10 @@
+## v1.0.70 — обязанности outcome и calibration модулей
+
+- `app/outcomes.py` выбирает все явно outcome-eligible, риск-чистые `shadow_no_trade` roots без невозможного LLM prerequisite.
+- `app/db.py` использует тот же контракт в liveness и runtime eligibility.
+- `app/recommender.py` продолжает отдельно присваивать `calibration_role=shadow_exploration` и `policy_evaluation_eligible=false` кандидатам вне exact candidate policy.
+- `app/calibration.py` и policy observability не принимают exploration rows в current-policy fit.
+
 ## v1.0.69 — диагностические обязанности
 
 - `app/db.py`: создаёт стабильный `database_instance_id_v1` и формирует безопасную сводку непрерывности.

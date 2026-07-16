@@ -3574,14 +3574,7 @@ def get_outcome_worker_liveness(
         AND r.risk_checks_passed = 1
         AND r.risk_blocks_empty = 1
     )"""
-    llm_shadow_expr = """(
-        r.status = 'no_trade'
-        AND r.outcome_eligible = 1
-        AND r.policy_evaluation_eligible = 1
-        AND r.outcome_sample_role = 'shadow_no_trade'
-        AND r.risk_checks_passed = 1
-        AND r.risk_blocks_empty = 1
-    )"""
+    llm_shadow_expr = safe_shadow_expr
     eligibility = f"""
              FROM recommendations r
              LEFT JOIN reco_outcomes o ON o.rec_id=r.rec_id
@@ -4456,9 +4449,10 @@ def _is_explicit_safe_shadow_no_trade(status: Any, reasons_json: str | None) -> 
     """Return true only for publisher-opted-in, risk-clean shadow no-trade roots.
 
     These rows are deliberately non-actionable and therefore never enter the LLM
-    review queue. Requiring an LLM verdict for them creates an impossible bootstrap
-    dependency: the empirical model needs outcomes, while the outcome worker waits
-    for a review that cannot exist.
+    review queue. Requiring an LLM verdict for them creates an impossible dependency
+    for both exact-policy evidence and separately marked shadow exploration. The
+    policy-evaluation flag remains a downstream calibration filter, not an outcome
+    observability prerequisite.
     """
     if str(status or "").strip().lower() != "no_trade":
         return False
@@ -4468,8 +4462,12 @@ def _is_explicit_safe_shadow_no_trade(status: Any, reasons_json: str | None) -> 
         return False
     if policy.get("eligible") is not True:
         return False
-    if policy.get("policy_evaluation_eligible") is not True:
-        return False
+    # ``policy_evaluation_eligible`` intentionally remains independent from
+    # outcome observability.  A risk-clean shadow exploration row may be labeled
+    # for research while staying excluded from the exact current-policy
+    # calibration cohort.  Requiring the policy flag here makes the optional
+    # advisory LLM silently disable that research path even though the reviewer
+    # never processes non-actionable rows.
     if str(policy.get("sample_role") or "").strip() != "shadow_no_trade":
         return False
     risk_checks = reasons.get("risk_checks") if isinstance(reasons, dict) else None

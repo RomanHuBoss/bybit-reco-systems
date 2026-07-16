@@ -1,3 +1,7 @@
+## Разделение observability и exact-policy calibration — v1.0.70
+
+`outcome_policy.eligible` отвечает за допустимость построения proxy-outcome, а `policy_evaluation_eligible` — за включение результата в exact current-policy calibration. Эти флаги намеренно не эквивалентны. При включённом локальном advisory-LLM любая явно outcome-eligible, риск-чистая строка `sample_role=shadow_no_trade` может созреть без LLM verdict, поскольку reviewer не обрабатывает неисполняемые строки. Если `policy_evaluation_eligible=false`, полученный outcome остаётся `shadow_exploration` и исключается из calibration lineage. Actionable roots по-прежнему требуют завершённый допустимый LLM verdict, когда этот gate включён.
+
 ## Диагностика публикации не меняет торговый допуск — v1.0.69
 
 Outcome-root является identity для labeling, но не фильтром операторской сводки. Строка, повторно использующая прежний root, остаётся частью текущей публикации и должна учитываться в `no_trade`/`blocked` статистике. Изменение не снижает evidence thresholds, не включает LLM в deterministic gate и не делает рекомендацию actionable.

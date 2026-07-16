@@ -1,3 +1,7 @@
+## Shadow outcome observability boundary — v1.0.70
+
+Путь `recommendation -> materialized outcome policy -> outcome worker` теперь использует `outcome_eligible + sample_role + deterministic risk cleanliness` как контракт фоновой разметки. `policy_evaluation_eligible` применяется downstream в `get_policy_outcome_observability` и calibration lineage. Благодаря этому optional advisory LLM не меняет доступность исследовательских labels, а exact-policy cohort остаётся неизменным и fail-closed. Схема БД и materialized columns не изменены.
+
 ## Restart provenance and persistence continuity — v1.0.69
 
 `/api/v1/status` различает heartbeat supervised thread и завершённый цикл именно текущего процесса. `runtime_provenance.current_process_ready` требует одновременно собственного collector cycle и собственной recommendation publication. Старые persisted cycle metrics допустимы только во время boot grace. `database_continuity.database_instance_id` хранится в `app_config` и не содержит путь, DSN или credentials.

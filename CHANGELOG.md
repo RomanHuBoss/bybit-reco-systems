@@ -1,3 +1,12 @@
+## 2026-07-16 - v1.0.70 - liveness исследовательских shadow outcomes
+
+- Исправлен advisory-LLM deadlock для явно outcome-eligible `shadow_exploration`: risk-clean `no_trade` roots теперь размечаются без LLM verdict.
+- Exact-policy calibration не расширена: `policy_evaluation_eligible=false` по-прежнему исключает exploration outcomes из `calibrator_n`, monetary cohort и probability fit.
+- Порог `MEAN_REVERSION_MIN_SCORE`, risk/economics gates, статусы и execution boundary не менялись.
+- Добавлен `tests/test_iteration258_shadow_exploration_liveness.py` с RED -> GREEN проверкой outcome worker, liveness и отсутствия calibration contamination.
+- Синхронизированы версия, static cache, README, trading/risk/architecture/module/scenario/infographic docs и операторские артефакты.
+- Baseline: 1175/1175 tests passed. Post-check: 1178/1178 tests passed, targeted 3/3 дважды, relevant suite 31/31, PostgreSQL offline subset 22/22; `compileall` и Node syntax passed. `pip check` сохранил внешний MoviePy/Pillow conflict; Ruff отсутствует.
+
 ## 2026-07-16 - v1.0.69 - целостность диагностики перезапуска и БД
 
 - Исправлена сводка `recommendation_readiness`: строки, повторно использующие прежний outcome-root, больше не исчезают из последней публикации.

@@ -158,5 +158,5 @@ def test_release_docs_use_cross_margin_contract() -> None:
 def test_release_version_and_outcome_contract_are_bumped() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.0.69"' in source
+    assert 'version="1.0.70"' in source
     assert _generated("long")["margin_mode"] == "cross"
