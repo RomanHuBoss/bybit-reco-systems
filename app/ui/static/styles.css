@@ -1514,9 +1514,23 @@ body {
 
 /* v1.0.62: minimum operator decision table */
 .decision { font-weight: 800; white-space: nowrap; }
-.decision-enter { color: var(--success, #15803d); }
-.decision-wait { color: var(--warning, #a16207); }
-.decision-stop { color: var(--danger, #b91c1c); }
+.decision-enter { color: var(--good); }
+.decision-pending,
+.decision-no-trade { color: var(--warn); }
+.decision-blocked { color: var(--bad); }
 .decision-executed { color: var(--accent, #2563eb); }
+.decision-muted { color: var(--muted); }
+/* Legacy alias kept for old generated fragments; hard blocks remain red. */
+.decision-stop { color: var(--bad); }
 .primary-reason { display: inline-block; max-width: 34rem; line-height: 1.25; }
-.symbol-details { margin-left: .35rem; }
+.details-action-cell { text-align: right; white-space: nowrap; }
+.symbol-details { margin-left: 0; min-width: 74px; }
+
+/* v1.0.68: operator health diagnostics export */
+.diagnostic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+.badge-executed { color: var(--accent); border-color: rgba(90, 150, 255, 0.40); }

@@ -1,3 +1,16 @@
+## Operator readiness observability — v1.0.68
+
+`GET /api/v1/status` теперь объединяет четыре независимых слоя наблюдаемости:
+
+1. `database_schema` — наличие materialized outcome/LLM колонок и число legacy-строк, ещё ожидающих backfill;
+2. `background_threads` и `outcome_worker` — фактическая жизнеспособность supervised runtime;
+3. `recommendation_readiness` — bounded-агрегация последней публикации, включая actionable/status counts и ранжированные `no_trade`/`blocked` причины;
+4. `operator_readiness` — производное состояние `ready`, `healthy_not_actionable`, `starting` или `degraded`, которое не смешивает техническую готовность с наличием торгового кандидата.
+
+Frontend health flow параллельно получает `/api/v1/health/symbols`, `/api/v1/status` и `/api/v1/decisions?limit=200`. Отрисовка выполняется только после проверки обоих обязательных HTTP-ответов. Экспорт формируется в браузере из уже полученных payload; чтения файлов сервера, `.env` или credential storage нет.
+
+Latest-publication aggregation ограничена 1000 корневыми рекомендациями и не сканирует исторический outcome backlog. Это сохраняет bounded request cost и не возвращает тяжёлую проверку очереди в HTTP hot path.
+
 ## Outcome maintenance runtime — v1.0.67
 
 Outcome/calibration maintenance является самостоятельным фоновым контуром. `outcomes` запускается через общий supervisor, получает собственную атомарную runtime-блокировку `runtime:outcomes` и не выполняется внутри рекомендательного цикла. Потеря блокировки проверяется heartbeat перед циклом, по строкам и после цикла; ошибка сохраняется в `app_config[outcome_worker_cycle]` и приводит к безопасному рестарту supervisor.

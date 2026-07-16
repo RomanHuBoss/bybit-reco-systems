@@ -8,6 +8,7 @@ import secrets
 import threading
 import socket
 import time
+from collections import Counter
 from functools import partial
 from contextlib import closing, asynccontextmanager
 from pathlib import Path
@@ -30,6 +31,7 @@ from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import BOT_HORIZONS, compute_outcomes_cycle
 from .recommender import (
+    CALIBRATION_EVIDENCE_REASON_CODES,
     DIRECTION_CALIBRATION_KEY,
     LLM_REVIEW_ASYNC_STATUS_APP_KEY,
     RECOMMENDER_MODEL_VERSION,
@@ -4836,7 +4838,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.67", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.68", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6946,6 +6948,208 @@ def metrics() -> str:
         return "\n".join(lines) + "\n"
 
 
+def _latest_recommendation_readiness(conn) -> dict[str, Any]:
+    """Summarise the latest publication without conflating safety with actionability.
+
+    The latest snapshot is bounded by the configured universe, so parsing its
+    reasons is safe and gives the operator a concrete explanation for a uniform
+    ``no_trade`` screen. Historical queues are intentionally excluded here.
+    """
+    latest_ts = db.get_latest_reco_ts(conn)
+    status_counts = {
+        "recommended": 0,
+        "active": 0,
+        "pending": 0,
+        "blocked": 0,
+        "no_trade": 0,
+        "suppressed": 0,
+        "expired": 0,
+        "executed": 0,
+        "ignored": 0,
+        "unknown": 0,
+    }
+    if latest_ts is None:
+        return {
+            "latest_snapshot_ts": None,
+            "latest_snapshot_age_sec": None,
+            "latest_snapshot_total": 0,
+            "status_counts": status_counts,
+            "actionable_count": 0,
+            "calibration_only_no_trade_count": 0,
+            "non_calibration_no_trade_count": 0,
+            "no_trade_reason_counts": [],
+            "blocked_reason_counts": [],
+            "dominant_state": "no_snapshot",
+        }
+
+    rows = conn.execute(
+        """SELECT status, reasons_json
+               FROM recommendations
+              WHERE ts=? AND is_outcome_label_root=1
+              ORDER BY rec_id ASC
+              LIMIT 1000""",
+        (int(latest_ts),),
+    ).fetchall()
+    no_trade_counts: Counter[str] = Counter()
+    blocked_counts: Counter[str] = Counter()
+    no_trade_messages: dict[str, str] = {}
+    blocked_messages: dict[str, str] = {}
+    no_trade_order: dict[str, int] = {}
+    blocked_order: dict[str, int] = {}
+    calibration_only_no_trade_count = 0
+    non_calibration_no_trade_count = 0
+
+    def _add_reason(
+        counter: Counter[str],
+        messages: dict[str, str],
+        ordering: dict[str, int],
+        item: Any,
+        *,
+        fallback_code: str,
+    ) -> str:
+        if isinstance(item, dict):
+            code = str(item.get("code") or fallback_code).strip().upper() or fallback_code
+            message = str(item.get("msg") or item.get("message") or code).strip() or code
+        else:
+            code = fallback_code
+            message = str(item or fallback_code).strip() or fallback_code
+        if code not in ordering:
+            ordering[code] = len(ordering)
+        counter[code] += 1
+        messages.setdefault(code, message)
+        return code
+
+    for row in rows:
+        status = str(row["status"] or "unknown").strip().lower() or "unknown"
+        if status not in status_counts:
+            status = "unknown"
+        status_counts[status] += 1
+        reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+        if status == "no_trade":
+            decision_layers = reasons.get("decision_layers") if isinstance(reasons.get("decision_layers"), dict) else {}
+            reason_items = decision_layers.get("no_trade_reasons") if isinstance(decision_layers.get("no_trade_reasons"), list) else []
+            codes: list[str] = []
+            for item in reason_items:
+                codes.append(_add_reason(
+                    no_trade_counts, no_trade_messages, no_trade_order, item,
+                    fallback_code="UNSPECIFIED_NO_TRADE_REASON",
+                ))
+            if not codes:
+                codes.append(_add_reason(
+                    no_trade_counts, no_trade_messages, no_trade_order,
+                    {
+                        "code": "SCORE_OR_CONFIDENCE_BELOW_THRESHOLD",
+                        "msg": "оценка или подтверждённая уверенность ниже порога допуска",
+                    },
+                    fallback_code="SCORE_OR_CONFIDENCE_BELOW_THRESHOLD",
+                ))
+            if codes and all(code in CALIBRATION_EVIDENCE_REASON_CODES for code in codes):
+                calibration_only_no_trade_count += 1
+            else:
+                non_calibration_no_trade_count += 1
+        elif status == "blocked":
+            risk_checks = reasons.get("risk_checks") if isinstance(reasons.get("risk_checks"), dict) else {}
+            block_items = risk_checks.get("blocks") if isinstance(risk_checks.get("blocks"), list) else []
+            if not block_items:
+                block_items = [{
+                    "code": "UNSPECIFIED_HARD_BLOCK",
+                    "msg": "жёсткая причина блокировки не детализирована",
+                }]
+            for item in block_items:
+                _add_reason(
+                    blocked_counts, blocked_messages, blocked_order, item,
+                    fallback_code="UNSPECIFIED_HARD_BLOCK",
+                )
+
+    def _ranked(counter: Counter[str], messages: dict[str, str], ordering: dict[str, int]) -> list[dict[str, Any]]:
+        return [
+            {"code": code, "count": int(count), "message": messages.get(code, code)}
+            for code, count in sorted(counter.items(), key=lambda item: (-item[1], ordering.get(item[0], 10**9)))
+        ]
+
+    actionable_count = status_counts["recommended"] + status_counts["active"]
+    if actionable_count > 0:
+        dominant_state = "actionable"
+    elif status_counts["no_trade"] > 0 and calibration_only_no_trade_count == status_counts["no_trade"]:
+        dominant_state = "calibration_evidence_pending"
+    elif status_counts["blocked"] == len(rows) and rows:
+        dominant_state = "all_blocked"
+    else:
+        dominant_state = "not_actionable"
+    return {
+        "latest_snapshot_ts": int(latest_ts),
+        "latest_snapshot_age_sec": max(0, db.now_ts() - int(latest_ts)),
+        "latest_snapshot_total": len(rows),
+        "status_counts": status_counts,
+        "actionable_count": actionable_count,
+        "calibration_only_no_trade_count": calibration_only_no_trade_count,
+        "non_calibration_no_trade_count": non_calibration_no_trade_count,
+        "no_trade_reason_counts": _ranked(no_trade_counts, no_trade_messages, no_trade_order),
+        "blocked_reason_counts": _ranked(blocked_counts, blocked_messages, blocked_order),
+        "dominant_state": dominant_state,
+    }
+
+
+def _operator_runtime_readiness(
+    *,
+    schema_status: dict[str, Any],
+    recommendation_readiness: dict[str, Any],
+    outcome_worker: dict[str, Any],
+    collector_state: str,
+    background_threads: dict[str, Any],
+) -> dict[str, Any]:
+    issues: list[dict[str, str]] = []
+    if not bool(schema_status.get("migration_applied")):
+        issues.append({"code": "DATABASE_MIGRATION_MISSING", "message": "не все outcome-поля присутствуют в БД"})
+    elif int(schema_status.get("materialization_pending") or 0) > 0:
+        issues.append({"code": "DATABASE_MATERIALIZATION_PENDING", "message": "миграция применена, но часть старых рекомендаций ещё не материализована"})
+    outcome_state = str(outcome_worker.get("state") or "unknown").lower()
+    if outcome_state in {"stalled", "error"}:
+        issues.append({"code": f"OUTCOME_WORKER_{outcome_state.upper()}", "message": "контур исходов не продвигает очередь"})
+    if collector_state in {"stalled", "error"}:
+        issues.append({"code": f"COLLECTOR_{collector_state.upper()}", "message": "контур рыночных данных не работает штатно"})
+    required_threads = {"collector", "backfill", "futures_meta", "sentiment", "reco", "outcomes"}
+    for name, info in background_threads.items():
+        thread_state = str((info or {}).get("state") or "").lower()
+        if thread_state == "error":
+            issues.append({"code": f"THREAD_{str(name).upper()}_ERROR", "message": f"фоновый контур {name} завершился с ошибкой"})
+        elif name in required_threads and thread_state == "stopped":
+            issues.append({"code": f"THREAD_{str(name).upper()}_STOPPED", "message": f"обязательный фоновый контур {name} остановлен"})
+        elif name in required_threads and not thread_state:
+            issues.append({"code": f"THREAD_{str(name).upper()}_NOT_STARTED", "message": f"нет подтверждения запуска обязательного фонового контура {name}"})
+
+    actionable_count = int(recommendation_readiness.get("actionable_count") or 0)
+    snapshot_total = int(recommendation_readiness.get("latest_snapshot_total") or 0)
+    if issues:
+        state = "degraded"
+    elif snapshot_total <= 0:
+        state = "starting"
+    elif actionable_count > 0:
+        state = "ready"
+    else:
+        state = "healthy_not_actionable"
+
+    explanations = list(issues)
+    dominant = str(recommendation_readiness.get("dominant_state") or "")
+    if not issues and dominant == "calibration_evidence_pending":
+        explanations.append({
+            "code": "CALIBRATION_EVIDENCE_PENDING",
+            "message": "система работает, но текущий набор правил ещё не доказал положительную ожидаемость и/или вероятность вне обучения",
+        })
+    elif not issues and actionable_count == 0 and snapshot_total > 0:
+        explanations.append({
+            "code": "NO_ACTIONABLE_RECOMMENDATIONS",
+            "message": "инфраструктура работает, но текущие сигналы не прошли модельные, экономические или риск-условия",
+        })
+    return {
+        "state": state,
+        "runtime_healthy": not issues,
+        "trading_actionable": actionable_count > 0,
+        "issues": issues,
+        "explanations": explanations,
+    }
+
+
 @app.get("/api/v1/status")
 def api_status() -> dict[str, Any]:
     with closing(_get_conn()) as conn:
@@ -7146,6 +7350,15 @@ def api_status() -> dict[str, Any]:
             require_llm_verdict=require_llm_outcome_verdict,
             worker_stale_after_sec=_outcome_worker_stale_after_sec(),
         )
+        database_schema = db.get_outcome_policy_schema_status(conn)
+        recommendation_readiness = _latest_recommendation_readiness(conn)
+        operator_readiness = _operator_runtime_readiness(
+            schema_status=database_schema,
+            recommendation_readiness=recommendation_readiness,
+            outcome_worker=outcome_worker_liveness,
+            collector_state=collector_runtime_state,
+            background_threads=background_threads,
+        )
 
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))
         inference_supported_bot_count = len(bot_status)
@@ -7157,6 +7370,10 @@ def api_status() -> dict[str, Any]:
             confidence_mode_in_use = "mixed_bot_and_raw"
 
         return {
+            "app_version": app.version,
+            "operator_readiness": operator_readiness,
+            "recommendation_readiness": recommendation_readiness,
+            "database_schema": database_schema,
             "calibrator_fitted": calib_fitted,
             "calibrator_logreg": calib_logreg,
             "calibrator_n": calib_n,

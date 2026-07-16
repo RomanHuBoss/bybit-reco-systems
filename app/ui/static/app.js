@@ -9,6 +9,7 @@ let currentRecId = null;   // rec_id currently shown in Details panel
 let detailsRequestSeq = 0;
 let currentMeta  = null;   // {venue, symbol, bot_type} — used to find fresh rec_id on refresh
 let refreshInFlight = null;
+let lastHealthDiagnostics = null;
 
 // ── sort state ────────────────────────────────────────────────────────────────
 let sortCol = "plan_rr";  // по умолчанию: лучшие значения RR плана сверху
@@ -237,6 +238,10 @@ function healthStatusRu(status) {
     pending: "Ожидает проверки",
     warming_up: "Накопление данных",
     backlog: "Есть очередь",
+    processing: "Обрабатывается",
+    starting: "Запускается",
+    healthy_not_actionable: "Работает, сделок нет",
+    degraded: "Требует внимания",
     stalled: "Работа остановилась",
     unknown: "Неизвестно",
   };
@@ -628,12 +633,18 @@ function symbolLinksHtml(it, compact = false) {
   `;
 }
 
+function operatorStatusTone(status) {
+  const value = String(status || "").trim().toLowerCase();
+  if (value === "recommended" || value === "active") return "good";
+  if (value === "blocked") return "bad";
+  if (value === "no_trade" || value === "pending") return "warn";
+  if (value === "executed") return "executed";
+  return "muted";
+}
+
 function statusBadgeHtml(status) {
-  let cls = "badge-inline badge-muted";
-  if (status === "recommended" || status === "active") cls = "badge-inline badge-good";
-  else if (status === "blocked") cls = "badge-inline badge-bad";
-  else if (status === "no_trade" || status === "pending") cls = "badge-inline badge-warn";
-  return `<span class="${cls}">${escapeHtml(operatorStatusRu(status))}</span>`;
+  const tone = operatorStatusTone(status);
+  return `<span class="badge-inline badge-${tone}">${escapeHtml(operatorStatusRu(status))}</span>`;
 }
 
 function shockBadgeHtml(shock) {
@@ -2074,9 +2085,9 @@ function buildLlmReviewCardHtml(llm, engineDirection) {
 
 function renderHealthStatus(status) {
   const value = String(status || "missing").toLowerCase();
-  const cls = value === "ok"
+  const cls = value === "ok" || value === "ready"
     ? "health-status-ok"
-    : value === "stale" || value === "disabled"
+    : ["stale", "disabled", "pending", "backlog", "processing", "starting", "warming_up", "healthy_not_actionable"].includes(value)
       ? "health-status-stale"
       : "health-status-missing";
   return `<span class="health-status ${cls}">${escapeHtml(healthStatusRu(value))}</span>`;
@@ -2753,30 +2764,44 @@ function updateSortHeaders() {
   });
 }
 
+function operatorDecisionPresentation(it) {
+  const summary = it?.operator_summary && typeof it.operator_summary === "object" ? it.operator_summary : {};
+  const decision = String(summary.decision || "").trim().toLowerCase();
+  const effectiveStatus = String(summary.effective_status || operatorEffectiveStatus(it) || "").trim().toLowerCase();
+
+  if (effectiveStatus === "executed" || decision === "executed") {
+    return { label: "ЗАПУЩЕНО", className: "decision-executed", effectiveStatus };
+  }
+  if (effectiveStatus === "recommended" || effectiveStatus === "active" || decision === "enter_allowed") {
+    return { label: "ВХОДИТЬ", className: "decision-enter", effectiveStatus };
+  }
+  if (effectiveStatus === "blocked") {
+    return { label: "ЗАБЛОКИРОВАНО", className: "decision-blocked", effectiveStatus };
+  }
+  if (effectiveStatus === "no_trade") {
+    return { label: "НЕ ТОРГОВАТЬ", className: "decision-no-trade", effectiveStatus };
+  }
+  if (effectiveStatus === "pending" || decision === "wait") {
+    return { label: "ЖДАТЬ", className: "decision-pending", effectiveStatus };
+  }
+  if (effectiveStatus === "ignored") {
+    return { label: "ОТКЛОНЕНО", className: "decision-muted", effectiveStatus };
+  }
+  if (effectiveStatus === "expired") {
+    return { label: "УСТАРЕЛО", className: "decision-muted", effectiveStatus };
+  }
+  if (effectiveStatus === "suppressed") {
+    return { label: "СКРЫТО", className: "decision-muted", effectiveStatus };
+  }
+  return { label: "НЕИЗВЕСТНО", className: "decision-muted", effectiveStatus: effectiveStatus || "unknown" };
+}
+
 function operatorDecisionCell(it) {
   const summary = it?.operator_summary && typeof it.operator_summary === "object" ? it.operator_summary : {};
-  const decision = String(summary.decision || "").toLowerCase();
-  const effectiveStatus = String(summary.effective_status || operatorEffectiveStatus(it) || "").toLowerCase();
   const reason = String(summary.primary_reason || "Решение требует проверки");
-
-  let label = "НЕ ТОРГОВАТЬ";
-  let className = "decision-stop";
-  if (decision === "enter_allowed") {
-    label = "ВХОДИТЬ";
-    className = "decision-enter";
-  } else if (decision === "wait") {
-    label = "ЖДАТЬ";
-    className = "decision-wait";
-  } else if (decision === "executed") {
-    label = "ЗАПУЩЕНО";
-    className = "decision-executed";
-  } else if (effectiveStatus === "blocked") {
-    label = "ЗАБЛОКИРОВАНО";
-    className = "decision-stop";
-  }
-
-  const ariaLabel = `${label}: ${reason}`;
-  return `<span class="decision ${className}" tabindex="0" title="${escapeHtml(reason)}" aria-label="${escapeHtml(ariaLabel)}">${label}</span>`;
+  const presentation = operatorDecisionPresentation(it);
+  const ariaLabel = `${presentation.label}: ${reason}`;
+  return `<span class="decision ${presentation.className}" tabindex="0" title="${escapeHtml(reason)}" aria-label="${escapeHtml(ariaLabel)}">${presentation.label}</span>`;
 }
 
 function renderRecoTable(items) {
@@ -2794,13 +2819,13 @@ function renderRecoTable(items) {
         <div class="symbol-cell">
           <b>${escapeHtml(it.symbol || "—")}</b>
           ${symbolLinksHtml(it)}
-          <button class="btn tiny symbol-details" data-act="details" data-id="${escapeHtml(it.rec_id)}">Детали</button>
         </div>
       </td>
       <td>${directionBadge(it.direction)}</td>
       <td>${planRrCell(it)}</td>
       <td>${empiricalExpectancyCell(it)}</td>
       <td data-cell="status">${operatorDecisionCell(it)}</td>
+      <td data-cell="details" class="details-action-cell"><button class="btn tiny symbol-details" data-act="details" data-id="${escapeHtml(it.rec_id)}">Детали</button></td>
     `;
     body.appendChild(tr);
   });
@@ -2885,9 +2910,33 @@ async function refreshCurrentDetails() {
 // ── decisions / risk ──────────────────────────────────────────────────────────
 
 async function loadHealth() {
-  const res = await fetch("/api/v1/health/symbols");
+  const [healthRes, statusRes, decisionsRes] = await Promise.all([
+    fetch("/api/v1/health/symbols"),
+    fetch("/api/v1/status"),
+    fetch("/api/v1/decisions?limit=200"),
+  ]);
   let data;
-  try { data = await res.json(); } catch (e) { return; }
+  let systemStatus;
+  let recentDecisions = [];
+  try {
+    data = await healthRes.json();
+    systemStatus = await statusRes.json();
+    if (decisionsRes.ok) recentDecisions = await decisionsRes.json();
+  } catch (e) {
+    showModal("Ошибка загрузки здоровья", { error: "Сервер вернул некорректный диагностический ответ" });
+    return;
+  }
+  if (!healthRes.ok || !statusRes.ok) {
+    showModal("Ошибка загрузки здоровья", { health: data, status: systemStatus });
+    return;
+  }
+  lastHealthDiagnostics = {
+    generated_at: new Date().toISOString(),
+    browser_location: window.location.href,
+    health: data,
+    status: systemStatus,
+    recent_decisions: recentDecisions,
+  };
 
   const sum = data.summary || {};
   const llm = data.llm_reviewer || {};
@@ -2895,6 +2944,23 @@ async function loadHealth() {
   const runtime = data.runtime || {};
   const collector = data.collector || {};
   const backfill = data.backfill || {};
+  const operatorReadiness = systemStatus.operator_readiness || {};
+  const recommendationReadiness = systemStatus.recommendation_readiness || {};
+  const outcomeWorker = systemStatus.outcome_worker || {};
+  const databaseSchema = systemStatus.database_schema || {};
+  const botCalibrator = systemStatus.bot_calibrators?.futures_grid || {};
+  const backgroundThreads = Object.entries(systemStatus.background_threads || {}).map(([name, info]) => ({
+    name,
+    ...(info || {}),
+  }));
+  const readinessStateLabels = {
+    ready: "Работает, есть торговые кандидаты",
+    healthy_not_actionable: "Работает, торговых кандидатов нет",
+    starting: "Запускается / накапливает данные",
+    degraded: "Есть эксплуатационная проблема",
+  };
+  const readinessState = String(operatorReadiness.state || "unknown");
+  const recCounts = recommendationReadiness.status_counts || {};
   const llmTfText = Array.isArray(llm.tf_secs) && llm.tf_secs.length
     ? llm.tf_secs.map(timeframeRu).join(", ")
     : "—";
@@ -2914,6 +2980,14 @@ async function loadHealth() {
 
   const html = `
     ${renderModalSummaryCards([
+      { label: "Состояние системы", value: readinessStateLabels[readinessState] || healthStatusRu(readinessState) },
+      { label: "Версия", value: systemStatus.app_version || "—" },
+      { label: "Можно торговать", value: Number(recommendationReadiness.actionable_count || 0) },
+      { label: "Не торговать", value: Number(recCounts.no_trade || 0) },
+      { label: "Заблокировано", value: Number(recCounts.blocked || 0) },
+      { label: "Контур исходов", value: healthStatusRu(outcomeWorker.state || "unknown") },
+      { label: "Миграция БД", value: databaseSchema.migration_applied && Number(databaseSchema.materialization_pending || 0) === 0 ? "Применена" : "Требует внимания" },
+      { label: "Калибратор", value: botCalibrator.fitted ? "Обучен" : "Не обучен" },
       { label: "Норма", value: Number(sum.ok || 0) },
       { label: "Устаревшие", value: Number(sum.stale || 0) },
       { label: "Нет данных", value: Number(sum.missing || 0) },
@@ -2927,7 +3001,63 @@ async function loadHealth() {
       { label: "Проверка LLM", html: renderLlmStatusBadge(llm.enabled ? (llm.mode || "enabled") : "disabled") },
       { label: "Модель LLM", value: llm.model || "—" },
     ])}
-    <p class="modal-note">«Норма» в этом окне означает свежую текущую цену и минутные свечи. Готовность алгоритма рассчитывается отдельно и требует достаточной истории на нескольких временных интервалах.</p>
+    <p class="modal-note"><b>${escapeHtml(readinessStateLabels[readinessState] || healthStatusRu(readinessState))}.</b> «Система работает» и «сейчас есть разрешённая сделка» — разные утверждения. Инфраструктура может быть исправна, а все идеи оставаться в статусе «Не торговать», пока текущий набор правил не накопил доказательства положительной ожидаемости или сигналы не прошли экономические условия.</p>
+    <div class="diagnostic-actions">
+      <button class="btn secondary" data-act="copy-health-diagnostics">Скопировать диагностику</button>
+      <button class="btn secondary" data-act="download-health-diagnostics">Скачать диагностику JSON</button>
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Сводное заключение</div>
+      ${buildModalTable([
+        { label: "Код", render: row => `<span class="wrap">${escapeHtml(row.code || "—")}</span>` },
+        { label: "Пояснение", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.message || row.code || "—"))}</span>` },
+      ], operatorReadiness.explanations || [], { emptyText: "Эксплуатационные проблемы не обнаружены; наличие сделки определяется отдельными торговыми условиями." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Почему сейчас нет торговых кандидатов</div>
+      ${buildModalTable([
+        { label: "Код", render: row => `<span class="wrap">${escapeHtml(row.code || "—")}</span>` },
+        { label: "Количество", render: row => escapeHtml(String(Number(row.count || 0))) },
+        { label: "Пояснение", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.message || row.code || "—"))}</span>` },
+      ], recommendationReadiness.no_trade_reason_counts || [], { emptyText: Number(recommendationReadiness.actionable_count || 0) > 0 ? "Есть разрешённые кандидаты." : "Структурированные причины «Не торговать» отсутствуют; проверьте последний снимок рекомендаций." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Жёсткие блокировки последней публикации</div>
+      ${buildModalTable([
+        { label: "Код", render: row => `<span class="wrap">${escapeHtml(row.code || "—")}</span>` },
+        { label: "Количество", render: row => escapeHtml(String(Number(row.count || 0))) },
+        { label: "Пояснение", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.message || row.code || "—"))}</span>` },
+      ], recommendationReadiness.blocked_reason_counts || [], { emptyText: "Жёстких блокировок в последней публикации нет." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Контур исходов, миграция и калибровка</div>
+      ${buildModalTable([
+        { label: "Параметр", render: row => escapeHtml(row.name) },
+        { label: "Значение", render: row => `<span class="wrap">${escapeHtml(String(row.value ?? "—"))}</span>` },
+      ], [
+        { name: "Состояние outcome-worker", value: healthStatusRu(outcomeWorker.state || "unknown") },
+        { name: "Созревших в очереди", value: outcomeWorker.matured_pending_total ?? "—" },
+        { name: "Не предпринималась попытка", value: outcomeWorker.unattempted_total ?? "—" },
+        { name: "Обработано в последнем цикле", value: outcomeWorker.last_cycle?.rows_examined ?? outcomeWorker.rows_examined ?? "—" },
+        { name: "Возраст старейшего просроченного", value: formatAgeHuman(outcomeWorker.oldest_due_age_sec) },
+        { name: "Outcome-поля БД", value: databaseSchema.migration_applied ? "присутствуют" : `отсутствуют: ${(databaseSchema.missing_columns || []).join(", ")}` },
+        { name: "Старых строк без материализации", value: databaseSchema.materialization_pending ?? "—" },
+        { name: "Денежная ожидаемость", value: empiricalStatusRu(botCalibrator.expectancy_status || "insufficient") },
+        { name: "Наблюдений текущих правил", value: botCalibrator.policy_eligible_outcomes_total ?? 0 },
+        { name: "До денежного минимума", value: botCalibrator.monetary_sample_gap ?? "—" },
+        { name: "До вероятностного минимума", value: botCalibrator.probability_sample_gap ?? "—" },
+        { name: "Независимые временные группы", value: `${botCalibrator.temporal_cluster_count ?? 0}/${botCalibrator.minimum_temporal_clusters ?? 0}` },
+      ], { emptyText: "Диагностика исходов недоступна." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Фоновые контуры</div>
+      ${buildModalTable([
+        { label: "Контур", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.name || "—"))}</span>` },
+        { label: "Состояние", render: row => renderHealthStatus(row.state || "unknown") },
+        { label: "Последнее изменение", render: row => escapeHtml(formatTs(row.updated_ts || row.last_heartbeat_ts || row.started_ts)) },
+        { label: "Ошибка", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.error || "—"))}</span>` },
+      ], backgroundThreads, { emptyText: "Состояние фоновых контуров недоступно." })}
+    </div>
     <div class="modal-section">
       <div class="modal-section-title">Накопление данных и готовность</div>
       ${buildModalTable([
@@ -2994,7 +3124,7 @@ async function loadHealth() {
     </div>
   `;
 
-  showModalHtml("Здоровье символов", html);
+  showModalHtml("Здоровье системы", html);
 }
 
 async function loadOutcomes() {
@@ -3271,6 +3401,35 @@ document.addEventListener("click", async (e) => {
       t.textContent = "✓";
       setTimeout(() => { t.textContent = old; }, 1200);
     });
+    return;
+  }
+
+  if (act === "copy-health-diagnostics") {
+    if (!lastHealthDiagnostics) return;
+    const txt = JSON.stringify(lastHealthDiagnostics, null, 2);
+    try {
+      await navigator.clipboard.writeText(txt);
+      const old = t.textContent;
+      t.textContent = "Диагностика скопирована";
+      setTimeout(() => { t.textContent = old; }, 1500);
+    } catch (err) {
+      showRawTechnicalModal("Диагностика системы", lastHealthDiagnostics);
+    }
+    return;
+  }
+
+  if (act === "download-health-diagnostics") {
+    if (!lastHealthDiagnostics) return;
+    const blob = new Blob([JSON.stringify(lastHealthDiagnostics, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    link.href = url;
+    link.download = `bybit-recommender-diagnostics-${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
     return;
   }
 

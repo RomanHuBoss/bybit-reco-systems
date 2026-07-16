@@ -64,7 +64,7 @@ def test_primary_table_uses_decision_tooltip_and_has_no_reason_column() -> None:
     headers = re.findall(r"<th(?:\s[^>]*)?>(.*?)</th>", table_match.group(1), re.S)
     labels = [re.sub(r"<[^>]+>", "", item).strip() for item in headers]
 
-    assert labels == ["Символ", "Направление", "RR плана ?", "Доходность по наблюдениям ?", "Решение"]
+    assert labels == ["Символ", "Направление", "RR плана ?", "Доходность по наблюдениям ?", "Решение", "Детали"]
     assert "primaryDecisionReasonCell" not in js
     assert 'title="${escapeHtml(reason)}"' in js
     assert 'aria-label="${escapeHtml(ariaLabel)}"' in js
@@ -89,12 +89,14 @@ def _extract_js_function(source: str, name: str) -> str:
 def test_decision_cell_renders_short_hover_hint_from_production_function() -> None:
     root = Path(__file__).resolve().parents[1]
     source = (root / "app/ui/static/app.js").read_text(encoding="utf-8")
+    presentation_source = _extract_js_function(source, "operatorDecisionPresentation")
     function_source = _extract_js_function(source, "operatorDecisionCell")
     script = f"""
 function escapeHtml(value) {{
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#039;');
 }}
 function operatorEffectiveStatus(it) {{ return it.effective_status || it.status || ''; }}
+{presentation_source}
 {function_source}
 const html = operatorDecisionCell({{
   status: 'no_trade',

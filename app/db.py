@@ -198,6 +198,35 @@ def _ensure_recommendation_outcome_policy_columns(conn: sqlite3.Connection) -> b
     return added
 
 
+def get_outcome_policy_schema_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return an operator-facing proof that the additive outcome migration is active.
+
+    This is intentionally cheap: one schema lookup and one bounded aggregate over
+    rows whose materialized fields are still NULL.  It lets the runtime health UI
+    distinguish "migration applied" from assumptions based only on a restart.
+    """
+    columns = _table_columns(conn, "recommendations")
+    missing = [name for name in OUTCOME_POLICY_MATERIALIZED_COLUMNS if name not in columns]
+    materialization_pending = 0
+    if not missing:
+        row = conn.execute(
+            """SELECT COUNT(*) AS c
+                   FROM recommendations
+                  WHERE outcome_eligible IS NULL
+                     OR policy_evaluation_eligible IS NULL
+                     OR risk_checks_passed IS NULL
+                     OR risk_blocks_empty IS NULL"""
+        ).fetchone()
+        materialization_pending = int(row["c"] if row is not None else 0)
+    return {
+        "required_columns": list(OUTCOME_POLICY_MATERIALIZED_COLUMNS),
+        "missing_columns": missing,
+        "migration_applied": not missing,
+        "materialization_pending": materialization_pending,
+        "materialization_complete": not missing and materialization_pending == 0,
+    }
+
+
 def _recommendation_outcome_policy_backfill_needed(conn: sqlite3.Connection) -> bool:
     cur = conn.execute(
         """SELECT 1

@@ -1,3 +1,18 @@
+## v1.0.68 — обязанности модулей диагностики готовности
+
+### `app/db.py`
+- `get_outcome_policy_schema_status(conn)` проверяет наличие materialized eligibility/LLM колонок и сообщает состояние legacy materialization; функция read-only и не заменяет `init_db()`.
+
+### `app/main.py`
+- `_latest_recommendation_readiness()` строит ограниченный снимок последней публикации и агрегирует причины `no_trade`/`blocked`.
+- `_operator_runtime_readiness()` разделяет техническое состояние runtime и наличие actionable-рекомендаций.
+- `/api/v1/status` публикует `app_version`, `database_schema`, `recommendation_readiness` и `operator_readiness` как additive contract.
+
+### `app/ui/static/app.js`
+- `operatorDecisionPresentation()` является единым frontend-контрактом подписи и CSS-класса статуса.
+- `loadHealth()` объединяет symbol health, runtime status и ограниченную историю решений, отображает итог и позволяет экспортировать диагностический JSON.
+- `renderRecoTable()` оставляет решение отдельной ячейкой, а действие «Детали» — отдельной крайней правой колонкой.
+
 ## v1.0.67: обязанности outcome-контура
 
 - `app/outcomes.py`: `compute_outcomes_cycle()` обрабатывает ограниченный пакет, поддерживает runtime heartbeat и возвращает структурированные показатели цикла; `compute_outcomes_once()` сохранён как count-only compatibility wrapper.

@@ -221,7 +221,7 @@ def test_primary_table_has_only_five_visible_fields_and_keeps_diagnostics_in_det
     assert table_match is not None
     headers = re.findall(r"<th(?:\s[^>]*)?>(.*?)</th>", table_match.group(1), re.S)
     labels = [re.sub(r"<[^>]+>", "", item).strip() for item in headers]
-    assert labels == ["Символ", "Направление", "RR плана ?", "Доходность по наблюдениям ?", "Решение"]
+    assert labels == ["Символ", "Направление", "RR плана ?", "Доходность по наблюдениям ?", "Решение", "Детали"]
     assert "Запас капитала" not in table_match.group(1)
     assert ">Карточка<" not in table_match.group(1)
     assert "function operatorDecisionCell" in js
