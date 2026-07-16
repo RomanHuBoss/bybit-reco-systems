@@ -1769,13 +1769,10 @@ def compute_outcomes_cycle(
     params: list[object] = [db.now_ts() - min_horizon]
 
     if require_llm_verdict:
-        # Actionable roots require a completed LLM verdict. Every explicitly
-        # outcome-eligible, risk-clean shadow no_trade root bypasses it because the
-        # reviewer intentionally never processes non-actionable rows.
-        # ``policy_evaluation_eligible`` is deliberately not required here:
-        # shadow exploration can be labeled while remaining excluded from the
-        # exact current-policy calibration cohort. Filter before LIMIT to preserve
-        # forward progress.
+        # Actionable roots require a completed LLM verdict. Explicit risk-clean
+        # shadow no_trade roots bypass it because the reviewer intentionally never
+        # processes non-actionable rows; without this branch the learning bootstrap
+        # is permanently stalled. Filter before LIMIT to preserve forward progress.
         base_sql += """
            AND (
                r.llm_review_status = 'ok'

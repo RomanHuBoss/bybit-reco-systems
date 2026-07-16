@@ -1,6 +1,8 @@
-## Shadow outcome observability boundary — v1.0.70
+## Runtime lock handover и shadow exploration - v1.0.71
 
-Путь `recommendation -> materialized outcome policy -> outcome worker` теперь использует `outcome_eligible + sample_role + deterministic risk cleanliness` как контракт фоновой разметки. `policy_evaluation_eligible` применяется downstream в `get_policy_outcome_observability` и calibration lineage. Благодаря этому optional advisory LLM не меняет доступность исследовательских labels, а exact-policy cohort остаётся неизменным и fail-closed. Схема БД и materialized columns не изменены.
+Supervised wrapper владеет единым lifecycle release для блокировок фоновых компонентов. `release_runtime_lock` удаляет строку только при совпадении owner, поэтому завершившийся процесс не может удалить lease нового лидера. При аварийном завершении сохраняется TTL takeover. Status API читает lock-row только как диагностику и не использует read-before-write для claim; PostgreSQL atomic UPSERT остаётся source of truth.
+
+Runtime provenance теперь содержит collector lock owner/heartbeat/TTL/takeover, а collector state различает `handover`, `starting`, `ok`, `stalled`, `error`. Handover grace отделён от symbol freshness: диагностическая передача может быть штатной, но stale symbols не маскируются как торгово свежие. Outcome SQL и liveness используют одинаковый риск-чистый shadow contract; `policy_evaluation_eligible` остаётся downstream calibration gate, а не prerequisite для исследовательской разметки.
 
 ## Restart provenance and persistence continuity — v1.0.69
 

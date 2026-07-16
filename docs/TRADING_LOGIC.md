@@ -1,6 +1,8 @@
-## Разделение observability и exact-policy calibration — v1.0.70
+## v1.0.71 - перезапуск и исследовательские исходы не ослабляют торговый допуск
 
-`outcome_policy.eligible` отвечает за допустимость построения proxy-outcome, а `policy_evaluation_eligible` — за включение результата в exact current-policy calibration. Эти флаги намеренно не эквивалентны. При включённом локальном advisory-LLM любая явно outcome-eligible, риск-чистая строка `sample_role=shadow_no_trade` может созреть без LLM verdict, поскольку reviewer не обрабатывает неисполняемые строки. Если `policy_evaluation_eligible=false`, полученный outcome остаётся `shadow_exploration` и исключается из calibration lineage. Actionable roots по-прежнему требуют завершённый допустимый LLM verdict, когда этот gate включён.
+Состояние `handover` относится только к передаче фоновой блокировки. Пока текущий процесс не получил свежий цикл и не опубликовал собственный snapshot, торговая готовность отсутствует; stale market data остаются hard fail-closed. Освобождение lease при штатном shutdown сокращает окно восстановления, но не делает старые данные безопасными.
+
+Риск-чистая строка `no_trade` с `outcome_eligible=true`, `outcome_sample_role=shadow_no_trade` и `policy_evaluation_eligible=false` может получить исследовательский proxy-outcome без LLM verdict. Она не становится `recommended`/`active`, не входит в exact-policy calibration и не меняет `calibrator_n`. Неоднозначная внутрисвечная траектория и недостаточный подтверждённый объём приводят к `censored`, а не к оптимистическому результату.
 
 ## Диагностика публикации не меняет торговый допуск — v1.0.69
 

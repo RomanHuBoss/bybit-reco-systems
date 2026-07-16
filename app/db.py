@@ -2856,6 +2856,26 @@ def heartbeat_runtime_lock(conn: sqlite3.Connection, lock_key: str, owner: str) 
     conn.commit()
     return int(cur.rowcount or 0) > 0
 
+
+def get_runtime_lock_snapshot(conn: sqlite3.Connection, lock_key: str) -> dict[str, Any]:
+    """Return the current durable owner/heartbeat for one runtime lock.
+
+    The snapshot is diagnostic only. Lock acquisition remains atomic in
+    :func:`acquire_runtime_lock`; callers must not use this read as a claim.
+    """
+    row = conn.execute(
+        "SELECT owner, heartbeat_ts FROM runtime_locks WHERE lock_key=?",
+        (lock_key,),
+    ).fetchone()
+    if row is None:
+        return {"lock_key": lock_key, "owner": None, "heartbeat_ts": None}
+    heartbeat = strict_integer(row["heartbeat_ts"])
+    return {
+        "lock_key": lock_key,
+        "owner": str(row["owner"] or "").strip() or None,
+        "heartbeat_ts": heartbeat if heartbeat is not None and heartbeat > 0 else None,
+    }
+
 def upsert_risk_limits(conn: sqlite3.Connection, version: str, limits: dict[str, Any], is_active: bool = True, *, commit: bool = True) -> None:
     if is_active:
         conn.execute("""UPDATE risk_limits SET is_active=0""")
@@ -3574,7 +3594,13 @@ def get_outcome_worker_liveness(
         AND r.risk_checks_passed = 1
         AND r.risk_blocks_empty = 1
     )"""
-    llm_shadow_expr = safe_shadow_expr
+    llm_shadow_expr = """(
+        r.status = 'no_trade'
+        AND r.outcome_eligible = 1
+        AND r.outcome_sample_role = 'shadow_no_trade'
+        AND r.risk_checks_passed = 1
+        AND r.risk_blocks_empty = 1
+    )"""
     eligibility = f"""
              FROM recommendations r
              LEFT JOIN reco_outcomes o ON o.rec_id=r.rec_id
@@ -4449,10 +4475,9 @@ def _is_explicit_safe_shadow_no_trade(status: Any, reasons_json: str | None) -> 
     """Return true only for publisher-opted-in, risk-clean shadow no-trade roots.
 
     These rows are deliberately non-actionable and therefore never enter the LLM
-    review queue. Requiring an LLM verdict for them creates an impossible dependency
-    for both exact-policy evidence and separately marked shadow exploration. The
-    policy-evaluation flag remains a downstream calibration filter, not an outcome
-    observability prerequisite.
+    review queue. Requiring an LLM verdict for them creates an impossible bootstrap
+    dependency: the empirical model needs outcomes, while the outcome worker waits
+    for a review that cannot exist.
     """
     if str(status or "").strip().lower() != "no_trade":
         return False
@@ -4462,12 +4487,6 @@ def _is_explicit_safe_shadow_no_trade(status: Any, reasons_json: str | None) -> 
         return False
     if policy.get("eligible") is not True:
         return False
-    # ``policy_evaluation_eligible`` intentionally remains independent from
-    # outcome observability.  A risk-clean shadow exploration row may be labeled
-    # for research while staying excluded from the exact current-policy
-    # calibration cohort.  Requiring the policy flag here makes the optional
-    # advisory LLM silently disable that research path even though the reviewer
-    # never processes non-actionable rows.
     if str(policy.get("sample_role") or "").strip() != "shadow_no_trade":
         return False
     risk_checks = reasons.get("risk_checks") if isinstance(reasons, dict) else None

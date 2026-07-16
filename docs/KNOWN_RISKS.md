@@ -1,6 +1,8 @@
-## v1.0.70 — различие исследовательских и калибровочных outcomes
+## v1.0.71 - остаточные риски перезапуска и наблюдаемости исходов
 
-После исправления общее число proxy-outcomes может расти, тогда как `calibration_eligible_outcome_count` и `calibrator_n` остаются нулевыми. Это не противоречие: low-thesis `shadow_exploration` служит диагностике гипотез и не доказывает пригодность текущей candidate policy. Запрещено использовать такие строки для обхода `MEAN_REVERSION_MIN_SCORE`, monetary expectancy, OOF-skill или confidence gate. Остаточный риск proxy-to-fill gap сохраняется: OHLCV-реконструкция не является фактическим биржевым исполнением.
+Штатный shutdown освобождает runtime-lock, но при принудительном завершении процесса (`kill -9`, авария ОС, отключение питания) takeover по-прежнему возможен только после TTL. В этот период состояние `handover` не означает свежесть рынка: stale/missing данные остаются заблокированными. SQLite остаётся single-node backend; PostgreSQL нужен для распределённой блокировки между узлами.
+
+Большая историческая очередь outcome может содержать высокую долю терминально цензурированных строк. `intrabar_extreme_order_unobservable`, `intrabar_replacement_fill_timing_unobservable`, недостаточный свечной объём и неизвестный порядок kill-switch не должны автоматически превращаться в метки. Это ограничение разрешимости OHLCV, а не ошибка worker. `shadow_exploration` не входит в exact-policy denominator/fit и не доказывает live edge.
 
 ## v1.0.69 — остаточные риски непрерывности
 

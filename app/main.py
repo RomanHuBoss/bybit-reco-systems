@@ -4561,6 +4561,41 @@ def _log_background_thread_error(name: str, exc: Exception) -> None:
         logger.warning("background thread error log failed for %s", name, exc_info=True)
 
 
+BACKGROUND_RUNTIME_LOCK_KEYS = {
+    "collector": "runtime:collector",
+    "backfill": "runtime:backfill",
+    "futures_meta": "runtime:futures_meta",
+    "sentiment": "runtime:sentiment",
+    "reco": "runtime:reco",
+    "outcomes": "runtime:outcomes",
+    "llm_reviewer": "runtime:llm_reviewer",
+}
+
+
+def _collector_runtime_lock_ttl_sec() -> int:
+    return max(120, int(settings.collect_interval_sec) * 20)
+
+
+def _runtime_handover_grace_sec() -> int:
+    # A clean restart must be allowed to wait until a prior collector lease can
+    # expire, plus one scheduling interval, without being reported as a crash.
+    return max(
+        int(settings.stale_data_max_sec),
+        _collector_runtime_lock_ttl_sec() + int(settings.collect_interval_sec),
+    )
+
+
+def _release_component_runtime_lock(name: str) -> None:
+    lock_key = BACKGROUND_RUNTIME_LOCK_KEYS.get(str(name or "").strip().lower())
+    if not lock_key:
+        return
+    try:
+        with closing(_get_lock_conn()) as lock_conn:
+            db.release_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER)
+    except Exception:
+        logger.warning("runtime lock release failed for %s", name, exc_info=True)
+
+
 def _run_supervised_background_target(
     name: str,
     target,
@@ -4616,6 +4651,8 @@ def _run_supervised_background_target(
                 sleep_fn(max(0.0, float(restart_delay_sec)))
             except Exception:
                 return
+        finally:
+            _release_component_runtime_lock(name)
 
 
 def _make_runtime_lock_heartbeat(lock_key: str, lock_conn_factory=None):
@@ -4838,7 +4875,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.70", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.71", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6409,7 +6446,7 @@ def api_sentiment_get(scope: str = "global", key: str = "crypto", limit: int = 1
 def _collector_thread():
     client = BybitPublicClient(settings.bybit_base_url)
     lock_key = "runtime:collector"
-    lock_ttl = max(120, settings.collect_interval_sec * 20)
+    lock_ttl = _collector_runtime_lock_ttl_sec()
     next_run = time.monotonic()
     try:
         while not _BACKGROUND_STOP_EVENT.is_set():
@@ -6469,7 +6506,7 @@ def _collector_thread():
 def _backfill_thread():
     client = BybitPublicClient(settings.bybit_base_url)
     lock_key = "runtime:backfill"
-    lock_ttl = max(120, settings.collect_interval_sec * 20)
+    lock_ttl = _collector_runtime_lock_ttl_sec()
     next_run = time.monotonic()
     try:
         while not _BACKGROUND_STOP_EVENT.is_set():
@@ -7090,11 +7127,37 @@ def _latest_recommendation_readiness(conn) -> dict[str, Any]:
     }
 
 
+def _collector_runtime_state(
+    *,
+    collector_last_cycle: dict[str, Any],
+    collector_thread_state: dict[str, Any],
+    collector_cycle_age_sec: int | None,
+    runtime_provenance: dict[str, Any],
+) -> str:
+    thread_state = str(collector_thread_state.get("state") or "").strip().lower()
+    if thread_state == "error":
+        return "error"
+    current_cycle = bool(runtime_provenance.get("collector_cycle_current_process"))
+    handover_active = bool(runtime_provenance.get("boot_grace_active")) and not current_cycle
+    owner_matches = bool(runtime_provenance.get("collector_owner_matches_runtime"))
+    if handover_active and thread_state == "running":
+        return "starting" if owner_matches else "handover"
+    stale_after = max(int(settings.collect_interval_sec) * 6, int(settings.stale_data_max_sec))
+    if collector_cycle_age_sec is not None and collector_cycle_age_sec > stale_after:
+        return "stalled"
+    if collector_last_cycle:
+        return "ok"
+    if thread_state == "running":
+        return "starting"
+    return "unknown"
+
+
 def _runtime_provenance_status(
     *,
     now_ts: int,
     collector_last_cycle: dict[str, Any],
     recommendation_readiness: dict[str, Any],
+    collector_lock_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     collector_started_ts = int(collector_last_cycle.get("started_ts") or 0)
     collector_owner = str(collector_last_cycle.get("owner") or "").strip()
@@ -7102,8 +7165,15 @@ def _runtime_provenance_status(
     collector_cycle_current_process = collector_started_ts >= int(PROCESS_STARTED_TS)
     publication_current_process = latest_snapshot_ts >= int(PROCESS_STARTED_TS)
     collector_owner_matches_runtime = bool(collector_owner) and collector_owner == RUNTIME_OWNER
-    boot_grace_sec = _symbol_health_boot_grace_sec()
+    boot_grace_sec = _runtime_handover_grace_sec()
     boot_grace_active = int(now_ts) < int(PROCESS_STARTED_TS) + int(boot_grace_sec)
+    lock_snapshot = collector_lock_snapshot if isinstance(collector_lock_snapshot, dict) else {}
+    lock_owner = str(lock_snapshot.get("owner") or "").strip() or None
+    lock_heartbeat_ts = strict_integer(lock_snapshot.get("heartbeat_ts"))
+    lock_ttl_sec = _collector_runtime_lock_ttl_sec()
+    lock_takeover_in_sec = None
+    if lock_heartbeat_ts is not None and lock_heartbeat_ts > 0 and lock_owner != RUNTIME_OWNER:
+        lock_takeover_in_sec = max(0, int(lock_heartbeat_ts) + int(lock_ttl_sec) - int(now_ts))
     return {
         "runtime_owner": RUNTIME_OWNER,
         "process_started_ts": int(PROCESS_STARTED_TS),
@@ -7114,6 +7184,11 @@ def _runtime_provenance_status(
         "collector_cycle_owner": collector_owner or None,
         "collector_cycle_current_process": bool(collector_cycle_current_process),
         "collector_owner_matches_runtime": bool(collector_owner_matches_runtime),
+        "collector_lock_owner": lock_owner,
+        "collector_lock_heartbeat_ts": lock_heartbeat_ts,
+        "collector_lock_ttl_sec": int(lock_ttl_sec),
+        "collector_lock_takeover_in_sec": lock_takeover_in_sec,
+        "collector_lock_owned_by_current_process": bool(lock_owner and lock_owner == RUNTIME_OWNER),
         "publication_ts": latest_snapshot_ts or None,
         "publication_current_process": bool(publication_current_process),
         "current_process_ready": bool(collector_cycle_current_process and publication_current_process),
@@ -7172,6 +7247,11 @@ def _operator_runtime_readiness(
 
     explanations = list(issues)
     if not issues and provenance and not current_process_ready:
+        if collector_state == "handover":
+            explanations.append({
+                "code": "RUNTIME_LOCK_HANDOVER",
+                "message": "новый процесс запущен и ожидает безопасной передачи блокировки сборщика от предыдущего процесса",
+            })
         explanations.append({
             "code": "CURRENT_PROCESS_CYCLE_PENDING",
             "message": "после перезапуска ожидается первый собственный цикл сбора данных и публикации текущего процесса",
@@ -7218,14 +7298,6 @@ def api_status() -> dict[str, Any]:
         backfill_thread_state = background_threads.get("backfill") or {}
         futures_meta_thread_state = background_threads.get("futures_meta") or {}
         collector_runtime_state = "unknown"
-        if str(collector_thread_state.get("state") or "").lower() == "error":
-            collector_runtime_state = "error"
-        elif collector_cycle_age_sec is not None and collector_cycle_age_sec > max(int(settings.collect_interval_sec) * 6, int(settings.stale_data_max_sec)):
-            collector_runtime_state = "stalled"
-        elif collector_last_cycle:
-            collector_runtime_state = "ok"
-        elif str(collector_thread_state.get("state") or "").lower() == "running":
-            collector_runtime_state = "starting"
 
         active_risk_limits = normalize_risk_limits(
             db.get_active_risk_limits(conn),
@@ -7399,10 +7471,23 @@ def api_status() -> dict[str, Any]:
         database_schema = db.get_outcome_policy_schema_status(conn)
         database_continuity = db.get_database_continuity_status(conn)
         recommendation_readiness = _latest_recommendation_readiness(conn)
+        collector_lock_snapshot: dict[str, Any] = {}
+        try:
+            with closing(_get_lock_conn()) as lock_conn:
+                collector_lock_snapshot = db.get_runtime_lock_snapshot(lock_conn, "runtime:collector")
+        except Exception:
+            logger.warning("collector runtime lock diagnostics unavailable", exc_info=True)
         runtime_provenance = _runtime_provenance_status(
             now_ts=now_ts_int,
             collector_last_cycle=collector_last_cycle,
             recommendation_readiness=recommendation_readiness,
+            collector_lock_snapshot=collector_lock_snapshot,
+        )
+        collector_runtime_state = _collector_runtime_state(
+            collector_last_cycle=collector_last_cycle,
+            collector_thread_state=collector_thread_state,
+            collector_cycle_age_sec=collector_cycle_age_sec,
+            runtime_provenance=runtime_provenance,
         )
         operator_readiness = _operator_runtime_readiness(
             schema_status=database_schema,

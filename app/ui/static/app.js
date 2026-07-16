@@ -385,6 +385,7 @@ function humanizeOperatorText(value) {
     cached: "сохранённый ответ", fresh: "актуальные данные",
     guarded: "усиленный контроль", lockdown: "торговля заблокирована",
     bullish: "преобладает рост", bearish: "преобладает снижение",
+    handover: "передача управления", starting: "запуск", processing: "обработка", backlog: "обработка очереди",
   };
   const lower = text.toLowerCase();
   if (Object.prototype.hasOwnProperty.call(exact, lower)) return exact[lower];
@@ -519,6 +520,40 @@ function humanizeOperatorText(value) {
   ];
   for (const [pattern, replacement] of replacements) text = text.replace(pattern, replacement);
   return text.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+}
+
+
+function decisionActionRu(value) {
+  const code = String(value ?? "").trim();
+  const labels = {
+    OUTCOME_SKIP_INVALID_GRID_CONTRACT: "Исход не рассчитан: контракт сетки недостаточно наблюдаем",
+    STALE_DATA_SKIP: "Расчёт пропущен: рыночные данные устарели",
+    OUTCOME_WORKER_STALLED: "Контур расчёта исходов не продвигает очередь",
+    COLLECT_ERROR: "Ошибка сбора рыночных данных",
+    DB_PRUNE: "Плановая очистка устаревших технических данных",
+  };
+  const label = labels[code];
+  return label ? `${label} (${code})` : `${humanizeOperatorText(code)} (${code})`;
+}
+
+function outcomeObservabilityReasonRu(value) {
+  const code = String(value ?? "").trim();
+  const labels = {
+    intrabar_extreme_order_unobservable: "Не удалось однозначно определить порядок касаний цен внутри одной свечи",
+    intrabar_replacement_fill_timing_unobservable: "Не удалось однозначно определить момент исполнения перевыставленной заявки внутри свечи",
+    kill_switch_intrabar_order_unobservable: "Не удалось однозначно определить порядок срабатывания аварийной границы внутри свечи",
+    insufficient_candle_volume_for_initial_inventory: "Объёма свечи недостаточно для подтверждения формирования начальной позиции",
+    insufficient_candle_volume_for_terminal_liquidation: "Объёма свечи недостаточно для подтверждения полного закрытия позиции в конце горизонта",
+  };
+  const label = labels[code];
+  return label ? `${label} (${code})` : `${humanizeOperatorText(code)} (${code})`;
+}
+
+function isTechnicalIdentifierField(key) {
+  return new Set([
+    "rec_id", "publication_root_rec_id", "model_version", "policy_fingerprint",
+    "database_instance_id", "runtime_owner", "owner", "lock_key",
+  ]).has(String(key || ""));
 }
 
 const SUPPORTED_GRID_BOT_TYPE = "futures_grid";
@@ -2463,6 +2498,10 @@ function localizeObjectForDisplay(value, key = "") {
   if (value && typeof value === "object") {
     const keyLabels = {
       ts: "Время", action: "Действие", operator: "Оператор", status: "Статус",
+      rec_id: "Идентификатор рекомендации", publication_root_rec_id: "Корневой идентификатор публикации",
+      entry_ts: "Время начала наблюдения", entry_price: "Начальная цена",
+      label_available_ts: "Время готовности результата", event_ts: "Время события",
+      candle_high: "Максимум свечи", candle_low: "Минимум свечи", candle_volume: "Объём свечи",
       effective_status: "Итоговый статус", symbol: "Символ", direction: "Направление",
       message: "Сообщение", msg: "Сообщение", reason: "Причина", code: "Технический код",
       details: "Сведения", severity: "Важность", count: "Количество", total: "Всего",
@@ -2488,9 +2527,11 @@ function localizeObjectForDisplay(value, key = "") {
     return out;
   }
   if (typeof value === "string") {
+    if (isTechnicalIdentifierField(key)) return value;
     if (key.includes("status")) return operatorStatusRu(value);
     if (key === "direction" || key === "raw_direction" || key === "execution_direction") return directionRu(value);
-    if (key === "action") return humanizeOperatorText(value);
+    if (key === "action") return decisionActionRu(value);
+    if (key === "reason") return outcomeObservabilityReasonRu(value);
     if (key === "llm_status") return llmStatusRu(value);
     if (key === "sample_role") return sampleRoleRu(value);
     if (key === "gate_decision") return gateDecisionRu(value);
@@ -3094,6 +3135,10 @@ async function loadHealth() {
         { name: "Цикл сборщика текущего процесса", value: runtimeProvenance.collector_cycle_current_process ? "Да" : "Нет" },
         { name: "Владелец последнего цикла сборщика", value: runtimeProvenance.collector_cycle_owner || "—" },
         { name: "Владелец цикла совпадает", value: runtimeProvenance.collector_owner_matches_runtime ? "Да" : "Нет" },
+        { name: "Владелец блокировки сборщика", value: runtimeProvenance.collector_lock_owner || "—" },
+        { name: "Блокировка принадлежит текущему процессу", value: runtimeProvenance.collector_lock_owned_by_current_process ? "Да" : "Нет" },
+        { name: "Срок блокировки сборщика", value: runtimeProvenance.collector_lock_ttl_sec == null ? "—" : `${runtimeProvenance.collector_lock_ttl_sec} с` },
+        { name: "До разрешённого перехвата", value: runtimeProvenance.collector_lock_takeover_in_sec == null ? "—" : `${runtimeProvenance.collector_lock_takeover_in_sec} с` },
         { name: "Публикация текущего процесса", value: runtimeProvenance.publication_current_process ? "Да" : "Нет" },
         { name: "Период запуска активен", value: runtimeProvenance.boot_grace_active ? "Да" : "Нет" },
         { name: "Свежих минутных свечей при быстром старте", value: collector.recent_tail_bars ?? 360 },

@@ -1,9 +1,9 @@
-## v1.0.70 — обязанности outcome и calibration модулей
+## v1.0.71 - изменённые обязанности модулей
 
-- `app/outcomes.py` выбирает все явно outcome-eligible, риск-чистые `shadow_no_trade` roots без невозможного LLM prerequisite.
-- `app/db.py` использует тот же контракт в liveness и runtime eligibility.
-- `app/recommender.py` продолжает отдельно присваивать `calibration_role=shadow_exploration` и `policy_evaluation_eligible=false` кандидатам вне exact candidate policy.
-- `app/calibration.py` и policy observability не принимают exploration rows в current-policy fit.
+- `app/main.py`: lifecycle release runtime-lock, расчёт handover grace, collector state/provenance и дополнительные status fields.
+- `app/db.py`: read-only snapshot runtime-lock; LLM outcome eligibility допускает явно разрешённый риск-чистый shadow exploration без exact-policy допуска.
+- `app/outcomes.py`: SQL selection соответствует тому же shadow contract и не требует `policy_evaluation_eligible=true` для исследовательской метки.
+- `app/ui/static/app.js`: exact-code локализация decision log, сохранение технических идентификаторов и показ lock takeover diagnostics.
 
 ## v1.0.69 — диагностические обязанности
 

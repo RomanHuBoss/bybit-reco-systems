@@ -1,11 +1,13 @@
-## 2026-07-16 - v1.0.70 - liveness исследовательских shadow outcomes
+## 2026-07-16 - v1.0.71 - Windows restart handover, shadow-outcome liveness и журнал аудита
 
-- Исправлен advisory-LLM deadlock для явно outcome-eligible `shadow_exploration`: risk-clean `no_trade` roots теперь размечаются без LLM verdict.
-- Exact-policy calibration не расширена: `policy_evaluation_eligible=false` по-прежнему исключает exploration outcomes из `calibrator_n`, monetary cohort и probability fit.
-- Порог `MEAN_REVERSION_MIN_SCORE`, risk/economics gates, статусы и execution boundary не менялись.
-- Добавлен `tests/test_iteration258_shadow_exploration_liveness.py` с RED -> GREEN проверкой outcome worker, liveness и отсутствия calibration contamination.
-- Синхронизированы версия, static cache, README, trading/risk/architecture/module/scenario/infographic docs и операторские артефакты.
-- Baseline: 1175/1175 tests passed. Post-check: 1178/1178 tests passed, targeted 3/3 дважды, relevant suite 31/31, PostgreSQL offline subset 22/22; `compileall` и Node syntax passed. `pip check` сохранил внешний MoviePy/Pillow conflict; Ruff отсутствует.
+- HIGH: штатное завершение supervised background-loop освобождает принадлежащий процессу runtime-lock, поэтому новый Windows/Linux процесс не ждёт полный lease предыдущего PID.
+- MEDIUM: restart readiness различает `handover`/`starting` и реальный `stalled`; boot grace согласован с collector lease, а статус показывает owner, heartbeat, TTL и время до takeover.
+- HIGH: риск-чистые `shadow_exploration` созревают при advisory-LLM без невозможного LLM verdict, оставаясь исключёнными из exact-policy calibration.
+- MEDIUM: UI журнала сохраняет `rec_id`, action/reason codes и версии без пословного перевода; для известных outcome-censor причин добавлены связные русские пояснения.
+- Торговые пороги, risk/economic gates, grid geometry, Bybit scope, SQLite/PostgreSQL schema и recommendation/audit-only граница не изменены.
+- Новый regression: `tests/test_iteration258_windows_restart_handover.py`.
+- Baseline: 1175 тестов собрано и исчерпывающе выполнено 8 непересекающимися пакетами; 1175 passed. Ruff недоступен; `pip check` сохранил внешний конфликт MoviePy/Pillow.
+- Точные результаты post-check и ограничения сохранены в релизной документации внутри архива.
 
 ## 2026-07-16 - v1.0.69 - целостность диагностики перезапуска и БД
 
