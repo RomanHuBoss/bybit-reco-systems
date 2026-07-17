@@ -1,3 +1,11 @@
+## 2026-07-17 - v1.0.75 - terminal selected-policy monetary holdout
+
+- Исправлен HIGH model/risk fail-open: положительные aggregate selected-policy OOF returns больше не могут скрыть отрицательный денежный результат выбранной политики на последнем whole-timestamp holdout.
+- Terminal selector теперь требует собственные row/temporal positive lower bounds, минимум 80 выбранных строк и 5 целых decision timestamps; insufficient/negative/uncertain evidence блокирует probability activation.
+- Fitted cache без нового terminal-selected contract отклоняется; model/policy/calibrator identities обновлены до v10/v3/v21 без изменения schema, routes, env или `grid_label_v26`.
+- Добавлены terminal-selected diagnostics в persistence, recommendation payload, `/api/v1/status` и операторский UI; добавлен regression `test_iteration262_terminal_selected_policy_monetary.py`.
+- Post-check: `1195 passed`; новый regression дважды дал `2 passed`; pip/compileall/Node/SQLite/PostgreSQL-dialect checks прошли. Ruff сохранил 24 исходных finding (`delta=0`); live PostgreSQL integration не запускался без явно disposable DSN.
+
 ## 2026-07-17 - v1.0.74 - selected-policy monetary validation and cohort-safe terminal holdout
 
 - HIGH: вероятность успеха больше не может активировать модель только на основании денежной доходности всей candidate-когорты; row/temporal lower bounds теперь повторно проверяются на exact purged-OOF подвыборке, прошедшей runtime confidence transform и threshold.

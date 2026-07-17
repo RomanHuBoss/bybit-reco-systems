@@ -398,6 +398,19 @@ class LogRegScaler:
     selected_policy_weighted_temporal_mean_return: float | None = None
     selected_policy_weighted_temporal_return_std: float | None = None
     selected_policy_weighted_temporal_mean_return_lower_bound: float | None = None
+    # The most recent whole-timestamp holdout is a regime check, not only a
+    # binary log-loss check.  A policy that loses money in that terminal block
+    # must not activate merely because older selected OOF rows were profitable.
+    terminal_selected_policy_expectancy_status: str = "not_evaluated"
+    terminal_selected_policy_samples: int = 0
+    terminal_selected_policy_required_samples: int = 0
+    terminal_selected_policy_weighted_mean_return: float | None = None
+    terminal_selected_policy_weighted_effective_return_samples: float = 0.0
+    terminal_selected_policy_weighted_mean_return_lower_bound: float | None = None
+    terminal_selected_policy_temporal_cluster_count: int = 0
+    terminal_selected_policy_required_temporal_clusters: int = 0
+    terminal_selected_policy_weighted_effective_temporal_clusters: float = 0.0
+    terminal_selected_policy_weighted_temporal_mean_return_lower_bound: float | None = None
     policy_fingerprint: str = ""
     policy_matured_total: int = 0
     policy_labeled_total: int = 0
@@ -1067,11 +1080,17 @@ def _selected_policy_return_diagnostics(
     *,
     confidence_threshold: float,
     min_samples: int,
+    minimum_temporal_clusters: int | None = None,
 ) -> dict[str, Any]:
     """Monetary evidence for the exact purged-OOF publication subset."""
     threshold = _finite_float(confidence_threshold)
     minimum = max(1, int(min_samples))
-    minimum_temporal_clusters = max(1, min(20, int(math.ceil(minimum / 4.0))))
+    requested_temporal_floor = strict_integer(minimum_temporal_clusters)
+    temporal_floor = (
+        max(1, int(requested_temporal_floor))
+        if requested_temporal_floor is not None
+        else max(1, min(20, int(math.ceil(minimum / 4.0))))
+    )
     empty = {
         "status": "insufficient",
         "confidence_threshold": threshold,
@@ -1082,7 +1101,7 @@ def _selected_policy_return_diagnostics(
         "weighted_effective_return_samples": 0.0,
         "weighted_mean_return_lower_bound": None,
         "temporal_cluster_count": 0,
-        "minimum_temporal_clusters": minimum_temporal_clusters,
+        "minimum_temporal_clusters": temporal_floor,
         "weighted_effective_temporal_clusters": 0.0,
         "weighted_temporal_mean_return": None,
         "weighted_temporal_return_std": None,
@@ -1156,7 +1175,7 @@ def _selected_policy_return_diagnostics(
         ),
         "weighted_mean_return_lower_bound": monetary["weighted_mean_return_lower_bound"],
         "temporal_cluster_count": int(temporal["temporal_cluster_count"] or 0),
-        "minimum_temporal_clusters": minimum_temporal_clusters,
+        "minimum_temporal_clusters": temporal_floor,
         "weighted_effective_temporal_clusters": float(
             temporal["weighted_effective_temporal_clusters"] or 0.0
         ),
@@ -1172,9 +1191,9 @@ def _selected_policy_return_diagnostics(
         or fields["weighted_mean_return_lower_bound"] is None
         or fields["weighted_temporal_mean_return_lower_bound"] is None
         or float(fields["weighted_effective_return_samples"]) + 1e-6 < float(minimum)
-        or int(fields["temporal_cluster_count"]) < minimum_temporal_clusters
+        or int(fields["temporal_cluster_count"]) < temporal_floor
         or float(fields["weighted_effective_temporal_clusters"]) + 1e-6
-        < float(minimum_temporal_clusters)
+        < float(temporal_floor)
     ):
         return {"status": "insufficient", **fields}
     if float(fields["weighted_mean_return"]) <= 0.0:
@@ -1327,6 +1346,14 @@ def _time_series_oof_skill_diagnostics(
             selection_confidence_threshold
         ),
         "selected_policy_samples": 0,
+        "terminal_selected_policy_status": "not_evaluated",
+        "terminal_selected_policy_samples": 0,
+        "terminal_selected_policy_required_samples": int(min_samples),
+        "terminal_selected_policy_temporal_cluster_count": 0,
+        "terminal_selected_policy_required_temporal_clusters": min(
+            MIN_TERMINAL_DECISION_COHORTS,
+            max(2, int(min_samples)),
+        ),
     }
     n = len(X)
     if not (
@@ -1501,6 +1528,10 @@ def _time_series_oof_skill_diagnostics(
             "final_decision_cohorts": candidate_decision_cohorts,
         }
 
+    required_final_decision_cohorts = min(
+        MIN_TERMINAL_DECISION_COHORTS,
+        max(2, int(min_samples)),
+    )
     selected_policy = (
         _selected_policy_return_diagnostics(
             feature_probs,
@@ -1521,12 +1552,30 @@ def _time_series_oof_skill_diagnostics(
             "samples": 0,
         }
     )
+    terminal_selected_policy = (
+        _selected_policy_return_diagnostics(
+            [feature_probs[idx] for idx in final_indices],
+            [policy_raw_confidences[idx] for idx in final_indices],
+            [policy_adjustments[idx] for idx in final_indices],
+            [policy_model_sample_counts[idx] for idx in final_indices],
+            [policy_returns[idx] for idx in final_indices],
+            [weights[idx] for idx in final_indices],
+            [policy_tss[idx] for idx in final_indices],
+            [policy_label_available_tss[idx] for idx in final_indices],
+            confidence_threshold=selection_confidence_threshold,
+            min_samples=min_samples,
+            minimum_temporal_clusters=required_final_decision_cohorts,
+        )
+        if selection_inputs_available
+        else {
+            "status": "not_evaluated",
+            "confidence_threshold": _finite_float(selection_confidence_threshold),
+            "samples": 0,
+            "minimum_temporal_clusters": required_final_decision_cohorts,
+        }
+    )
 
     minimum_improvement = 1e-4
-    required_final_decision_cohorts = min(
-        MIN_TERMINAL_DECISION_COHORTS,
-        max(2, int(min_samples)),
-    )
     accepted = bool(
         len(final_indices) >= int(min_samples)
         and candidate_decision_cohorts >= required_final_decision_cohorts
@@ -1588,6 +1637,35 @@ def _time_series_oof_skill_diagnostics(
             "weighted_temporal_return_std"
         ),
         "selected_policy_weighted_temporal_mean_return_lower_bound": selected_policy.get(
+            "weighted_temporal_mean_return_lower_bound"
+        ),
+        "terminal_selected_policy_status": str(
+            terminal_selected_policy.get("status") or "insufficient"
+        ),
+        "terminal_selected_policy_samples": int(
+            terminal_selected_policy.get("samples") or 0
+        ),
+        "terminal_selected_policy_required_samples": int(min_samples),
+        "terminal_selected_policy_weighted_mean_return": terminal_selected_policy.get(
+            "weighted_mean_return"
+        ),
+        "terminal_selected_policy_weighted_effective_return_samples": float(
+            terminal_selected_policy.get("weighted_effective_return_samples") or 0.0
+        ),
+        "terminal_selected_policy_weighted_mean_return_lower_bound": terminal_selected_policy.get(
+            "weighted_mean_return_lower_bound"
+        ),
+        "terminal_selected_policy_temporal_cluster_count": int(
+            terminal_selected_policy.get("temporal_cluster_count") or 0
+        ),
+        "terminal_selected_policy_required_temporal_clusters": int(
+            terminal_selected_policy.get("minimum_temporal_clusters")
+            or required_final_decision_cohorts
+        ),
+        "terminal_selected_policy_weighted_effective_temporal_clusters": float(
+            terminal_selected_policy.get("weighted_effective_temporal_clusters") or 0.0
+        ),
+        "terminal_selected_policy_weighted_temporal_mean_return_lower_bound": terminal_selected_policy.get(
             "weighted_temporal_mean_return_lower_bound"
         ),
     }
@@ -1976,6 +2054,43 @@ def fit_logreg(
             "selected_policy_weighted_temporal_mean_return_lower_bound": skill.get(
                 "selected_policy_weighted_temporal_mean_return_lower_bound"
             ),
+            "terminal_selected_policy_expectancy_status": str(
+                skill.get("terminal_selected_policy_status") or "insufficient"
+            ),
+            "terminal_selected_policy_samples": int(
+                skill.get("terminal_selected_policy_samples") or 0
+            ),
+            "terminal_selected_policy_required_samples": int(
+                skill.get("terminal_selected_policy_required_samples") or min_samples
+            ),
+            "terminal_selected_policy_weighted_mean_return": skill.get(
+                "terminal_selected_policy_weighted_mean_return"
+            ),
+            "terminal_selected_policy_weighted_effective_return_samples": float(
+                skill.get(
+                    "terminal_selected_policy_weighted_effective_return_samples"
+                )
+                or 0.0
+            ),
+            "terminal_selected_policy_weighted_mean_return_lower_bound": skill.get(
+                "terminal_selected_policy_weighted_mean_return_lower_bound"
+            ),
+            "terminal_selected_policy_temporal_cluster_count": int(
+                skill.get("terminal_selected_policy_temporal_cluster_count") or 0
+            ),
+            "terminal_selected_policy_required_temporal_clusters": int(
+                skill.get("terminal_selected_policy_required_temporal_clusters")
+                or min(MIN_TERMINAL_DECISION_COHORTS, max(2, int(min_samples)))
+            ),
+            "terminal_selected_policy_weighted_effective_temporal_clusters": float(
+                skill.get(
+                    "terminal_selected_policy_weighted_effective_temporal_clusters"
+                )
+                or 0.0
+            ),
+            "terminal_selected_policy_weighted_temporal_mean_return_lower_bound": skill.get(
+                "terminal_selected_policy_weighted_temporal_mean_return_lower_bound"
+            ),
         }
 
         # A model trained on the full retained sample is not an out-of-sample
@@ -2014,6 +2129,9 @@ def fit_logreg(
             and candidate_platt.fitted
         )
         selected_policy_status = str(skill.get("selected_policy_status") or "insufficient")
+        terminal_selected_policy_status = str(
+            skill.get("terminal_selected_policy_status") or "insufficient"
+        )
         terminal_contract_satisfied = bool(
             int(skill.get("final_samples") or 0) >= int(min_samples)
             and int(skill.get("final_decision_cohorts") or 0)
@@ -2022,6 +2140,7 @@ def fit_logreg(
         if (
             str(skill.get("status") or "") != "accepted"
             or selected_policy_status != "positive"
+            or terminal_selected_policy_status != "positive"
             or not terminal_contract_satisfied
             or not candidate_is_valid
         ):
@@ -2030,10 +2149,16 @@ def fit_logreg(
                 fitted=False, saved_ts=fit_ts, n_samples=n,
                 return_samples=n, expectancy_status="positive",
                 oof_status=(
-                    "selected_policy_unproven"
+                    "terminal_selected_policy_unproven"
                     if str(skill.get("status") or "") == "accepted"
-                    and selected_policy_status != "positive"
-                    else "no_skill"
+                    and selected_policy_status == "positive"
+                    and terminal_selected_policy_status != "positive"
+                    else (
+                        "selected_policy_unproven"
+                        if str(skill.get("status") or "") == "accepted"
+                        and selected_policy_status != "positive"
+                        else "no_skill"
+                    )
                 ),
                 oof_samples=int(oof_samples),
                 oof_required_samples=int(oof_required_samples),
@@ -2119,6 +2244,32 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
             ),
             "weighted_temporal_mean_return_lower_bound": (
                 model.selected_policy_weighted_temporal_mean_return_lower_bound
+            ),
+        },
+        "terminal_selected_policy": {
+            "status": model.terminal_selected_policy_expectancy_status,
+            "samples": model.terminal_selected_policy_samples,
+            "required_samples": model.terminal_selected_policy_required_samples,
+            "weighted_mean_return": (
+                model.terminal_selected_policy_weighted_mean_return
+            ),
+            "weighted_effective_return_samples": (
+                model.terminal_selected_policy_weighted_effective_return_samples
+            ),
+            "weighted_mean_return_lower_bound": (
+                model.terminal_selected_policy_weighted_mean_return_lower_bound
+            ),
+            "temporal_cluster_count": (
+                model.terminal_selected_policy_temporal_cluster_count
+            ),
+            "required_temporal_clusters": (
+                model.terminal_selected_policy_required_temporal_clusters
+            ),
+            "weighted_effective_temporal_clusters": (
+                model.terminal_selected_policy_weighted_effective_temporal_clusters
+            ),
+            "weighted_temporal_mean_return_lower_bound": (
+                model.terminal_selected_policy_weighted_temporal_mean_return_lower_bound
             ),
         },
         "policy_evidence": {
@@ -2263,6 +2414,7 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             "sufficient",
             "no_skill",
             "selected_policy_unproven",
+            "terminal_selected_policy_unproven",
             "error",
         }:
             return None
@@ -2425,6 +2577,108 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
         ):
             return None
 
+        terminal_selected_obj = obj.get("terminal_selected_policy") or {}
+        if not isinstance(terminal_selected_obj, dict):
+            return None
+        terminal_selected_policy_expectancy_status = str(
+            terminal_selected_obj.get("status") or "not_evaluated"
+        ).strip().lower()
+        if terminal_selected_policy_expectancy_status not in {
+            "not_evaluated",
+            "insufficient",
+            "negative",
+            "uncertain",
+            "positive",
+        }:
+            return None
+        terminal_selected_policy_samples = max(
+            0,
+            _finite_int(terminal_selected_obj.get("samples", 0), 0),
+        )
+        terminal_selected_policy_required_samples = max(
+            0,
+            _finite_int(terminal_selected_obj.get("required_samples", 0), 0),
+        )
+        terminal_selected_policy_temporal_cluster_count = max(
+            0,
+            _finite_int(terminal_selected_obj.get("temporal_cluster_count", 0), 0),
+        )
+        terminal_selected_policy_required_temporal_clusters = max(
+            0,
+            _finite_int(
+                terminal_selected_obj.get("required_temporal_clusters", 0),
+                0,
+            ),
+        )
+
+        def _terminal_selected_optional_metric(name: str) -> float | None:
+            raw = terminal_selected_obj.get(name)
+            return None if raw is None else _finite_float(raw)
+
+        terminal_selected_policy_weighted_mean_return = (
+            _terminal_selected_optional_metric("weighted_mean_return")
+        )
+        terminal_selected_policy_weighted_effective_return_samples = _finite_float(
+            terminal_selected_obj.get("weighted_effective_return_samples", 0.0)
+        )
+        terminal_selected_policy_weighted_mean_return_lower_bound = (
+            _terminal_selected_optional_metric("weighted_mean_return_lower_bound")
+        )
+        terminal_selected_policy_weighted_effective_temporal_clusters = _finite_float(
+            terminal_selected_obj.get("weighted_effective_temporal_clusters", 0.0)
+        )
+        terminal_selected_policy_weighted_temporal_mean_return_lower_bound = (
+            _terminal_selected_optional_metric(
+                "weighted_temporal_mean_return_lower_bound"
+            )
+        )
+        for metric_name in (
+            "weighted_mean_return",
+            "weighted_mean_return_lower_bound",
+            "weighted_temporal_mean_return_lower_bound",
+        ):
+            if (
+                terminal_selected_obj.get(metric_name) is not None
+                and _terminal_selected_optional_metric(metric_name) is None
+            ):
+                return None
+        if (
+            terminal_selected_policy_weighted_effective_return_samples is None
+            or terminal_selected_policy_weighted_effective_return_samples < 0.0
+            or terminal_selected_policy_weighted_effective_temporal_clusters is None
+            or terminal_selected_policy_weighted_effective_temporal_clusters < 0.0
+        ):
+            return None
+        if terminal_selected_policy_expectancy_status in {
+            "negative",
+            "uncertain",
+            "positive",
+        } and (
+            terminal_selected_policy_samples <= 0
+            or terminal_selected_policy_weighted_mean_return is None
+        ):
+            return None
+        if terminal_selected_policy_expectancy_status == "positive" and (
+            terminal_selected_policy_weighted_mean_return <= 0.0
+            or terminal_selected_policy_weighted_mean_return_lower_bound is None
+            or terminal_selected_policy_weighted_mean_return_lower_bound <= 0.0
+            or terminal_selected_policy_weighted_temporal_mean_return_lower_bound
+            is None
+            or terminal_selected_policy_weighted_temporal_mean_return_lower_bound
+            <= 0.0
+            or terminal_selected_policy_required_samples <= 0
+            or terminal_selected_policy_samples
+            < terminal_selected_policy_required_samples
+            or terminal_selected_policy_weighted_effective_return_samples + 1e-6
+            < float(terminal_selected_policy_required_samples)
+            or terminal_selected_policy_required_temporal_clusters <= 0
+            or terminal_selected_policy_temporal_cluster_count
+            < terminal_selected_policy_required_temporal_clusters
+            or terminal_selected_policy_weighted_effective_temporal_clusters + 1e-6
+            < float(terminal_selected_policy_required_temporal_clusters)
+        ):
+            return None
+
         policy_obj = obj.get("policy_evidence") or {}
         if not isinstance(policy_obj, dict):
             return None
@@ -2477,6 +2731,7 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             or oof_required_final_decision_cohorts <= 0
             or oof_final_decision_cohorts < oof_required_final_decision_cohorts
             or selected_policy_expectancy_status != "positive"
+            or terminal_selected_policy_expectancy_status != "positive"
         ):
             return None
         if not fitted and (coef or platt.fitted):
@@ -2551,6 +2806,34 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             selected_policy_weighted_temporal_mean_return_lower_bound=(
                 selected_policy_weighted_temporal_mean_return_lower_bound
             ),
+            terminal_selected_policy_expectancy_status=(
+                terminal_selected_policy_expectancy_status
+            ),
+            terminal_selected_policy_samples=terminal_selected_policy_samples,
+            terminal_selected_policy_required_samples=(
+                terminal_selected_policy_required_samples
+            ),
+            terminal_selected_policy_weighted_mean_return=(
+                terminal_selected_policy_weighted_mean_return
+            ),
+            terminal_selected_policy_weighted_effective_return_samples=float(
+                terminal_selected_policy_weighted_effective_return_samples
+            ),
+            terminal_selected_policy_weighted_mean_return_lower_bound=(
+                terminal_selected_policy_weighted_mean_return_lower_bound
+            ),
+            terminal_selected_policy_temporal_cluster_count=(
+                terminal_selected_policy_temporal_cluster_count
+            ),
+            terminal_selected_policy_required_temporal_clusters=(
+                terminal_selected_policy_required_temporal_clusters
+            ),
+            terminal_selected_policy_weighted_effective_temporal_clusters=float(
+                terminal_selected_policy_weighted_effective_temporal_clusters
+            ),
+            terminal_selected_policy_weighted_temporal_mean_return_lower_bound=(
+                terminal_selected_policy_weighted_temporal_mean_return_lower_bound
+            ),
             policy_fingerprint=policy_fingerprint,
             policy_matured_total=policy_matured_total,
             policy_labeled_total=policy_labeled_total,
@@ -2608,6 +2891,8 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
+# v21: requires the confidence-selected subset to remain monetarily positive in
+#      the whole-timestamp terminal holdout, not only across aggregate OOF rows.
 # v20: validates the exact confidence-selected OOF subset monetarily and reserves
 #      a minimum whole-timestamp terminal holdout before activation.
 # v19: binds cached evidence to an immutable policy fingerprint, requires held-out
@@ -2618,9 +2903,9 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 #      Existing outcomes remain valid, but cached v16 diagnostics must refit.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v20",
+    "futures_grid": "logreg_futures_grid_v21",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v20"
+GLOBAL_LOGREG_KEY = "logreg_global_v21"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

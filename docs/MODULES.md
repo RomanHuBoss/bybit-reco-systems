@@ -1,3 +1,11 @@
+## v1.0.75: денежная проверка terminal-selected policy
+
+- `app/calibration.py`: вычисляет aggregate и terminal selected-policy monetary diagnostics, требует positive terminal row/temporal lower bounds, сохраняет/валидирует новый cache contract v21.
+- `app/recommender.py`: policy schema v3/model v10, не активирует LogReg без positive terminal-selected evidence, публикует отдельные поля в `confidence_model`.
+- `app/main.py`: FastAPI 1.0.75 и additive terminal-selected поля/contract в `/api/v1/status`.
+- `app/ui/static/app.js`: явно показывает состояние и размер денежной проверки выбранной политики на итоговом периоде.
+- `tests/test_iteration262_terminal_selected_policy_monetary.py`: regression недавнего денежного reversal и rejection старого fitted cache.
+
 ## v1.0.74: денежная цель выбранной политики
 
 - `app.calibration._chronological_validation_blocks`: целые timestamp blocks и минимальный terminal contract.

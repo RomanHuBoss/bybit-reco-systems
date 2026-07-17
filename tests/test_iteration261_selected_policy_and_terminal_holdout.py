@@ -167,6 +167,16 @@ def _persistable_positive_model() -> calibration.LogRegScaler:
         selected_policy_weighted_temporal_mean_return=0.004,
         selected_policy_weighted_temporal_return_std=0.002,
         selected_policy_weighted_temporal_mean_return_lower_bound=0.002,
+        terminal_selected_policy_expectancy_status="positive",
+        terminal_selected_policy_samples=80,
+        terminal_selected_policy_required_samples=80,
+        terminal_selected_policy_weighted_mean_return=0.003,
+        terminal_selected_policy_weighted_effective_return_samples=80.0,
+        terminal_selected_policy_weighted_mean_return_lower_bound=0.002,
+        terminal_selected_policy_temporal_cluster_count=5,
+        terminal_selected_policy_required_temporal_clusters=5,
+        terminal_selected_policy_weighted_effective_temporal_clusters=5.0,
+        terminal_selected_policy_weighted_temporal_mean_return_lower_bound=0.001,
     )
 
 
@@ -186,6 +196,8 @@ def test_terminal_and_selected_policy_contract_round_trips(tmp_path) -> None:
     assert loaded.selected_policy_expectancy_status == "positive"
     assert loaded.selected_policy_confidence_threshold == pytest.approx(0.62)
     assert loaded.selected_policy_weighted_mean_return == pytest.approx(0.004)
+    assert loaded.terminal_selected_policy_expectancy_status == "positive"
+    assert loaded.terminal_selected_policy_samples == 80
 
 
 def test_fitted_payload_without_selected_policy_evidence_is_rejected(tmp_path) -> None:

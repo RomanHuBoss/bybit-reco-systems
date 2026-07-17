@@ -1,3 +1,12 @@
+## Сценарий: aggregate selected-policy прибыльна, terminal subset убыточна (v1.0.75)
+
+1. Общая candidate-когорта имеет mean `+0,3267%`.
+2. Confidence selector на объединённых purged OOF rows выбирает 660 строк с mean `+0,2194%`, row lower bound `+0,1992%` и положительным temporal lower bound.
+3. Binary feature model выигрывает у score/null baselines, в том числе на terminal holdout.
+4. Те же правила выбора дают на последних пяти целых timestamps 100 строк с mean `-0,1200%`.
+5. Система сохраняет `terminal_selected_policy_expectancy_status=negative`, не активирует coefficients и оставляет рекомендации `no_trade`.
+6. Старый fitted cache без terminal-selected evidence не загружается.
+
 ## Сценарий: общая когорта прибыльна, выбранная моделью — нет (v1.0.74)
 
 1. Pre-calibration candidate rows в целом имеют положительные row/temporal lower bounds.

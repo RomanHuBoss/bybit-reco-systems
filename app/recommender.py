@@ -40,9 +40,9 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v9-selected-policy-terminal-cohorts"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v10-terminal-selected-policy-money"
 DIRECTION_CALIBRATION_KEY = "platt_direction_v14"
-CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v2"
+CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v3"
 POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
 CALIBRATION_LABEL_GRACE_SEC = 120
 CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
@@ -3413,13 +3413,17 @@ def calibration_policy_contract(settings_obj: Any, risk_limits: dict[str, Any]) 
         },
         "calibration": {
             "monetary_cohort": "pre-calibration-candidate-policy-v1",
-            "selected_policy_expectancy": "purged-oof-exact-confidence-subset-v1",
+            "selected_policy_expectancy": "purged-oof-exact-confidence-subset-v2-terminal-money",
             "uncertainty": "student-t-temporal-v1",
             "oof_activation": "purged-whole-timestamp-terminal-v2",
             "terminal_holdout_min_samples": int(
                 max(1, _safe_int_or_none(getattr(settings_obj, "calib_min_samples", 80)) or 80)
             ),
             "terminal_holdout_min_decision_cohorts": 5,
+            "terminal_selected_policy_min_samples": int(
+                max(1, _safe_int_or_none(getattr(settings_obj, "calib_min_samples", 80)) or 80)
+            ),
+            "terminal_selected_policy_min_decision_cohorts": 5,
             "confidence_selection": "adaptive-blend-context-adjusted-v1",
             "direction_target": "horizon-price-direction-audit-only-v1",
             "label_due_grace_sec": CALIBRATION_LABEL_GRACE_SEC,
@@ -3878,6 +3882,7 @@ def _probability_calibration_no_trade_reason(
         and int(model.oof_final_decision_cohorts)
         >= int(model.oof_required_final_decision_cohorts) > 0
         and str(model.selected_policy_expectancy_status) == "positive"
+        and str(model.terminal_selected_policy_expectancy_status) == "positive"
     ):
         return None
     oof_status = str(getattr(model, "oof_status", "not_evaluated") if model else "not_evaluated")
@@ -3888,6 +3893,25 @@ def _probability_calibration_no_trade_reason(
         getattr(model, "selected_policy_expectancy_status", "not_evaluated")
         if model
         else "not_evaluated"
+    )
+    terminal_selected_policy_status = str(
+        getattr(
+            model,
+            "terminal_selected_policy_expectancy_status",
+            "not_evaluated",
+        )
+        if model
+        else "not_evaluated"
+    )
+    terminal_selected_samples = (
+        int(getattr(model, "terminal_selected_policy_samples", 0) or 0)
+        if model
+        else 0
+    )
+    terminal_selected_required = (
+        int(getattr(model, "terminal_selected_policy_required_samples", 0) or 0)
+        if model
+        else 0
     )
     final_samples = int(getattr(model, "oof_final_samples", 0) or 0) if model else 0
     final_required = (
@@ -3909,7 +3933,10 @@ def _probability_calibration_no_trade_reason(
             f"(oof_status={oof_status}, skill={skill_status}, "
             f"terminal={final_samples}/{final_required} rows, "
             f"terminal_cohorts={final_cohorts}/{final_cohorts_required}, "
-            f"selected_policy={selected_policy_status}); "
+            f"selected_policy={selected_policy_status}, "
+            f"terminal_selected_policy={terminal_selected_policy_status}, "
+            f"terminal_selected_rows={terminal_selected_samples}/"
+            f"{terminal_selected_required}); "
             "raw confidence remains audit-only"
         ),
     }
@@ -5386,6 +5413,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 and int(bot_cal.oof_final_decision_cohorts)
                 >= int(bot_cal.oof_required_final_decision_cohorts) > 0
                 and str(bot_cal.selected_policy_expectancy_status) == "positive"
+                and str(bot_cal.terminal_selected_policy_expectancy_status)
+                == "positive"
                 and _fv is not None
             ):
                 conf_cal = float(bot_cal.predict(_fv))
@@ -5767,7 +5796,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             # fitted/a/b when bot_cal existed-but-unfitted and global was used instead.
             reasons2["confidence_model"] = {
                 "source": _cal_source,
-                "type": "logreg_platt_v3_selected_policy_terminal_cohorts" if _cal_source == "bot_logreg" else (
+                "type": "logreg_platt_v4_terminal_selected_policy_money" if _cal_source == "bot_logreg" else (
                     "raw_proxy" if _cal_source == "raw_proxy" else "raw"
                 ),
                 "fitted": _active_cal.fitted if _active_cal is not None else False,
@@ -5821,6 +5850,14 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "selected_policy_weighted_temporal_mean_return": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_temporal_mean_return", None)) if bot_cal is not None else None,
                 "selected_policy_weighted_temporal_return_std": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_temporal_return_std", None)) if bot_cal is not None else None,
                 "selected_policy_weighted_temporal_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_temporal_mean_return_lower_bound", None)) if bot_cal is not None else None,
+                "terminal_selected_policy_expectancy_status": str(getattr(bot_cal, "terminal_selected_policy_expectancy_status", "not_evaluated")) if bot_cal is not None else "not_evaluated",
+                "terminal_selected_policy_samples": int(getattr(bot_cal, "terminal_selected_policy_samples", 0) or 0) if bot_cal is not None else 0,
+                "terminal_selected_policy_required_samples": int(getattr(bot_cal, "terminal_selected_policy_required_samples", 0) or 0) if bot_cal is not None else 0,
+                "terminal_selected_policy_weighted_mean_return": _finite_or_none(getattr(bot_cal, "terminal_selected_policy_weighted_mean_return", None)) if bot_cal is not None else None,
+                "terminal_selected_policy_weighted_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "terminal_selected_policy_weighted_mean_return_lower_bound", None)) if bot_cal is not None else None,
+                "terminal_selected_policy_temporal_cluster_count": int(getattr(bot_cal, "terminal_selected_policy_temporal_cluster_count", 0) or 0) if bot_cal is not None else 0,
+                "terminal_selected_policy_required_temporal_clusters": int(getattr(bot_cal, "terminal_selected_policy_required_temporal_clusters", 0) or 0) if bot_cal is not None else 0,
+                "terminal_selected_policy_weighted_temporal_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "terminal_selected_policy_weighted_temporal_mean_return_lower_bound", None)) if bot_cal is not None else None,
                 "a": getattr(getattr(_active_cal, "platt", None), "a", None) if _active_cal else None,
                 "b": getattr(getattr(_active_cal, "platt", None), "b", None) if _active_cal else None,
                 "heuristic_cap": float(_heur_cap) if _heur_cap is not None else None,

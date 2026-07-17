@@ -1,3 +1,10 @@
+## Остаточные риски после v1.0.75
+
+- Terminal-selected денежный gate запрещает активацию при наблюдаемом недавнем monetary reversal, но пять timestamps не равны пяти независимым рыночным режимам и не доказывают устойчивость за пределами retained history.
+- Требование минимум 80 выбранных terminal-строк может продлить `no_trade`, если confidence threshold пропускает малую долю кандидатов. Нельзя снижать этот floor только ради ускорения активации.
+- Проверка остаётся OHLCV proxy: queue priority, partial fills, market impact, реальные fees/funding и account-level cross-margin PnL требуют внешнего read-only reconciliation.
+- Смена model/policy identity начинает новую exact-policy когорту. Диагностика перед исправлением показывала 0 current-model outcomes и 29 078 исторических строк старых contracts; архив не является evidence v1.0.75.
+
 ## Остаточные риски после v1.0.74
 
 - Исправление запрещает активировать денежно-отрицательную selected-policy на известной OOF-выборке, но не доказывает устойчивость edge вне retained proxy history и тем более по реальным Bybit fills.

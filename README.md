@@ -1,3 +1,11 @@
+## Денежная проверка выбранной политики на итоговом периоде (v1.0.75)
+
+Версия 1.0.75 закрывает HIGH-дефект активации вероятностной модели. В v1.0.74 итоговый whole-timestamp holdout проверял binary log-loss модели, а денежные lower bounds выбранной порогом политики считались только по объединённым OOF-строкам. Поэтому старые прибыльные периоды могли перекрыть денежный убыток выбранной политики в последних пяти временных когортах, и модель всё равно становилась `fitted`.
+
+Теперь тот же exact confidence selector отдельно применяется к terminal holdout. Активация требует не менее `CALIB_MIN_SAMPLES` выбранных terminal-строк, не менее пяти целых decision timestamps, положительного row-level Student-t lower bound и положительного temporal lower bound. `negative`, `uncertain` или `insufficient` дают `terminal_selected_policy_unproven`; raw confidence остаётся audit-only, а рекомендация — `no_trade`. `/api/v1/status`, `confidence_model` и UI показывают отдельные terminal-selected diagnostics.
+
+Контракты обновлены до `bybit-taxonomy-v10-terminal-selected-policy-money`, `candidate-policy-v3`, bot/global calibrators v21; FastAPI/cache build — `1.0.75`. `grid_label_v26`, direction v14, API routes, SQLite/PostgreSQL schema и `.env` не изменены. Приложенная диагностика 1.0.74 содержала 0 current-model outcomes, поэтому смена lineage не отбрасывает уже накопленную пригодную калибровочную выборку; исторические 29 078 outcomes остаются архивом. Исправление не доказывает live edge и не добавляет выставление ордеров.
+
 ## Денежная проверка выбранной моделью политики и безопасный terminal holdout (v1.0.74)
 
 Версия 1.0.74 закрывает два дефекта калибровки, из-за которых формально принятая модель могла не соответствовать денежной цели. Раньше положительное ожидание проверялось на всей pre-calibration candidate-когорте, а затем LogReg обучался на бинарном `success`. Поэтому модель могла выбрать группу с высокой долей мелких выигрышей, но отрицательным средним денежным результатом, отбросив редкие крупные выигрыши другой группы. Теперь каждая purged OOF-вероятность проходит тот же adaptive blend, тот же записанный context/OI/shock multiplier и тот же `MIN_CONF_TO_RECOMMEND`, что runtime publication gate. Активация требует положительных row-level и temporal Student-t lower bounds именно у этой выбранной подвыборки.

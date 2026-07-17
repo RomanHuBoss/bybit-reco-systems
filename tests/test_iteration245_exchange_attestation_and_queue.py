@@ -553,6 +553,16 @@ def test_fresh_positive_cache_is_disabled_when_supporting_rows_disappear(tmp_pat
                 selected_policy_weighted_effective_temporal_clusters=20.0,
                 selected_policy_weighted_temporal_mean_return=0.01,
                 selected_policy_weighted_temporal_mean_return_lower_bound=0.005,
+                terminal_selected_policy_expectancy_status="positive",
+                terminal_selected_policy_samples=80,
+                terminal_selected_policy_required_samples=80,
+                terminal_selected_policy_weighted_mean_return=0.01,
+                terminal_selected_policy_weighted_effective_return_samples=80.0,
+                terminal_selected_policy_weighted_mean_return_lower_bound=0.005,
+                terminal_selected_policy_temporal_cluster_count=5,
+                terminal_selected_policy_required_temporal_clusters=5,
+                terminal_selected_policy_weighted_effective_temporal_clusters=5.0,
+                terminal_selected_policy_weighted_temporal_mean_return_lower_bound=0.005,
             ),
     )
     try:

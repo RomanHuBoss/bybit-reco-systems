@@ -1,3 +1,9 @@
+## Terminal selected-policy activation boundary - v1.0.75
+
+`app/calibration.py` повторно применяет shared confidence transform к финальному whole-timestamp fold и строит для выбранных terminal rows отдельные row/temporal monetary diagnostics. Persistence сохраняет этот блок отдельно от aggregate `selected_policy`; loader не принимает fitted payload без положительного terminal contract. `app/recommender.py` использует model только когда оба monetary слоя положительны, а `app/main.py` и UI публикуют фактические/требуемые terminal-selected counts.
+
+Поток: exact-policy outcomes -> purged folds -> terminal candidate -> binary skill -> aggregate selected money -> terminal selected money -> strict cache -> publication confidence gate. Любое неизвестное или неположительное terminal evidence разрывает поток до inference; deterministic risk/economics gates и recommendation/audit-only boundary не меняются.
+
 ## Calibration activation boundary - v1.0.74
 
 `fit_logreg()` теперь имеет две независимые OOF границы допуска. Первая сравнивает feature model со score-only/null по aggregate и terminal log-loss. Вторая применяет общий runtime confidence transform к тем же purged OOF predictions и рассчитывает monetary diagnostics только для строк, которые реально прошли бы publication threshold. Активный pipeline — candidate, обученный строго до terminal block; metadata `n_samples` соответствует его train prefix.

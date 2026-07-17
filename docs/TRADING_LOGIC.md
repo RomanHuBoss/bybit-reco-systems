@@ -1,3 +1,9 @@
+## Terminal-selected monetary contract (v1.0.75)
+
+Probability activation теперь требует две разные денежные проверки exact confidence-selected policy: aggregate purged OOF и последний whole-timestamp terminal holdout. Для terminal subset обязательны `CALIB_MIN_SAMPLES` выбранных строк, пять decision timestamps, положительный weighted mean, положительный one-sided row lower bound и положительный temporal lower bound. Binary log-loss skill без этой денежной проверки не разрешает inference.
+
+`terminal_selected_policy_expectancy_status` принимает `positive`, `negative`, `uncertain`, `insufficient` или `not_evaluated`. Только `positive` совместно со всеми прежними gates допускает `bot_logreg`; остальные состояния дают `CALIBRATED_CONFIDENCE_UNAVAILABLE` и сохраняют `no_trade`. Политика имеет identities `bybit-taxonomy-v10-terminal-selected-policy-money`, `candidate-policy-v3`, bot/global v21; outcome `grid_label_v26` и direction v14 не меняются.
+
 ## Selected-policy и terminal-holdout contract (v1.0.74)
 
 Положительное денежное ожидание всей pre-calibration candidate-когорты является только первым gate. Для каждого purged walk-forward validation row модель рассчитывает `P(success)`, затем общий `selected_policy_confidence()` применяет сохранённые `selection_confidence_raw`, размер train prefix, context/OI/shock adjustment и текущий confidence threshold. Только прошедшие threshold rows образуют selected-policy cohort. Её Kish effective sample, mean, expected shortfall, one-sided row lower bound и lower bound по максимально возможному набору непересекающихся temporal cohorts должны быть положительными/достаточными. Иначе `oof_status=selected_policy_unproven`, коэффициенты не активируются.

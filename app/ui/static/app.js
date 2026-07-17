@@ -1867,26 +1867,37 @@ function buildBotCalibText(botType, info, totalOutcomeCount) {
   const censored = Number(info?.policy_censored_total || 0);
   const unresolved = Number(info?.policy_unresolved_total || 0);
   const invalidLabeled = Number(info?.policy_invalid_labeled_total || 0);
+  const terminalSelectedStatus = String(info?.terminal_selected_policy_expectancy_status || "not_evaluated");
+  const terminalSelectedSamples = Number(info?.terminal_selected_policy_samples || 0);
+  const terminalSelectedRequired = Number(info?.terminal_selected_policy_required_samples || monetaryNeeded);
+  const terminalSelectedStatusRu = ({
+    positive: "положительная",
+    negative: "отрицательная",
+    uncertain: "неопределённая",
+    insufficient: "недостаточно данных",
+    not_evaluated: "ещё не выполнена",
+  })[terminalSelectedStatus] || terminalSelectedStatus;
   const readiness = `Для денежной оценки: ${policyEligibleTotal}/${monetaryNeeded}; для вероятностной калибровки: ${policyEligibleTotal}/${probabilityNeeded}.`;
   const lineage = `Архив: ${archiveTotal}; текущая версия модели: ${currentModelTotal}; завершено: ${matured}; размечено: ${labeled}.`;
   const clusters = minimumTemporalClusters > 0 ? ` Независимые временные группы: ${temporalClusters}/${minimumTemporalClusters}.` : "";
+  const terminalMoney = ` Денежная проверка выбранной политики на итоговом периоде: ${terminalSelectedStatusRu} (${terminalSelectedSamples}/${terminalSelectedRequired} строк).`;
 
   if (censored > 0 || unresolved > 0 || invalidLabeled > 0) {
-    return `${product}: калибровка заблокирована неполными наблюдениями (незавершённых: ${unresolved}, ограниченно наблюдаемых: ${censored}, некорректных: ${invalidLabeled}). ${readiness} ${lineage}${clusters}`;
+    return `${product}: калибровка заблокирована неполными наблюдениями (незавершённых: ${unresolved}, ограниченно наблюдаемых: ${censored}, некорректных: ${invalidLabeled}). ${readiness} ${lineage}${clusters}${terminalMoney}`;
   }
   if (info?.fitted && info?.logreg_active) {
-    return `${product}: вероятностная калибровка активна. Наблюдений: ${policyEligibleTotal}; успешных: ${wins}; неуспешных: ${losses}; эффективная выборка: ${effective}. ${lineage}${clusters}`;
+    return `${product}: вероятностная калибровка активна. Наблюдений: ${policyEligibleTotal}; успешных: ${wins}; неуспешных: ${losses}; эффективная выборка: ${effective}. ${lineage}${clusters}${terminalMoney}`;
   }
   if (info?.fitted) {
-    return `${product}: сохранённая старая калибровка не соответствует текущим правилам проверки и не используется. ${readiness} ${lineage}${clusters}`;
+    return `${product}: сохранённая старая калибровка не соответствует текущим правилам проверки и не используется. ${readiness} ${lineage}${clusters}${terminalMoney}`;
   }
   if ((info?.unfitted_reason || "") === "degenerate_win_rate") {
-    return `${product}: в выборке пока недостаточно результатов одного из классов, поэтому вероятностная калибровка невозможна. Успешных: ${wins}; неуспешных: ${losses}; эффективная выборка: ${effective}. ${readiness} ${lineage}${clusters}`;
+    return `${product}: в выборке пока недостаточно результатов одного из классов, поэтому вероятностная калибровка невозможна. Успешных: ${wins}; неуспешных: ${losses}; эффективная выборка: ${effective}. ${readiness} ${lineage}${clusters}${terminalMoney}`;
   }
   if ((info?.unfitted_reason || "") === "pending_refit") {
-    return `${product}: данных уже достаточно, но пересчёт калибратора ещё не завершён. ${readiness} ${lineage}${clusters}`;
+    return `${product}: данных уже достаточно, но пересчёт калибратора ещё не завершён. ${readiness} ${lineage}${clusters}${terminalMoney}`;
   }
-  return `${product}: калибратор ещё не обучен. ${readiness} ${lineage}${clusters}`;
+  return `${product}: калибратор ещё не обучен. ${readiness} ${lineage}${clusters}${terminalMoney}`;
 }
 
 function updateCalibrationUi(items) {
@@ -1922,7 +1933,7 @@ function updateCalibrationUi(items) {
         ? `Готово: ${fittedBots.length}/${botCalibs.length}${logregBots.length ? ` (вероятностная модель: ${logregBots.length})` : ""}. `
         : "";
       const temporalDays = Number(statusPayload?.calibration_gate_contract?.minimum_temporal_span_days || 10);
-      $("calibProgress").textContent = `${readiness}Исторический архив: ${archiveCount}; наблюдения текущей версии модели: ${currentModelCount}; пригодные для обучения: ${eligibleCount}. Для денежной оценки требуется ${eligibleCount}/${monetaryNeeded}. Для вероятностной калибровки требуется ${eligibleCount}/${probabilityNeeded}, а также отдельная проверка вне обучения без пересечения временных окон. Итоговая отложенная выборка содержит не менее ${monetaryNeeded} строк и 5 целых временных когорт; денежное ожидание проверяется повторно только на строках, которые разрешает порог уверенности. При обязательной проверке уверенности 80 наблюдений недостаточно. При 12-часовом горизонте требуется не менее ${temporalDays} суток работы неизменного набора правил. Смена идентификатора набора правил начинает новую выборку наблюдений; старые наблюдения сохраняются только в архиве.`;
+      $("calibProgress").textContent = `${readiness}Исторический архив: ${archiveCount}; наблюдения текущей версии модели: ${currentModelCount}; пригодные для обучения: ${eligibleCount}. Для денежной оценки требуется ${eligibleCount}/${monetaryNeeded}. Для вероятностной калибровки требуется ${eligibleCount}/${probabilityNeeded}, а также отдельная проверка вне обучения без пересечения временных окон. Итоговая отложенная выборка содержит не менее ${monetaryNeeded} строк и 5 целых временных когорт; выбранная порогом политика обязана иметь положительные денежные lower bounds и на всей OOF-истории, и отдельно на итоговой отложенной выборке. При обязательной проверке уверенности 80 наблюдений недостаточно. При 12-часовом горизонте требуется не менее ${temporalDays} суток работы неизменного набора правил. Смена идентификатора набора правил начинает новую выборку наблюдений; старые наблюдения сохраняются только в архиве.`;
       $("calibBarFill").style.width = `${pct}%`;
     }
     return;

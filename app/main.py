@@ -4875,7 +4875,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.74", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.75", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -7477,6 +7477,14 @@ def api_status() -> dict[str, Any]:
                 "selected_policy_temporal_cluster_count": int(getattr(m, "selected_policy_temporal_cluster_count", 0) or 0) if m is not None else 0,
                 "selected_policy_minimum_temporal_clusters": int(getattr(m, "selected_policy_minimum_temporal_clusters", 0) or 0) if m is not None else 0,
                 "selected_policy_weighted_temporal_mean_return_lower_bound": getattr(m, "selected_policy_weighted_temporal_mean_return_lower_bound", None) if m is not None else None,
+                "terminal_selected_policy_expectancy_status": str(getattr(m, "terminal_selected_policy_expectancy_status", "not_evaluated")) if m is not None else "not_evaluated",
+                "terminal_selected_policy_samples": int(getattr(m, "terminal_selected_policy_samples", 0) or 0) if m is not None else 0,
+                "terminal_selected_policy_required_samples": int(getattr(m, "terminal_selected_policy_required_samples", 0) or 0) if m is not None else 0,
+                "terminal_selected_policy_weighted_mean_return": getattr(m, "terminal_selected_policy_weighted_mean_return", None) if m is not None else None,
+                "terminal_selected_policy_weighted_mean_return_lower_bound": getattr(m, "terminal_selected_policy_weighted_mean_return_lower_bound", None) if m is not None else None,
+                "terminal_selected_policy_temporal_cluster_count": int(getattr(m, "terminal_selected_policy_temporal_cluster_count", 0) or 0) if m is not None else 0,
+                "terminal_selected_policy_required_temporal_clusters": int(getattr(m, "terminal_selected_policy_required_temporal_clusters", 0) or 0) if m is not None else 0,
+                "terminal_selected_policy_weighted_temporal_mean_return_lower_bound": getattr(m, "terminal_selected_policy_weighted_temporal_mean_return_lower_bound", None) if m is not None else None,
                 "policy_matured_total": int(observability.get("matured_total") or 0),
                 "policy_labeled_total": int(observability.get("labeled_total") or 0),
                 "policy_censored_total": int(observability.get("censored_total") or 0),
@@ -7602,9 +7610,12 @@ def api_status() -> dict[str, Any]:
                 "policy_fingerprint_change_starts_new_cohort": True,
                 "probability_requires_purged_oof_skill": True,
                 "probability_requires_positive_selected_policy_expectancy": True,
+                "probability_requires_positive_terminal_selected_policy_expectancy": True,
                 "terminal_holdout_min_samples": min_samples,
                 "terminal_holdout_min_decision_cohorts": 5,
                 "terminal_holdout_preserves_whole_decision_timestamps": True,
+                "terminal_selected_policy_min_samples": min_samples,
+                "terminal_selected_policy_min_decision_cohorts": 5,
                 "note": (
                     "The 80-row floor proves neither a fitted probability model nor actionability. "
                     "With REQUIRE_CONF_GATE=1, at least 300 exact-policy labeled rows plus accepted "
