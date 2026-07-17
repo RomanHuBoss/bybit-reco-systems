@@ -3661,6 +3661,17 @@ def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
             o.get("label_available_ts"), o["entry_close"], o["exit_close"], o["ret"], o["success"]
         ),
     )
+    raw_diagnostics = o.get("diagnostics")
+    diagnostics = dict(raw_diagnostics) if isinstance(raw_diagnostics, dict) else {}
+    diagnostics.setdefault("bot_type", o.get("bot_type"))
+    diagnostics.setdefault("success", int(o["success"]))
+    diagnostics.setdefault("net_proxy_return", float(o["ret"]))
+    diagnostics.setdefault(
+        "terminal_reason",
+        "positive_net_proxy_pnl"
+        if int(o["success"]) == 1
+        else "non_positive_or_stopped_net_proxy_pnl",
+    )
     upsert_outcome_observability(
         conn,
         rec_id=str(o["rec_id"]),
@@ -3668,7 +3679,7 @@ def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
         label_due_ts=o.get("label_available_ts"),
         state="labeled",
         reason="outcome_inserted",
-        details={"bot_type": o.get("bot_type")},
+        details=diagnostics,
         commit=False,
     )
     conn.commit()
@@ -4829,9 +4840,12 @@ def get_outcomes_recent_enriched(
                      o.horizon_sec, o.entry_close, o.exit_close, o.ret, o.success,
                      r.direction AS reco_direction, r.status AS reco_status,
                      r.score, r.confidence, r.expected_rr, r.reasons_json,
-                     r.model_version, r.is_outcome_label_root
+                     r.model_version, r.is_outcome_label_root,
+                     obs.reason AS outcome_observability_reason,
+                     obs.details_json AS outcome_observability_details_json
               FROM reco_outcomes o
               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
+              LEFT JOIN reco_outcome_observability obs ON obs.rec_id = o.rec_id
               WHERE {' AND '.join(where_parts)}
               ORDER BY o.ts DESC{limit_sql}""",
         query_params,
@@ -4876,6 +4890,11 @@ def get_outcomes_recent_enriched(
             "policy_fingerprint": scope_snapshot["policy_fingerprint"],
             "policy_contract_verified": scope_snapshot["policy_contract_verified"],
             "sample_role": scope_snapshot["sample_role"],
+            "outcome_reason": str(row["outcome_observability_reason"] or "") or None,
+            "outcome_diagnostics": _json_loads_mapping_or_default(
+                row["outcome_observability_details_json"],
+                {},
+            ),
         })
         if len(out) >= int(limit):
             break

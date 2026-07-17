@@ -1636,6 +1636,28 @@ def _grid_outcome(
         and math.isfinite(net_proxy)
         and net_proxy > positive_pnl_epsilon
     )
+    if isinstance(diagnostics, dict):
+        breach_side: str | None = None
+        if stopped and stop_boundary_price is not None:
+            if math.isclose(float(stop_boundary_price), float(ks_lower), rel_tol=1e-12, abs_tol=1e-12):
+                breach_side = "lower"
+            elif math.isclose(float(stop_boundary_price), float(ks_upper), rel_tol=1e-12, abs_tol=1e-12):
+                breach_side = "upper"
+        diagnostics.update({
+            "stopped": bool(stopped),
+            "kill_switch_breach_side": breach_side,
+            "terminal_reason": (
+                "kill_switch_breached"
+                if stopped
+                else (
+                    "positive_net_proxy_pnl"
+                    if success == 1
+                    else "non_positive_net_proxy_pnl"
+                )
+            ),
+            "net_proxy_return": float(net_proxy),
+            "success": int(success),
+        })
     return success, float(net_proxy)
 
 
@@ -2076,6 +2098,7 @@ def compute_outcomes_cycle(
                 "exit_close": float(exitp),
                 "ret": float(ret_proxy),
                 "success": int(success),
+                "diagnostics": dict(diagnostics),
             },
         )
         done += 1

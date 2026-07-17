@@ -1,3 +1,11 @@
+## v1.0.76: outcome audit semantics
+
+- `app/outcomes.py`: формирует terminal reason и kill-switch diagnostics для завершённой proxy-метки.
+- `app/db.py`: сохраняет diagnostics в существующем `reco_outcome_observability` и включает их в enriched read model.
+- `app/ui/static/app.js`: строго валидирует outcome numeric/boolean fields и объясняет terminal outcome.
+- `app/ui/static/styles.css`: нейтральное отображение неизвестного/некорректного исхода.
+- Схема, migrations, calibration formulae и execution preflight не изменены.
+
 ## v1.0.75: денежная проверка terminal-selected policy
 
 - `app/calibration.py`: вычисляет aggregate и terminal selected-policy monetary diagnostics, требует positive terminal row/temporal lower bounds, сохраняет/валидирует новый cache contract v21.

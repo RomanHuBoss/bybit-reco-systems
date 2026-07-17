@@ -2026,9 +2026,59 @@ function renderDirectionBadge(dir) {
   return `<span class="dir-badge ${cls}">${escapeHtml(directionRu(value))}</span>`;
 }
 
-function renderOutcomeResult(success) {
-  const ok = Number(success) === 1;
-  return `<span class="outcome-result ${ok ? "outcome-result-win" : "outcome-result-loss"}">${ok ? "Успех" : "Неуспех"}</span>`;
+function renderOutcomeResult(success, diagnostics) {
+  const value = toStrictInteger(success);
+  if (value !== 0 && value !== 1) {
+    return '<span class="outcome-result outcome-result-unknown">Неизвестно</span>';
+  }
+  const details = diagnostics && typeof diagnostics === "object" ? diagnostics : {};
+  const stopped = details.stopped === true || details.terminal_reason === "kill_switch_breached";
+  const ok = value === 1;
+  const label = ok ? "Успех" : (stopped ? "Неуспех · kill-switch" : "Неуспех");
+  return `<span class="outcome-result ${ok ? "outcome-result-win" : "outcome-result-loss"}">${escapeHtml(label)}</span>`;
+}
+
+function renderOutcomeReturn(value) {
+  const ret = toFiniteNumber(value);
+  return ret === null ? "—" : fmtPct(ret * 100, 2);
+}
+
+function outcomeReasonText(row) {
+  const item = row && typeof row === "object" ? row : {};
+  const details = item.outcome_diagnostics && typeof item.outcome_diagnostics === "object"
+    ? item.outcome_diagnostics
+    : {};
+  const success = toStrictInteger(item.success);
+  const ret = toFiniteNumber(item.ret);
+  const stopped = details.stopped === true || details.terminal_reason === "kill_switch_breached";
+
+  if (stopped) {
+    const side = details.kill_switch_breach_side === "upper"
+      ? "верхний"
+      : details.kill_switch_breach_side === "lower"
+        ? "нижний"
+        : "защитный";
+    const boundary = toFiniteNumber(details.kill_switch_boundary_price);
+    const observed = toFiniteNumber(details.kill_switch_observed_extreme);
+    const boundaryText = boundary === null ? "" : ` на границе ${String(boundary)}`;
+    const observedText = observed === null ? "" : `; наблюдавшийся экстремум ${String(observed)}`;
+    const pnlText = ret === null ? "" : `; итоговый net proxy P&L ${renderOutcomeReturn(ret)}`;
+    return `Сработал ${side} kill-switch${boundaryText}${observedText}${pnlText}. Срабатывание защиты означает неуспешный исход независимо от знака proxy P&L.`;
+  }
+  if (success === 1) {
+    return ret === null
+      ? "Защитные границы не нарушены; числовой proxy P&L недоступен."
+      : `Защитные границы не нарушены; net proxy P&L ${renderOutcomeReturn(ret)}.`;
+  }
+  if (success === 0) {
+    if (ret !== null && ret > 0) {
+      return "Положительный net proxy P&L, но терминальная причина отсутствует в legacy-архиве; сохранённый исход остаётся неуспешным.";
+    }
+    return ret === null
+      ? "Неуспешный исход; числовой proxy P&L или терминальная диагностика недоступны."
+      : `Net proxy P&L ${renderOutcomeReturn(ret)} не прошёл критерий успешного исхода.`;
+  }
+  return "Исход или терминальная диагностика имеют недопустимый формат.";
 }
 
 function renderNeutralSourceTag(source) {
@@ -3385,8 +3435,9 @@ async function loadOutcomes() {
         { label: "Совпадение", render: row => renderAgreementBadge(row.llm_review?.agree_with_engine) },
         { label: "Уверенность LLM", render: row => row.llm_review?.confidence === null || row.llm_review?.confidence === undefined ? '—' : escapeHtml(formatDotNumber(row.llm_review.confidence, 2)) },
         { label: "Тип нейтрального сигнала", render: row => renderNeutralSourceTag(row.neutral_source) },
-        { label: "Исход", render: row => renderOutcomeResult(row.success) },
-        { label: "Результат", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
+        { label: "Исход по правилам стратегии", render: row => renderOutcomeResult(row.success, row.outcome_diagnostics) },
+        { label: "Расчётный net proxy P&L", render: row => escapeHtml(renderOutcomeReturn(row.ret)) },
+        { label: "Причина исхода", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeReasonText(row))}</span>` },
         { label: "Горизонт", render: row => escapeHtml(formatAgeHuman(row.horizon_sec)) },
         { label: "Пояснение LLM", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.llm_review?.summary || row.llm_review?.error || "—"))}</span>` },
         { label: "Набор правил", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
@@ -3401,8 +3452,9 @@ async function loadOutcomes() {
         { label: "Модель", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.model_version || "—")}</span>` },
         { label: "Набор правил", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
         { label: "Роль", render: row => `<span class="neutral-note">${escapeHtml(sampleRoleRu(row.sample_role || row.reco_status || "legacy"))}</span>` },
-        { label: "Исход", render: row => renderOutcomeResult(row.success) },
-        { label: "Результат", render: row => escapeHtml(fmtPct(Number(row.ret || 0) * 100, 2)) },
+        { label: "Исход по правилам стратегии", render: row => renderOutcomeResult(row.success, row.outcome_diagnostics) },
+        { label: "Расчётный net proxy P&L", render: row => escapeHtml(renderOutcomeReturn(row.ret)) },
+        { label: "Причина исхода", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeReasonText(row))}</span>` },
         { label: "Идентификатор рекомендации", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
       ], archiveRecent, { emptyText: "Исторический архив пуст.", compact: true, maxHeight: 300 })}
     </div>

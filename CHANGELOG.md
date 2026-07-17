@@ -1,3 +1,12 @@
+## 2026-07-17 - v1.0.76 - outcome audit semantics
+
+- Сохранены терминальные diagnostics завершённого grid outcome в существующем observability-контуре: `stopped`, `terminal_reason`, сторона/граница kill-switch, наблюдавшийся экстремум, консервативная цена ликвидации и net proxy return.
+- Enriched outcome read model теперь возвращает `outcome_reason` и `outcome_diagnostics` без изменения схемы БД или существующих полей API.
+- Журнал исходов разделяет бинарный исход стратегии, расчётный net proxy P&L и терминальную причину; положительный P&L при kill-switch больше не выглядит необъяснимым противоречием.
+- Frontend применяет строгую numeric-семантику: boolean, пустые строки, NaN и Infinity не становятся торговыми числами или процентами.
+- Добавлен regression test `tests/test_iteration263_outcome_audit_semantics.py` с фактическим RED -> GREEN.
+- Baseline: 1195 tests collected; монолитный baseline pytest не завершился в лимите 20 минут, критический пакет — 215 passed. Post-check counts приведены в audit report. `ruff` недоступен; `pip check` сообщает внешнее несовпадение moviepy/pillow в общем окружении.
+
 ## 2026-07-17 - v1.0.75 - terminal selected-policy monetary holdout
 
 - Исправлен HIGH model/risk fail-open: положительные aggregate selected-policy OOF returns больше не могут скрыть отрицательный денежный результат выбранной политики на последнем whole-timestamp holdout.

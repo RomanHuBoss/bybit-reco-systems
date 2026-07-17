@@ -1,3 +1,13 @@
+## Терминальный исход grid outcome (v1.0.76)
+
+Для `grid_label_v26` бинарный успех и денежный результат являются разными величинами:
+
+```text
+success = 1  <=>  kill-switch не сработал AND net_proxy_return > 0
+```
+
+Положительный `net_proxy_return` не превращает аварийно завершённую сетку в успешную. При пробое lower/upper kill-switch outcome получает `success=0`, а итоговый P&L может остаться положительным за счёт ранее реализованных grid cycles. Версия 1.0.76 не меняет эту математику; она сохраняет и публикует терминальную причину, сторону защитной границы, boundary price, observed adverse extreme и liquidation price. Funding benefit по-прежнему не кредитуется в canonical approval/calibration economics.
+
 ## Terminal-selected monetary contract (v1.0.75)
 
 Probability activation теперь требует две разные денежные проверки exact confidence-selected policy: aggregate purged OOF и последний whole-timestamp terminal holdout. Для terminal subset обязательны `CALIB_MIN_SAMPLES` выбранных строк, пять decision timestamps, положительный weighted mean, положительный one-sided row lower bound и положительный temporal lower bound. Binary log-loss skill без этой денежной проверки не разрешает inference.

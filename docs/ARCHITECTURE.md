@@ -1,3 +1,7 @@
+## Outcome audit data flow - v1.0.76
+
+Завершённый proxy outcome проходит единый доказуемый путь: `_grid_outcome` формирует `(success, net_proxy_return)` и terminal diagnostics -> `compute_outcomes_cycle` передаёт их в `db.insert_outcome` -> существующий `reco_outcome_observability.details_json` сохраняет diagnostics атомарно с outcome lifecycle -> `get_outcomes_recent_enriched` присоединяет observability -> frontend показывает отдельные поля исхода, P&L и причины. Схема SQLite/PostgreSQL не изменена; используется уже существующий additive observability-контракт.
+
 ## Terminal selected-policy activation boundary - v1.0.75
 
 `app/calibration.py` повторно применяет shared confidence transform к финальному whole-timestamp fold и строит для выбранных terminal rows отдельные row/temporal monetary diagnostics. Persistence сохраняет этот блок отдельно от aggregate `selected_policy`; loader не принимает fitted payload без положительного terminal contract. `app/recommender.py` использует model только когда оба monetary слоя положительны, а `app/main.py` и UI публикуют фактические/требуемые terminal-selected counts.
