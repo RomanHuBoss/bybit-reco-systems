@@ -1,3 +1,9 @@
+## v1.0.73: завершение LLM reviewer
+
+- `app.main._llm_reviewer_thread`: прекращает цикл после общего shutdown-event и не запускает повторный sweep во время остановки.
+- `app.main._run_supervised_background_target`: существующий clean-stop и owner-safe lock-release контракт теперь достижим для всех зарегистрированных background components.
+- `tests/test_iteration260_llm_shutdown_liveness.py`: динамически проверяет stop, отсутствие второго sweep, состояние `stopped` и удаление owned reviewer lock.
+
 ## v1.0.72: быстрые диагностические чтения
 
 - `app.db.get_outcome_history_summary()` — SQL-only totals/class balance исторического архива.

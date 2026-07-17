@@ -4875,7 +4875,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.72", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.73", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6889,7 +6889,7 @@ def _llm_reviewer_thread():
     lock_ttl = max(60, base_interval * 4)
     next_run = time.monotonic()
     interval_sec = eager_interval
-    while True:
+    while not _BACKGROUND_STOP_EVENT.is_set():
         with closing(_get_lock_conn()) as lock_conn:
             has_lock = db.acquire_runtime_lock(lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl)
         if has_lock:

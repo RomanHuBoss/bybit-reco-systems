@@ -1,3 +1,10 @@
+## 2026-07-17 - v1.0.73 - LLM reviewer shutdown liveness
+
+- Исправлен подтверждённый shutdown-дефект: `_llm_reviewer_thread()` больше не продолжает безусловный цикл после общего stop-event.
+- Штатное завершение теперь возвращает reviewer target в supervisor, сохраняет `stopped` без ложного crash/restart и запускает существующий owner-safe release `runtime:llm_reviewer`.
+- Добавлен regression `tests/test_iteration260_llm_shutdown_liveness.py`, воспроизводящий второй sweep на исходном коде и проверяющий один sweep, один wait и отсутствие lock после исправления.
+- Версия FastAPI и frontend cache build синхронизированы до `1.0.73`; API, `.env`, торговая логика, policy/calibration identity и схемы БД не изменены.
+
 ## 2026-07-17 - v1.0.72 - bounded health/outcomes reads для крупной PostgreSQL БД
 
 - HIGH: `/api/v1/status` больше не декодирует весь архив `reasons_json`; исторические totals и class balance агрегируются SQL, JSON-level lineage проверяется только для текущей модели.

@@ -1,3 +1,9 @@
+## LLM reviewer shutdown lifecycle - v1.0.73
+
+`_llm_reviewer_thread()` использует тот же общий `_BACKGROUND_STOP_EVENT`, что collector, backfill, futures metadata, sentiment, recommender и outcomes. После сигнала shutdown новый reviewer cycle не начинается; target возвращается в `_run_supervised_background_target()`, который сохраняет clean `stopped` state и в `finally` вызывает owner-safe release для `runtime:llm_reviewer`.
+
+Runtime-lock остаётся single-owner lease. Исправление не удаляет чужой lock, не ослабляет atomic acquisition SQLite/PostgreSQL и не меняет LLM review/pending contract. При аварийном kill восстановление по-прежнему происходит только после TTL.
+
 ## Bounded operator diagnostics — v1.0.72
 
 Тяжёлые operator reads разделены по назначению. Историческая lineage-сводка строится агрегатами SQL; JSON-контракты проверяются только для outcomes текущей модели. Полное окно исходов получает детальные матрицы текущей policy-когорты, а архив — отдельный summary endpoint с ограниченным recent-list. Это сохраняет immutable audit history, но исключает O(N) JSON-декодирование всего архива при каждом клике.
