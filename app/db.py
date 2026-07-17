@@ -196,6 +196,10 @@ def _ensure_recommendation_outcome_policy_columns(conn: sqlite3.Connection) -> b
         "CREATE INDEX IF NOT EXISTS idx_reco_llm_outcome_liveness "
         "ON recommendations(llm_review_status, outcome_sample_role, ts)"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reco_model_outcome_scope "
+        "ON recommendations(model_version, is_outcome_label_root, rec_id)"
+    )
     return added
 
 
@@ -3207,14 +3211,27 @@ def iter_calibration_lineage_rows(
     conn: sqlite3.Connection,
     *,
     require_llm_verdict: bool = False,
+    current_model_version: str | None = None,
     batch_size: int = LARGE_READ_BATCH_SIZE,
 ) -> Iterable[dict[str, Any]]:
-    """Yield compact outcome-lineage rows without retaining full diagnostics JSON."""
+    """Yield compact outcome-lineage rows without retaining full diagnostics JSON.
+
+    Operator status only needs JSON-level feature and policy verification for the
+    currently running model.  ``current_model_version`` therefore narrows the
+    stream in SQL, preventing immutable historical outcomes from being transferred
+    and decoded on every opening of the health dialog.
+    """
     batch_int = strict_integer(batch_size)
     if batch_int is None or batch_int <= 0:
         batch_int = LARGE_READ_BATCH_SIZE
     batch_int = min(int(batch_int), 4096)
     supported_sql, supported_params = sql_in_clause("o.bot_type")
+    where_parts = [supported_sql]
+    params: list[Any] = [*supported_params]
+    model_norm = str(current_model_version or "").strip()
+    if model_norm:
+        where_parts.append("(r.model_version=? OR r.model_version LIKE ?)")
+        params.extend([model_norm, model_norm + "+%"])
     cur = backend_execute_stream(
         conn,
         f"""SELECT o.bot_type, o.success, o.ts,
@@ -3222,8 +3239,8 @@ def iter_calibration_lineage_rows(
                     r.is_outcome_label_root
                FROM reco_outcomes o
                JOIN recommendations r ON r.rec_id = o.rec_id
-              WHERE {supported_sql}""",
-        supported_params,
+              WHERE {' AND '.join(where_parts)}""",
+        params,
         batch_size=int(batch_int),
     )
     try:
@@ -3263,6 +3280,76 @@ def iter_calibration_lineage_rows(
         close = getattr(cur, "close", None)
         if callable(close):
             close()
+
+
+def get_outcome_history_summary(
+    conn: sqlite3.Connection,
+    *,
+    require_llm_verdict: bool = False,
+) -> dict[str, Any]:
+    """Return historical outcome totals with SQL aggregation only.
+
+    The immutable archive can contain tens of thousands of rows with sizeable
+    ``reasons_json`` payloads.  Health/status needs only total and class-balance
+    statistics for historical lineage; decoding every archived payload is both
+    unnecessary and increasingly expensive.
+    """
+    supported_sql, supported_params = sql_in_clause("o.bot_type")
+    where_parts = [supported_sql, "COALESCE(r.is_outcome_label_root, 1)=1"]
+    if require_llm_verdict:
+        where_parts.append(
+            """(
+                r.llm_review_status='ok'
+                OR (
+                    r.status='no_trade'
+                    AND r.outcome_eligible=1
+                    AND r.outcome_sample_role='shadow_no_trade'
+                    AND r.risk_checks_passed=1
+                    AND r.risk_blocks_empty=1
+                )
+            )"""
+        )
+    rows = conn.execute(
+        f"""SELECT o.bot_type,
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN o.success=1 THEN 1 ELSE 0 END), 0) AS wins
+               FROM reco_outcomes o
+               JOIN recommendations r ON r.rec_id=o.rec_id
+              WHERE {' AND '.join(where_parts)}
+              GROUP BY o.bot_type""",
+        supported_params,
+    ).fetchall()
+    stats_by_bot: dict[str, dict[str, Any]] = {}
+    historical_total = 0
+    for row in rows:
+        bot_type = str(row["bot_type"] or "")
+        total = int(row["total"] or 0)
+        wins = int(row["wins"] or 0)
+        losses = max(0, total - wins)
+        minority = min(wins, losses)
+        effective = max(0, 2 * minority)
+        win_rate = float(wins / total) if total else None
+        if win_rate is None or win_rate <= 0.0 or win_rate >= 1.0:
+            entropy = 0.0
+        else:
+            entropy = -(
+                win_rate * math.log2(win_rate)
+                + (1.0 - win_rate) * math.log2(1.0 - win_rate)
+            )
+        stats_by_bot[bot_type] = {
+            "total": total,
+            "wins": wins,
+            "losses": losses,
+            "minority_class_count": minority,
+            "effective_samples": effective,
+            "win_rate": round(win_rate, 4) if win_rate is not None else None,
+            "class_entropy_bits": round(float(entropy), 4),
+        }
+        historical_total += total
+    return {
+        "historical_total": int(historical_total),
+        "stats_by_bot": stats_by_bot,
+    }
 
 
 OUTCOME_OBSERVABILITY_STATES: frozenset[str] = frozenset({
@@ -3355,10 +3442,29 @@ def get_policy_outcome_observability(
         raise ValueError("policy_fingerprint must be a sha256 hex digest")
 
     bot_filter_sql = ""
+    maturity_filter_sql = ""
     params: list[Any] = [model_norm, model_norm + "+%"]
     if bot_type is not None:
+        bot_norm = str(bot_type or "").strip()
         bot_filter_sql = " AND r.bot_type=?"
-        params.append(str(bot_type or "").strip())
+        params.append(bot_norm)
+        horizon = POLICY_LABEL_HORIZONS_SEC.get(bot_norm)
+        if horizon is not None:
+            maturity_filter_sql = " AND r.ts <= ?"
+            params.append(int(now_value) - int(horizon) - int(POLICY_LABEL_GRACE_SEC))
+
+    llm_filter_sql = ""
+    if require_llm_verdict:
+        llm_filter_sql = """ AND (
+            r.llm_review_status='ok'
+            OR (
+                r.status='no_trade'
+                AND r.outcome_eligible=1
+                AND r.outcome_sample_role='shadow_no_trade'
+                AND r.risk_checks_passed=1
+                AND r.risk_blocks_empty=1
+            )
+        )"""
 
     cur = backend_execute_stream(
         conn,
@@ -3378,7 +3484,14 @@ def get_policy_outcome_observability(
              LEFT JOIN reco_outcome_observability obs ON obs.rec_id=r.rec_id
             WHERE COALESCE(r.is_outcome_label_root, 1)=1
               AND (r.model_version=? OR r.model_version LIKE ?)
-              {bot_filter_sql}""",
+              AND (
+                    r.policy_evaluation_eligible=1
+                    OR r.policy_evaluation_eligible IS NULL
+                    OR COALESCE(r.outcome_sample_role, '') NOT IN ('shadow_no_trade', 'excluded')
+                  )
+              {bot_filter_sql}
+              {maturity_filter_sql}
+              {llm_filter_sql}""",
         params,
         batch_size=LARGE_READ_BATCH_SIZE,
     )
@@ -4769,6 +4882,133 @@ def get_outcomes_recent_enriched(
     return out
 
 
+def _archive_outcome_summary_fast(
+    conn: sqlite3.Connection,
+    *,
+    require_llm_verdict: bool,
+    recent_limit: int,
+) -> dict[str, Any]:
+    """Build the archive headline with SQL aggregates and a bounded recent list.
+
+    The outcomes window only uses archive totals and the most recent archive rows;
+    detailed matrices are rendered from the current-policy cohort.  Scanning and
+    decoding every historical ``reasons_json`` twice is therefore wasted work.
+    """
+    supported_sql, supported_params = sql_in_clause("o.bot_type")
+    root_expr = "COALESCE(r.is_outcome_label_root, 1)=1"
+    shadow_expr = """(
+        r.outcome_sample_role='shadow_no_trade'
+        OR (COALESCE(r.outcome_sample_role, '')='' AND r.status='no_trade')
+    )"""
+    where_parts = [supported_sql]
+    if require_llm_verdict:
+        where_parts.append(
+            """(
+                r.llm_review_status='ok'
+                OR (
+                    r.status='no_trade'
+                    AND r.outcome_eligible=1
+                    AND r.outcome_sample_role='shadow_no_trade'
+                    AND r.risk_checks_passed=1
+                    AND r.risk_blocks_empty=1
+                )
+            )"""
+        )
+    row = conn.execute(
+        f"""SELECT
+                 COUNT(*) AS raw_total,
+                 COALESCE(SUM(CASE WHEN {root_expr} THEN 1 ELSE 0 END), 0) AS total,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND o.success=1 THEN 1 ELSE 0 END), 0) AS wins,
+                 COALESCE(SUM(CASE WHEN {root_expr} THEN o.ret ELSE 0 END), 0.0) AS ret_sum,
+                 COALESCE(SUM(CASE WHEN {root_expr} THEN ABS(o.ret) ELSE 0 END), 0.0) AS abs_ret_sum,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND {shadow_expr} THEN 1 ELSE 0 END), 0) AS shadow_total,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND {shadow_expr} AND o.success=1 THEN 1 ELSE 0 END), 0) AS shadow_wins,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND {shadow_expr} THEN o.ret ELSE 0 END), 0.0) AS shadow_ret_sum,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND {shadow_expr} THEN ABS(o.ret) ELSE 0 END), 0.0) AS shadow_abs_ret_sum,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND NOT {shadow_expr} THEN 1 ELSE 0 END), 0) AS actionable_total,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND NOT {shadow_expr} AND o.success=1 THEN 1 ELSE 0 END), 0) AS actionable_wins,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND NOT {shadow_expr} THEN o.ret ELSE 0 END), 0.0) AS actionable_ret_sum,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND NOT {shadow_expr} THEN ABS(o.ret) ELSE 0 END), 0.0) AS actionable_abs_ret_sum,
+                 COALESCE(SUM(CASE WHEN {root_expr} AND r.status='executed' THEN 1 ELSE 0 END), 0) AS executed_audit_total
+            FROM reco_outcomes o
+            LEFT JOIN recommendations r ON r.rec_id=o.rec_id
+           WHERE {' AND '.join(where_parts)}""",
+        supported_params,
+    ).fetchone()
+
+    def _summary(total: int, wins: int, ret_sum: float, abs_ret_sum: float) -> dict[str, Any]:
+        total_int = int(total or 0)
+        wins_int = int(wins or 0)
+        return {
+            "total": total_int,
+            "wins": wins_int,
+            "losses": max(0, total_int - wins_int),
+            "win_rate": round(wins_int / total_int, 3) if total_int else None,
+            "avg_ret": round((float(ret_sum or 0.0) / total_int) * 100.0, 3) if total_int else 0.0,
+            "avg_abs_ret": round((float(abs_ret_sum or 0.0) / total_int) * 100.0, 3) if total_int else 0.0,
+        }
+
+    total = int(row["total"] or 0) if row else 0
+    raw_total = int(row["raw_total"] or 0) if row else 0
+    all_roots = _summary(
+        total,
+        int(row["wins"] or 0) if row else 0,
+        float(row["ret_sum"] or 0.0) if row else 0.0,
+        float(row["abs_ret_sum"] or 0.0) if row else 0.0,
+    )
+    shadow = _summary(
+        int(row["shadow_total"] or 0) if row else 0,
+        int(row["shadow_wins"] or 0) if row else 0,
+        float(row["shadow_ret_sum"] or 0.0) if row else 0.0,
+        float(row["shadow_abs_ret_sum"] or 0.0) if row else 0.0,
+    )
+    actionable = _summary(
+        int(row["actionable_total"] or 0) if row else 0,
+        int(row["actionable_wins"] or 0) if row else 0,
+        float(row["actionable_ret_sum"] or 0.0) if row else 0.0,
+        float(row["actionable_abs_ret_sum"] or 0.0) if row else 0.0,
+    )
+    summary = {
+        **all_roots,
+        "raw_total": raw_total,
+        "deduped_duplicates": max(0, raw_total - total),
+        "true_neutral_total": 0,
+        "futures_neutral_total": 0,
+        "shadow_no_trade_total": int(shadow["total"]),
+        "actionable_total": int(actionable["total"]),
+        "executed_audit_total": int(row["executed_audit_total"] or 0) if row else 0,
+    }
+    return {
+        "scope": _outcome_scope_metadata(
+            "archive",
+            current_model_version=None,
+            policy_fingerprint=None,
+        ),
+        "summary": summary,
+        "cohorts": {
+            "all_roots": all_roots,
+            "actionable": actionable,
+            "shadow_no_trade": shadow,
+        },
+        "llm_summary": {},
+        "by_bot": [],
+        "by_symbol": [],
+        "by_raw_direction": [],
+        "by_execution_direction": [],
+        "direction_pairs": [],
+        "neutral_breakdown": [],
+        "llm_alignment": [],
+        "llm_engine_alignment": [],
+        "llm_engine_matrix": [],
+        "recent": get_outcomes_recent_enriched(
+            conn,
+            limit=max(1, int(recent_limit)),
+            require_llm_verdict=require_llm_verdict,
+            scope="archive",
+        ),
+    }
+
+
 def get_outcomes_stats(
     conn: sqlite3.Connection,
     *,
@@ -4776,6 +5016,8 @@ def get_outcomes_stats(
     scope: str = "archive",
     current_model_version: str | None = None,
     policy_fingerprint: str | None = None,
+    include_breakdowns: bool = True,
+    recent_limit: int = 120,
 ) -> dict:
     """Aggregate outcome proxies inside an explicit, verified evidence scope.
 
@@ -4790,7 +5032,18 @@ def get_outcomes_stats(
         raise ValueError("current outcome scope requires current_model_version")
     if scope_name == "current_policy" and not is_sha256_fingerprint(expected_policy):
         raise ValueError("current_policy outcome scope requires a sha256 policy_fingerprint")
+    if not include_breakdowns and scope_name == "archive":
+        return _archive_outcome_summary_fast(
+            conn,
+            require_llm_verdict=require_llm_verdict,
+            recent_limit=recent_limit,
+        )
     _supported_sql, _supported_params = sql_in_clause("o.bot_type")
+    where_parts = [_supported_sql]
+    query_params: list[Any] = [*_supported_params]
+    if scope_name in {"current_model", "current_policy"}:
+        where_parts.append("(r.model_version=? OR r.model_version LIKE ?)")
+        query_params.extend([current_model, current_model + "+%"])
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                      o.ret, o.success,
@@ -4798,9 +5051,9 @@ def get_outcomes_stats(
                      r.reasons_json, r.is_outcome_label_root, r.model_version
               FROM reco_outcomes o
               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
-              WHERE {_supported_sql}
+              WHERE {' AND '.join(where_parts)}
               ORDER BY o.ts DESC""",
-        _supported_params,
+        query_params,
     )
 
     raw_total = 0
@@ -5058,7 +5311,7 @@ def get_outcomes_stats(
         "llm_engine_matrix": llm_engine_matrix,
         "recent": get_outcomes_recent_enriched(
             conn,
-            limit=120,
+            limit=max(1, int(recent_limit)),
             require_llm_verdict=require_llm_verdict,
             scope=scope_name,
             current_model_version=current_model_version,

@@ -1,3 +1,14 @@
+## 2026-07-17 - v1.0.72 - bounded health/outcomes reads для крупной PostgreSQL БД
+
+- HIGH: `/api/v1/status` больше не декодирует весь архив `reasons_json`; исторические totals и class balance агрегируются SQL, JSON-level lineage проверяется только для текущей модели.
+- HIGH: `GET /api/v1/outcomes/stats?scope=archive&detail=summary` возвращает SQL headline/cohort totals и ограниченный recent-list вместо полной повторной агрегации архива.
+- MEDIUM: current-policy outcomes фильтруются по `model_version` в SQL до передачи payload приложению.
+- MEDIUM: exact-policy observability отсекает `policy_evaluation_eligible!=1`, несозревшие и неподходящие LLM-строки до разбора JSON.
+- UI: окна «Здоровье» и «Исходы» открываются немедленно и отображают состояние загрузки.
+- Добавлен индекс `idx_reco_model_outcome_scope`; миграция идемпотентна для SQLite/PostgreSQL.
+- Торговая логика, risk/economic gates, outcome labels и calibration eligibility не изменены.
+- Новый regression: `tests/test_iteration259_health_outcomes_performance.py`.
+
 ## 2026-07-16 - v1.0.71 - Windows restart handover, shadow-outcome liveness и журнал аудита
 
 - HIGH: штатное завершение supervised background-loop освобождает принадлежащий процессу runtime-lock, поэтому новый Windows/Linux процесс не ждёт полный lease предыдущего PID.

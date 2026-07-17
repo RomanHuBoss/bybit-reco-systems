@@ -1,3 +1,7 @@
+## Bounded operator diagnostics — v1.0.72
+
+Тяжёлые operator reads разделены по назначению. Историческая lineage-сводка строится агрегатами SQL; JSON-контракты проверяются только для outcomes текущей модели. Полное окно исходов получает детальные матрицы текущей policy-когорты, а архив — отдельный summary endpoint с ограниченным recent-list. Это сохраняет immutable audit history, но исключает O(N) JSON-декодирование всего архива при каждом клике.
+
 ## Runtime lock handover и shadow exploration - v1.0.71
 
 Supervised wrapper владеет единым lifecycle release для блокировок фоновых компонентов. `release_runtime_lock` удаляет строку только при совпадении owner, поэтому завершившийся процесс не может удалить lease нового лидера. При аварийном завершении сохраняется TTL takeover. Status API читает lock-row только как диагностику и не использует read-before-write для claim; PostgreSQL atomic UPSERT остаётся source of truth.

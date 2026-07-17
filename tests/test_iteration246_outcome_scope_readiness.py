@@ -246,7 +246,8 @@ def test_current_policy_scope_rejects_missing_or_malformed_lineage(tmp_path: Pat
 def test_outcomes_api_defaults_to_current_policy_scope() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
 
-    assert 'def api_outcomes_stats(scope: str = "current_policy")' in source
+    assert 'scope: str = "current_policy"' in source
+    assert 'detail: str = "full"' in source
     assert 'scope=scope' in source
     assert 'status_code=400' in source
 

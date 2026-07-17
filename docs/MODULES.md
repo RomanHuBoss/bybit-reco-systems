@@ -1,3 +1,10 @@
+## v1.0.72: быстрые диагностические чтения
+
+- `app.db.get_outcome_history_summary()` — SQL-only totals/class balance исторического архива.
+- `app.db.iter_calibration_lineage_rows(current_model_version=...)` — bounded JSON stream только текущей модели.
+- `app.db.get_outcomes_stats(include_breakdowns=False)` — краткая архивная сводка без полной Python-агрегации.
+- `GET /api/v1/outcomes/stats?...&detail=summary` — контракт краткого архива для UI.
+
 ## v1.0.71 - изменённые обязанности модулей
 
 - `app/main.py`: lifecycle release runtime-lock, расчёт handover grace, collector state/provenance и дополнительные status fields.

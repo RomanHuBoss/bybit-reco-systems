@@ -4875,7 +4875,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.71", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.72", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6310,13 +6310,19 @@ def api_trades(bot_id: str | None = None, limit: int = 200) -> dict[str, Any]:
 
 
 @app.get("/api/v1/outcomes/stats")
-def api_outcomes_stats(scope: str = "current_policy") -> dict[str, Any]:
+def api_outcomes_stats(
+    scope: str = "current_policy",
+    detail: str = "full",
+) -> dict[str, Any]:
     """Return outcome proxies in an explicit evidence lineage.
 
     The operator UI defaults to the exact policy currently running. Historical
     outcomes remain available via ``scope=archive`` but are never blended into the
     current-policy headline.
     """
+    detail_norm = str(detail or "full").strip().lower()
+    if detail_norm not in {"full", "summary"}:
+        raise HTTPException(status_code=400, detail="detail must be full or summary")
     with closing(_get_conn()) as conn:
         active_risk_limits = normalize_risk_limits(
             db.get_active_risk_limits(conn),
@@ -6333,6 +6339,8 @@ def api_outcomes_stats(scope: str = "current_policy") -> dict[str, Any]:
                 scope=scope,
                 current_model_version=RECOMMENDER_MODEL_VERSION,
                 policy_fingerprint=policy_fingerprint,
+                include_breakdowns=detail_norm == "full",
+                recent_limit=20 if detail_norm == "summary" else 120,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -7327,15 +7335,29 @@ def api_status() -> dict[str, Any]:
         require_llm_outcome_verdict = bool(
             getattr(settings, "llm_reviewer_enabled", False)
         )
+        history_summary = db.get_outcome_history_summary(
+            conn,
+            require_llm_verdict=require_llm_outcome_verdict,
+        )
         lineage = calibration_lineage_diagnostics(
             db.iter_calibration_lineage_rows(
                 conn,
                 require_llm_verdict=require_llm_outcome_verdict,
+                current_model_version=RECOMMENDER_MODEL_VERSION,
             ),
             policy_fingerprint=policy_fingerprint,
             mean_reversion_min_score=settings.mean_reversion_min_score,
             retain_rows=False,
             recent_cutoff_ts=now_ts_int - 7 * 86400,
+        )
+        lineage["historical_total"] = int(history_summary["historical_total"])
+        lineage["dropped_old_model"] = max(
+            0,
+            int(history_summary["historical_total"])
+            - int(lineage.get("current_model_total") or 0),
+        )
+        lineage.setdefault("stats_by_bot", {})["historical"] = dict(
+            history_summary.get("stats_by_bot") or {}
         )
         lineage_stats = lineage.get("stats_by_bot") or {}
         historical_stats_by_bot = lineage_stats.get("historical") or {}

@@ -2951,6 +2951,12 @@ async function refreshCurrentDetails() {
 // ── decisions / risk ──────────────────────────────────────────────────────────
 
 async function loadHealth() {
+  showModalHtml("Здоровье системы", `
+    <div class="modal-section">
+      <div class="modal-section-title">Загрузка диагностики</div>
+      <p class="modal-note">Получаем актуальное состояние фоновых контуров и базы данных…</p>
+    </div>
+  `);
   const [healthRes, statusRes, decisionsRes] = await Promise.all([
     fetch("/api/v1/health/symbols"),
     fetch("/api/v1/status"),
@@ -3187,9 +3193,15 @@ async function loadHealth() {
 }
 
 async function loadOutcomes() {
+  showModalHtml("Результаты наблюдений", `
+    <div class="modal-section">
+      <div class="modal-section-title">Загрузка статистики</div>
+      <p class="modal-note">Считаем текущую policy-когорту и загружаем краткую сводку исторического архива…</p>
+    </div>
+  `);
   const [currentRes, archiveRes] = await Promise.all([
     fetch("/api/v1/outcomes/stats?scope=current_policy"),
-    fetch("/api/v1/outcomes/stats?scope=archive"),
+    fetch("/api/v1/outcomes/stats?scope=archive&detail=summary"),
   ]);
   let data;
   let archiveData;
