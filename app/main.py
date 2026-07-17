@@ -4875,7 +4875,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.73", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.74", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -7465,6 +7465,18 @@ def api_status() -> dict[str, Any]:
                 "purged_oof_feature_log_loss": getattr(m, "oof_feature_log_loss", None) if m is not None else None,
                 "purged_oof_score_log_loss": getattr(m, "oof_score_log_loss", None) if m is not None else None,
                 "purged_oof_null_log_loss": getattr(m, "oof_null_log_loss", None) if m is not None else None,
+                "purged_oof_final_samples": int(getattr(m, "oof_final_samples", 0) or 0) if m is not None else 0,
+                "purged_oof_required_final_samples": int(getattr(m, "oof_required_final_samples", 0) or 0) if m is not None else 0,
+                "purged_oof_final_decision_cohorts": int(getattr(m, "oof_final_decision_cohorts", 0) or 0) if m is not None else 0,
+                "purged_oof_required_final_decision_cohorts": int(getattr(m, "oof_required_final_decision_cohorts", 0) or 0) if m is not None else 0,
+                "selected_policy_expectancy_status": str(getattr(m, "selected_policy_expectancy_status", "not_evaluated")) if m is not None else "not_evaluated",
+                "selected_policy_confidence_threshold": getattr(m, "selected_policy_confidence_threshold", None) if m is not None else None,
+                "selected_policy_samples": int(getattr(m, "selected_policy_samples", 0) or 0) if m is not None else 0,
+                "selected_policy_weighted_mean_return": getattr(m, "selected_policy_weighted_mean_return", None) if m is not None else None,
+                "selected_policy_weighted_mean_return_lower_bound": getattr(m, "selected_policy_weighted_mean_return_lower_bound", None) if m is not None else None,
+                "selected_policy_temporal_cluster_count": int(getattr(m, "selected_policy_temporal_cluster_count", 0) or 0) if m is not None else 0,
+                "selected_policy_minimum_temporal_clusters": int(getattr(m, "selected_policy_minimum_temporal_clusters", 0) or 0) if m is not None else 0,
+                "selected_policy_weighted_temporal_mean_return_lower_bound": getattr(m, "selected_policy_weighted_temporal_mean_return_lower_bound", None) if m is not None else None,
                 "policy_matured_total": int(observability.get("matured_total") or 0),
                 "policy_labeled_total": int(observability.get("labeled_total") or 0),
                 "policy_censored_total": int(observability.get("censored_total") or 0),
@@ -7589,10 +7601,15 @@ def api_status() -> dict[str, Any]:
                 "minimum_temporal_span_days": round(minimum_temporal_span_sec / 86400.0, 2),
                 "policy_fingerprint_change_starts_new_cohort": True,
                 "probability_requires_purged_oof_skill": True,
+                "probability_requires_positive_selected_policy_expectancy": True,
+                "terminal_holdout_min_samples": min_samples,
+                "terminal_holdout_min_decision_cohorts": 5,
+                "terminal_holdout_preserves_whole_decision_timestamps": True,
                 "note": (
                     "The 80-row floor proves neither a fitted probability model nor actionability. "
                     "With REQUIRE_CONF_GATE=1, at least 300 exact-policy labeled rows plus accepted "
-                    "purged OOF and terminal-holdout skill are required."
+                    "purged OOF skill, a whole-timestamp terminal holdout, and positive monetary "
+                    "evidence for the exact confidence-selected subset are required."
                 ),
             },
             "last_reco_ts": last_reco_ts,

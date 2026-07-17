@@ -1,3 +1,11 @@
+## Денежная проверка выбранной моделью политики и безопасный terminal holdout (v1.0.74)
+
+Версия 1.0.74 закрывает два дефекта калибровки, из-за которых формально принятая модель могла не соответствовать денежной цели. Раньше положительное ожидание проверялось на всей pre-calibration candidate-когорте, а затем LogReg обучался на бинарном `success`. Поэтому модель могла выбрать группу с высокой долей мелких выигрышей, но отрицательным средним денежным результатом, отбросив редкие крупные выигрыши другой группы. Теперь каждая purged OOF-вероятность проходит тот же adaptive blend, тот же записанный context/OI/shock multiplier и тот же `MIN_CONF_TO_RECOMMEND`, что runtime publication gate. Активация требует положительных row-level и temporal Student-t lower bounds именно у этой выбранной подвыборки.
+
+Terminal validation больше не строится остатком целочисленного fold. Границы всех validation blocks совпадают с границами целого recommendation timestamp; terminal block содержит не менее `CALIB_MIN_SAMPLES` строк и пяти целых decision timestamps. Недостаточная история, испорченные selection inputs, маленький terminal block, отсутствие бинарного skill или неположительное selected-policy expectancy оставляют модель unfitted и confidence audit-only.
+
+Контракты обновлены до `bybit-taxonomy-v9-selected-policy-terminal-cohorts`, `candidate-policy-v2`, bot/global calibrators v20; FastAPI/cache build — `1.0.74`. `grid_label_v26`, direction v14, API routes, SQLite/PostgreSQL schema и `.env` не изменены. Из-за изменения политики начинается новая exact-policy когорта; прежние рекомендации и исходы сохраняются как архив. Исправление не доказывает будущую или live-прибыльность и не добавляет выставление ордеров.
+
 ## Завершение LLM reviewer без зависшего runtime-lock (v1.0.73)
 
 Версия 1.0.73 исправляет shutdown-контракт фонового LLM reviewer. Его цикл теперь, как и остальные supervised background loops, проверяет общий stop-event перед следующим проходом. При штатном завершении после текущего прохода target возвращается в supervisor, состояние фиксируется как `stopped`, а принадлежащий процессу `runtime:llm_reviewer` удаляется owner-safe операцией. Это исключает прежний повторный sweep после сигнала остановки и сокращает риск наследования живого lease при обычном restart.

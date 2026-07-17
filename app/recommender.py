@@ -32,7 +32,7 @@ from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
     extract_features, FEATURE_NAMES, GLOBAL_LOGREG_KEY, CALIB_REFIT_INTERVAL_SEC,
-    return_confidence_interval,
+    return_confidence_interval, selected_policy_confidence,
 )
 # Note: calibrators use db.get_outcomes_with_recs (single JOIN query) to avoid N+1 pattern
 
@@ -40,9 +40,9 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v8-policy-conditioned-censor-aware"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v9-selected-policy-terminal-cohorts"
 DIRECTION_CALIBRATION_KEY = "platt_direction_v14"
-CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v1"
+CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v2"
 POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
 CALIBRATION_LABEL_GRACE_SEC = 120
 CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
@@ -3413,8 +3413,14 @@ def calibration_policy_contract(settings_obj: Any, risk_limits: dict[str, Any]) 
         },
         "calibration": {
             "monetary_cohort": "pre-calibration-candidate-policy-v1",
+            "selected_policy_expectancy": "purged-oof-exact-confidence-subset-v1",
             "uncertainty": "student-t-temporal-v1",
-            "oof_activation": "purged-logloss-skill-v1",
+            "oof_activation": "purged-whole-timestamp-terminal-v2",
+            "terminal_holdout_min_samples": int(
+                max(1, _safe_int_or_none(getattr(settings_obj, "calib_min_samples", 80)) or 80)
+            ),
+            "terminal_holdout_min_decision_cohorts": 5,
+            "confidence_selection": "adaptive-blend-context-adjusted-v1",
             "direction_target": "horizon-price-direction-audit-only-v1",
             "label_due_grace_sec": CALIBRATION_LABEL_GRACE_SEC,
         },
@@ -3868,17 +3874,42 @@ def _probability_calibration_no_trade_reason(
         and bool(model.platt.fitted)
         and str(model.oof_status) == "sufficient"
         and str(model.oof_skill_status) == "accepted"
+        and int(model.oof_final_samples) >= int(model.oof_required_final_samples) > 0
+        and int(model.oof_final_decision_cohorts)
+        >= int(model.oof_required_final_decision_cohorts) > 0
+        and str(model.selected_policy_expectancy_status) == "positive"
     ):
         return None
     oof_status = str(getattr(model, "oof_status", "not_evaluated") if model else "not_evaluated")
     skill_status = str(
         getattr(model, "oof_skill_status", "not_evaluated") if model else "not_evaluated"
     )
+    selected_policy_status = str(
+        getattr(model, "selected_policy_expectancy_status", "not_evaluated")
+        if model
+        else "not_evaluated"
+    )
+    final_samples = int(getattr(model, "oof_final_samples", 0) or 0) if model else 0
+    final_required = (
+        int(getattr(model, "oof_required_final_samples", 0) or 0) if model else 0
+    )
+    final_cohorts = (
+        int(getattr(model, "oof_final_decision_cohorts", 0) or 0) if model else 0
+    )
+    final_cohorts_required = (
+        int(getattr(model, "oof_required_final_decision_cohorts", 0) or 0)
+        if model
+        else 0
+    )
     return {
         "code": "CALIBRATED_CONFIDENCE_UNAVAILABLE",
         "msg": (
             "REQUIRE_CONF_GATE=1, but no bot-specific probability model has "
-            f"validated held-out skill (oof_status={oof_status}, skill={skill_status}); "
+            "validated held-out skill and positive selected-policy expectancy "
+            f"(oof_status={oof_status}, skill={skill_status}, "
+            f"terminal={final_samples}/{final_required} rows, "
+            f"terminal_cohorts={final_cohorts}/{final_cohorts_required}, "
+            f"selected_policy={selected_policy_status}); "
             "raw confidence remains audit-only"
         ),
     }
@@ -4112,7 +4143,15 @@ def _fit_global_logreg(
         )
     else:
         selected = policy_rows
-    model = fit_logreg(selected, min_samples=min_samples)
+    model = fit_logreg(
+        selected,
+        min_samples=min_samples,
+        selection_confidence_threshold=(
+            float(getattr(settings_obj, "min_conf_to_recommend", 0.52))
+            if bool(getattr(settings_obj, "require_conf_gate", True))
+            else 0.0
+        ),
+    )
     evidence = observability or _policy_observability_diagnostics(
         conn,
         policy_fingerprint=policy_fingerprint,
@@ -4162,7 +4201,15 @@ def _fit_bot_logregs(
         if bt in UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS:
             result[bt] = LogRegScaler(fitted=False)
             continue
-        model = fit_logreg(bt_rows, min_samples=min_samples)
+        model = fit_logreg(
+            bt_rows,
+            min_samples=min_samples,
+            selection_confidence_threshold=(
+                float(getattr(settings_obj, "min_conf_to_recommend", 0.52))
+                if bool(getattr(settings_obj, "require_conf_gate", True))
+                else 0.0
+            ),
+        )
         evidence = (observability_by_bot or {}).get(bt) or _policy_observability_diagnostics(
             conn,
             policy_fingerprint=policy_fingerprint,
@@ -5335,6 +5382,10 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 and bot_cal.platt.fitted
                 and str(bot_cal.oof_status) == "sufficient"
                 and str(bot_cal.oof_skill_status) == "accepted"
+                and int(bot_cal.oof_final_samples) >= int(bot_cal.oof_required_final_samples) > 0
+                and int(bot_cal.oof_final_decision_cohorts)
+                >= int(bot_cal.oof_required_final_decision_cohorts) > 0
+                and str(bot_cal.selected_policy_expectancy_status) == "positive"
                 and _fv is not None
             ):
                 conf_cal = float(bot_cal.predict(_fv))
@@ -5380,12 +5431,31 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 _ctx_mult *= 0.93  # sparse TF coverage
             if _ctx_mult < 1.0:
                 conf = float(_clamp(conf * _ctx_mult, 0.0, 1.0))
+            _selection_confidence_adjustment = float(_ctx_mult)
 
             # OI unwinding → reduce confidence
             if venue == "linear" and oi_sig["signal"] == "caution":
                 conf = float(_clamp(conf * 0.88, 0.0, 1.0))
+                _selection_confidence_adjustment *= 0.88
             if str((market_shock or {}).get("severity") or "normal") == "guarded":
                 conf = float(_clamp(conf * 0.93, 0.0, 1.0))
+                _selection_confidence_adjustment *= 0.93
+
+            # Recompute active-model confidence through the shared transform used
+            # by purged OOF monetary validation. Any future formula drift must now
+            # fail tests instead of changing the publication subset silently.
+            if _active_cal is not None:
+                _policy_confidence = selected_policy_confidence(
+                    conf_raw,
+                    conf_cal,
+                    _n_cal,
+                    _selection_confidence_adjustment,
+                )
+                conf = float(_policy_confidence) if _policy_confidence is not None else 0.0
+            feature_snapshot["selection_confidence_raw"] = float(conf_raw)
+            feature_snapshot["selection_confidence_adjustment"] = float(
+                _selection_confidence_adjustment
+            )
 
             expected_rr = _expected_rr(bot_type, f, cost_model=cost_model)
             account_mode, margin_mode = _mode(venue, direction)
@@ -5697,7 +5767,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             # fitted/a/b when bot_cal existed-but-unfitted and global was used instead.
             reasons2["confidence_model"] = {
                 "source": _cal_source,
-                "type": "logreg_platt_v2_terminal_holdout" if _cal_source == "bot_logreg" else (
+                "type": "logreg_platt_v3_selected_policy_terminal_cohorts" if _cal_source == "bot_logreg" else (
                     "raw_proxy" if _cal_source == "raw_proxy" else "raw"
                 ),
                 "fitted": _active_cal.fitted if _active_cal is not None else False,
@@ -5734,6 +5804,23 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "purged_oof_final_score_log_loss": _finite_or_none(getattr(bot_cal, "oof_final_score_log_loss", None)) if bot_cal is not None else None,
                 "purged_oof_final_null_log_loss": _finite_or_none(getattr(bot_cal, "oof_final_null_log_loss", None)) if bot_cal is not None else None,
                 "purged_oof_final_samples": int(getattr(bot_cal, "oof_final_samples", 0) or 0) if bot_cal is not None else 0,
+                "purged_oof_required_final_samples": int(getattr(bot_cal, "oof_required_final_samples", 0) or 0) if bot_cal is not None else 0,
+                "purged_oof_final_decision_cohorts": int(getattr(bot_cal, "oof_final_decision_cohorts", 0) or 0) if bot_cal is not None else 0,
+                "purged_oof_required_final_decision_cohorts": int(getattr(bot_cal, "oof_required_final_decision_cohorts", 0) or 0) if bot_cal is not None else 0,
+                "selected_policy_expectancy_status": str(getattr(bot_cal, "selected_policy_expectancy_status", "not_evaluated")) if bot_cal is not None else "not_evaluated",
+                "selected_policy_confidence_threshold": _finite_or_none(getattr(bot_cal, "selected_policy_confidence_threshold", None)) if bot_cal is not None else None,
+                "selected_policy_samples": int(getattr(bot_cal, "selected_policy_samples", 0) or 0) if bot_cal is not None else 0,
+                "selected_policy_weighted_mean_return": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_mean_return", None)) if bot_cal is not None else None,
+                "selected_policy_weighted_expected_shortfall": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_expected_shortfall", None)) if bot_cal is not None else None,
+                "selected_policy_weighted_return_std": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_return_std", None)) if bot_cal is not None else None,
+                "selected_policy_weighted_effective_return_samples": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_effective_return_samples", None)) if bot_cal is not None else None,
+                "selected_policy_weighted_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_mean_return_lower_bound", None)) if bot_cal is not None else None,
+                "selected_policy_temporal_cluster_count": int(getattr(bot_cal, "selected_policy_temporal_cluster_count", 0) or 0) if bot_cal is not None else 0,
+                "selected_policy_minimum_temporal_clusters": int(getattr(bot_cal, "selected_policy_minimum_temporal_clusters", 0) or 0) if bot_cal is not None else 0,
+                "selected_policy_weighted_effective_temporal_clusters": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_effective_temporal_clusters", None)) if bot_cal is not None else None,
+                "selected_policy_weighted_temporal_mean_return": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_temporal_mean_return", None)) if bot_cal is not None else None,
+                "selected_policy_weighted_temporal_return_std": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_temporal_return_std", None)) if bot_cal is not None else None,
+                "selected_policy_weighted_temporal_mean_return_lower_bound": _finite_or_none(getattr(bot_cal, "selected_policy_weighted_temporal_mean_return_lower_bound", None)) if bot_cal is not None else None,
                 "a": getattr(getattr(_active_cal, "platt", None), "a", None) if _active_cal else None,
                 "b": getattr(getattr(_active_cal, "platt", None), "b", None) if _active_cal else None,
                 "heuristic_cap": float(_heur_cap) if _heur_cap is not None else None,

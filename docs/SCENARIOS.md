@@ -1,3 +1,18 @@
+## Сценарий: общая когорта прибыльна, выбранная моделью — нет (v1.0.74)
+
+1. Pre-calibration candidate rows в целом имеют положительные row/temporal lower bounds.
+2. Purged walk-forward model присваивает высокий `P(success)` группе частых мелких выигрышей с редкими крупными убытками.
+3. Shared confidence transform и threshold выбирают эту группу, а более денежно-прибыльную low-hit-rate группу отклоняют.
+4. Selected-policy mean/lower bounds рассчитываются отдельно и получают `negative`/`uncertain`.
+5. Binary log-loss skill остаётся видимым в диагностике, но `oof_status=selected_policy_unproven`, fitted coefficients не загружаются и рекомендация остаётся `no_trade`.
+
+## Сценарий: размер ряда оставляет однострочный хвост
+
+1. Последовательность из 301 строки раньше давала integer-fold starts с terminal remainder из одной строки.
+2. Новый splitter группирует строки по recommendation timestamp и идёт назад от конца, пока terminal block не содержит минимум 80 строк и 5 целых timestamps.
+3. Train prefix проходит label-availability purge; общий timestamp никогда не оказывается одновременно в train/validation из-за границы block.
+4. Если terminal contract нельзя построить или проверить, candidate не активируется.
+
 ## Scenario: штатный restart при включённом LLM reviewer (v1.0.73)
 
 1. FastAPI lifespan устанавливает общий shutdown-event.

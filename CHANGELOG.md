@@ -1,3 +1,12 @@
+## 2026-07-17 - v1.0.74 - selected-policy monetary validation and cohort-safe terminal holdout
+
+- HIGH: вероятность успеха больше не может активировать модель только на основании денежной доходности всей candidate-когорты; row/temporal lower bounds теперь повторно проверяются на exact purged-OOF подвыборке, прошедшей runtime confidence transform и threshold.
+- HIGH: terminal holdout больше не бывает однострочным остатком и не разрезает общий timestamp; требуется не менее `CALIB_MIN_SAMPLES` строк и пяти целых decision timestamps.
+- Runtime и validation используют общий `selected_policy_confidence()`; исходные confidence и cumulative context/OI/shock adjustment сохраняются в `feature_snapshot`.
+- Новые terminal/selected-policy diagnostics строго сохраняются и проверяются при загрузке; `/api/v1/status`, recommendation details и UI readiness получили соответствующие поля/пояснения.
+- Model/policy/calibrator identities обновлены до v9/v2/v20; старая exact-policy выборка остаётся архивом. Outcome target `grid_label_v26`, direction v14, schema, routes и `.env` не менялись.
+- Regression: `tests/test_iteration261_selected_policy_and_terminal_holdout.py`; RED — 2 failures, GREEN — 6 passed; полный post-check — 1193 passed до финальной документационной синхронизации.
+
 ## 2026-07-17 - v1.0.73 - LLM reviewer shutdown liveness
 
 - Исправлен подтверждённый shutdown-дефект: `_llm_reviewer_thread()` больше не продолжает безусловный цикл после общего stop-event.

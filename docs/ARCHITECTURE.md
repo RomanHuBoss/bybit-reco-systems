@@ -1,3 +1,9 @@
+## Calibration activation boundary - v1.0.74
+
+`fit_logreg()` теперь имеет две независимые OOF границы допуска. Первая сравнивает feature model со score-only/null по aggregate и terminal log-loss. Вторая применяет общий runtime confidence transform к тем же purged OOF predictions и рассчитывает monetary diagnostics только для строк, которые реально прошли бы publication threshold. Активный pipeline — candidate, обученный строго до terminal block; metadata `n_samples` соответствует его train prefix.
+
+`_chronological_validation_blocks()` формирует blocks на границах одинаковых timestamps и резервирует terminal block не менее 80 строк/5 timestamps при default contract. Persistence хранит обе границы; loader отклоняет fitted payload без положительного selected-policy status, минимального terminal block или полных lower bounds. Model/policy/calibrator identity bump не требует DB migration: старые rows остаются immutable archive и не смешиваются с v2 evidence.
+
 ## LLM reviewer shutdown lifecycle - v1.0.73
 
 `_llm_reviewer_thread()` использует тот же общий `_BACKGROUND_STOP_EVENT`, что collector, backfill, futures metadata, sentiment, recommender и outcomes. После сигнала shutdown новый reviewer cycle не начинается; target возвращается в `_run_supervised_background_target()`, который сохраняет clean `stopped` state и в `finally` вызывает owner-safe release для `runtime:llm_reviewer`.

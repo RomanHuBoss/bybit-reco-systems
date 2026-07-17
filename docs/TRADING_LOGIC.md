@@ -1,3 +1,9 @@
+## Selected-policy и terminal-holdout contract (v1.0.74)
+
+Положительное денежное ожидание всей pre-calibration candidate-когорты является только первым gate. Для каждого purged walk-forward validation row модель рассчитывает `P(success)`, затем общий `selected_policy_confidence()` применяет сохранённые `selection_confidence_raw`, размер train prefix, context/OI/shock adjustment и текущий confidence threshold. Только прошедшие threshold rows образуют selected-policy cohort. Её Kish effective sample, mean, expected shortfall, one-sided row lower bound и lower bound по максимально возможному набору непересекающихся temporal cohorts должны быть положительными/достаточными. Иначе `oof_status=selected_policy_unproven`, коэффициенты не активируются.
+
+Chronological split строится только по границам целых recommendation timestamps. Последний block содержит как минимум `CALIB_MIN_SAMPLES` строк и пять timestamps; model candidate обучен только на labels, полностью доступных до начала этого block. `confidence_model` и `/api/v1/status` публикуют фактические/требуемые terminal rows/cohorts и selected-policy monetary diagnostics. Политика имеет identities `bybit-taxonomy-v9-selected-policy-terminal-cohorts`, `candidate-policy-v2`, bot/global v20; `grid_label_v26` и direction v14 не меняются.
+
 ## Производительность операторских окон (v1.0.72)
 
 Оптимизация health/outcomes относится только к чтению и представлению диагностики. `mean_reversion_min_score`, денежные/вероятностные floors, policy fingerprint verification, LLM contract, risk gates и fail-closed outcome censoring не изменены. SQL prefilter уменьшает объём данных, но каждая строка, попавшая в exact-policy cohort, по-прежнему проходит полную canonical-contract проверку.

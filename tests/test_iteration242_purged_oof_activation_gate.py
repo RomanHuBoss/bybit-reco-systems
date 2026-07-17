@@ -39,6 +39,8 @@ def _row(*, index: int, cluster: int, success: int, ret: float, total_clusters: 
                 "liq_tier_num": 0.67,
                 "btc_corr": 0.80,
                 "regime_conf": 0.80,
+                "selection_confidence_raw": 0.50,
+                "selection_confidence_adjustment": 1.0,
             }
         },
     }

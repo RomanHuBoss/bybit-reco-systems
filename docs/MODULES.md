@@ -1,3 +1,13 @@
+## v1.0.74: денежная цель выбранной политики
+
+- `app.calibration._chronological_validation_blocks`: целые timestamp blocks и минимальный terminal contract.
+- `app.calibration._selected_policy_return_diagnostics`: row/temporal monetary evidence exact OOF-подвыборки.
+- `app.calibration.selected_policy_confidence`: единая adaptive blend + adjustment формула для fit и runtime.
+- `app.calibration.LogRegScaler` persistence: terminal rows/cohorts и selected-policy diagnostics с fail-closed loader validation; bot/global keys v20.
+- `app.recommender`: model/policy v9/v2, запись selection inputs, exact gate parity и новые confidence diagnostics.
+- `app.main` и `app/ui/static/app.js`: status/readiness объясняют обе новые границы.
+- `tests/test_iteration261_selected_policy_and_terminal_holdout.py`: negative selected-policy, one-row terminal, formula parity, persistence и fail-closed gates.
+
 ## v1.0.73: завершение LLM reviewer
 
 - `app.main._llm_reviewer_thread`: прекращает цикл после общего shutdown-event и не запускает повторный sweep во время остановки.

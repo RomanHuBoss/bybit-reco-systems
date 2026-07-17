@@ -1,3 +1,11 @@
+## Остаточные риски после v1.0.74
+
+- Исправление запрещает активировать денежно-отрицательную selected-policy на известной OOF-выборке, но не доказывает устойчивость edge вне retained proxy history и тем более по реальным Bybit fills.
+- Новые model/policy identities начинают отдельную exact-policy когорту. Пока она не накопит 300 пригодных labels, 20 непересекающихся денежных когорт и достаточную selected подвыборку, `REQUIRE_CONF_GATE=1` штатно оставляет рекомендации в `no_trade`.
+- Пять целых timestamps защищают terminal holdout от однострочного остатка и разреза cross-section, но сами по себе не доказывают пять независимых рыночных режимов. Отдельный monetary gate по-прежнему требует 20 pairwise non-overlapping temporal cohorts.
+- OOF selected-policy evidence относится к историческому OHLCV proxy. Queue priority, partial fills, market impact, фактические fees/funding и account-level cross-margin PnL требуют внешней сверки.
+- Если confidence threshold выбирает слишком мало строк или выбранные returns имеют lower bound около/ниже нуля, модель остаётся unfitted. Снижать threshold или sample floors только ради liveness нельзя.
+
 ## Остаточные риски после v1.0.73
 
 - Все supervised loops теперь выходят по общему stop-event, включая LLM reviewer. Owner-safe release выполняется после возврата target в supervisor.

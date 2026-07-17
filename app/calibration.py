@@ -13,7 +13,9 @@ Architecture:
                                oi_4h, funding, liq_tier, btc_corr, regime_conf]) )
 
 Inference chain:
-  held-out-skilled LogReg + Platt  →  capped raw heuristic (audit-only)
+  held-out-skilled LogReg + Platt
+  + positive exact selected-policy OOF expectancy
+  + cohort-safe terminal holdout  →  capped raw heuristic (audit-only)
 """
 from __future__ import annotations
 
@@ -187,6 +189,10 @@ FEATURE_NAMES = [
     "regime_conf",        # regime_confidence [0, 1] — how decisive the current regime is
 ]
 N_FEATURES = len(FEATURE_NAMES)
+
+DEFAULT_SELECTION_CONFIDENCE_THRESHOLD = 0.52
+MAX_CHRONOLOGICAL_OOF_SPLITS = 5
+MIN_TERMINAL_DECISION_COHORTS = 5
 
 _LIQ_TIER_MAP = {"micro": 0.0, "low": 0.33, "medium": 0.67, "high": 1.0}
 
@@ -373,6 +379,25 @@ class LogRegScaler:
     oof_final_score_log_loss: float | None = None
     oof_final_null_log_loss: float | None = None
     oof_final_samples: int = 0
+    oof_required_final_samples: int = 0
+    oof_final_decision_cohorts: int = 0
+    oof_required_final_decision_cohorts: int = 0
+    # A binary-success model is not an economic policy.  These fields describe
+    # only the purged OOF rows that the exact confidence policy would publish.
+    selected_policy_expectancy_status: str = "not_evaluated"
+    selected_policy_confidence_threshold: float = DEFAULT_SELECTION_CONFIDENCE_THRESHOLD
+    selected_policy_samples: int = 0
+    selected_policy_weighted_mean_return: float | None = None
+    selected_policy_weighted_expected_shortfall: float | None = None
+    selected_policy_weighted_return_std: float | None = None
+    selected_policy_weighted_effective_return_samples: float = 0.0
+    selected_policy_weighted_mean_return_lower_bound: float | None = None
+    selected_policy_temporal_cluster_count: int = 0
+    selected_policy_minimum_temporal_clusters: int = 0
+    selected_policy_weighted_effective_temporal_clusters: float = 0.0
+    selected_policy_weighted_temporal_mean_return: float | None = None
+    selected_policy_weighted_temporal_return_std: float | None = None
+    selected_policy_weighted_temporal_mean_return_lower_bound: float | None = None
     policy_fingerprint: str = ""
     policy_matured_total: int = 0
     policy_labeled_total: int = 0
@@ -430,6 +455,39 @@ def _sigmoid(z: float) -> float:
         return 1.0 / (1.0 + e)
     e = math.exp(z)
     return e / (1.0 + e)
+
+
+def selected_policy_confidence(
+    raw_confidence: Any,
+    calibrated_confidence: Any,
+    model_samples: Any,
+    adjustment: Any = 1.0,
+) -> float | None:
+    """Apply the exact confidence transform used by the publication gate.
+
+    ``adjustment`` is the product of the context-completeness, OI-unwind and
+    guarded-market multipliers recorded at recommendation time.  Keeping this
+    transform shared prevents the OOF monetary selector from validating a
+    different subset than the runtime later publishes.
+    """
+    raw = _finite_float(raw_confidence)
+    calibrated = _finite_float(calibrated_confidence)
+    sample_count = strict_integer(model_samples)
+    multiplier = _finite_float(adjustment)
+    if (
+        raw is None
+        or calibrated is None
+        or sample_count is None
+        or sample_count <= 0
+        or multiplier is None
+        or not (0.0 <= raw <= 1.0)
+        or not (0.0 <= calibrated <= 1.0)
+        or not (0.0 < multiplier <= 1.0)
+    ):
+        return None
+    calibration_weight = min(1.0, max(0.0, float(sample_count) / 300.0)) * 0.40 + 0.10
+    blended = (1.0 - calibration_weight) * raw + calibration_weight * calibrated
+    return float(min(1.0, max(0.0, blended * multiplier)))
 
 
 def _continued_beta_fraction(a: float, b: float, x: float) -> float:
@@ -914,6 +972,221 @@ def _purged_train_indices(
     return indices
 
 
+def _chronological_validation_blocks(
+    tss: list[int],
+    *,
+    min_samples: int,
+) -> list[tuple[int, int, int]]:
+    """Return chronological validation blocks on whole decision timestamps.
+
+    The terminal block always contains at least ``min_samples`` rows and five
+    distinct decision timestamps (or the smaller explicit floor used by tiny
+    unit contracts).  If the retained history cannot provide both a training
+    prefix and that terminal block, activation fails closed.
+    """
+    minimum = max(1, int(min_samples))
+    parsed = [strict_integer(value) for value in tss]
+    if (
+        len(parsed) < max(6, minimum * 2)
+        or any(value is None for value in parsed)
+        or any(int(parsed[idx]) > int(parsed[idx + 1]) for idx in range(len(parsed) - 1))
+    ):
+        return []
+
+    groups: list[tuple[int, int]] = []
+    start = 0
+    for index in range(1, len(parsed) + 1):
+        if index == len(parsed) or parsed[index] != parsed[start]:
+            groups.append((start, index))
+            start = index
+
+    required_terminal_cohorts = min(
+        MIN_TERMINAL_DECISION_COHORTS,
+        max(2, minimum),
+    )
+    if len(groups) <= required_terminal_cohorts:
+        return []
+
+    terminal_group_index = len(groups) - required_terminal_cohorts
+    while (
+        terminal_group_index > 0
+        and len(parsed) - groups[terminal_group_index][0] < minimum
+    ):
+        terminal_group_index -= 1
+    terminal_start = groups[terminal_group_index][0]
+    if terminal_start < minimum or len(parsed) - terminal_start < minimum:
+        return []
+
+    desired_splits = min(
+        MAX_CHRONOLOGICAL_OOF_SPLITS,
+        max(2, len(parsed) // minimum),
+    )
+    target_width = max(minimum, len(parsed) // (desired_splits + 1))
+    starts: list[int] = []
+    next_target = target_width
+    for group_start, _group_end in groups[1:terminal_group_index]:
+        if group_start >= next_target:
+            starts.append(group_start)
+            next_target = group_start + target_width
+    starts.append(terminal_start)
+    starts = sorted(set(starts))
+
+    blocks: list[tuple[int, int, int]] = []
+    for index, block_start in enumerate(starts):
+        block_end = starts[index + 1] if index + 1 < len(starts) else len(parsed)
+        if block_end <= block_start:
+            continue
+        decision_count = sum(
+            1
+            for group_start, _group_end in groups
+            if block_start <= group_start < block_end
+        )
+        blocks.append((int(block_start), int(block_end), int(decision_count)))
+
+    if not blocks:
+        return []
+    final_start, final_end, final_decisions = blocks[-1]
+    if (
+        final_end != len(parsed)
+        or final_end - final_start < minimum
+        or final_decisions < required_terminal_cohorts
+    ):
+        return []
+    return blocks
+
+
+def _selected_policy_return_diagnostics(
+    probabilities: list[float],
+    raw_confidences: list[float | None],
+    adjustments: list[float | None],
+    model_sample_counts: list[int],
+    returns: list[float],
+    weights: list[float],
+    tss: list[int],
+    label_available_tss: list[int | None],
+    *,
+    confidence_threshold: float,
+    min_samples: int,
+) -> dict[str, Any]:
+    """Monetary evidence for the exact purged-OOF publication subset."""
+    threshold = _finite_float(confidence_threshold)
+    minimum = max(1, int(min_samples))
+    minimum_temporal_clusters = max(1, min(20, int(math.ceil(minimum / 4.0))))
+    empty = {
+        "status": "insufficient",
+        "confidence_threshold": threshold,
+        "samples": 0,
+        "weighted_mean_return": None,
+        "weighted_expected_shortfall": None,
+        "weighted_return_std": None,
+        "weighted_effective_return_samples": 0.0,
+        "weighted_mean_return_lower_bound": None,
+        "temporal_cluster_count": 0,
+        "minimum_temporal_clusters": minimum_temporal_clusters,
+        "weighted_effective_temporal_clusters": 0.0,
+        "weighted_temporal_mean_return": None,
+        "weighted_temporal_return_std": None,
+        "weighted_temporal_mean_return_lower_bound": None,
+    }
+    n = len(probabilities)
+    if (
+        threshold is None
+        or not (0.0 <= threshold <= 1.0)
+        or not (
+            n
+            == len(raw_confidences)
+            == len(adjustments)
+            == len(model_sample_counts)
+            == len(returns)
+            == len(weights)
+            == len(tss)
+            == len(label_available_tss)
+        )
+        or n == 0
+    ):
+        return empty
+
+    selected_rows: list[dict[str, Any]] = []
+    selected_returns: list[float] = []
+    selected_weights: list[float] = []
+    for index in range(n):
+        policy_confidence = selected_policy_confidence(
+            raw_confidences[index],
+            probabilities[index],
+            model_sample_counts[index],
+            adjustments[index],
+        )
+        ret = _finite_float(returns[index])
+        weight = _finite_float(weights[index])
+        ts = strict_integer(tss[index])
+        available = strict_integer(label_available_tss[index])
+        if (
+            policy_confidence is None
+            or ret is None
+            or weight is None
+            or weight <= 0.0
+            or ts is None
+            or available is None
+            or available <= ts
+        ):
+            # Dropping malformed policy inputs could manufacture a profitable
+            # subset, so one invalid OOF row invalidates the selector evidence.
+            return empty
+        if policy_confidence + 1e-12 < threshold:
+            continue
+        selected_rows.append({"ts": int(ts), "label_available_ts": int(available)})
+        selected_returns.append(float(ret))
+        selected_weights.append(float(weight))
+
+    monetary = _weighted_return_diagnostics(selected_returns, selected_weights)
+    temporal = _temporal_cluster_return_diagnostics(
+        selected_rows,
+        selected_returns,
+        selected_weights,
+        confidence_level=float(monetary["expectancy_confidence_level"] or 0.95),
+    )
+    fields = {
+        "confidence_threshold": float(threshold),
+        "samples": len(selected_returns),
+        "weighted_mean_return": monetary["weighted_mean_return"],
+        "weighted_expected_shortfall": monetary["weighted_expected_shortfall"],
+        "weighted_return_std": monetary["weighted_return_std"],
+        "weighted_effective_return_samples": float(
+            monetary["weighted_effective_return_samples"] or 0.0
+        ),
+        "weighted_mean_return_lower_bound": monetary["weighted_mean_return_lower_bound"],
+        "temporal_cluster_count": int(temporal["temporal_cluster_count"] or 0),
+        "minimum_temporal_clusters": minimum_temporal_clusters,
+        "weighted_effective_temporal_clusters": float(
+            temporal["weighted_effective_temporal_clusters"] or 0.0
+        ),
+        "weighted_temporal_mean_return": temporal["weighted_temporal_mean_return"],
+        "weighted_temporal_return_std": temporal["weighted_temporal_return_std"],
+        "weighted_temporal_mean_return_lower_bound": temporal[
+            "weighted_temporal_mean_return_lower_bound"
+        ],
+    }
+    if (
+        len(selected_returns) < minimum
+        or fields["weighted_mean_return"] is None
+        or fields["weighted_mean_return_lower_bound"] is None
+        or fields["weighted_temporal_mean_return_lower_bound"] is None
+        or float(fields["weighted_effective_return_samples"]) + 1e-6 < float(minimum)
+        or int(fields["temporal_cluster_count"]) < minimum_temporal_clusters
+        or float(fields["weighted_effective_temporal_clusters"]) + 1e-6
+        < float(minimum_temporal_clusters)
+    ):
+        return {"status": "insufficient", **fields}
+    if float(fields["weighted_mean_return"]) <= 0.0:
+        return {"status": "negative", **fields}
+    if (
+        float(fields["weighted_mean_return_lower_bound"]) <= 0.0
+        or float(fields["weighted_temporal_mean_return_lower_bound"]) <= 0.0
+    ):
+        return {"status": "uncertain", **fields}
+    return {"status": "positive", **fields}
+
+
 def _time_series_oof_logits(
     X: list[list[float]],
     ys: list[int],
@@ -932,8 +1205,6 @@ def _time_series_oof_logits(
     n = len(X)
     if n < max(6, min_samples * 2):
         return [], [], []
-    n_splits = min(5, max(2, n // max(1, min_samples)))
-    fold = max(1, n // (n_splits + 1))
     logits: list[float] = []
     y_out: list[int] = []
     w_out: list[float] = []
@@ -943,9 +1214,20 @@ def _time_series_oof_logits(
         and len(tss) == n
         and len(label_available_tss) == n
     )
+    if timing_available:
+        blocks = _chronological_validation_blocks(
+            list(tss),
+            min_samples=min_samples,
+        )
+    else:
+        n_splits = min(5, max(2, n // max(1, min_samples)))
+        fold = max(1, n // (n_splits + 1))
+        blocks = [
+            (split, min(n, split + fold), 0)
+            for split in range(fold, n, fold)
+        ]
 
-    for split in range(fold, n, fold):
-        end = min(n, split + fold)
+    for split, end, _decision_count in blocks:
         if split < min_samples or end <= split:
             continue
         train_indices = (
@@ -1008,6 +1290,10 @@ def _time_series_oof_skill_diagnostics(
     min_samples: int,
     tss: list[int],
     label_available_tss: list[int | None],
+    returns: list[float] | None = None,
+    selection_raw_confidences: list[float | None] | None = None,
+    selection_adjustments: list[float | None] | None = None,
+    selection_confidence_threshold: float = DEFAULT_SELECTION_CONFIDENCE_THRESHOLD,
 ) -> dict[str, Any]:
     """Compare feature, score-only and null models on purged future folds.
 
@@ -1020,6 +1306,12 @@ def _time_series_oof_skill_diagnostics(
         "status": "insufficient",
         "samples": 0,
         "final_samples": 0,
+        "required_final_samples": int(min_samples),
+        "final_decision_cohorts": 0,
+        "required_final_decision_cohorts": min(
+            MIN_TERMINAL_DECISION_COHORTS,
+            max(2, int(min_samples)),
+        ),
         "feature_log_loss": None,
         "score_log_loss": None,
         "null_log_loss": None,
@@ -1029,6 +1321,12 @@ def _time_series_oof_skill_diagnostics(
         "candidate_coef": None,
         "candidate_intercept": None,
         "candidate_platt": None,
+        "candidate_train_samples": 0,
+        "selected_policy_status": "not_evaluated",
+        "selected_policy_confidence_threshold": _finite_float(
+            selection_confidence_threshold
+        ),
+        "selected_policy_samples": 0,
     }
     n = len(X)
     if not (
@@ -1037,21 +1335,35 @@ def _time_series_oof_skill_diagnostics(
     ):
         return empty
 
-    n_splits = min(5, max(2, n // max(1, min_samples)))
-    fold_size = max(1, n // (n_splits + 1))
+    blocks = _chronological_validation_blocks(tss, min_samples=min_samples)
+    if not blocks:
+        return empty
+    selection_inputs_available = bool(
+        returns is not None
+        and selection_raw_confidences is not None
+        and selection_adjustments is not None
+        and len(returns) == len(selection_raw_confidences) == len(selection_adjustments) == n
+    )
     feature_probs: list[float] = []
     score_probs: list[float] = []
     null_probs: list[float] = []
     labels: list[int] = []
     weights: list[float] = []
     fold_ids: list[int] = []
+    policy_returns: list[float] = []
+    policy_raw_confidences: list[float | None] = []
+    policy_adjustments: list[float | None] = []
+    policy_model_sample_counts: list[int] = []
+    policy_tss: list[int] = []
+    policy_label_available_tss: list[int | None] = []
     candidate_coef: list[float] | None = None
     candidate_intercept: float | None = None
     candidate_platt: PlattScaler | None = None
+    candidate_train_samples = 0
     candidate_validation_end = 0
+    candidate_decision_cohorts = 0
 
-    for split in range(fold_size, n, fold_size):
-        end = min(n, split + fold_size)
+    for split, end, decision_count in blocks:
         if split < min_samples or end <= split:
             continue
         train_indices = _purged_train_indices(
@@ -1114,13 +1426,22 @@ def _time_series_oof_skill_diagnostics(
             labels.append(int(ys[idx]))
             weights.append(float(ws[idx]))
             fold_ids.append(int(split))
+            if selection_inputs_available:
+                policy_returns.append(float(returns[idx]))
+                policy_raw_confidences.append(selection_raw_confidences[idx])
+                policy_adjustments.append(selection_adjustments[idx])
+                policy_model_sample_counts.append(len(train_indices))
+                policy_tss.append(int(tss[idx]))
+                policy_label_available_tss.append(label_available_tss[idx])
         # Preserve the pipeline fitted strictly before this validation block.
         # Only the terminal candidate may be activated; fitting again on its
         # validation rows would destroy the held-out evidence boundary.
         candidate_coef = list(coef)
         candidate_intercept = float(intercept)
         candidate_platt = feature_platt
+        candidate_train_samples = len(train_indices)
         candidate_validation_end = int(end)
+        candidate_decision_cohorts = int(decision_count)
         if end >= n:
             break
 
@@ -1133,7 +1454,16 @@ def _time_series_oof_skill_diagnostics(
         or candidate_platt is None
         or not candidate_platt.fitted
     ):
-        return {**empty, "samples": len(feature_probs)}
+        return {
+            **empty,
+            "samples": len(feature_probs),
+            "final_samples": (
+                sum(1 for fold_id in fold_ids if fold_id == max(fold_ids))
+                if fold_ids
+                else 0
+            ),
+            "final_decision_cohorts": candidate_decision_cohorts,
+        }
 
     feature_loss = _weighted_log_loss(feature_probs, labels, weights)
     score_loss = _weighted_log_loss(score_probs, labels, weights)
@@ -1164,11 +1494,43 @@ def _time_series_oof_skill_diagnostics(
         final_null_loss,
     )
     if any(value is None for value in metrics):
-        return {**empty, "samples": len(feature_probs), "final_samples": len(final_indices)}
+        return {
+            **empty,
+            "samples": len(feature_probs),
+            "final_samples": len(final_indices),
+            "final_decision_cohorts": candidate_decision_cohorts,
+        }
+
+    selected_policy = (
+        _selected_policy_return_diagnostics(
+            feature_probs,
+            policy_raw_confidences,
+            policy_adjustments,
+            policy_model_sample_counts,
+            policy_returns,
+            weights,
+            policy_tss,
+            policy_label_available_tss,
+            confidence_threshold=selection_confidence_threshold,
+            min_samples=min_samples,
+        )
+        if selection_inputs_available
+        else {
+            "status": "not_evaluated",
+            "confidence_threshold": _finite_float(selection_confidence_threshold),
+            "samples": 0,
+        }
+    )
 
     minimum_improvement = 1e-4
+    required_final_decision_cohorts = min(
+        MIN_TERMINAL_DECISION_COHORTS,
+        max(2, int(min_samples)),
+    )
     accepted = bool(
-        float(feature_loss) + minimum_improvement < float(score_loss)
+        len(final_indices) >= int(min_samples)
+        and candidate_decision_cohorts >= required_final_decision_cohorts
+        and float(feature_loss) + minimum_improvement < float(score_loss)
         and float(feature_loss) + minimum_improvement < float(null_loss)
         and float(final_feature_loss) + minimum_improvement < float(final_score_loss)
         and float(final_feature_loss) + minimum_improvement < float(final_null_loss)
@@ -1177,6 +1539,9 @@ def _time_series_oof_skill_diagnostics(
         "status": "accepted" if accepted else "rejected",
         "samples": len(feature_probs),
         "final_samples": len(final_indices),
+        "required_final_samples": int(min_samples),
+        "final_decision_cohorts": candidate_decision_cohorts,
+        "required_final_decision_cohorts": required_final_decision_cohorts,
         "feature_log_loss": feature_loss,
         "score_log_loss": score_loss,
         "null_log_loss": null_loss,
@@ -1186,6 +1551,45 @@ def _time_series_oof_skill_diagnostics(
         "candidate_coef": candidate_coef,
         "candidate_intercept": candidate_intercept,
         "candidate_platt": candidate_platt,
+        "candidate_train_samples": candidate_train_samples,
+        "selected_policy_status": str(selected_policy.get("status") or "insufficient"),
+        "selected_policy_confidence_threshold": selected_policy.get(
+            "confidence_threshold"
+        ),
+        "selected_policy_samples": int(selected_policy.get("samples") or 0),
+        "selected_policy_weighted_mean_return": selected_policy.get(
+            "weighted_mean_return"
+        ),
+        "selected_policy_weighted_expected_shortfall": selected_policy.get(
+            "weighted_expected_shortfall"
+        ),
+        "selected_policy_weighted_return_std": selected_policy.get(
+            "weighted_return_std"
+        ),
+        "selected_policy_weighted_effective_return_samples": float(
+            selected_policy.get("weighted_effective_return_samples") or 0.0
+        ),
+        "selected_policy_weighted_mean_return_lower_bound": selected_policy.get(
+            "weighted_mean_return_lower_bound"
+        ),
+        "selected_policy_temporal_cluster_count": int(
+            selected_policy.get("temporal_cluster_count") or 0
+        ),
+        "selected_policy_minimum_temporal_clusters": int(
+            selected_policy.get("minimum_temporal_clusters") or 0
+        ),
+        "selected_policy_weighted_effective_temporal_clusters": float(
+            selected_policy.get("weighted_effective_temporal_clusters") or 0.0
+        ),
+        "selected_policy_weighted_temporal_mean_return": selected_policy.get(
+            "weighted_temporal_mean_return"
+        ),
+        "selected_policy_weighted_temporal_return_std": selected_policy.get(
+            "weighted_temporal_return_std"
+        ),
+        "selected_policy_weighted_temporal_mean_return_lower_bound": selected_policy.get(
+            "weighted_temporal_mean_return_lower_bound"
+        ),
     }
 
 
@@ -1194,6 +1598,7 @@ def fit_logreg(
     min_samples: int = 80,
     logreg_min_samples: int = 300,
     half_life_days: float = 21.0,
+    selection_confidence_threshold: float = DEFAULT_SELECTION_CONFIDENCE_THRESHOLD,
 ) -> LogRegScaler:
     """Fit LogReg + Platt from outcome rows with recency weighting.
 
@@ -1383,8 +1788,13 @@ def fit_logreg(
             **monetary_fields,
         )
 
-    # Build feature matrix
+    # Build feature matrix and preserve the exact confidence-policy inputs that
+    # existed at recommendation time. Missing inputs may remain in diagnostics,
+    # but they can never be silently dropped from selected-policy validation.
     X, y_used, w_used, ts_used, label_available_used, score_used = [], [], [], [], [], []
+    return_used: list[float] = []
+    selection_raw_used: list[float | None] = []
+    selection_adjustment_used: list[float | None] = []
     for r, w in zip(sanitized_rows, ws):
         fv = extract_features(r)
         if fv is not None:
@@ -1393,6 +1803,36 @@ def fit_logreg(
             w_used.append(w)
             ts_used.append(int(r.get("ts") or 0))
             score_used.append(float(r.get("score") or 0.0))
+            return_used.append(float(r["ret"]))
+            reasons = r.get("reasons")
+            if isinstance(reasons, str):
+                try:
+                    reasons = json.loads(reasons)
+                except Exception:
+                    reasons = None
+            snapshot = reasons.get("feature_snapshot") if isinstance(reasons, dict) else None
+            raw_selection_confidence = (
+                _finite_float(snapshot.get("selection_confidence_raw"))
+                if isinstance(snapshot, dict)
+                else None
+            )
+            selection_adjustment = (
+                _finite_float(snapshot.get("selection_confidence_adjustment"))
+                if isinstance(snapshot, dict)
+                else None
+            )
+            selection_raw_used.append(
+                raw_selection_confidence
+                if raw_selection_confidence is not None
+                and 0.0 <= raw_selection_confidence <= 1.0
+                else None
+            )
+            selection_adjustment_used.append(
+                selection_adjustment
+                if selection_adjustment is not None
+                and 0.0 < selection_adjustment <= 1.0
+                else None
+            )
             raw_available_ts = r.get("label_available_ts")
             parsed_available_ts = strict_integer(raw_available_ts)
             label_available_used.append(
@@ -1415,7 +1855,17 @@ def fit_logreg(
 
     try:
         ordered = sorted(
-            zip(ts_used, label_available_used, X, y_used, w_used, score_used),
+            zip(
+                ts_used,
+                label_available_used,
+                X,
+                y_used,
+                w_used,
+                score_used,
+                return_used,
+                selection_raw_used,
+                selection_adjustment_used,
+            ),
             key=lambda item: item[0],
         )
         ts_ord = [item[0] for item in ordered]
@@ -1424,6 +1874,9 @@ def fit_logreg(
         y_ord = [item[3] for item in ordered]
         w_ord = [item[4] for item in ordered]
         score_ord = [item[5] for item in ordered]
+        return_ord = [item[6] for item in ordered]
+        selection_raw_ord = [item[7] for item in ordered]
+        selection_adjustment_ord = [item[8] for item in ordered]
 
         oof_logits, oof_y, oof_w = _time_series_oof_logits(
             X_ord,
@@ -1450,9 +1903,17 @@ def fit_logreg(
                 min_samples=min_samples,
                 tss=ts_ord,
                 label_available_tss=label_available_ord,
+                returns=return_ord,
+                selection_raw_confidences=selection_raw_ord,
+                selection_adjustments=selection_adjustment_ord,
+                selection_confidence_threshold=selection_confidence_threshold,
             )
             if oof_samples >= oof_required_samples
-            else {"status": "insufficient"}
+            else {
+                "status": "insufficient",
+                "selected_policy_status": "insufficient",
+                "selected_policy_confidence_threshold": selection_confidence_threshold,
+            }
         )
         skill_fields = {
             "oof_skill_status": str(skill.get("status") or "insufficient"),
@@ -1463,6 +1924,58 @@ def fit_logreg(
             "oof_final_score_log_loss": skill.get("final_score_log_loss"),
             "oof_final_null_log_loss": skill.get("final_null_log_loss"),
             "oof_final_samples": int(skill.get("final_samples") or 0),
+            "oof_required_final_samples": int(
+                skill.get("required_final_samples") or min_samples
+            ),
+            "oof_final_decision_cohorts": int(
+                skill.get("final_decision_cohorts") or 0
+            ),
+            "oof_required_final_decision_cohorts": int(
+                skill.get("required_final_decision_cohorts")
+                or min(MIN_TERMINAL_DECISION_COHORTS, max(2, int(min_samples)))
+            ),
+            "selected_policy_expectancy_status": str(
+                skill.get("selected_policy_status") or "insufficient"
+            ),
+            "selected_policy_confidence_threshold": float(
+                _finite_float(skill.get("selected_policy_confidence_threshold"))
+                if _finite_float(skill.get("selected_policy_confidence_threshold")) is not None
+                else DEFAULT_SELECTION_CONFIDENCE_THRESHOLD
+            ),
+            "selected_policy_samples": int(skill.get("selected_policy_samples") or 0),
+            "selected_policy_weighted_mean_return": skill.get(
+                "selected_policy_weighted_mean_return"
+            ),
+            "selected_policy_weighted_expected_shortfall": skill.get(
+                "selected_policy_weighted_expected_shortfall"
+            ),
+            "selected_policy_weighted_return_std": skill.get(
+                "selected_policy_weighted_return_std"
+            ),
+            "selected_policy_weighted_effective_return_samples": float(
+                skill.get("selected_policy_weighted_effective_return_samples") or 0.0
+            ),
+            "selected_policy_weighted_mean_return_lower_bound": skill.get(
+                "selected_policy_weighted_mean_return_lower_bound"
+            ),
+            "selected_policy_temporal_cluster_count": int(
+                skill.get("selected_policy_temporal_cluster_count") or 0
+            ),
+            "selected_policy_minimum_temporal_clusters": int(
+                skill.get("selected_policy_minimum_temporal_clusters") or 0
+            ),
+            "selected_policy_weighted_effective_temporal_clusters": float(
+                skill.get("selected_policy_weighted_effective_temporal_clusters") or 0.0
+            ),
+            "selected_policy_weighted_temporal_mean_return": skill.get(
+                "selected_policy_weighted_temporal_mean_return"
+            ),
+            "selected_policy_weighted_temporal_return_std": skill.get(
+                "selected_policy_weighted_temporal_return_std"
+            ),
+            "selected_policy_weighted_temporal_mean_return_lower_bound": skill.get(
+                "selected_policy_weighted_temporal_mean_return_lower_bound"
+            ),
         }
 
         # A model trained on the full retained sample is not an out-of-sample
@@ -1500,12 +2013,28 @@ def fit_logreg(
             and isinstance(candidate_platt, PlattScaler)
             and candidate_platt.fitted
         )
-        if str(skill.get("status") or "") != "accepted" or not candidate_is_valid:
+        selected_policy_status = str(skill.get("selected_policy_status") or "insufficient")
+        terminal_contract_satisfied = bool(
+            int(skill.get("final_samples") or 0) >= int(min_samples)
+            and int(skill.get("final_decision_cohorts") or 0)
+            >= min(MIN_TERMINAL_DECISION_COHORTS, max(2, int(min_samples)))
+        )
+        if (
+            str(skill.get("status") or "") != "accepted"
+            or selected_policy_status != "positive"
+            or not terminal_contract_satisfied
+            or not candidate_is_valid
+        ):
             return LogRegScaler(
                 coef=[], intercept=0.0, platt=PlattScaler(fitted=False),
                 fitted=False, saved_ts=fit_ts, n_samples=n,
                 return_samples=n, expectancy_status="positive",
-                oof_status="no_skill",
+                oof_status=(
+                    "selected_policy_unproven"
+                    if str(skill.get("status") or "") == "accepted"
+                    and selected_policy_status != "positive"
+                    else "no_skill"
+                ),
                 oof_samples=int(oof_samples),
                 oof_required_samples=int(oof_required_samples),
                 **skill_fields,
@@ -1516,7 +2045,8 @@ def fit_logreg(
             coef=[float(value) for value in candidate_coef if value is not None],
             intercept=float(candidate_intercept),
             platt=candidate_platt,
-            fitted=True, saved_ts=fit_ts, n_samples=len(X),
+            fitted=True, saved_ts=fit_ts,
+            n_samples=int(skill.get("candidate_train_samples") or len(X)),
             return_samples=n, expectancy_status="positive",
             oof_status="sufficient",
             oof_samples=int(oof_samples),
@@ -1559,6 +2089,37 @@ def save_logreg_to_db(conn, key: str, model: LogRegScaler) -> None:
             "final_score_log_loss": model.oof_final_score_log_loss,
             "final_null_log_loss": model.oof_final_null_log_loss,
             "final_samples": model.oof_final_samples,
+            "required_final_samples": model.oof_required_final_samples,
+            "final_decision_cohorts": model.oof_final_decision_cohorts,
+            "required_final_decision_cohorts": model.oof_required_final_decision_cohorts,
+        },
+        "selected_policy": {
+            "status": model.selected_policy_expectancy_status,
+            "confidence_threshold": model.selected_policy_confidence_threshold,
+            "samples": model.selected_policy_samples,
+            "weighted_mean_return": model.selected_policy_weighted_mean_return,
+            "weighted_expected_shortfall": model.selected_policy_weighted_expected_shortfall,
+            "weighted_return_std": model.selected_policy_weighted_return_std,
+            "weighted_effective_return_samples": (
+                model.selected_policy_weighted_effective_return_samples
+            ),
+            "weighted_mean_return_lower_bound": (
+                model.selected_policy_weighted_mean_return_lower_bound
+            ),
+            "temporal_cluster_count": model.selected_policy_temporal_cluster_count,
+            "minimum_temporal_clusters": model.selected_policy_minimum_temporal_clusters,
+            "weighted_effective_temporal_clusters": (
+                model.selected_policy_weighted_effective_temporal_clusters
+            ),
+            "weighted_temporal_mean_return": (
+                model.selected_policy_weighted_temporal_mean_return
+            ),
+            "weighted_temporal_return_std": (
+                model.selected_policy_weighted_temporal_return_std
+            ),
+            "weighted_temporal_mean_return_lower_bound": (
+                model.selected_policy_weighted_temporal_mean_return_lower_bound
+            ),
         },
         "policy_evidence": {
             "fingerprint": model.policy_fingerprint,
@@ -1701,6 +2262,7 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             "insufficient",
             "sufficient",
             "no_skill",
+            "selected_policy_unproven",
             "error",
         }:
             return None
@@ -1744,6 +2306,124 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             if oof_obj.get(metric_name) is not None and metric_value is None:
                 return None
         oof_final_samples = max(0, _finite_int(oof_obj.get("final_samples", 0), 0))
+        oof_required_final_samples = max(
+            0,
+            _finite_int(oof_obj.get("required_final_samples", 0), 0),
+        )
+        oof_final_decision_cohorts = max(
+            0,
+            _finite_int(oof_obj.get("final_decision_cohorts", 0), 0),
+        )
+        oof_required_final_decision_cohorts = max(
+            0,
+            _finite_int(oof_obj.get("required_final_decision_cohorts", 0), 0),
+        )
+
+        selected_obj = obj.get("selected_policy") or {}
+        if not isinstance(selected_obj, dict):
+            return None
+        selected_policy_expectancy_status = str(
+            selected_obj.get("status") or "not_evaluated"
+        ).strip().lower()
+        if selected_policy_expectancy_status not in {
+            "not_evaluated",
+            "insufficient",
+            "negative",
+            "uncertain",
+            "positive",
+        }:
+            return None
+        selected_policy_confidence_threshold = _finite_float(
+            selected_obj.get(
+                "confidence_threshold",
+                DEFAULT_SELECTION_CONFIDENCE_THRESHOLD,
+            )
+        )
+        selected_policy_samples = max(
+            0,
+            _finite_int(selected_obj.get("samples", 0), 0),
+        )
+        selected_policy_temporal_cluster_count = max(
+            0,
+            _finite_int(selected_obj.get("temporal_cluster_count", 0), 0),
+        )
+        selected_policy_minimum_temporal_clusters = max(
+            0,
+            _finite_int(selected_obj.get("minimum_temporal_clusters", 0), 0),
+        )
+
+        def _selected_optional_metric(name: str) -> float | None:
+            raw = selected_obj.get(name)
+            return None if raw is None else _finite_float(raw)
+
+        selected_policy_weighted_mean_return = _selected_optional_metric(
+            "weighted_mean_return"
+        )
+        selected_policy_weighted_expected_shortfall = _selected_optional_metric(
+            "weighted_expected_shortfall"
+        )
+        selected_policy_weighted_return_std = _selected_optional_metric(
+            "weighted_return_std"
+        )
+        selected_policy_weighted_effective_return_samples = _finite_float(
+            selected_obj.get("weighted_effective_return_samples", 0.0)
+        )
+        selected_policy_weighted_mean_return_lower_bound = _selected_optional_metric(
+            "weighted_mean_return_lower_bound"
+        )
+        selected_policy_weighted_effective_temporal_clusters = _finite_float(
+            selected_obj.get("weighted_effective_temporal_clusters", 0.0)
+        )
+        selected_policy_weighted_temporal_mean_return = _selected_optional_metric(
+            "weighted_temporal_mean_return"
+        )
+        selected_policy_weighted_temporal_return_std = _selected_optional_metric(
+            "weighted_temporal_return_std"
+        )
+        selected_policy_weighted_temporal_mean_return_lower_bound = (
+            _selected_optional_metric("weighted_temporal_mean_return_lower_bound")
+        )
+        for metric_name in (
+            "weighted_mean_return",
+            "weighted_expected_shortfall",
+            "weighted_return_std",
+            "weighted_mean_return_lower_bound",
+            "weighted_temporal_mean_return",
+            "weighted_temporal_return_std",
+            "weighted_temporal_mean_return_lower_bound",
+        ):
+            if selected_obj.get(metric_name) is not None and _selected_optional_metric(metric_name) is None:
+                return None
+        if (
+            selected_policy_confidence_threshold is None
+            or not (0.0 <= selected_policy_confidence_threshold <= 1.0)
+            or selected_policy_weighted_effective_return_samples is None
+            or selected_policy_weighted_effective_return_samples < 0.0
+            or selected_policy_weighted_effective_temporal_clusters is None
+            or selected_policy_weighted_effective_temporal_clusters < 0.0
+        ):
+            return None
+        if selected_policy_expectancy_status in {"negative", "uncertain", "positive"} and (
+            selected_policy_samples <= 0
+            or selected_policy_weighted_mean_return is None
+        ):
+            return None
+        if selected_policy_expectancy_status == "positive" and (
+            selected_policy_weighted_mean_return <= 0.0
+            or selected_policy_weighted_mean_return_lower_bound is None
+            or selected_policy_weighted_mean_return_lower_bound <= 0.0
+            or selected_policy_weighted_temporal_mean_return_lower_bound is None
+            or selected_policy_weighted_temporal_mean_return_lower_bound <= 0.0
+            or selected_policy_samples < oof_required_samples
+            or selected_policy_weighted_effective_return_samples + 1e-6
+            < float(oof_required_samples)
+            or selected_policy_minimum_temporal_clusters <= 0
+            or selected_policy_temporal_cluster_count
+            < selected_policy_minimum_temporal_clusters
+            or selected_policy_weighted_effective_temporal_clusters + 1e-6
+            < float(selected_policy_minimum_temporal_clusters)
+        ):
+            return None
 
         policy_obj = obj.get("policy_evidence") or {}
         if not isinstance(policy_obj, dict):
@@ -1792,6 +2472,11 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             or oof_skill_status != "accepted"
             or oof_required_samples <= 0
             or oof_samples < oof_required_samples
+            or oof_required_final_samples <= 0
+            or oof_final_samples < oof_required_final_samples
+            or oof_required_final_decision_cohorts <= 0
+            or oof_final_decision_cohorts < oof_required_final_decision_cohorts
+            or selected_policy_expectancy_status != "positive"
         ):
             return None
         if not fitted and (coef or platt.fitted):
@@ -1829,6 +2514,43 @@ def load_logreg_from_db(conn, key: str) -> LogRegScaler | None:
             oof_final_score_log_loss=oof_final_score_log_loss,
             oof_final_null_log_loss=oof_final_null_log_loss,
             oof_final_samples=oof_final_samples,
+            oof_required_final_samples=oof_required_final_samples,
+            oof_final_decision_cohorts=oof_final_decision_cohorts,
+            oof_required_final_decision_cohorts=oof_required_final_decision_cohorts,
+            selected_policy_expectancy_status=selected_policy_expectancy_status,
+            selected_policy_confidence_threshold=float(
+                selected_policy_confidence_threshold
+            ),
+            selected_policy_samples=selected_policy_samples,
+            selected_policy_weighted_mean_return=selected_policy_weighted_mean_return,
+            selected_policy_weighted_expected_shortfall=(
+                selected_policy_weighted_expected_shortfall
+            ),
+            selected_policy_weighted_return_std=selected_policy_weighted_return_std,
+            selected_policy_weighted_effective_return_samples=float(
+                selected_policy_weighted_effective_return_samples
+            ),
+            selected_policy_weighted_mean_return_lower_bound=(
+                selected_policy_weighted_mean_return_lower_bound
+            ),
+            selected_policy_temporal_cluster_count=(
+                selected_policy_temporal_cluster_count
+            ),
+            selected_policy_minimum_temporal_clusters=(
+                selected_policy_minimum_temporal_clusters
+            ),
+            selected_policy_weighted_effective_temporal_clusters=float(
+                selected_policy_weighted_effective_temporal_clusters
+            ),
+            selected_policy_weighted_temporal_mean_return=(
+                selected_policy_weighted_temporal_mean_return
+            ),
+            selected_policy_weighted_temporal_return_std=(
+                selected_policy_weighted_temporal_return_std
+            ),
+            selected_policy_weighted_temporal_mean_return_lower_bound=(
+                selected_policy_weighted_temporal_mean_return_lower_bound
+            ),
             policy_fingerprint=policy_fingerprint,
             policy_matured_total=policy_matured_total,
             policy_labeled_total=policy_labeled_total,
@@ -1886,6 +2608,8 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 
 # ── Key registry ─────────────────────────────────────────────────────────────
+# v20: validates the exact confidence-selected OOF subset monetarily and reserves
+#      a minimum whole-timestamp terminal holdout before activation.
 # v19: binds cached evidence to an immutable policy fingerprint, requires held-out
 #      skill over score-only/null baselines, and uses small-sample temporal bounds.
 # v18: retains the v17 purged-OOF/temporal rule and starts a new model-lineage dataset;
@@ -1894,9 +2618,9 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 #      Existing outcomes remain valid, but cached v16 diagnostics must refit.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v19",
+    "futures_grid": "logreg_futures_grid_v20",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v19"
+GLOBAL_LOGREG_KEY = "logreg_global_v20"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600
