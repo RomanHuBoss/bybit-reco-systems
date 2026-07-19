@@ -313,12 +313,12 @@ def test_release_documents_and_iterative_pdf_match_current_contract() -> None:
 
     prompt_text = "\n".join(page.extract_text() or "" for page in PdfReader(prompt_pdf).pages)
     for expected in (
-        "v1.4.1",
+        "v1.4.2",
         "directional_trend",
         "TP_FIRST",
         "SL_FIRST",
         "HORIZON_EXIT",
-        "strategy-profitability-router-v2",
+        "strategy-profitability-router-v3",
     ):
         assert expected in prompt_text
     assert "Поддерживаемый bot_type — `futures_grid`" not in prompt_text
@@ -330,7 +330,7 @@ def test_release_documents_and_iterative_pdf_match_current_contract() -> None:
     with ZipFile(operator_docx) as archive:
         xml = archive.read("word/document.xml").decode("utf-8")
     operator_text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", xml)))
-    assert "Версия документа: 1.4.1" in operator_text
+    assert "Версия документа: 1.4.2" in operator_text
     assert "P(TP раньше SL)" in operator_text
     assert "AMBIGUOUS" in operator_text
 

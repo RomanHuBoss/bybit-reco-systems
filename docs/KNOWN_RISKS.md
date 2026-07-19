@@ -1,3 +1,10 @@
+## Остаточные риски после v1.4.2 rejected-evaluation boundary
+
+- A high rate of `trend_evaluation_rejected` may be legitimate market ambiguity or may reveal an overly conservative direction classifier. It must be analysed as diagnostic coverage, not as strategy failures or negative first-touch labels.
+- Legacy databases may retain immutable outcomes attached to formerly neutral trend rows. They are preserved for audit and deliberately fail semantic-integrity readiness; operators should investigate rather than delete evidence automatically.
+- `candidate_kind` prevents invalid lifecycle participation but does not prove that confirmed LONG/SHORT trends are profitable. First-touch holdout, EV lower bounds and tail-risk gates remain mandatory.
+- External consumers must use `candidate_kind`, not infer a formed position solely from `bot_type=directional_trend`.
+
 ## Остаточные риски после v1.4.1 strategy-native Details fix
 
 - A blocked `directional_trend/neutral` row is expected during parallel candidate evaluation; it is evidence that direction was not confirmed, not a third «neutral trend» strategy.

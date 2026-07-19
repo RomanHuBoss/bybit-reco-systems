@@ -978,12 +978,47 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
     return {"qty": None, "qty_source": None}
 
 
+def _candidate_kind_for_reco(rec: Any) -> str:
+    if not isinstance(rec, dict):
+        return "strategy_recommendation"
+    params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+    reasons = rec.get("reasons") if isinstance(rec.get("reasons"), dict) else {}
+    if (
+        str(rec.get("bot_type") or "").strip().lower() == "directional_trend"
+        and str(rec.get("direction") or "").strip().lower() not in {"long", "short"}
+    ):
+        return "trend_evaluation_rejected"
+    explicit = str(
+        rec.get("candidate_kind")
+        or params.get("candidate_kind")
+        or reasons.get("candidate_kind")
+        or ""
+    ).strip().lower()
+    if explicit in {"strategy_recommendation", "trend_evaluation_rejected"}:
+        return explicit
+    return "strategy_recommendation"
+
+
 def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
     ctx = _trade_plan_price_context(rec)
     bot_type = str(rec.get("bot_type") or "").strip().lower()
     direction_raw = str(rec.get("direction") or "neutral").strip().lower()
 
-    if bot_type == "directional_trend":
+    if _candidate_kind_for_reco(rec) == "trend_evaluation_rejected":
+        levels = {
+            "direction": "neutral",
+            "take_profit": None,
+            "stop_loss": None,
+            "kill_switch_lower": None,
+            "kill_switch_upper": None,
+            "take_profit_label": None,
+            "stop_loss_label": None,
+            "geometry": "rejected trend evaluation: no position geometry exists",
+            "has_directional_take_profit": False,
+            "level_source": "trend_evaluation_rejected",
+        }
+        direction = "neutral"
+    elif bot_type == "directional_trend":
         # A trend recommendation is a single-position contract.  Its TP/SL are
         # explicit levels and must never be reconstructed from futures-grid
         # kill-switch bounds.  Reading those bounds here used to make a correct
@@ -1380,7 +1415,11 @@ def _operator_next_actions_for_reco(
             "severity": severity,
         })
 
-    if is_trend and "DIRECTIONAL_TREND_DIRECTION_INVALID" in error_codes:
+    if is_trend and (
+        "DIRECTIONAL_TREND_DIRECTION_INVALID" in error_codes
+        or "TREND_DIRECTION_UNCONFIRMED" in warning_codes
+        or _candidate_kind_for_reco(rec) == "trend_evaluation_rejected"
+    ):
         add(
             "WAIT_FOR_CONFIRMED_TREND_DIRECTION",
             "Ждать подтверждённого направления LONG или SHORT",
@@ -1908,9 +1947,21 @@ def _augment_reco_for_ui(
     outcome_tracking_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     out = dict(rec)
+    out["candidate_kind"] = _candidate_kind_for_reco(out)
     outcome_root_id = str(out.get("outcome_root_rec_id") or out.get("rec_id") or "").strip()
+    rejected_trend_evaluation = out["candidate_kind"] == "trend_evaluation_rejected"
     out["outcome_tracking"] = (
-        dict(outcome_tracking_override)
+        {
+            "outcome_root_rec_id": None,
+            "state": "not_applicable",
+            "reason": "trend_direction_unconfirmed_no_position",
+            "event_type": None,
+            "success": None,
+            "ret": None,
+            "diagnostics": {"candidate_kind": "trend_evaluation_rejected"},
+        }
+        if rejected_trend_evaluation
+        else dict(outcome_tracking_override)
         if isinstance(outcome_tracking_override, dict)
         else db.get_outcome_tracking(conn, outcome_root_id)
         if conn is not None and outcome_root_id
@@ -1925,6 +1976,42 @@ def _augment_reco_for_ui(
         }
     )
     out["directional_exit_levels"] = _directional_exit_payload_for_reco(out)
+    if rejected_trend_evaluation:
+        original_status = str(out.get("status") or "no_trade").strip().lower() or "no_trade"
+        out["stored_status"] = out.get("stored_status") or original_status
+        out["status"] = "no_trade"
+        out["effective_status"] = "no_trade"
+        out["is_outcome_label_root"] = False
+        out["blocks"] = []
+        out["bybit_meta"] = {}
+        guard = {
+            "ok": False,
+            "critical": False,
+            "errors": [],
+            "warnings": [{
+                "code": "TREND_DIRECTION_UNCONFIRMED",
+                "msg": (
+                    "Предварительная trend-оценка не подтвердила LONG или SHORT. "
+                    "Для отклонённой проверки тренда позиция, TP и SL не формируются."
+                ),
+            }],
+            "candidate_kind": "trend_evaluation_rejected",
+            "execution_plan_required": False,
+        }
+        out["bybit_plan_validation"] = dict(guard)
+        out["bybit_operator_guard"] = dict(guard)
+        out["evaluation_rejection"] = {
+            "code": "TREND_DIRECTION_UNCONFIRMED",
+            "primary": True,
+            "position_created": False,
+            "outcome_scheduled": False,
+            "included_in_training": False,
+        }
+        out["operator_decision_context"] = _operator_decision_context_for_reco(
+            out, conn=conn, guard=guard
+        )
+        out["operator_summary"] = _operator_summary_for_reco(out, conn=conn, guard=guard)
+        return out
     venue = str(out.get("venue") or "")
     symbol = str(out.get("symbol") or "")
     try:
@@ -5461,7 +5548,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.1", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.2", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -5739,6 +5826,11 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
     rec = db.get_recommendation_by_id(conn, rec_id, for_update=True)
     if not rec:
         raise HTTPException(status_code=404, detail="rec_id not found")
+    if _candidate_kind_for_reco(rec) != "strategy_recommendation":
+        raise HTTPException(
+            status_code=409,
+            detail="rejected trend evaluation is diagnostic only and cannot be executed",
+        )
 
     current_status = str(rec.get("status") or "")
     ttl_sec = max(0, _safe_int(rec.get("ttl_sec"), 0))

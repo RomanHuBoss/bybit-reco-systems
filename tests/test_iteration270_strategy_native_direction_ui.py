@@ -89,7 +89,7 @@ def test_strategy_direction_labels_do_not_call_invalid_trend_a_neutral_grid() ->
     js = app_js.read_text(encoding="utf-8")
     assert "function strategyDirectionRu" in js
     assert "function strategyDirectionBadge" in js
-    assert "Направление не определено" in js
+    assert "Направление не подтверждено" in js
     assert "Trend-кандидат отклонён" in js
     assert "DIRECTIONAL_TREND_DIRECTION_INVALID" in js
     assert "Для trend-позиции не определено направление LONG или SHORT" in js
@@ -120,7 +120,7 @@ console.log(JSON.stringify(values));
 """
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     values = __import__("json").loads(result.stdout)
-    assert values["trendNeutral"] == "Направление не определено"
+    assert values["trendNeutral"] == "Направление не подтверждено"
     assert values["gridNeutral"] == "Нейтральная сетка"
     assert "Нейтральная сетка" not in values["trendBadge"]
     assert "Нейтральная сетка" in values["gridBadge"]
@@ -160,10 +160,17 @@ def test_details_api_keeps_grid_and_trend_validation_isolated(tmp_path: Path, mo
     grid_codes = {str(item.get("code")) for item in grid.get("blocks", []) if isinstance(item, dict)}
     trend_codes = {str(item.get("code")) for item in trend.get("blocks", []) if isinstance(item, dict)}
     assert not any(code.startswith("DIRECTIONAL_TREND_") for code in grid_codes)
-    assert "DIRECTIONAL_TREND_DIRECTION_INVALID" in trend_codes
-    assert "DIRECTIONAL_TREND_LEVELS_MISSING" in trend_codes
+    assert trend_codes == set()
+    warning_codes = {
+        str(item.get("code"))
+        for item in (trend.get("bybit_operator_guard", {}).get("warnings") or [])
+        if isinstance(item, dict)
+    }
+    assert warning_codes == {"TREND_DIRECTION_UNCONFIRMED"}
     assert trend["bot_type"] == "directional_trend"
     assert trend["direction"] == "neutral"
+    assert trend["candidate_kind"] == "trend_evaluation_rejected"
+    assert trend["effective_status"] == "no_trade"
 
 
 def test_all_strategy_bound_ui_locations_use_strategy_aware_badges() -> None:

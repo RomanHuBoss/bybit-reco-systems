@@ -1,3 +1,17 @@
+## Rejected trend evaluation scenarios — v1.4.2
+
+### Direction is not confirmed
+Given `bot_type=directional_trend` and the direction analyser returns `neutral`, the system persists `candidate_kind=trend_evaluation_rejected`, `status=no_trade` and one reason `TREND_DIRECTION_UNCONFIRMED`. Entry, TP, SL, sizing and trade plan are absent. No outcome schedule or price-history point exists.
+
+### Legacy neutral trend row on upgrade
+`init_db()` backfills the rejected kind, clears label-root and eligibility flags and removes a waiting observability row if no immutable outcome exists. A pre-existing terminal outcome is retained but health becomes not ready because such an outcome cannot be valid evidence for a formed trend strategy.
+
+### Execution attempt
+Any request to materialize `trend_evaluation_rejected` is rejected before Bybit metadata/live-price validation.
+
+### Valid directional trend
+A LONG/SHORT trend candidate remains `strategy_recommendation`; its entry/TP/SL, first-touch outcome, history and router behavior are unchanged.
+
 ## Strategy-native Details scenarios — v1.4.1
 
 ### Trend candidate with `direction=neutral`

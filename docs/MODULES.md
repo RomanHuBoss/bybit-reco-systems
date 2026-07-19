@@ -1,3 +1,12 @@
+## v1.4.2: candidate-kind lifecycle
+
+- `app/recommender.py` classifies preliminary trend analysis before constructing any position geometry. Neutral trend becomes `trend_evaluation_rejected`; valid LONG/SHORT becomes `strategy_recommendation`.
+- `app/db.py` persists and indexes `candidate_kind`, upgrades/repairs legacy rows, excludes rejected evaluations from outcome/history/training queries and exposes integrity counters.
+- `app/main.py` projects rejected evaluations as diagnostics, suppresses TP/SL and blocks materialization before any live validation.
+- `app/strategy_router.py` accepts only formed strategy recommendations and uses router identity `strategy-profitability-router-v3`.
+- `app/trend_events.py` excludes rejected or explicitly neutral trend rows from first-touch fitting.
+- `app/ui/static/app.js` renders a preliminary-evaluation card with no position/history controls.
+
 ## v1.4.1: strategy-native direction and remediation ownership
 
 - `app/main.py`: `_operator_next_actions_for_reco` gates every strategy-specific action by `bot_type`; missing legacy `bot_type` defaults to historical `futures_grid`.

@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS recommendations (
   outcome_sample_role TEXT,
   risk_checks_passed INTEGER,
   risk_blocks_empty INTEGER,
-  llm_review_status TEXT
+  llm_review_status TEXT,
+  candidate_kind TEXT NOT NULL DEFAULT 'strategy_recommendation'
 );
 
 CREATE INDEX IF NOT EXISTS idx_reco_ts ON recommendations(ts DESC);
@@ -90,6 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_reco_publication_root_ts ON recommendations(publi
 CREATE INDEX IF NOT EXISTS idx_reco_outcome_lineage_ts ON recommendations(outcome_root_rec_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_outcome_root_ts ON recommendations(is_outcome_label_root, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_model_outcome_scope ON recommendations(model_version, is_outcome_label_root, rec_id);
+CREATE INDEX IF NOT EXISTS idx_reco_candidate_kind_ts ON recommendations(candidate_kind, bot_type, ts DESC);
 
 CREATE TABLE IF NOT EXISTS decision_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

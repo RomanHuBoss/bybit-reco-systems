@@ -56,7 +56,7 @@ def _operator_field_harness() -> str:
     available_helpers = [name for name in helper_names if re.search(rf"function {re.escape(name)}\([^)]*\) \{{", source)]
     fns.extend(available_helpers)
     fns.append("buildOperatorFieldSpecs")
-    constants = "const SUPPORTED_GRID_BOT_TYPE = 'futures_grid';\nconst DIRECTIONAL_TREND_BOT_TYPE = 'directional_trend';\n"
+    constants = "const SUPPORTED_GRID_BOT_TYPE = 'futures_grid';\nconst DIRECTIONAL_TREND_BOT_TYPE = 'directional_trend';\nconst TREND_EVALUATION_REJECTED_KIND = 'trend_evaluation_rejected';\n"
     return constants + "\n".join(_extract_js_function(source, name) for name in fns) + "\n"
 
 

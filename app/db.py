@@ -166,7 +166,42 @@ OUTCOME_POLICY_MATERIALIZED_COLUMNS: tuple[str, ...] = (
     "risk_checks_passed",
     "risk_blocks_empty",
     "llm_review_status",
+    "candidate_kind",
 )
+
+STRATEGY_RECOMMENDATION_KIND = "strategy_recommendation"
+TREND_EVALUATION_REJECTED_KIND = "trend_evaluation_rejected"
+VALID_RECOMMENDATION_CANDIDATE_KINDS = {
+    STRATEGY_RECOMMENDATION_KIND,
+    TREND_EVALUATION_REJECTED_KIND,
+}
+
+def _canonical_recommendation_candidate_kind(
+    *,
+    bot_type: Any,
+    direction: Any,
+    params: Any = None,
+    reasons: Any = None,
+    stored: Any = None,
+) -> str:
+    params_map = params if isinstance(params, dict) else {}
+    reasons_map = reasons if isinstance(reasons, dict) else {}
+    if (
+        str(bot_type or "").strip().lower() == "directional_trend"
+        and str(direction or "").strip().lower() not in {"long", "short"}
+    ):
+        # Direction is part of the strategy contract. A default or stale stored
+        # candidate_kind may never promote a neutral trend evaluation to a position.
+        return TREND_EVALUATION_REJECTED_KIND
+    explicit = str(
+        stored
+        or params_map.get("candidate_kind")
+        or reasons_map.get("candidate_kind")
+        or ""
+    ).strip().lower()
+    if explicit in VALID_RECOMMENDATION_CANDIDATE_KINDS:
+        return explicit
+    return STRATEGY_RECOMMENDATION_KIND
 
 
 def _materialize_outcome_policy_fields(reasons: Any) -> tuple[int, int, str | None, int, int, str | None]:
@@ -222,6 +257,96 @@ def _ensure_recommendation_outcome_policy_columns(conn: sqlite3.Connection) -> b
     return added
 
 
+def _ensure_recommendation_candidate_kind_column(conn: sqlite3.Connection) -> bool:
+    cols = _table_columns(conn, "recommendations")
+    if "candidate_kind" in cols:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reco_candidate_kind_ts "
+            "ON recommendations(candidate_kind, bot_type, ts DESC)"
+        )
+        return False
+    conn.execute(
+        "ALTER TABLE recommendations ADD COLUMN candidate_kind TEXT NOT NULL "
+        "DEFAULT 'strategy_recommendation'"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reco_candidate_kind_ts "
+        "ON recommendations(candidate_kind, bot_type, ts DESC)"
+    )
+    return True
+
+
+def _repair_rejected_trend_evaluations(conn: sqlite3.Connection) -> dict[str, int]:
+    """Materialize the evaluation-vs-position boundary for current and legacy rows.
+
+    A directional trend with no confirmed LONG/SHORT direction is a rejected
+    market evaluation, not a position.  It may remain in the immutable audit
+    history, but it must never own an outcome window or enter calibration.
+    """
+    cols = _table_columns(conn, "recommendations")
+    required = {
+        "candidate_kind", "bot_type", "direction", "params_json", "reasons_json",
+        "is_outcome_label_root", "outcome_eligible",
+        "policy_evaluation_eligible", "outcome_sample_role",
+    }
+    if not required.issubset(cols):
+        return {"classified": 0, "excluded": 0, "observability_removed": 0}
+    rows = conn.execute(
+        """SELECT rec_id, bot_type, direction, params_json, reasons_json, candidate_kind
+               FROM recommendations
+              WHERE candidate_kind IS NULL
+                 OR TRIM(candidate_kind)=''
+                 OR candidate_kind NOT IN ('strategy_recommendation','trend_evaluation_rejected')
+                 OR candidate_kind='trend_evaluation_rejected'
+                 OR (bot_type='directional_trend' AND LOWER(TRIM(COALESCE(direction,''))) NOT IN ('long','short'))"""
+    ).fetchall()
+    classified = 0
+    excluded = 0
+    rejected_ids: list[str] = []
+    for row in rows:
+        params = _json_loads_mapping_or_default(row["params_json"], {})
+        reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+        kind = _canonical_recommendation_candidate_kind(
+            bot_type=row["bot_type"],
+            direction=row["direction"],
+            params=params,
+            reasons=reasons,
+            stored=row["candidate_kind"],
+        )
+        rec_id = str(row["rec_id"] or "")
+        conn.execute(
+            "UPDATE recommendations SET candidate_kind=? WHERE rec_id=?",
+            (kind, rec_id),
+        )
+        classified += 1
+        if kind == TREND_EVALUATION_REJECTED_KIND:
+            conn.execute(
+                """UPDATE recommendations
+                      SET is_outcome_label_root=0,
+                          outcome_eligible=0,
+                          policy_evaluation_eligible=0,
+                          outcome_sample_role='excluded'
+                    WHERE rec_id=?""",
+                (rec_id,),
+            )
+            rejected_ids.append(rec_id)
+            excluded += 1
+    removed = 0
+    for rec_id in rejected_ids:
+        cur = conn.execute(
+            """DELETE FROM reco_outcome_observability
+                  WHERE rec_id=?
+                    AND NOT EXISTS (SELECT 1 FROM reco_outcomes o WHERE o.rec_id=?)""",
+            (rec_id, rec_id),
+        )
+        removed += max(0, int(cur.rowcount or 0))
+    return {
+        "classified": int(classified),
+        "excluded": int(excluded),
+        "observability_removed": int(removed),
+    }
+
+
 def get_outcome_policy_schema_status(conn: sqlite3.Connection) -> dict[str, Any]:
     """Return an operator-facing proof that the additive outcome migration is active.
 
@@ -239,7 +364,12 @@ def get_outcome_policy_schema_status(conn: sqlite3.Connection) -> dict[str, Any]
                   WHERE outcome_eligible IS NULL
                      OR policy_evaluation_eligible IS NULL
                      OR risk_checks_passed IS NULL
-                     OR risk_blocks_empty IS NULL"""
+                     OR risk_blocks_empty IS NULL
+                     OR candidate_kind IS NULL
+                     OR candidate_kind NOT IN ('strategy_recommendation','trend_evaluation_rejected')
+                     OR (bot_type='directional_trend'
+                         AND LOWER(TRIM(COALESCE(direction,''))) NOT IN ('long','short')
+                         AND candidate_kind<>'trend_evaluation_rejected')"""
         ).fetchone()
         materialization_pending = int(row["c"] if row is not None else 0)
     return {
@@ -783,6 +913,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     # table already exists, then execute the complete idempotent bootstrap script.
     if _table_columns(conn, "recommendations"):
         _ensure_recommendation_publication_columns(conn)
+        _ensure_recommendation_candidate_kind_column(conn)
     sql = migration_path.read_text(encoding="utf-8")
     conn.executescript(sql)
     conn.execute("""CREATE TABLE IF NOT EXISTS runtime_locks (
@@ -791,6 +922,7 @@ def init_db(conn: sqlite3.Connection) -> None:
       heartbeat_ts INTEGER NOT NULL
     )""")
     _ensure_recommendation_publication_columns(conn)
+    _ensure_recommendation_candidate_kind_column(conn)
     _ensure_recommendation_outcome_policy_columns(conn)
     if _recommendation_outcome_policy_backfill_needed(conn):
         backfill_recommendation_outcome_policy_fields(conn)
@@ -807,6 +939,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         # операцией через `repair_async_llm_pending_publication_chains()`.
         backfill_recommendation_publication_lineage(conn)
     _ensure_bot_publication_root_columns(conn)
+    _repair_rejected_trend_evaluations(conn)
     _materialize_outcome_observability_for_recommendations(conn)
     ensure_database_instance_id(conn, commit=False)
     conn.commit()
@@ -1124,7 +1257,10 @@ def get_outcome_semantic_integrity(conn: sqlite3.Connection) -> dict[str, Any]:
                  END), 0) AS invalid_event_type_total,
                  COALESCE(SUM(CASE WHEN o.bot_type='directional_trend'
                        AND UPPER(TRIM(COALESCE(o.event_type, '')))='AMBIGUOUS'
-                       THEN 1 ELSE 0 END), 0) AS persisted_ambiguous_total
+                       THEN 1 ELSE 0 END), 0) AS persisted_ambiguous_total,
+                 COALESCE(SUM(CASE WHEN COALESCE(r.candidate_kind, 'strategy_recommendation')='trend_evaluation_rejected'
+                       OR (r.bot_type='directional_trend' AND LOWER(TRIM(COALESCE(r.direction,''))) NOT IN ('long','short'))
+                       THEN 1 ELSE 0 END), 0) AS rejected_trend_outcome_total
             FROM reco_outcomes o
             LEFT JOIN recommendations r ON r.rec_id=o.rec_id
             LEFT JOIN reco_outcome_observability obs ON obs.rec_id=o.rec_id"""
@@ -1136,6 +1272,7 @@ def get_outcome_semantic_integrity(conn: sqlite3.Connection) -> dict[str, Any]:
         "recommendation_identity_mismatch_total",
         "invalid_event_type_total",
         "persisted_ambiguous_total",
+        "rejected_trend_outcome_total",
     )
     metrics = {field: int(row[field] or 0) if row else 0 for field in fields}
     metrics["ok"] = all(metrics[field] == 0 for field in fields)
@@ -1152,6 +1289,7 @@ def get_database_continuity_status(conn: sqlite3.Connection) -> dict[str, Any]:
         "engine": str(getattr(conn, "db_engine", SQLITE) or SQLITE),
         "recommendations_total": recs["count"],
         "recommendations_by_bot_type": _count_by_column(conn, "recommendations", "bot_type"),
+        "recommendations_by_candidate_kind": _count_by_column(conn, "recommendations", "candidate_kind"),
         "first_recommendation_ts": recs["first_ts"],
         "latest_recommendation_ts": recs["latest_ts"],
         "outcomes_total": outcomes["count"],
@@ -1225,7 +1363,7 @@ _RECOMMENDATION_COLUMNS: tuple[str, ...] = (
     "params_json", "reasons_json", "blocks_json", "status", "ttl_sec", "model_version", "features_ref_ts",
     "publication_root_rec_id", "outcome_root_rec_id", "is_outcome_label_root",
     "outcome_eligible", "policy_evaluation_eligible", "outcome_sample_role",
-    "risk_checks_passed", "risk_blocks_empty", "llm_review_status",
+    "risk_checks_passed", "risk_blocks_empty", "llm_review_status", "candidate_kind",
 )
 
 
@@ -1320,6 +1458,13 @@ def _normalize_recommendation_payload(r: dict[str, Any]) -> tuple[Any, ...]:
         outcome_root_rec_id,
         is_outcome_label_root,
         *materialized_outcome_policy,
+        _canonical_recommendation_candidate_kind(
+            bot_type=r.get("bot_type"),
+            direction=r.get("direction"),
+            params=r.get("params"),
+            reasons=r.get("reasons"),
+            stored=r.get("candidate_kind"),
+        ),
     )
 
 
@@ -1339,6 +1484,13 @@ def _normalize_stored_recommendation_payload(row: Any) -> tuple[Any, ...]:
         values[idx] = int(values[idx] or 0)
     values[24] = str(values[24]).strip() if values[24] not in (None, "") else None
     values[27] = str(values[27]).strip().lower() if values[27] not in (None, "") else None
+    values[28] = _canonical_recommendation_candidate_kind(
+        bot_type=values[4],
+        direction=values[5],
+        params=_json_loads_mapping_or_default(values[12], {}),
+        reasons=_json_loads_mapping_or_default(values[13], {}),
+        stored=values[28],
+    )
     return tuple(values)
 
 
@@ -2909,6 +3061,8 @@ def get_recommendations(
     for r in cur.fetchall():
         if not _recommended_row_passes_conf_filter(r, min_conf=min_conf, strict_min_conf=strict_min_conf):
             continue
+        params_mapping = _json_loads_mapping_or_default(r["params_json"], {})
+        reasons_mapping = _json_loads_mapping_or_default(r["reasons_json"], {})
         rows.append({
             "rec_id": r["rec_id"],
             "ts": r["ts"],
@@ -2916,14 +3070,15 @@ def get_recommendations(
             "symbol": r["symbol"],
             "bot_type": r["bot_type"],
             "direction": r["direction"],
+            "candidate_kind": recommendation_candidate_kind(r["bot_type"], r["direction"], params_mapping, reasons_mapping, _outcome_row_value(r, "candidate_kind")),
             "account_mode": r["account_mode"],
             "margin_mode": r["margin_mode"],
             "score": r["score"],
             "confidence": r["confidence"],
             "expected_rr": r["expected_rr"],
             "risk_score": r["risk_score"],
-            "params": _json_loads_mapping_or_default(r["params_json"], {}),
-            "reasons": _json_loads_mapping_or_default(r["reasons_json"], {}),
+            "params": params_mapping,
+            "reasons": reasons_mapping,
             "blocks": _json_loads_list_of_mappings_or_default(r["blocks_json"], []),
             "status": r["status"],
             "ttl_sec": r["ttl_sec"],
@@ -2959,6 +3114,22 @@ def _nested_price(mapping: dict[str, Any], *path: str) -> float | None:
     return _optional_finite_float(current)
 
 
+def recommendation_candidate_kind(
+    bot_type: Any,
+    direction: Any,
+    params: Any,
+    reasons: Any = None,
+    stored: Any = None,
+) -> str:
+    return _canonical_recommendation_candidate_kind(
+        bot_type=bot_type,
+        direction=direction,
+        params=params,
+        reasons=reasons,
+        stored=stored,
+    )
+
+
 def recommendation_price_geometry(bot_type: str, params: dict[str, Any]) -> dict[str, Any]:
     """Return only persisted, strategy-native price levels for historical charts.
 
@@ -2973,6 +3144,16 @@ def recommendation_price_geometry(bot_type: str, params: dict[str, Any]) -> dict
         or _optional_finite_float(params.get("price_ref"))
         or _optional_finite_float(params.get("reference_price"))
     )
+    if (
+        str(bot_type or "") == "directional_trend"
+        and str(params.get("candidate_kind") or "").strip().lower() == "trend_evaluation_rejected"
+    ):
+        return {
+            "kind": "trend_evaluation_rejected",
+            "reference_price": reference,
+            "take_profit": None,
+            "stop_loss": None,
+        }
     if str(bot_type or "") == "directional_trend":
         return {
             "kind": "directional_trend",
@@ -3132,6 +3313,11 @@ def get_recommendation_history(
     if bot_type_norm:
         where.append("r.bot_type=?")
         params.append(bot_type_norm)
+    # A directional_trend row without LONG/SHORT is a rejected pre-trade
+    # evaluation, not a position publication.  Exclude it from strategy history
+    # and price dynamics, including legacy rows created before candidate_kind.
+    where.append("COALESCE(r.candidate_kind, 'strategy_recommendation') <> 'trend_evaluation_rejected'")
+    where.append("NOT (r.bot_type='directional_trend' AND LOWER(COALESCE(r.direction, '')) NOT IN ('long','short'))")
     where_sql = " AND ".join(where)
 
     count_row = conn.execute(
@@ -3142,7 +3328,7 @@ def get_recommendation_history(
     cur = conn.execute(
         f"""SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction, r.score,
                    r.confidence, r.expected_rr, r.risk_score, r.params_json, r.reasons_json, r.status,
-                   r.ttl_sec, r.model_version, r.features_ref_ts,
+                   r.ttl_sec, r.model_version, r.features_ref_ts, r.candidate_kind,
                    r.publication_root_rec_id, r.outcome_root_rec_id, r.is_outcome_label_root,
                    o.rec_id AS outcome_rec_id, o.event_type AS outcome_event_type,
                    o.success AS outcome_success, o.ret AS outcome_ret,
@@ -3177,7 +3363,9 @@ def get_recommendation_history(
         outcome_root = str(r["outcome_root_rec_id"] or r["rec_id"]).strip() or str(r["rec_id"])
         rows.append({
             "rec_id": r["rec_id"], "ts": r["ts"], "venue": r["venue"], "symbol": r["symbol"],
-            "bot_type": r["bot_type"], "direction": r["direction"], "score": r["score"],
+            "bot_type": r["bot_type"], "direction": r["direction"],
+            "candidate_kind": recommendation_candidate_kind(r["bot_type"], r["direction"], params_mapping, reasons, _outcome_row_value(r, "candidate_kind")),
+            "score": r["score"],
             "confidence": r["confidence"], "expected_rr": r["expected_rr"],
             "plan_rr": plan_rr.get("rr"), "plan_rr_status": plan_rr.get("status") or "unavailable",
             "empirical_expectancy_status": empirical.get("status") or "insufficient",
@@ -3210,6 +3398,8 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str, *, for_updat
     r = cur.fetchone()
     if not r or not is_supported_bot_type(r["bot_type"]):
         return None
+    params_mapping = _json_loads_mapping_or_default(r["params_json"], {})
+    reasons_mapping = _json_loads_mapping_or_default(r["reasons_json"], {})
     return {
         "rec_id": r["rec_id"],
         "ts": r["ts"],
@@ -3217,14 +3407,15 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str, *, for_updat
         "symbol": r["symbol"],
         "bot_type": r["bot_type"],
         "direction": r["direction"],
+        "candidate_kind": recommendation_candidate_kind(r["bot_type"], r["direction"], params_mapping, reasons_mapping, _outcome_row_value(r, "candidate_kind")),
         "account_mode": r["account_mode"],
         "margin_mode": r["margin_mode"],
         "score": r["score"],
         "confidence": r["confidence"],
         "expected_rr": r["expected_rr"],
         "risk_score": r["risk_score"],
-        "params": _json_loads_mapping_or_default(r["params_json"], {}),
-        "reasons": _json_loads_mapping_or_default(r["reasons_json"], {}),
+        "params": params_mapping,
+        "reasons": reasons_mapping,
         "blocks": _json_loads_list_of_mappings_or_default(r["blocks_json"], []),
         "status": r["status"],
         "ttl_sec": r["ttl_sec"],
@@ -3630,6 +3821,8 @@ def get_outcomes_with_recs(
            FROM reco_outcomes o
            JOIN recommendations r ON r.rec_id = o.rec_id
            WHERE COALESCE(r.is_outcome_label_root, 1) = 1
+             AND COALESCE(r.candidate_kind, 'strategy_recommendation') <> 'trend_evaluation_rejected'
+             AND NOT (r.bot_type='directional_trend' AND LOWER(TRIM(COALESCE(r.direction,''))) NOT IN ('long','short'))
            ORDER BY o.ts DESC LIMIT ?""",
         (int(limit_int),),
         batch_size=int(batch_int),
@@ -5736,7 +5929,11 @@ def get_outcomes_recent_enriched(
         raise ValueError("current_policy outcome scope requires a sha256 policy_fingerprint")
 
     _supported_sql, _supported_params = sql_in_clause("o.bot_type")
-    where_parts = [_supported_sql]
+    where_parts = [
+        _supported_sql,
+        "COALESCE(r.candidate_kind, 'strategy_recommendation') <> 'trend_evaluation_rejected'",
+        "(r.rec_id IS NULL OR NOT (r.bot_type='directional_trend' AND LOWER(TRIM(COALESCE(r.direction,''))) NOT IN ('long','short')))",
+    ]
     query_params: list[Any] = [*_supported_params]
     if scope_name in {"current_model", "current_policy"}:
         where_parts.append("(r.model_version = ? OR r.model_version LIKE ?)")
@@ -5754,7 +5951,7 @@ def get_outcomes_recent_enriched(
                      o.entry_close, o.exit_close, o.ret, o.success, o.event_type,
                      r.direction AS reco_direction, r.status AS reco_status,
                      r.score, r.confidence, r.expected_rr, r.reasons_json,
-                     r.model_version, r.is_outcome_label_root,
+                     r.model_version, r.is_outcome_label_root, r.candidate_kind,
                      r.outcome_eligible, r.policy_evaluation_eligible,
                      r.outcome_sample_role,
                      obs.reason AS outcome_observability_reason,
@@ -5796,6 +5993,11 @@ def get_outcomes_recent_enriched(
             "venue": row["venue"],
             "symbol": row["symbol"],
             "bot_type": row["bot_type"],
+            "candidate_kind": _canonical_recommendation_candidate_kind(
+                bot_type=row["bot_type"],
+                direction=row["reco_direction"],
+                stored=row["candidate_kind"],
+            ),
             "direction": _normalize_direction(row["direction"]),
             "raw_direction": dirs["raw_direction"],
             "execution_direction": dirs["execution_direction"],

@@ -212,6 +212,14 @@ def fit_trend_event_model(
     for row in rows or []:
         if str(row.get("bot_type") or "") != "directional_trend":
             continue
+        direction = str(row.get("direction") or "").strip().lower()
+        if direction and direction not in {"long", "short"}:
+            # An explicitly neutral/unknown signal is an evaluation rejection,
+            # not a single-position strategy. Missing direction remains accepted
+            # only for bounded legacy/test rows; DB-backed rows always persist it.
+            continue
+        if str(row.get("candidate_kind") or "strategy_recommendation").strip().lower() == "trend_evaluation_rejected":
+            continue
         event_type = str(row.get("event_type") or "").strip().upper()
         if event_type not in event_index:
             continue

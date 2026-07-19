@@ -24,7 +24,7 @@ def test_pending_status_is_not_rendered_as_no_trade_when_risk_report_is_conserva
 def test_pending_details_copy_has_its_own_title_and_does_not_emit_no_trade_reason() -> None:
     fragment = _details_logic_fragment()
 
-    assert 'pendingDecision\n          ? "Ждать проверку LLM"' in fragment
+    assert 'pendingDecision' in fragment and '? "Ждать проверку LLM"' in fragment
     no_trade_items_expr = fragment.split('const noTradeReasonItems = ', 1)[1].split('];', 1)[0]
     assert 'noTradeDecision && !explicitHardBlocked' in no_trade_items_expr
     assert 'pendingDecision' not in no_trade_items_expr

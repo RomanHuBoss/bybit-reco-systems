@@ -60,7 +60,9 @@ CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v3"
 POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
 TREND_STRATEGY_CONTRACT_VERSION = "directional_trend_v2"
 TREND_OUTCOME_LABEL_VERSION = "directional_trend_label_v2"
-TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v2"
+TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v4"
+TREND_EVALUATION_REJECTED_KIND = "trend_evaluation_rejected"
+TREND_STRATEGY_RECOMMENDATION_KIND = "strategy_recommendation"
 CALIBRATION_LABEL_GRACE_SEC = 120
 CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
     "PROXY_MONETARY_EXPECTANCY_UNPROVEN",
@@ -334,7 +336,24 @@ def _sync_recommendation_metadata(rec: dict[str, Any]) -> None:
     reasons["simulation_scope"] = simulation_scope
 
     params = rec.get("params")
+    if (
+        str(rec.get("bot_type") or "").strip().lower() == "directional_trend"
+        and str(rec.get("direction") or "").strip().lower() not in {"long", "short"}
+    ):
+        candidate_kind = TREND_EVALUATION_REJECTED_KIND
+    else:
+        candidate_kind = str(
+            rec.get("candidate_kind")
+            or (params.get("candidate_kind") if isinstance(params, dict) else "")
+            or reasons.get("candidate_kind")
+            or TREND_STRATEGY_RECOMMENDATION_KIND
+        ).strip().lower()
+        if candidate_kind not in {TREND_EVALUATION_REJECTED_KIND, TREND_STRATEGY_RECOMMENDATION_KIND}:
+            candidate_kind = TREND_STRATEGY_RECOMMENDATION_KIND
+    rec["candidate_kind"] = candidate_kind
+    reasons["candidate_kind"] = candidate_kind
     if isinstance(params, dict):
+        params["candidate_kind"] = candidate_kind
         params["simulation_model"] = {
             "scope": "historical_proxy_only",
             "runtime_execution_validation": "not_performed",
@@ -1680,6 +1699,8 @@ def _build_trade_plan(
     atr_abs_used = (price * atr_pct_slow) if (price is not None and atr_pct_slow > 0) else None
 
     if bot_type == "directional_trend":
+        if _is_rejected_trend_evaluation_params(params):
+            return {}
         take_profit = _finite_or_none(params.get("take_profit_price"))
         stop_loss = _finite_or_none(params.get("stop_loss_price"))
         direction_norm = str(direction or "").strip().lower()
@@ -1915,6 +1936,14 @@ def _direction(bot_type: str, agg: dict[str, Any]) -> str:
     if bot_type == "directional_trend" and raw_direction in ("long", "short"):
         return raw_direction
     return "neutral"
+
+
+def _is_rejected_trend_evaluation_params(params: Any) -> bool:
+    return bool(
+        isinstance(params, dict)
+        and str(params.get("candidate_kind") or "").strip().lower()
+        == TREND_EVALUATION_REJECTED_KIND
+    )
 
 
 def _stable_range_score(f: dict[str, Any], agg: dict[str, Any]) -> tuple[float, dict[str, Any]]:
@@ -2810,6 +2839,31 @@ def _directional_trend_params(
     price = float(price_raw) if price_valid else 0.0
     direction_norm = str(direction or "").strip().lower()
     direction_valid = direction_norm in {"long", "short"}
+    if not direction_valid:
+        return {
+            "bot_type": "directional_trend",
+            "candidate_kind": TREND_EVALUATION_REJECTED_KIND,
+            "strategy_family": "trend_evaluation",
+            "evaluation_only": True,
+            "venue": venue,
+            "direction": "neutral",
+            "direction_bias": direction_bias,
+            "direction_bias_strength": float(_clamp(abs(_finite_float(direction_bias_strength, 0.0)), 0.0, 1.0)),
+            "effective_sentiment": float(_clamp(_finite_float(global_sent, 0.0), -1.0, 1.0)),
+            "price_input_valid": bool(price_valid),
+            "invalid_price_fail_closed": not bool(price_valid),
+            "direction_input_valid": False,
+            "price_ref": _round_price(price, decimals=10),
+            "evaluation_reason_code": "TREND_DIRECTION_UNCONFIRMED",
+            "evaluation_note": (
+                "Предварительная оценка не подтвердила LONG или SHORT. "
+                "Позиция, TP/SL, outcome-root и обучающая метка не создаются."
+            ),
+            "trade_plan": {},
+            "sizing": {},
+            "economics": {},
+            "operator_metrics": {},
+        }
     atr_value = _finite_or_none(atr_pct)
     if atr_value is None or atr_value <= 0.0:
         atr_value = _finite_or_none(f.get("_atr_pct_1h"))
@@ -2867,6 +2921,7 @@ def _directional_trend_params(
 
     return {
         "bot_type": "directional_trend",
+        "candidate_kind": TREND_STRATEGY_RECOMMENDATION_KIND,
         "strategy_family": "directional_trend",
         "strategy_contract_version": TREND_STRATEGY_CONTRACT_VERSION,
         "outcome_label_version": TREND_OUTCOME_LABEL_VERSION,
@@ -5842,6 +5897,9 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             oi_sig   = oi_trend(oi_rows)
             raw_direction = str((f.get('_direction_agg', {}) or {}).get('direction') or 'neutral')
             direction = _direction(bot_type, f.get('_direction_agg', {}))
+            trend_direction_rejected = bool(
+                bot_type == "directional_trend" and direction not in {"long", "short"}
+            )
             cost_model = _estimate_cost_model(
                 bot_type=bot_type,
                 venue=venue,
@@ -5984,31 +6042,35 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                         "code": "INSUFFICIENT_MTF_HISTORY_FOR_TREND",
                         "msg": f"использовано только {len(_tf_used_now)} timeframes; directional trend требует минимум 3 закрытых TF-истории",
                     })
-                if direction not in {"long", "short"}:
+                if trend_direction_rejected:
                     thesis_no_trade_reasons.append({
                         "code": "TREND_DIRECTION_UNCONFIRMED",
-                        "msg": "directional trend не формируется без явного long/short направления",
+                        "msg": (
+                            "предварительная trend-оценка не подтвердила LONG или SHORT; "
+                            "позиция и TP/SL не формируются"
+                        ),
                     })
-                if _regime_now != "trend":
-                    thesis_no_trade_reasons.append({
-                        "code": "TREND_REGIME_UNCONFIRMED",
-                        "msg": f"regime={_regime_now}; trend strategy исследуется только в подтверждённом trend-режиме",
-                    })
-                if _trendiness_now < 0.48:
-                    thesis_no_trade_reasons.append({
-                        "code": "TREND_STRENGTH_INSUFFICIENT",
-                        "msg": f"trendiness={_trendiness_now:.2f} < 0.48",
-                    })
-                if _all_strength_now < 0.18 or _structural_strength_now < 0.12:
-                    thesis_no_trade_reasons.append({
-                        "code": "DIRECTIONAL_MTF_STRENGTH_INSUFFICIENT",
-                        "msg": f"all_strength={_all_strength_now:.2f}, structural_strength={_structural_strength_now:.2f}",
-                    })
-                if _coherence_now < 0.55:
-                    thesis_no_trade_reasons.append({
-                        "code": "TREND_TIMEFRAME_COHERENCE_INSUFFICIENT",
-                        "msg": f"coherence={_coherence_now:.2f} < 0.55",
-                    })
+                else:
+                    if _regime_now != "trend":
+                        thesis_no_trade_reasons.append({
+                            "code": "TREND_REGIME_UNCONFIRMED",
+                            "msg": f"regime={_regime_now}; trend strategy исследуется только в подтверждённом trend-режиме",
+                        })
+                    if _trendiness_now < 0.48:
+                        thesis_no_trade_reasons.append({
+                            "code": "TREND_STRENGTH_INSUFFICIENT",
+                            "msg": f"trendiness={_trendiness_now:.2f} < 0.48",
+                        })
+                    if _all_strength_now < 0.18 or _structural_strength_now < 0.12:
+                        thesis_no_trade_reasons.append({
+                            "code": "DIRECTIONAL_MTF_STRENGTH_INSUFFICIENT",
+                            "msg": f"all_strength={_all_strength_now:.2f}, structural_strength={_structural_strength_now:.2f}",
+                        })
+                    if _coherence_now < 0.55:
+                        thesis_no_trade_reasons.append({
+                            "code": "TREND_TIMEFRAME_COHERENCE_INSUFFICIENT",
+                            "msg": f"coherence={_coherence_now:.2f} < 0.55",
+                        })
                 if atr_pct >= 0.15:
                     feasibility_blocks.append({
                         "code": "VOLATILITY_TOO_HIGH_FOR_DIRECTIONAL_TREND",
@@ -6132,15 +6194,16 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             _fv = extract_features(_row_for_cal)
 
             bot_cal = bot_calibrators.get(bot_type)
-            _expectancy_no_trade = _calibration_expectancy_no_trade_reason(bot_cal)
-            if _expectancy_no_trade is not None:
-                thesis_no_trade_reasons.append(_expectancy_no_trade)
-            _probability_no_trade = _probability_calibration_no_trade_reason(
-                bot_cal,
-                require_conf_gate=bool(settings.require_conf_gate),
-            )
-            if _probability_no_trade is not None:
-                thesis_no_trade_reasons.append(_probability_no_trade)
+            if not trend_direction_rejected:
+                _expectancy_no_trade = _calibration_expectancy_no_trade_reason(bot_cal)
+                if _expectancy_no_trade is not None:
+                    thesis_no_trade_reasons.append(_expectancy_no_trade)
+                _probability_no_trade = _probability_calibration_no_trade_reason(
+                    bot_cal,
+                    require_conf_gate=bool(settings.require_conf_gate),
+                )
+                if _probability_no_trade is not None:
+                    thesis_no_trade_reasons.append(_probability_no_trade)
             if (
                 bot_cal
                 and bot_cal.fitted
@@ -6257,6 +6320,24 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 cost_model=cost_model,
                 risk_limits=limits,
             )
+            if trend_direction_rejected:
+                params["evaluation_diagnostics"] = {
+                    "raw_direction": raw_direction,
+                    "normalized_direction": direction,
+                    "regime": str((f.get("_direction_agg") or {}).get("regime") or "unknown"),
+                    "trendiness": _finite_or_none((f.get("_direction_agg") or {}).get("trendiness")),
+                    "coherence": _finite_or_none((f.get("_direction_agg") or {}).get("coherence")),
+                    "suppressed_feasibility_observations": list(blocks),
+                    "note": (
+                        "Диагностические наблюдения сохранены, но не являются блокировками позиции: "
+                        "позиция не существует без LONG/SHORT."
+                    ),
+                }
+                # An unresolved direction is a rejected evaluation, not a malformed
+                # position.  Do not cascade missing TP/SL or exchange-plan errors.
+                blocks = []
+                status = "no_trade"
+
             no_trade_reasons: list[dict[str, str]] = list(thesis_no_trade_reasons)
             leverage_policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
             if (
@@ -6286,7 +6367,26 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             params["account_mode"] = account_mode
             params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params, cost_model=cost_model)
             trend_event_assessment: dict[str, Any] | None = None
-            if bot_type == "directional_trend":
+            if bot_type == "directional_trend" and trend_direction_rejected:
+                params["operator_sheet"] = {
+                    "mode": "evaluation_rejected",
+                    "venue": venue,
+                    "bot_type": bot_type,
+                    "symbol": sym,
+                    "candidate_kind": TREND_EVALUATION_REJECTED_KIND,
+                    "strategy_family": "trend_evaluation",
+                    "recommendation_only": True,
+                    "exchange_order_submitted": False,
+                    "price_ref": params.get("price_ref"),
+                    "entry_model": None,
+                    "take_profit": None,
+                    "stop_loss": None,
+                    "operator_note": (
+                        "Проверка направления отклонена: LONG/SHORT не подтверждён. "
+                        "Для этой строки позиция и outcome не существуют."
+                    ),
+                }
+            elif bot_type == "directional_trend":
                 trend_event_assessment = build_trend_event_assessment(
                     {"direction": direction, "params": params},
                     _fv,
@@ -6399,7 +6499,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     margin_label = "estimated_margin_required"
                 if max_margin is not None and max_margin > 0 and estimated_margin is not None and estimated_margin > max_margin:
                     blocks.append({"code": "MAX_MARGIN_PER_BOT", "msg": f"{margin_label}={estimated_margin:.2f} USDT > runtime cap={max_margin:.2f} USDT"})
-            elif bot_type == "directional_trend":
+            elif bot_type == "directional_trend" and not trend_direction_rejected:
                 trend_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
                 trend_econ = params.get("economics") if isinstance(params.get("economics"), dict) else {}
                 if trend_plan.get("geometry_valid") is not True:
@@ -6462,7 +6562,23 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "no_trade_reasons": [str(x.get("msg") or x.get("code") or "") for x in no_trade_reasons[:8] if isinstance(x, dict)],
                 "warnings": risk_warnings,
             }
-            if bot_type == "directional_trend":
+            if bot_type == "directional_trend" and trend_direction_rejected:
+                params["risk_report"] = {
+                    "decision": "not_recommended",
+                    "risk_profile": "not_applicable",
+                    "strategy_family": "trend_evaluation",
+                    "candidate_kind": TREND_EVALUATION_REJECTED_KIND,
+                    "recommendation_only": True,
+                    "exchange_order_submitted": False,
+                    "rejection_reasons": [
+                        "TREND_DIRECTION_UNCONFIRMED: LONG/SHORT не подтверждён"
+                    ],
+                    "no_trade_reasons": [
+                        "Для отклонённой проверки тренда позиция, TP и SL не формируются"
+                    ],
+                    "warnings": [],
+                }
+            elif bot_type == "directional_trend":
                 _trend_econ = params.get("economics") if isinstance(params.get("economics"), dict) else {}
                 params["risk_report"] = {
                     "decision": _risk_report_decision_for_status(status),
@@ -6489,10 +6605,13 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)
             reasons2["regime"] = regime
+            reasons2["candidate_kind"] = str(params.get("candidate_kind") or TREND_STRATEGY_RECOMMENDATION_KIND)
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
             if bot_type == "directional_trend":
-                reasons2["trend_economics"] = params.get("economics")
+                reasons2["trend_economics"] = params.get("economics") if not trend_direction_rejected else None
                 reasons2["trend_event_model"] = dict(trend_event_assessment or {})
+                if trend_direction_rejected:
+                    reasons2["trend_evaluation"] = dict(params.get("evaluation_diagnostics") or {})
             else:
                 reasons2["grid_economics"] = params.get("economics")
             reasons2["sizing"] = params.get("sizing")
@@ -6518,7 +6637,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "confidence_gate_applied": bool(confidence_gate_applied),
             }
             _trade_plan_complete = bool(
-                isinstance(params.get("trade_plan"), dict)
+                not trend_direction_rejected
+                and isinstance(params.get("trade_plan"), dict)
                 and bool(params.get("trade_plan"))
                 and (params.get("trade_plan") or {}).get("geometry_valid") is not False
             )
@@ -6540,7 +6660,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 and _trade_plan_complete
                 and params.get("price_input_valid") is not False
             )
-            label_due_ts = calibration_policy_label_due_ts(ts_now, bot_type)
+            label_due_ts = None if trend_direction_rejected else calibration_policy_label_due_ts(ts_now, bot_type)
             reasons2["outcome_policy"] = {
                 "eligible": bool(status in {"recommended", "active", "executed"} or _shadow_no_trade_eligible),
                 "policy_evaluation_eligible": policy_evaluation_eligible,
@@ -6562,18 +6682,28 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     )
                 ),
                 "reason": (
-                    "model_thesis_or_launch_gate" if _shadow_no_trade_eligible else (
-                        "actionable_publication" if status in {"recommended", "active", "executed"} else "hard_or_incomplete_candidate"
+                    "trend_direction_unconfirmed_evaluation_excluded"
+                    if trend_direction_rejected
+                    else (
+                        "model_thesis_or_launch_gate" if _shadow_no_trade_eligible else (
+                            "actionable_publication" if status in {"recommended", "active", "executed"} else "hard_or_incomplete_candidate"
+                        )
                     )
                 ),
                 "strategy_family": (
-                    "directional_trend" if bot_type == "directional_trend" else "futures_grid"
+                    "trend_evaluation" if trend_direction_rejected else (
+                        "directional_trend" if bot_type == "directional_trend" else "futures_grid"
+                    )
                 ),
                 "bot_outcome_label_version": (
-                    TREND_OUTCOME_LABEL_VERSION if bot_type == "directional_trend" else POLICY_OUTCOME_LABEL_VERSION
+                    None if trend_direction_rejected else (
+                        TREND_OUTCOME_LABEL_VERSION if bot_type == "directional_trend" else POLICY_OUTCOME_LABEL_VERSION
+                    )
                 ),
                 "strategy_contract_version": (
-                    TREND_STRATEGY_CONTRACT_VERSION if bot_type == "directional_trend" else "futures_grid_v26"
+                    None if trend_direction_rejected else (
+                        TREND_STRATEGY_CONTRACT_VERSION if bot_type == "directional_trend" else "futures_grid_v26"
+                    )
                 ),
                 "comparison_return_basis": COMPARISON_RETURN_BASIS,
             }
@@ -6747,7 +6877,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             recs.append({
                 "rec_id": rec_id,
                 "publication_root_rec_id": rec_id,
-                "is_outcome_label_root": True,
+                "is_outcome_label_root": not trend_direction_rejected,
                 "ts": ts_now,
                 "venue": venue,
                 "symbol": sym,
@@ -6870,6 +7000,14 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "count_blocked": status_counts["blocked"],
                 "count_no_trade": status_counts["no_trade"],
                 "count_suppressed": status_counts["suppressed"],
+                "count_strategy_recommendations": sum(
+                    1 for r in recs
+                    if str(r.get("candidate_kind") or "") == TREND_STRATEGY_RECOMMENDATION_KIND
+                ),
+                "count_trend_evaluations_rejected": sum(
+                    1 for r in recs
+                    if str(r.get("candidate_kind") or "") == TREND_EVALUATION_REJECTED_KIND
+                ),
                 "model_version": model_version,
                 "model_versions": sorted({str(r.get("model_version") or "") for r in recs}),
                 "regime": regime,

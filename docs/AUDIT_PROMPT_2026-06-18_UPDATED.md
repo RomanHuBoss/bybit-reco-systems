@@ -1,3 +1,9 @@
+# Актуализация контракта — 19 июля 2026 г., v1.4.2
+
+Обязателен аудит границы между preliminary trend evaluation и сформированной стратегией. `directional_trend/neutral` запрещено хранить или показывать как позицию: canonical `candidate_kind=trend_evaluation_rejected`, одна причина `TREND_DIRECTION_UNCONFIRMED`, отсутствие entry/TP/SL, outcome-root, observability schedule, history, training и execution. Проверяй additive migration/index `candidate_kind`, startup repair legacy rows, исключение из router/first-touch fit и health-инвариант `rejected_trend_outcome_total=0`. Полноценный `directional_trend` допустим только с LONG/SHORT и `candidate_kind=strategy_recommendation`.
+
+---
+
 # Актуализация контракта — 19 июля 2026 г., v1.4.1
 
 Обязателен аудит strategy-native operator semantics: любое направление трактуется только вместе с `bot_type`; `directional_trend/neutral` должно отображаться как неподтверждённое направление, а не как «Нейтральная сетка». Проверяй раздельность blocks, next actions, labels и details payload для двух кандидатов одного symbol/timestamp. Grid-only remediation запрещена в trend Details, trend-only remediation — в grid Details. Legacy missing `bot_type` допускается только как historical futures_grid fallback.

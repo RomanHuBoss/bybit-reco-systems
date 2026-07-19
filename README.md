@@ -1,3 +1,11 @@
+## Отклонённая предварительная проверка тренда (v1.4.2)
+
+Версия 1.4.2 вводит жёсткий контракт `candidate_kind`. Полноценная стратегия `directional_trend` существует только при подтверждённом `direction=long` или `direction=short`. Комбинация `directional_trend/neutral` больше не является recommendation-позицией: она сохраняется только как диагностическая запись `trend_evaluation_rejected` с первичной причиной `TREND_DIRECTION_UNCONFIRMED`. Для неё не формируются entry/TP/SL, trade plan, outcome-root, строка ожидания исхода, история позиции, обучающий пример или возможность materialize/execute.
+
+В таблице `recommendations` добавлено индексируемое поле `candidate_kind` со значениями `strategy_recommendation` и `trend_evaluation_rejected`. `init_db()` автоматически классифицирует старые нейтральные trend-строки, снимает с них outcome eligibility и удаляет незавершённые schedule rows, если фактического outcome ещё нет. Существующие исторические outcomes не удаляются, но health помечает outcome, связанный с отклонённой trend-оценкой, как нарушение semantic integrity. Ручная миграция не требуется.
+
+В «Деталях» отклонённая проверка тренда показывается как предварительная оценка, а не как позиция: одна причина, отсутствие TP/SL и явные признаки `позиция не сформирована / исход не планируется / обучение исключено`. Такая запись исключена из ценовой истории, графика, first-touch модели, meta-router и execution lifecycle. `strategy-profitability-router-v3` принимает к сравнению только `candidate_kind=strategy_recommendation`.
+
 ## Разделение strategy family и направления в «Деталях» (v1.4.1)
 
 Версия 1.4.1 устраняет операторскую неоднозначность между `futures_grid` и `directional_trend`. Значение `direction=neutral` теперь интерпретируется с учётом `bot_type`: для `futures_grid` это **«Нейтральная сетка»**, а для `directional_trend` — **«Направление не определено»**, то есть невалидный/неподтверждённый trend-кандидат. Окно «Детали» сначала показывает strategy family, затем её собственную семантику направления; отклонённый trend не может визуально выглядеть как сетка.
@@ -20,7 +28,7 @@ Frontend локализует основные grid/trend guard-коды, не �
 
 Добавлена отдельная трёхклассовая first-touch модель `trend-first-touch-softmax-v1`, которая оценивает `P(TP_FIRST)`, `P(SL_FIRST)` и `P(HORIZON_EXIT)` только на exact-policy данных `directional_trend_label_v2`. Обучение использует whole-timestamp хронологический terminal holdout, purging по точному `label_available_ts`, сравнение multiclass log-loss с null-frequency baseline и отдельную оценку неопределённости вероятностей. Terminal holdout не входит в deployment fit. Legacy binary LogReg сохраняется как дополнительная диагностика, но не заменяет first-touch модель.
 
-`strategy-profitability-router-v2` допускает `directional_trend` только когда консервативная нижняя оценка `P(TP_FIRST)` выше верхней оценки `P(SL_FIRST)`, а денежная first-touch EV и её lower bound положительны после round-trip costs и adverse funding. EV учитывает чистый payoff TP, чистый loss SL и ожидаемый net return при `HORIZON_EXIT`. Если first-touch модель не готова, порядок границ не доказан или нижняя EV неположительна, trend остаётся `no_trade`; grid-кандидат оценивается независимо. Проект остаётся recommendation/audit-only и не отправляет биржевые ордера.
+`strategy-profitability-router-v3` допускает `directional_trend` только когда консервативная нижняя оценка `P(TP_FIRST)` выше верхней оценки `P(SL_FIRST)`, а денежная first-touch EV и её lower bound положительны после round-trip costs и adverse funding. EV учитывает чистый payoff TP, чистый loss SL и ожидаемый net return при `HORIZON_EXIT`. Если first-touch модель не готова, порядок границ не доказан или нижняя EV неположительна, trend остаётся `no_trade`; grid-кандидат оценивается независимо. Проект остаётся recommendation/audit-only и не отправляет биржевые ордера.
 
 ## Выбор стратегии по доказанной ожидаемой прибыльности (v1.2.0)
 

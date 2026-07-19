@@ -5,7 +5,7 @@ from typing import Any
 
 from .policy import is_sha256_fingerprint
 
-ROUTER_VERSION = "strategy-profitability-router-v2"
+ROUTER_VERSION = "strategy-profitability-router-v3"
 COMPARISON_RETURN_BASIS = "unlevered_net_return_on_committed_notional_v1"
 ACTIONABLE_STATUSES: frozenset[str] = frozenset({"recommended", "active", "pending"})
 MIN_POSITIVE_UTILITY = 0.00005  # 0.5 bp on the common unlevered return basis.
@@ -49,6 +49,17 @@ def evaluate_candidate(rec: dict[str, Any]) -> dict[str, Any]:
     trend_event = _mapping(reasons.get("trend_event_model"))
 
     reason_codes: list[str] = []
+    candidate_kind = str(
+        rec.get("candidate_kind")
+        or params.get("candidate_kind")
+        or reasons.get("candidate_kind")
+        or "strategy_recommendation"
+    ).strip().lower()
+    if candidate_kind != "strategy_recommendation":
+        reason_codes.append("CANDIDATE_KIND_NOT_STRATEGY")
+    direction = str(rec.get("direction") or "").strip().lower()
+    if bot_type == "directional_trend" and direction not in {"long", "short"}:
+        reason_codes.append("TREND_DIRECTION_UNCONFIRMED")
     status = str(rec.get("status") or "")
     if status not in ACTIONABLE_STATUSES:
         reason_codes.append("CANDIDATE_NOT_ACTIONABLE")

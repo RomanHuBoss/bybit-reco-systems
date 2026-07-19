@@ -1,3 +1,22 @@
+## 2026-07-19 - v1.4.2 - rejected trend evaluation contract
+
+### Fixed
+- Prohibit `directional_trend + neutral` from being represented as a formed trading recommendation.
+- Persist unconfirmed directional analysis as `candidate_kind=trend_evaluation_rejected` with one primary reason: `TREND_DIRECTION_UNCONFIRMED`.
+- Do not create entry/TP/SL, trade plans, outcome roots, observability schedules, history points, training rows or execution instances for rejected trend evaluations.
+- Collapse derivative geometry/level/direction errors into the single upstream rejection reason.
+- Exclude rejected evaluations from the first-touch model, outcome queries, strategy router and price-history API.
+- Add startup repair for legacy neutral trend rows and semantic-integrity detection for any retained historical outcome attached to a rejected evaluation.
+- Render rejected evaluations as preliminary diagnostics rather than positions in Details and operator surfaces.
+
+### Database
+- Add indexed `recommendations.candidate_kind` with values `strategy_recommendation` and `trend_evaluation_rejected`.
+- Existing databases are upgraded and repaired by `init_db()`; no manual SQL is required.
+
+### Validation
+- Added iteration 271 DB/API/UI/router/training regressions for the rejected-evaluation lifecycle.
+- Preserved grid behavior, valid LONG/SHORT trend behavior and legacy grid compatibility.
+
 ## 2026-07-19 - v1.4.1 - strategy-native Details semantics
 
 ### Fixed

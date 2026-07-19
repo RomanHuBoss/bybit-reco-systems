@@ -1,3 +1,14 @@
+## Rejected trend evaluation boundary — v1.4.2
+
+`directional_trend` is now a formed strategy only when direction is LONG or SHORT. The durable discriminator is `recommendations.candidate_kind`:
+
+- `strategy_recommendation` — a strategy-native candidate that may own geometry, an outcome root, history and an execution audit lifecycle;
+- `trend_evaluation_rejected` — a preliminary trend assessment with no position semantics.
+
+The rejected branch is terminal and fail-closed: no trade plan, no TP/SL, no `is_outcome_label_root`, no `reco_outcome_observability`, no position-history point, no training eligibility and no router/execution participation. It carries only `TREND_DIRECTION_UNCONFIRMED` plus bounded diagnostics stored outside the operator-block list. `strategy-profitability-router-v3` rejects every candidate whose kind is not `strategy_recommendation`.
+
+At database bootstrap, legacy `directional_trend/neutral` rows are classified as rejected, their eligibility/root flags are cleared and waiting schedules without a terminal outcome are removed. Existing immutable outcomes are retained for audit, while health reports `rejected_trend_outcome_total` as semantic-integrity failure.
+
 ## Strategy-native operator projection — v1.4.1
 
 `bot_type` is the discriminator for every operator-facing direction label and remediation path. `neutral` is not a global product name: under `futures_grid` it is a valid neutral inventory geometry; under `directional_trend` it means the mandatory LONG/SHORT direction was not established and the candidate is structurally invalid. API rows remain independent; frontend rendering must never infer strategy from `direction` alone.
@@ -22,7 +33,7 @@ Data flow для `directional_trend`:
 6. `app/strategy_router.py` сравнивает grid и trend только после strategy-specific evidence gates; непроверенный trend исключается fail-closed.
 7. API status и frontend показывают readiness, class probabilities и first-touch EV отдельно от heuristic confidence.
 
-Версии контракта: `directional_trend_v2`, `directional_trend_label_v2`, `logreg_directional_trend_v2`, `trend-first-touch-softmax-v1`, `strategy-profitability-router-v2`. Изменение label/contract исключает legacy v1 trend outcomes из нового fit без удаления исторического аудита.
+Версии контракта: `directional_trend_v2`, `directional_trend_label_v2`, `logreg_directional_trend_v2`, `trend-first-touch-softmax-v1`, `strategy-profitability-router-v3`. Изменение label/contract исключает legacy v1 trend outcomes из нового fit без удаления исторического аудита.
 
 ## Strategy profitability router - v1.2.0
 

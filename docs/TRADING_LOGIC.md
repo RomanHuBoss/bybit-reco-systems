@@ -1,3 +1,16 @@
+## Trend direction must exist before a trend strategy — v1.4.2
+
+A trend analyser may return an inconclusive result, but a `directional_trend` position may not be neutral. The state machine is now:
+
+```text
+market snapshot
+  -> preliminary trend evaluation
+     -> LONG or SHORT confirmed: strategy_recommendation, build entry/TP/SL
+     -> direction unconfirmed: trend_evaluation_rejected, no position
+```
+
+For a rejected evaluation, geometry validation is intentionally not run because no geometry is supposed to exist. It is not a failed TP/SL plan and does not generate `DIRECTIONAL_TREND_LEVELS_MISSING` or `DIRECTIONAL_TREND_GEOMETRY_INVALID`; the only causal trading decision is `TREND_DIRECTION_UNCONFIRMED`. It cannot receive a first-touch label, enter calibration, compete in the profitability router or be materialized by the operator.
+
 ## Strategy family precedes direction semantics — v1.4.1
 
 The pair `(bot_type, direction)` is the minimum semantic identity. Valid examples are `futures_grid/neutral`, `futures_grid/long`, `futures_grid/short`, `directional_trend/long` and `directional_trend/short`. `directional_trend/neutral` is not a neutral trend product and not a grid: it is a blocked candidate with unconfirmed direction. The operator UI must say «Направление не определено» and must not offer grid remediation.

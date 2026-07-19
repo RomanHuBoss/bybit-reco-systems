@@ -621,7 +621,25 @@ function isTechnicalIdentifierField(key) {
 
 const SUPPORTED_GRID_BOT_TYPE = "futures_grid";
 const DIRECTIONAL_TREND_BOT_TYPE = "directional_trend";
+const TREND_EVALUATION_REJECTED_KIND = "trend_evaluation_rejected";
 const SUPPORTED_GRID_VENUE = "linear";
+
+function candidateKindOf(it) {
+  if (!it || typeof it !== "object") return "strategy_recommendation";
+  const params = it.params && typeof it.params === "object" ? it.params : {};
+  const reasons = it.reasons && typeof it.reasons === "object" ? it.reasons : {};
+  if (String(it.bot_type || "") === DIRECTIONAL_TREND_BOT_TYPE && !["long", "short"].includes(String(it.direction || "").trim().toLowerCase())) {
+    return TREND_EVALUATION_REJECTED_KIND;
+  }
+  const explicit = String(it.candidate_kind || params.candidate_kind || reasons.candidate_kind || "").trim().toLowerCase();
+  if (["strategy_recommendation", TREND_EVALUATION_REJECTED_KIND].includes(explicit)) return explicit;
+  return "strategy_recommendation";
+}
+
+function strategyLabelForItem(it) {
+  if (candidateKindOf(it) === TREND_EVALUATION_REJECTED_KIND) return "Проверка тренда · сигнал отклонён";
+  return botTypeLabel(it?.bot_type);
+}
 
 function botTypeLabel(botType) {
   if (botType === SUPPORTED_GRID_BOT_TYPE) return "Фьючерсная сетка";
@@ -634,7 +652,7 @@ function strategyDirectionRu(botType, dir) {
   const normalized = String(dir || "").trim().toLowerCase();
   if (normalized === "long" || normalized === "short") return directionRu(normalized);
   if (strategy === SUPPORTED_GRID_BOT_TYPE) return "Нейтральная сетка";
-  if (strategy === DIRECTIONAL_TREND_BOT_TYPE) return "Направление не определено";
+  if (strategy === DIRECTIONAL_TREND_BOT_TYPE) return "Направление не подтверждено";
   return directionRu(normalized);
 }
 
@@ -649,8 +667,14 @@ function strategyDirectionBadge(botType, dir) {
   return `<span class="dir-badge ${cls}">${prefix} ${escapeHtml(strategyDirectionRu(strategy, normalized))}</span>`;
 }
 
+function isRejectedTrendEvaluation(it) {
+  return candidateKindOf(it) === TREND_EVALUATION_REJECTED_KIND;
+}
+
 function isDirectionalTrendSinglePosition(it) {
-  return String(it?.bot_type || "") === DIRECTIONAL_TREND_BOT_TYPE;
+  return String(it?.bot_type || "") === DIRECTIONAL_TREND_BOT_TYPE
+    && !isRejectedTrendEvaluation(it)
+    && ["long", "short"].includes(String(it?.direction || "").trim().toLowerCase());
 }
 
 function operatorEffectiveStatus(it) {
@@ -673,7 +697,7 @@ function isLaunchableGridRecommendation(it) {
 }
 
 function isLaunchableRecommendation(it) {
-  if (!it || it.venue !== SUPPORTED_GRID_VENUE) return false;
+  if (!it || it.venue !== SUPPORTED_GRID_VENUE || isRejectedTrendEvaluation(it)) return false;
   if (!(it.bot_type === SUPPORTED_GRID_BOT_TYPE || it.bot_type === DIRECTIONAL_TREND_BOT_TYPE)) return false;
   const status = operatorEffectiveStatus(it);
   if (!(status === "recommended" || status === "active")) return false;
@@ -1406,6 +1430,14 @@ function buildPriceFreshnessFields(it, ov) {
       : chainExpiresIn !== null && chainExpiresIn !== undefined
         ? `цепочка: осталось ${formatDurationValue(chainExpiresIn)}`
         : "Срок действия цепочки не задан";
+  if (candidateKindOf(it) === TREND_EVALUATION_REJECTED_KIND) {
+    return [
+      { label: "Опорная цена анализа", value: ov.entryRef, mono: true, help: "Цена рыночного снимка, на котором проверялось наличие направленного тренда. Это не цена входа: позиция не сформирована." },
+      { label: "Результат проверки", value: "LONG/SHORT не подтверждён", help: "Для отклонённой проверки тренда позиция, TP и SL не формируются." },
+      { label: "Текущая цена", value: formatBybitPrice(currentPrice, meta, "nearest"), mono: true, help: "Текущая цена показана только как контекст анализа; она не превращает отклонённую оценку в торговый план." },
+      { label: "Возраст проверки", value: recAge == null ? "—" : formatDurationValue(recAge), help: "Возраст диагностической проверки направления. У неё нет operator TTL торгового плана и нет outcome horizon." },
+    ];
+  }
   if (String(it?.bot_type || "") === "directional_trend") {
     const levels = it?.params?.trade_plan?.levels || {};
     const backendExit = it?.directional_exit_levels && typeof it.directional_exit_levels === "object"
@@ -1482,6 +1514,14 @@ function buildPriceFreshnessFields(it, ov) {
 }
 
 function buildRiskEconomicsFields(it) {
+  if (candidateKindOf(it) === TREND_EVALUATION_REJECTED_KIND) {
+    return [
+      { label: "Тип записи", value: "Диагностическая проверка направления", help: "Это не рекомендация single-position trend и не сеточный бот." },
+      { label: "Причина", value: "LONG/SHORT не подтверждён", help: "Без подтверждённого направления отсутствуют entry, TP, SL, first-touch outcome и обучающая метка." },
+      { label: "Outcome", value: "не применяется", help: "Отклонённая проверка не создаёт outcome-root, не попадает в историю стратегии и не обучает trend-модель." },
+      { label: "Действие", value: "ждать новый рыночный снимок", help: "Нельзя вручную достраивать TP/SL или интерпретировать neutral как трендовую позицию." },
+    ];
+  }
   const ctx = decisionContext(it);
   const metrics = operatorMetrics(it);
   const plan = metrics.plan;
@@ -1639,6 +1679,21 @@ function buildOperatorFieldSpecs(it, ov) {
   const sizing = params.sizing || {};
   const plan = params.trade_plan || {};
   const levels = plan.levels || {};
+  const candidateKind = String((it || {}).candidate_kind || params.candidate_kind || (it || {})?.reasons?.candidate_kind || "").trim().toLowerCase();
+  const rejectedTrendEvaluation = candidateKind === TREND_EVALUATION_REJECTED_KIND
+    || (String((it || {}).bot_type || "") === DIRECTIONAL_TREND_BOT_TYPE
+      && !["long", "short"].includes(String((it || {}).direction || "").trim().toLowerCase()));
+  if (rejectedTrendEvaluation) {
+    return [
+      { label: "Тип записи", value: "Отклонённая предварительная проверка тренда", help: "Это диагностический результат анализа рынка, а не сформированная торговая стратегия." },
+      { label: "Результат проверки", value: "LONG/SHORT не подтверждён", help: "Направление оказалось неоднозначным или недостаточно доказанным. Нейтральная trend-позиция не создаётся." },
+      { label: "Торговая позиция", value: "Не сформирована", help: "Нет entry, количества, leverage и биржевого плана исполнения." },
+      { label: "TP / SL", value: "Не рассчитываются", help: "Без подтверждённого LONG или SHORT корректная first-touch геометрия отсутствует." },
+      { label: "Исход", value: "Не планируется", help: "Эта запись исключена из outcome scheduling и не создаёт независимое 12-часовое окно." },
+      { label: "Обучение", value: "Исключено", help: "Отклонённая оценка не является размеченным примером directional_trend и не попадает в calibrator или first-touch модель." },
+      { label: "Следующее действие", value: "Ждать новый рыночный снимок", help: "Повторная полноценная trend-рекомендация появится только после подтверждения LONG или SHORT." },
+    ];
+  }
   if (String((it || {}).bot_type || "") === "directional_trend") {
     const takeProfit = levels.take_profit || {};
     const stopLoss = levels.stop_loss || {};
@@ -1886,6 +1941,7 @@ function outcomeTrackingHtml(it) {
     labeled: "Исход сформирован",
     censored: "Наблюдение цензурировано",
     unavailable: "Состояние недоступно",
+    not_applicable: "Не применяется к отклонённой оценке",
   };
   const resultHtml = state === "labeled"
     ? renderOutcomeResult(tracking.success, tracking.diagnostics, eventType, it?.bot_type)
@@ -1902,7 +1958,9 @@ function outcomeTrackingHtml(it) {
             ret: tracking.ret,
             outcome_diagnostics: tracking.diagnostics || {},
           })
-        : "Исход ещё не сформирован; текущая рекомендация не должна трактоваться как победа или поражение." },
+        : (state === "not_applicable"
+          ? "Позиция не сформирована: outcome, TP/SL first-touch и обучающая метка для этой диагностической строки не создаются."
+          : "Исход ещё не сформирован; текущая рекомендация не должна трактоваться как победа или поражение.") },
     { label: "Срок созревания", value: formatTs(tracking.label_due_ts) },
     { label: "Последняя попытка", value: formatTs(tracking.last_attempt_ts) },
     { label: "Причина состояния", value: humanizeOperatorText(tracking.reason || "—") },
@@ -1948,6 +2006,7 @@ function buildDetailsHtml(it) {
 
   const launchable = isLaunchableRecommendation(it);
   const trendSingle = isDirectionalTrendSinglePosition(it);
+  const rejectedTrendEvaluation = candidateKindOf(it) === TREND_EVALUATION_REJECTED_KIND;
   const scoreMeta = ensureUiScoreMeta(it);
   const status = operatorEffectiveStatus(it);
   const explicitHardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || status === "blocked";
@@ -1967,18 +2026,22 @@ function buildDetailsHtml(it) {
     "DIRECTIONAL_TREND_LEVELS_MISSING",
     "DIRECTIONAL_TREND_CONTRACT_MISSING",
   ].some(code => hardBlockCodes.has(code));
-  const decisionTitle = trendSingle && launchable
-    ? "Трендовая позиция выбрана meta-router"
-    : launchable
-    ? "Можно запускать после предпроверки"
-    : explicitHardBlocked
-      ? (trendCandidateStructurallyInvalid ? "Trend-кандидат отклонён" : "Не запускать")
-      : noTradeDecision
-        ? "Не запускать сейчас"
-        : pendingDecision
-          ? "Ждать проверку LLM"
-          : "Ждать / перепроверить";
-  const decisionText = trendSingle && launchable
+  const decisionTitle = rejectedTrendEvaluation
+    ? "Проверка тренда отклонена"
+    : trendSingle && launchable
+      ? "Трендовая позиция выбрана meta-router"
+      : launchable
+      ? "Можно запускать после предпроверки"
+      : explicitHardBlocked
+        ? (trendCandidateStructurallyInvalid ? "Trend-кандидат отклонён" : "Не запускать")
+        : noTradeDecision
+          ? "Не запускать сейчас"
+          : pendingDecision
+            ? "Ждать проверку LLM"
+            : "Ждать / перепроверить";
+  const decisionText = rejectedTrendEvaluation
+    ? "Предварительный анализ не подтвердил LONG или SHORT. Это не trend-позиция и не нейтральная сетка: entry, TP, SL, outcome и обучающая метка для этой строки отсутствуют."
+    : trendSingle && launchable
     ? "Meta-router выбрал single-position trend по сопоставимой risk-adjusted monetary utility. Подтверждение создаёт только audit-instance; ордер размещается вручную или внешним execution-layer."
     : launchable
     ? "Проверьте цену, актуальность, риск и экономику; затем используйте блок параметров запуска для создания бота."
@@ -2045,6 +2108,17 @@ function buildDetailsHtml(it) {
     : "";
   const nextActionsHtml = operatorNextActionsHtml(it);
   const outcomeTrackingCard = outcomeTrackingHtml(it);
+  const historyButtonHtml = rejectedTrendEvaluation
+    ? ""
+    : `
+          <button
+            class="ghost-chip"
+            data-act="show-recommendation-history"
+            data-venue="${escapeHtml(it.venue || "linear")}"
+            data-symbol="${escapeHtml(it.symbol || "")}"
+            data-bot-type="${escapeHtml(it.bot_type || "futures_grid")}">
+            История и динамика
+          </button>`;
 
   return `
     <div class="operator-sheet compact-details-sheet operator-minimal-sheet">
@@ -2052,7 +2126,7 @@ function buildDetailsHtml(it) {
         <div class="decision-title-row">
           <div>
             <h3>${escapeHtml(it.symbol)} · ${escapeHtml(decisionTitle)}</h3>
-            <div class="operator-subtitle operator-subtitle-inline">${escapeHtml(botTypeLabel(it.bot_type))}<span class="operator-sub-sep">·</span>${strategyDirectionBadge(it.bot_type, it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(operatorEffectiveStatus(it))}</div>
+            <div class="operator-subtitle operator-subtitle-inline">${escapeHtml(strategyLabelForItem(it))}<span class="operator-sub-sep">·</span>${strategyDirectionBadge(it.bot_type, it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(operatorEffectiveStatus(it))}</div>
           </div>
           <button class="ghost-chip" data-act="show-tech">Технические данные</button>
         </div>
@@ -2070,14 +2144,7 @@ function buildDetailsHtml(it) {
       <div class="operator-card price-freshness-card">
         <div class="operator-card-heading">
           <h3>Цена и актуальность</h3>
-          <button
-            class="ghost-chip"
-            data-act="show-recommendation-history"
-            data-venue="${escapeHtml(it.venue || "linear")}"
-            data-symbol="${escapeHtml(it.symbol || "")}"
-            data-bot-type="${escapeHtml(it.bot_type || "futures_grid")}">
-            История и динамика
-          </button>
+          ${historyButtonHtml}
         </div>
         <div class="operator-grid two decision-context-grid">
           ${priceFreshnessFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
@@ -2092,7 +2159,7 @@ function buildDetailsHtml(it) {
       </div>
 
       <div class="operator-card primary-launch-card">
-        <h3>${trendSingle ? "Параметры single-position trend-плана" : "Параметры запуска фьючерсной сетки Bybit"}</h3>
+        <h3>${rejectedTrendEvaluation ? "Результат предварительной проверки тренда" : trendSingle ? "Параметры single-position trend-плана" : "Параметры запуска фьючерсной сетки Bybit"}</h3>
         <div class="operator-grid two minimal-launch-grid">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
         </div>
@@ -2924,7 +2991,7 @@ function buildRecommendationHistoryHtml(data) {
   const tableItems = sortRecommendationHistoryRowsNewestFirst(items);
   const latest = items.length ? items[items.length - 1] : null;
   const summary = [
-    { label: "Стратегия", value: botTypeLabel(data?.bot_type || latest?.bot_type || "—") },
+    { label: "Стратегия", value: latest ? strategyLabelForItem(latest) : botTypeLabel(data?.bot_type || "—") },
     { label: "Публикаций", value: `${data?.returned ?? 0}${data?.truncated ? ` из ${data?.items_total ?? "?"}` : ""}` },
     { label: "Операторских цепочек", value: data?.publication_root_count ?? 0 },
     { label: "Независимых окон исхода", value: data?.outcome_root_count ?? 0 },
@@ -3398,7 +3465,7 @@ function renderRecoTable(items) {
       <td>
         <div class="symbol-cell">
           <b>${escapeHtml(it.symbol || "—")}</b>
-          <span class="helper-text">${escapeHtml(botTypeLabel(it.bot_type))}</span>
+          <span class="helper-text">${escapeHtml(strategyLabelForItem(it))}</span>
           ${symbolLinksHtml(it)}
         </div>
       </td>
@@ -3644,6 +3711,8 @@ async function loadHealth() {
         { name: "Идентификатор БД", value: databaseContinuity.database_instance_id || "—" },
         { name: "Тип БД", value: databaseContinuity.engine || "—" },
         { name: "Рекомендаций в БД", value: databaseContinuity.recommendations_total ?? "—" },
+        { name: "Сформированных торговых кандидатов", value: databaseContinuity.recommendations_by_candidate_kind?.strategy_recommendation ?? 0 },
+        { name: "Отклонённых предварительных проверок тренда", value: databaseContinuity.recommendations_by_candidate_kind?.trend_evaluation_rejected ?? 0 },
         { name: "Исходов в БД", value: databaseContinuity.outcomes_total ?? "—" },
         { name: "Первая рекомендация", value: formatTs(databaseContinuity.first_recommendation_ts) },
         { name: "Последняя рекомендация", value: formatTs(databaseContinuity.latest_recommendation_ts) },
@@ -3662,6 +3731,7 @@ async function loadHealth() {
         { name: "Несовпадений identity рекомендации/исхода", value: outcomeIntegrity.recommendation_identity_mismatch_total ?? "—" },
         { name: "Неканонических типов событий", value: outcomeIntegrity.invalid_event_type_total ?? "—" },
         { name: "Сохранённых AMBIGUOUS вместо censoring", value: outcomeIntegrity.persisted_ambiguous_total ?? "—" },
+        { name: "Исходов у отклонённых trend-проверок", value: outcomeIntegrity.rejected_trend_outcome_total ?? "—" },
         { name: "Grid · денежная ожидаемость", value: empiricalStatusRu(botCalibrator.expectancy_status || "insufficient") },
         { name: "Grid · наблюдений текущих правил", value: botCalibrator.policy_eligible_outcomes_total ?? 0 },
         { name: "Grid · до денежного минимума", value: botCalibrator.monetary_sample_gap ?? "—" },

@@ -74,7 +74,7 @@ def test_directional_trend_is_separate_supported_strategy_family() -> None:
 
 def test_directional_trend_has_distinct_audit_model_identity_without_resetting_grid() -> None:
     assert TREND_RECOMMENDER_MODEL_VERSION.startswith(RECOMMENDER_MODEL_VERSION + "+")
-    assert TREND_RECOMMENDER_MODEL_VERSION.endswith("directional-trend-v2")
+    assert TREND_RECOMMENDER_MODEL_VERSION.endswith("directional-trend-v4")
 
 
 def test_global_calibrator_does_not_pool_grid_and_trend_labels(monkeypatch: pytest.MonkeyPatch) -> None:

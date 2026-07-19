@@ -6,7 +6,7 @@
 
 Редакция: 19 июля 2026 г.
 
-Контракт: v1.4.1 — strategy-native Details + strategy observability + first-touch/router invariants
+Контракт: v1.4.2 — rejected trend evaluation + strategy-native observability + first-touch/router invariants
 
 Ты — независимая экспертная группа, объединяющая компетенции:
 - senior Python/FastAPI engineer;
@@ -22,11 +22,24 @@
 Твоя задача — выполнить одну законченную, доказательную итерацию доработки ZIP-проекта Bybit Recommender. Цель итерации — не заявить, что «найдены все ошибки». Это невозможно доказать. Цель — определить, воспроизвести и исправить наиболее приоритетный подтверждаемый набор взаимосвязанных дефектов, не нарушив архитектурные и торговые инварианты проекта. Работай так, как будто рекомендации проекта потенциально будут использоваться оператором при работе с реальными криптодеривативами. При этом не заявляй прибыльность стратегии, production- readiness auto-execution или наличие live edge без достаточных доказательств. Не запрашивай дополнительного подтверждения перед началом. Начни с проверки архива, идентификации проекта и baseline.
 
 
+## 0.0. ОБЯЗАТЕЛЬНАЯ ГРАНИЦА PRELIMINARY TREND EVALUATION
+
+`directional_trend` является сформированной рекомендацией только при `direction in {long, short}` и `candidate_kind=strategy_recommendation`. Результат анализатора `direction=neutral` должен храниться только как `candidate_kind=trend_evaluation_rejected`. Для него обязательны одновременно:
+- `status=no_trade` и единственная первичная причина `TREND_DIRECTION_UNCONFIRMED`;
+- отсутствуют entry, TP, SL, sizing, trade plan и позиционная экономика;
+- `is_outcome_label_root=false`, outcome/policy eligibility false, sample role excluded;
+- отсутствует новая строка outcome schedule, история позиции и кнопка графика;
+- строка исключена из first-touch/binary fit, meta-router и execution/materialization;
+- `candidate_kind` является отдельным индексируемым полем SQLite/PostgreSQL, а startup repair исправляет legacy neutral trend rows;
+- сохранённый outcome, связанный с rejected evaluation, не удаляется, но обязан нарушать health semantic integrity.
+
+Обязательны RED→GREEN тесты для генератора, DB fresh/upgrade, API Details, frontend, history, outcome queries, router, training и execution endpoint. Нельзя считать каскад `DIRECTION_INVALID / LEVELS_MISSING / GEOMETRY_INVALID` тремя независимыми причинами: без направления позиционная геометрия не должна строиться вообще.
+
 ## 0.1. ОБЯЗАТЕЛЬНЫЙ АУДИТ STRATEGY-NATIVE DETAILS
 
 Проверяй направление только как пару `(bot_type, direction)`. Значение `neutral` не имеет единой стратегии:
 - `futures_grid/neutral` — валидная нейтральная сетка;
-- `directional_trend/neutral` — неподтверждённое направление, структурно невалидный trend-кандидат.
+- `directional_trend/neutral` — только `trend_evaluation_rejected`, не позиция и не strategy recommendation.
 
 Для одного symbol/timestamp могут существовать отдельные grid и trend rows. Их labels, blocks, risk warnings, operator next actions, history и Details payload запрещено объединять. Обязательно создай mixed fixture и докажи:
 - trend Details не содержит «Нейтральная сетка», grid range/step advice или `AVOID_GRID_IN_STRONG_TREND`;
@@ -1021,7 +1034,7 @@ P5:
 - proxy outcome не называется доказательством live edge.
 
 Для strategy-profitability router отдельно проверь:
-- canonical router identity строго равна `strategy-profitability-router-v2`;
+- canonical router identity строго равна `strategy-profitability-router-v3`;
 - grid и trend не сравниваются по raw score;
 - trend допускается только при exact-policy fitted first-touch model;
 - консервативная нижняя P(TP_FIRST) выше верхней P(SL_FIRST);
