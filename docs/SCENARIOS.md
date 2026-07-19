@@ -1,4 +1,14 @@
-## Сценарий: сильный тренд и отдельная shadow-рекомендация (v1.1.0)
+## Сценарии выбора стратегии и operator lifecycle (v1.2.0)
+
+1. **Обе модели готовы, trend имеет доказанно большую utility.** Trend остаётся actionable; grid получает `suppressed` и роль `shadow_competitor`. Операторское подтверждение создаёт `external_single_order_audit`, но не биржевой ордер.
+2. **Обе модели готовы, grid лучше.** Grid публикуется; trend сохраняется как paired outcome sample.
+3. **Преимущество меньше absolute/relative edge.** Обе actionable-строки переводятся в `no_trade` с `STRATEGY_UTILITY_EDGE_INSUFFICIENT`; outcomes продолжают собираться.
+4. **Одна модель не имеет fitted exact-policy evidence.** Она не участвует в выборе; готовая положительная модель может быть выбрана одна.
+5. **Ни одна модель не доказала положительную utility.** `NO_STRATEGY_WITH_VALIDATED_POSITIVE_UTILITY`, запуск запрещён.
+6. **По символу уже запущен grid или trend audit-instance.** Другой strategy family блокируется `SYMBOL_STRATEGY_ALREADY_RUNNING` в one-way режиме.
+7. **Trend подтверждён оператором.** Система сохраняет single-order package для внешнего/manual executor; `exchange_order_submitted=false` остаётся audit truth.
+
+## Исторический сценарий v1.1.0: сильный тренд и shadow-рекомендация
 
 1. Multi-timeframe aggregation identifies an explicit `long` or `short`, `regime=trend`, sufficient trendiness/coherence and at least three usable timeframes.
 2. The existing `futures_grid` candidate is evaluated by its unchanged range/mean-reversion rules and may become `no_trade` because the market is too trendy for a grid.

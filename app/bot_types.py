@@ -8,7 +8,8 @@ SUPPORTED_BOT_TYPES: tuple[str, ...] = (
 LINEAR_BOT_TYPES: tuple[str, ...] = SUPPORTED_BOT_TYPES
 GRID_BOT_TYPES: tuple[str, ...] = ("futures_grid",)
 DIRECTIONAL_BOT_TYPES: tuple[str, ...] = ("directional_trend",)
-SHADOW_ONLY_BOT_TYPES: tuple[str, ...] = ("directional_trend",)
+SINGLE_POSITION_BOT_TYPES: tuple[str, ...] = ("directional_trend",)
+SHADOW_ONLY_BOT_TYPES: tuple[str, ...] = ()
 
 
 def is_supported_bot_type(bot_type: str | None) -> bool:

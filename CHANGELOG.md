@@ -1,3 +1,16 @@
+## 2026-07-19 - v1.2.0 - select strategy by validated risk-adjusted profitability
+
+- Added `strategy-profitability-router-v1`: grid and trend are compared only on a shared 12-hour unlevered net-return basis using bot-specific calibrated selected-policy evidence, terminal holdout, conservative lower bounds and expected shortfall.
+- Raw grid/trend scores are never compared. Missing, unfitted, negative or statistically ambiguous evidence produces `no_trade`; a small utility edge produces `STRATEGY_UTILITY_EDGE_INSUFFICIENT`.
+- Preserved paired learning: the non-winning candidate is stored as `shadow_competitor` with its own outcome lineage.
+- Promoted `directional_trend` from forced shadow-only status to an operator-selectable single-position audit contract with entry, TP, SL, conservative Bybit snapping and fail-closed risk/funding/live-price checks.
+- Trend does not create a grid bot. `futures_grid long/short` remains the directional-grid product; `directional_trend` is one position without averaging or pyramiding.
+- The service still submits no exchange orders. Trend execution creates `external_single_order_audit` plus `directional-single-order-package-v1` with `recommendation_only=true` and `exchange_order_submitted=false` for a manual/external executor.
+- Blocked simultaneous grid and trend audit instances on the same one-way symbol.
+- Added `tests/test_iteration267_strategy_meta_router.py` with router, monetary comparability, trade-plan, risk, conflict, audit materialization and no-private-order regressions.
+- Baseline: 1222/1222 tests passed in 16 deterministic non-overlapping batches. Post-check: 1237/1237 passed; the new 15-test regression passed twice and the focused router/execution/dual-DB compatibility suite passed 83 tests.
+- SQLite fresh/bootstrap checks passed. `pip check` retains the external MoviePy/Pillow conflict; `ruff` is unavailable. Live PostgreSQL integration, live Bybit order execution and private-account reconciliation were not run or added.
+
 ## 2026-07-19 - v1.1.0 - add independent directional trend shadow policy
 
 - Added `directional_trend` as a separate Bybit Linear USDT Perpetual research family; existing neutral/long/short `futures_grid` semantics are unchanged.

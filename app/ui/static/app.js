@@ -615,11 +615,11 @@ const SUPPORTED_GRID_VENUE = "linear";
 
 function botTypeLabel(botType) {
   if (botType === SUPPORTED_GRID_BOT_TYPE) return "Фьючерсная сетка";
-  if (botType === DIRECTIONAL_TREND_BOT_TYPE) return "Направленный тренд · shadow";
+  if (botType === DIRECTIONAL_TREND_BOT_TYPE) return "Направленный тренд · одна позиция";
   return "—";
 }
 
-function isDirectionalTrendShadow(it) {
+function isDirectionalTrendSinglePosition(it) {
   return String(it?.bot_type || "") === DIRECTIONAL_TREND_BOT_TYPE;
 }
 
@@ -629,6 +629,22 @@ function operatorEffectiveStatus(it) {
 
 function isLaunchableGridRecommendation(it) {
   if (!it || it.bot_type !== SUPPORTED_GRID_BOT_TYPE || it.venue !== SUPPORTED_GRID_VENUE) return false;
+  const status = operatorEffectiveStatus(it);
+  if (!(status === "recommended" || status === "active")) return false;
+  const params = it.params && typeof it.params === "object" ? it.params : {};
+  if (!params.trade_plan || typeof params.trade_plan !== "object") return false;
+  const riskDecision = params?.risk_report?.decision;
+  if (riskDecision !== "recommended") return false;
+  const llmStatus = String(it?.reasons?.llm_review?.status || "").toLowerCase();
+  if (llmStatus === "pending" || llmStatus === "error") return false;
+  const guard = it.bybit_operator_guard || {};
+  const errors = Array.isArray(guard.errors) ? guard.errors : [];
+  return guard.ok === true && guard.meta_checked === true && errors.length === 0;
+}
+
+function isLaunchableRecommendation(it) {
+  if (!it || it.venue !== SUPPORTED_GRID_VENUE) return false;
+  if (!(it.bot_type === SUPPORTED_GRID_BOT_TYPE || it.bot_type === DIRECTIONAL_TREND_BOT_TYPE)) return false;
   const status = operatorEffectiveStatus(it);
   if (!(status === "recommended" || status === "active")) return false;
   const params = it.params && typeof it.params === "object" ? it.params : {};
@@ -656,7 +672,7 @@ function liquidityTierRu(tier) {
 
 function marginModeRu(mode) {
   if (mode === "cross") return "Общая маржа сеточного бота Bybit";
-  if (mode === "isolated") return "Изолированная маржа — не соответствует выбранному режиму Bybit";
+  if (mode === "isolated") return "Изолированная маржа single-position";
   return mode || "—";
 }
 
@@ -935,8 +951,8 @@ function launchDecisionDiagnosticsHtml(it, scoreMeta) {
 }
 
 function noTradeDecisionMessage(it, scoreMeta) {
-  if (isDirectionalTrendShadow(it)) {
-    return "Это отдельная исследовательская trend-ветка. Она формирует single-position TP/SL outcome без усреднения, но в текущей версии не разрешена к запуску и не создаёт bot_instance.";
+  if (isDirectionalTrendSinglePosition(it)) {
+    return "Это отдельная single-position trend-ветка. Она формирует TP/SL-план без усреднения, но сейчас не прошла model-specific profitability gate или meta-router; реальный биржевой ордер сервис не отправляет.";
   }
   const rows = launchDecisionDiagnostics(it, scoreMeta);
   const launchRow = rows.find(row => row.code === "launch_score");
@@ -1438,7 +1454,24 @@ function buildRiskEconomicsFields(it) {
   const empiricalTailValue = empiricalTail === null
     ? "—"
     : `${formatReturnFraction(empiricalTail)}${empiricalRr === null ? "" : ` · RR ${formatDotNumber(empiricalRr, 2, false)}`}`;
+  const router = it?.reasons?.strategy_router && typeof it.reasons.strategy_router === "object" ? it.reasons.strategy_router : {};
+  const routerCandidate = router.candidate && typeof router.candidate === "object" ? router.candidate : {};
+  const routerUtility = toFiniteNumber(routerCandidate.utility);
+  const routerEdge = toFiniteNumber(router.utility_edge);
+  const routerWinner = String(router.winner_bot_type || "");
   return [
+    {
+      label: "Выбор стратегии",
+      value: router.status === "selected"
+        ? `${botTypeLabel(routerWinner)} · utility ${routerUtility === null ? "—" : formatReturnFraction(routerUtility)}`
+        : humanizeOperatorText(router.reason_code || router.status || "нет решения"),
+      help: "Meta-router сравнивает только bot-specific calibrated модели на общем 12-часовом net-return basis. Raw score разных стратегий не сравнивается.",
+    },
+    {
+      label: "Преимущество победителя",
+      value: routerEdge === null ? "—" : formatReturnFraction(routerEdge),
+      help: "Разница risk-adjusted monetary utility между лучшей и второй допустимой стратегией. При недостаточном преимуществе система выбирает no_trade.",
+    },
     {
       label: "Предзапусковая проверка",
       value: preflightStatusRu(ctx.preflight_status),
@@ -1535,16 +1568,16 @@ function buildOperatorFieldSpecs(it, ov) {
     const planRr = toFiniteNumber(economics.plan_rr);
     const horizon = toFiniteNumber(plan.label_horizon_hours ?? params.label_horizon_hours);
     return [
-      { label: "Стратегия", value: "Направленный тренд · shadow-only", help: "Отдельная исследовательская стратегия, а не направленная сетка. Execution API заблокирован." },
+      { label: "Стратегия", value: "Направленный тренд · одна позиция", help: "Отдельная single-position стратегия, а не направленная сетка. Система формирует проверяемый пакет для ручного или внешнего исполнения." },
       { label: "Направление", value: directionRu((it || {}).direction), help: "LONG следует за подтверждённым ростом, SHORT — за подтверждённым снижением." },
       { label: "Модель входа", value: "Одна позиция, без усреднения", help: "Позиция не увеличивается против движения и не использует grid-levels." },
       { label: "Расчётная цена входа", value: formatBybitPrice(plan.reference_price ?? params.price_ref, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
       { label: "Цель прибыли", value: formatBybitPrice(takeProfit.price, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
       { label: "Ограничение убытка", value: formatBybitPrice(stopLoss.price, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
-      { label: "Исследовательский номинал", value: targetNotional === null ? "—" : formatUsdValue(targetNotional), help: "Нормирующий proxy-notional для сравнения outcome; это не разрешённый размер реальной позиции." },
+      { label: "Номинал позиции", value: targetNotional === null ? "—" : formatUsdValue(targetNotional), help: "Расчётный номинал одной позиции после Bybit qty-step preflight и runtime risk caps." },
       { label: "Расчётный RR", value: planRr === null ? "—" : formatDotNumber(planRr, 2, false), help: "Проектный reward/risk после оценочных издержек; не доказательство live edge." },
       { label: "Горизонт метки", value: horizon === null ? "—" : `${formatDotNumber(horizon, 0, false)} ч`, help: "Период независимого proxy-outcome для трендовой ветки." },
-      { label: "Исполнение", value: "Запрещено в этой версии", help: "Рекомендация сохраняется как shadow_no_trade и не может создать bot_instance." },
+      { label: "Исполнение", value: "Ручное / внешний execution-layer", help: "Сервис не отправляет биржевой ордер. Кнопка подтверждения создаёт только внутренний audit-instance и фиксирует пакет entry/TP/SL." },
     ];
   }
   const range = levels.range || {};
@@ -1736,8 +1769,8 @@ function buildDetailsHtml(it) {
   $("details").dataset.recId = it.rec_id;
   updateDetailsHeaderLinks(it);
 
-  const launchable = isLaunchableGridRecommendation(it);
-  const trendShadow = isDirectionalTrendShadow(it);
+  const launchable = isLaunchableRecommendation(it);
+  const trendSingle = isDirectionalTrendSinglePosition(it);
   const scoreMeta = ensureUiScoreMeta(it);
   const status = operatorEffectiveStatus(it);
   const explicitHardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || status === "blocked";
@@ -1747,8 +1780,8 @@ function buildDetailsHtml(it) {
   const noTradeDecision = status === "no_trade";
   const pendingDecision = status === "pending";
   const decisionClass = launchable ? "go" : explicitHardBlocked ? "stop" : "wait";
-  const decisionTitle = trendShadow
-    ? "Учебный трендовый сигнал — запуск запрещён"
+  const decisionTitle = trendSingle && launchable
+    ? "Трендовая позиция выбрана meta-router"
     : launchable
     ? "Можно запускать после предпроверки"
     : explicitHardBlocked
@@ -1758,8 +1791,8 @@ function buildDetailsHtml(it) {
         : pendingDecision
           ? "Ждать проверку LLM"
           : "Ждать / перепроверить";
-  const decisionText = trendShadow
-    ? "Сигнал участвует только в отдельном trend-outcome и калибровке. Это single-position модель без grid-усреднения; execution endpoint и создание bot_instance заблокированы."
+  const decisionText = trendSingle && launchable
+    ? "Meta-router выбрал single-position trend по сопоставимой risk-adjusted monetary utility. Подтверждение создаёт только audit-instance; ордер размещается вручную или внешним execution-layer."
     : launchable
     ? "Проверьте цену, актуальность, риск и экономику; затем используйте блок параметров запуска для создания бота."
     : explicitHardBlocked
@@ -1863,7 +1896,7 @@ function buildDetailsHtml(it) {
       </div>
 
       <div class="operator-card primary-launch-card">
-        <h3>${trendShadow ? "Параметры исследовательской trend-модели" : "Параметры запуска фьючерсной сетки Bybit"}</h3>
+        <h3>${trendSingle ? "Параметры single-position trend-плана" : "Параметры запуска фьючерсной сетки Bybit"}</h3>
         <div class="operator-grid two minimal-launch-grid">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
         </div>
@@ -3192,7 +3225,7 @@ async function loadHealth() {
       { label: "Контур исходов", value: healthStatusRu(outcomeWorker.state || "unknown") },
       { label: "Миграция БД", value: databaseSchema.migration_applied && Number(databaseSchema.materialization_pending || 0) === 0 ? "Применена" : "Требует внимания" },
       { label: "Калибратор сетки", value: botCalibrator.fitted ? "Обучен" : "Не обучен" },
-      { label: "Trend shadow-калибратор", value: trendCalibrator.fitted ? "Обучен" : `Накопление (${trendCalibrator.policy_eligible_outcomes_total ?? 0})` },
+      { label: "Trend-калибратор", value: trendCalibrator.fitted ? "Обучен" : `Накопление (${trendCalibrator.policy_eligible_outcomes_total ?? 0})` },
       { label: "Норма", value: Number(sum.ok || 0) },
       { label: "Устаревшие", value: Number(sum.stale || 0) },
       { label: "Нет данных", value: Number(sum.missing || 0) },

@@ -1,11 +1,17 @@
-## Separate strategy families - v1.1.0
+## Strategy profitability router - v1.2.0
+
+`app/strategy_router.py` is the strategy-family selection boundary. The recommender constructs independent grid and trend candidates from one feature snapshot, annotates each with its bot-specific calibration evidence and calls the router before persistence/publication selection. The router never reads raw strategy score. It returns a selected winner, `no_eligible_strategy`, or `no_clear_winner`; non-winners remain paired outcome samples.
+
+Execution remains recommendation/audit-only. Grid and trend use distinct plan validators and audit instance kinds. Trend materialization stores an external single-order package but no private order client or endpoint is present. One-way symbol locking prevents simultaneous grid/trend instances on the same symbol. SQLite/PostgreSQL schema is unchanged.
+
+## Historical v1.1.0 architecture: separate shadow strategy family
 
 The recommendation loop now emits two mechanics-specific candidates per supported Linear USDT symbol:
 
 1. `futures_grid`: existing arithmetic grid, range/mean-reversion gates, neutral/long/short inventory bias and existing operator lifecycle.
 2. `directional_trend`: research-only single-position long/short policy with independent score, plan, outcome and calibration lineage.
 
-The separation is structural, not cosmetic. `GRID_BOT_TYPES` contains only `futures_grid`; `DIRECTIONAL_BOT_TYPES` and `SHADOW_ONLY_BOT_TYPES` contain `directional_trend`. The trend plan has no grid levels or replacement-order topology. The execution boundary rejects it before Bybit metadata can make it appear launchable. The outcome dispatcher routes it to a separate exact-1m TP/SL label and the calibrator registry uses `logreg_directional_trend_v1`.
+In v1.1.0 the separation was structural, not cosmetic. `GRID_BOT_TYPES` contains only `futures_grid`; `DIRECTIONAL_BOT_TYPES` and `SHADOW_ONLY_BOT_TYPES` contain `directional_trend`. The trend plan has no grid levels or replacement-order topology. The execution boundary rejects it before Bybit metadata can make it appear launchable. The outcome dispatcher routes it to a separate exact-1m TP/SL label and the calibrator registry uses `logreg_directional_trend_v1`.
 
 No schema migration is required: existing `bot_type`, JSON contract and outcome tables already represent the new family. Publication/outcome lineage remains partitioned by `bot_type`, so grid and trend roots cannot share an independent outcome window. SQLite and PostgreSQL paths remain supported.
 

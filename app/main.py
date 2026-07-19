@@ -1651,6 +1651,7 @@ def _operator_decision_context_for_reco(
         else:
             price_status = "available"
 
+    bot_type = str(rec.get("bot_type") or "").strip().lower()
     direction = str(rec.get("direction") or "").strip().lower()
     leverage = _finite_float_or_none(params.get("leverage"))
     # Bybit Futures Grid uses cross margin.  Do not fabricate a standalone
@@ -1674,7 +1675,11 @@ def _operator_decision_context_for_reco(
     else:
         preflight_status = "not_checked"
 
-    net_profit_bps = _finite_float_or_none(economics.get("net_profit_bps"))
+    net_edge_bps = _finite_float_or_none(
+        economics.get("projected_net_reward_bps")
+        if bot_type == "directional_trend"
+        else economics.get("net_profit_bps")
+    )
     gross_profit_bps = _finite_float_or_none(economics.get("gross_profit_bps"))
     execution_cost_bps = _finite_float_or_none(economics.get("execution_cost_bps"))
     if execution_cost_bps is None:
@@ -1734,7 +1739,8 @@ def _operator_decision_context_for_reco(
         "kill_switch_upper": kill_upper,
         "distance_to_kill_lower_pct": _distance_from_current_to_bound_pct(current_price, kill_lower, side="lower"),
         "distance_to_kill_upper_pct": _distance_from_current_to_bound_pct(current_price, kill_upper, side="upper"),
-        "net_profit_bps": net_profit_bps,
+        "net_profit_bps": net_edge_bps,
+        "net_edge_bps": net_edge_bps,
         "gross_profit_bps": gross_profit_bps,
         "execution_cost_bps": execution_cost_bps,
         "funding_cost_bps": funding_cost_bps,
@@ -2086,6 +2092,124 @@ def _update_float_key(mapping: Any, key: str, value: float | None) -> None:
         mapping[key] = float(value)
 
 
+def _snap_directional_trend_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Snap a single-position trend package without increasing exchange risk.
+
+    Prices are rounded conservatively for the selected direction: target reward is
+    rounded closer and stop risk farther. Quantity and leverage are always rounded
+    down. The helper never raises qty to minQty/minNotional; strict validation must
+    block a plan that becomes too small after snapping.
+    """
+    out = copy.deepcopy(rec) if isinstance(rec, dict) else {}
+    if not out or not isinstance(meta, dict) or not meta:
+        return out
+
+    tick_size = _finite_float_or_none(meta.get("tick_size"))
+    qty_step = _finite_float_or_none(meta.get("qty_step"))
+    leverage_step = _finite_float_or_none(meta.get("leverage_step"))
+    direction = str(out.get("direction") or "").strip().lower()
+    params = out.get("params") if isinstance(out.get("params"), dict) else {}
+    out["params"] = params
+    plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    params["trade_plan"] = plan
+    levels = plan.get("levels") if isinstance(plan.get("levels"), dict) else {}
+    plan["levels"] = levels
+    tp_block = levels.get("take_profit") if isinstance(levels.get("take_profit"), dict) else {}
+    sl_block = levels.get("stop_loss") if isinstance(levels.get("stop_loss"), dict) else {}
+    levels["take_profit"] = tp_block
+    levels["stop_loss"] = sl_block
+    sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
+    params["sizing"] = sizing
+    plan_sizing = plan.get("sizing") if isinstance(plan.get("sizing"), dict) else {}
+    plan["sizing"] = plan_sizing
+    package = plan.get("external_execution_package") if isinstance(plan.get("external_execution_package"), dict) else {}
+    plan["external_execution_package"] = package
+    entry = package.get("entry") if isinstance(package.get("entry"), dict) else {}
+    package["entry"] = entry
+    operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
+
+    def snap(value: Any, step: float | None, *, mode: str) -> float | None:
+        snapped = _quantize_to_step(_finite_float_or_none(value), step, mode=mode)
+        return _as_aligned_float(snapped, step) if snapped is not None else None
+
+    reference = snap(plan.get("reference_price", params.get("price_ref")), tick_size, mode="nearest")
+    if direction == "long":
+        take_profit = snap(tp_block.get("price", params.get("take_profit_price")), tick_size, mode="down")
+        stop_loss = snap(sl_block.get("price", params.get("stop_loss_price")), tick_size, mode="down")
+    elif direction == "short":
+        take_profit = snap(tp_block.get("price", params.get("take_profit_price")), tick_size, mode="up")
+        stop_loss = snap(sl_block.get("price", params.get("stop_loss_price")), tick_size, mode="up")
+    else:
+        take_profit = snap(tp_block.get("price", params.get("take_profit_price")), tick_size, mode="nearest")
+        stop_loss = snap(sl_block.get("price", params.get("stop_loss_price")), tick_size, mode="nearest")
+
+    if reference is not None:
+        plan["reference_price"] = reference
+        params["price_ref"] = reference
+        entry["reference_price"] = reference
+        if operator_sheet:
+            operator_sheet["price_ref"] = reference
+    if take_profit is not None:
+        tp_block["price"] = take_profit
+        params["take_profit_price"] = take_profit
+        exit_package = package.get("exit") if isinstance(package.get("exit"), dict) else {}
+        package["exit"] = exit_package
+        exit_package["take_profit_price"] = take_profit
+        if operator_sheet:
+            operator_sheet["take_profit_price"] = take_profit
+    if stop_loss is not None:
+        sl_block["price"] = stop_loss
+        params["stop_loss_price"] = stop_loss
+        exit_package = package.get("exit") if isinstance(package.get("exit"), dict) else {}
+        package["exit"] = exit_package
+        exit_package["stop_loss_price"] = stop_loss
+        if operator_sheet:
+            operator_sheet["stop_loss_price"] = stop_loss
+
+    raw_qty = entry.get("qty", sizing.get("qty", plan_sizing.get("qty")))
+    qty = snap(raw_qty, qty_step, mode="down")
+    if qty is not None:
+        sizing["qty"] = qty
+        plan_sizing["qty"] = qty
+        entry["qty"] = qty
+        requested_notional = _finite_float_or_none(entry.get("target_notional_usdt"))
+        if requested_notional is None:
+            requested_notional = _finite_float_or_none(sizing.get("target_notional_usdt"))
+        if requested_notional is not None:
+            sizing.setdefault("requested_target_notional_usdt", float(requested_notional))
+            entry.setdefault("requested_target_notional_usdt", float(requested_notional))
+        if reference is not None and reference > 0:
+            actual_notional = float(qty) * float(reference)
+            sizing["target_notional_usdt"] = actual_notional
+            sizing["estimated_position_notional_usdt"] = actual_notional
+            plan_sizing["target_notional_usdt"] = actual_notional
+            plan_sizing["estimated_position_notional_usdt"] = actual_notional
+            entry["target_notional_usdt"] = actual_notional
+
+    leverage = snap(params.get("leverage", package.get("leverage")), leverage_step, mode="down")
+    if leverage is not None and leverage > 0:
+        params["leverage"] = leverage
+        plan["leverage"] = leverage
+        package["leverage"] = leverage
+        if operator_sheet:
+            operator_sheet["leverage"] = leverage
+        actual_notional = _finite_float_or_none(sizing.get("estimated_position_notional_usdt"))
+        if actual_notional is not None:
+            sizing["estimated_margin_required_usdt"] = actual_notional / leverage
+            plan_sizing["estimated_margin_required_usdt"] = actual_notional / leverage
+
+    plan["snapped_execution"] = {
+        "source": "bybit_instrument_metadata",
+        "tick_size": tick_size,
+        "qty_step": qty_step,
+        "leverage_step": leverage_step,
+        "risk_increasing_rounding": False,
+    }
+    params["trade_plan"] = plan
+    out["params"] = params
+    return out
+
+
 def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
     """Return a recommendation copy with operator-facing levels snapped to Bybit filters.
 
@@ -2099,6 +2223,8 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
     out = copy.deepcopy(rec)
     if not isinstance(meta, dict) or not meta:
         return out
+    if str(out.get("bot_type") or "").strip().lower() == "directional_trend":
+        return _snap_directional_trend_payload_to_bybit_meta(out, meta)
 
     tick_size = _finite_float_or_none(meta.get("tick_size"))
     qty_step = _finite_float_or_none(meta.get("qty_step"))
@@ -2617,7 +2743,8 @@ def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None =
     funding turns the net grid edge negative, execution must be blocked rather
     than materialising a bot from stale carry assumptions.
     """
-    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+    bot_type = str(rec.get("bot_type") or "").strip().lower()
+    if bot_type not in {"futures_grid", "directional_trend"}:
         return []
     if str(rec.get("venue") or "").strip().lower() != "linear":
         return []
@@ -2637,7 +2764,7 @@ def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None =
     now = int(now_ts or time.time())
     funding = db.get_latest_funding_rate(conn, symbol)
     if not funding:
-        return [{"code": "FUNDING_RATE_UNAVAILABLE_AT_EXECUTION", "msg": f"{symbol}: нет funding_rate для execution-time проверки carry; запуск grid заблокирован."}]
+        return [{"code": "FUNDING_RATE_UNAVAILABLE_AT_EXECUTION", "msg": f"{symbol}: нет funding_rate для execution-time проверки carry; запуск стратегии заблокирован."}]
 
     ts = strict_integer(funding.get("ts"))
     ts = ts if ts is not None else 0
@@ -2651,7 +2778,7 @@ def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None =
     rate = _finite_float_or_none(funding.get("funding_rate"))
     signed_bps = _signed_funding_bps_for_direction(str(rec.get("direction") or "neutral"), rate if rate is not None else float("nan"))
     if signed_bps is None:
-        return [{"code": "FUNDING_RATE_INVALID_AT_EXECUTION", "msg": f"{symbol}: funding_rate не является finite-числом; запуск grid заблокирован."}]
+        return [{"code": "FUNDING_RATE_INVALID_AT_EXECUTION", "msg": f"{symbol}: funding_rate не является finite-числом; запуск стратегии заблокирован."}]
 
     interval_min = strict_integer(funding.get("funding_interval_min"))
     if interval_min is None or interval_min <= 0:
@@ -2666,7 +2793,11 @@ def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None =
     stored_expected_bps = _finite_float_or_none(cost_model.get("expected_funding_bps"))
     if stored_expected_bps is None:
         stored_expected_bps = 0.0
-    net_profit_bps = _finite_float_or_none(economics.get("net_profit_bps"))
+    net_edge_bps = _finite_float_or_none(
+        economics.get("projected_net_reward_bps")
+        if bot_type == "directional_trend"
+        else economics.get("net_profit_bps")
+    )
 
     current_adverse_cost_bps = max(0.0, float(current_expected_bps))
     stored_adverse_cost_bps = max(0.0, float(stored_expected_bps))
@@ -2679,13 +2810,13 @@ def _execution_funding_blocks(conn, rec: dict[str, Any], *, now_ts: int | None =
             "msg": f"{symbol}: текущий funding carry {current_adverse_cost_bps:.2f} bps до горизонта {horizon_sec}s превышает лимит {EXECUTION_FUNDING_EXTREME_BPS:.2f} bps.",
         })
     if (
-        net_profit_bps is not None
+        net_edge_bps is not None
         and worsened_bps > EXECUTION_FUNDING_WORSE_DELTA_BLOCK_BPS
-        and (float(net_profit_bps) - worsened_bps) <= 0.0
+        and (float(net_edge_bps) - worsened_bps) <= 0.0
     ):
         blocks.append({
             "code": "FUNDING_EDGE_TURNED_NEGATIVE",
-            "msg": f"{symbol}: funding ухудшился на {worsened_bps:.2f} bps; net edge {net_profit_bps:.2f} bps стал неположительным после актуального carry.",
+            "msg": f"{symbol}: funding ухудшился на {worsened_bps:.2f} bps; net edge {net_edge_bps:.2f} bps стал неположительным после актуального carry.",
         })
     return blocks
 
@@ -2698,6 +2829,52 @@ def _first_finite_from_mappings(mappings: list[Any], keys: tuple[str, ...]) -> t
     return None, None
 
 
+def _directional_trend_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, Any]) -> list[dict[str, Any]]:
+    effective = normalize_risk_limits(limits, limits)
+    params, plan = _rec_params_and_plan(rec)
+    sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
+    package = plan.get("external_execution_package") if isinstance(plan.get("external_execution_package"), dict) else {}
+    entry = package.get("entry") if isinstance(package.get("entry"), dict) else {}
+    reference = _finite_float_or_none(plan.get("reference_price"))
+    qty = _finite_float_or_none(entry.get("qty"))
+    if qty is None:
+        qty = _finite_float_or_none(sizing.get("qty"))
+    notional = qty * reference if qty is not None and reference is not None else None
+    if notional is None:
+        notional = _finite_float_or_none(entry.get("target_notional_usdt"))
+    if notional is None:
+        notional = _finite_float_or_none(sizing.get("target_notional_usdt"))
+    leverage = _finite_float_or_none(params.get("leverage"))
+    if leverage is None:
+        leverage = _finite_float_or_none(package.get("leverage"))
+
+    blocks: list[dict[str, Any]] = []
+    if reference is None or reference <= 0 or qty is None or qty <= 0 or notional is None or notional <= 0:
+        blocks.append({
+            "code": "DIRECTIONAL_POSITION_SIZE_UNVERIFIABLE",
+            "msg": "single-position trend payload lacks finite positive reference/qty/notional; runtime exposure cannot be verified.",
+        })
+        return blocks
+    if leverage is None or leverage <= 0:
+        blocks.append({"code": "LEVERAGE_MISSING_AT_EXECUTION", "msg": "directional_trend requires explicit leverage at execution."})
+        return blocks
+
+    min_leverage = _finite_float_or_none(effective.get("min_leverage"))
+    max_leverage = _finite_float_or_none(effective.get("max_leverage"))
+    max_notional = _finite_float_or_none(effective.get("max_position_notional_usdt"))
+    max_margin = _finite_float_or_none(effective.get("max_margin_per_bot_usdt"))
+    margin = float(notional) / float(leverage)
+    if min_leverage is not None and leverage < min_leverage:
+        blocks.append({"code": "MIN_LEVERAGE_PER_BOT_AT_EXECUTION", "msg": f"leverage={leverage:.8g}x below runtime min={min_leverage:.8g}x."})
+    if max_leverage is not None and leverage > max_leverage:
+        blocks.append({"code": "MAX_LEVERAGE_PER_BOT_AT_EXECUTION", "msg": f"leverage={leverage:.8g}x above runtime max={max_leverage:.8g}x."})
+    if max_notional is not None and notional > max_notional:
+        blocks.append({"code": "MAX_POSITION_NOTIONAL_AT_EXECUTION", "msg": f"single-position notional={notional:.8g} USDT above runtime max={max_notional:.8g} USDT."})
+    if max_margin is not None and margin > max_margin:
+        blocks.append({"code": "MAX_MARGIN_PER_BOT_AT_EXECUTION", "msg": f"single-position margin={margin:.8g} USDT above runtime max={max_margin:.8g} USDT."})
+    return blocks
+
+
 def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, Any]) -> list[dict[str, Any]]:
     """Re-check per-bot leverage/notional/margin caps at operator execution time.
 
@@ -2706,7 +2883,12 @@ def _execution_runtime_size_risk_blocks(rec: dict[str, Any], limits: dict[str, A
     Bybit minNotional/qtyStep. Execute-path must therefore validate the exact
     snapped payload that will be stored in the bot instance.
     """
-    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+    bot_type = str(rec.get("bot_type") or "").strip().lower()
+    if bot_type == "directional_trend":
+        if str(rec.get("venue") or "").strip().lower() != "linear":
+            return []
+        return _directional_trend_runtime_size_risk_blocks(rec, limits)
+    if bot_type != "futures_grid":
         return []
     if str(rec.get("venue") or "").strip().lower() != "linear":
         return []
@@ -2921,7 +3103,8 @@ def _execution_daily_loss_budget_guard(
         "adverse_distance_pct": None,
         "execution_cost_bps": None,
     }
-    if str(rec.get("bot_type") or "").strip().lower() != "futures_grid":
+    bot_type = str(rec.get("bot_type") or "").strip().lower()
+    if bot_type not in {"futures_grid", "directional_trend"}:
         return result
     if str(rec.get("venue") or "").strip().lower() != "linear":
         return result
@@ -2942,6 +3125,44 @@ def _execution_daily_loss_budget_guard(
     result["remaining_daily_loss_budget_usdt"] = remaining_budget
 
     params, plan = _rec_params_and_plan(rec)
+    if bot_type == "directional_trend":
+        levels = plan.get("levels") if isinstance(plan.get("levels"), dict) else {}
+        sl_block = levels.get("stop_loss") if isinstance(levels.get("stop_loss"), dict) else {}
+        package = plan.get("external_execution_package") if isinstance(plan.get("external_execution_package"), dict) else {}
+        entry = package.get("entry") if isinstance(package.get("entry"), dict) else {}
+        sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
+        reference = _finite_float_or_none(plan.get("reference_price"))
+        stop_loss = _finite_float_or_none(sl_block.get("price"))
+        qty = _finite_float_or_none(entry.get("qty"))
+        if qty is None:
+            qty = _finite_float_or_none(sizing.get("qty"))
+        notional = qty * reference if qty is not None and reference is not None else None
+        if notional is None:
+            notional = _finite_float_or_none(entry.get("target_notional_usdt"))
+        direction = str(rec.get("direction") or "").strip().lower()
+        if reference is None or reference <= 0 or stop_loss is None or stop_loss <= 0 or notional is None or notional <= 0 or direction not in {"long", "short"}:
+            result["blocks"].append({"code": "STOP_LOSS_BUDGET_UNVERIFIABLE", "msg": "Cannot verify directional stop-loss against remaining daily loss budget."})
+            return result
+        adverse_fraction = (reference - stop_loss) / reference if direction == "long" else (stop_loss - reference) / reference
+        cost_model = _cost_model_from_rec(rec)
+        execution_cost_bps = max(0.0, _finite_float_or_none(cost_model.get("execution_cost_bps")) or 0.0)
+        estimated_loss = float(notional) * (max(0.0, adverse_fraction) + execution_cost_bps / 10_000.0)
+        result.update({
+            "estimated_position_notional_usdt": float(notional),
+            "estimated_position_notional_source": "single_position_qty*reference",
+            "adverse_distance_pct": max(0.0, adverse_fraction) * 100.0,
+            "execution_cost_bps": execution_cost_bps,
+            "estimated_kill_switch_loss_usdt": estimated_loss,
+        })
+        if estimated_loss > remaining_budget + max(1e-9, remaining_budget * 1e-9):
+            result["blocks"].append({
+                "code": "DAILY_LOSS_BUDGET_EXCEEDED",
+                "msg": f"Directional stop-loss estimate={estimated_loss:.2f} USDT exceeds remaining daily budget={remaining_budget:.2f} USDT.",
+                "estimated_stop_loss_usdt": estimated_loss,
+                "remaining_daily_loss_budget_usdt": remaining_budget,
+            })
+        return result
+
     operator_sheet = params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
     sizing_maps: list[Any] = [
         params.get("sizing"),
@@ -3364,6 +3585,64 @@ def _execution_live_cost_blocks(ticker: dict[str, Any] | None, rec: dict[str, An
     return blocks
 
 
+def _directional_trend_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, Any]]:
+    params, plan = _rec_params_and_plan(rec)
+    levels = plan.get("levels") if isinstance(plan.get("levels"), dict) else {}
+    tp_block = levels.get("take_profit") if isinstance(levels.get("take_profit"), dict) else {}
+    sl_block = levels.get("stop_loss") if isinstance(levels.get("stop_loss"), dict) else {}
+    reference = _finite_float_or_none(plan.get("reference_price"))
+    take_profit = _finite_float_or_none(tp_block.get("price"))
+    stop_loss = _finite_float_or_none(sl_block.get("price"))
+    direction = str(rec.get("direction") or "").strip().lower()
+    ticker = db.get_latest_ticker(conn, str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
+    current_price = _current_price_from_ticker(ticker)
+    blocks: list[dict[str, Any]] = []
+    if current_price is None:
+        return [{"code": "LIVE_PRICE_UNAVAILABLE", "msg": "current ticker has no usable price; single-position trend entry is blocked."}]
+    live_spread_bps = _live_spread_bps_from_ticker(ticker)
+    if live_spread_bps is None:
+        blocks.append({"code": "LIVE_SPREAD_UNAVAILABLE", "msg": "current bid/ask spread is unavailable for trend entry."})
+    elif live_spread_bps > 20.0:
+        blocks.append({"code": "LIVE_SPREAD_TOO_WIDE", "msg": f"trend entry spread={live_spread_bps:.2f} bps exceeds 20.00 bps."})
+    if reference is None or take_profit is None or stop_loss is None or direction not in {"long", "short"}:
+        blocks.append({"code": "DIRECTIONAL_TREND_LIVE_GEOMETRY_UNVERIFIABLE", "msg": "reference/TP/SL/direction is incomplete at execution."})
+        return blocks
+
+    if direction == "long":
+        if current_price <= stop_loss:
+            blocks.append({"code": "CURRENT_PRICE_CROSSED_STOP_LOSS", "msg": f"current price {current_price:.12g} is at/below LONG stop {stop_loss}; recommendation is stale."})
+        if current_price >= take_profit:
+            blocks.append({"code": "CURRENT_PRICE_REACHED_TAKE_PROFIT", "msg": f"current price {current_price:.12g} is at/above LONG target {take_profit}; entry edge is exhausted."})
+        reward = take_profit - current_price
+        risk = current_price - stop_loss
+    else:
+        if current_price >= stop_loss:
+            blocks.append({"code": "CURRENT_PRICE_CROSSED_STOP_LOSS", "msg": f"current price {current_price:.12g} is at/above SHORT stop {stop_loss}; recommendation is stale."})
+        if current_price <= take_profit:
+            blocks.append({"code": "CURRENT_PRICE_REACHED_TAKE_PROFIT", "msg": f"current price {current_price:.12g} is at/below SHORT target {take_profit}; entry edge is exhausted."})
+        reward = current_price - take_profit
+        risk = stop_loss - current_price
+
+    original_stop_distance = abs(reference - stop_loss)
+    max_drift = max(0.005 * reference, 0.25 * original_stop_distance)
+    if abs(current_price - reference) > max_drift:
+        blocks.append({
+            "code": "REFERENCE_PRICE_DRIFT_TOO_LARGE",
+            "msg": f"current price drift={abs(current_price-reference):.12g} exceeds trend-entry tolerance={max_drift:.12g}; recalculate recommendation.",
+        })
+    economics = _economics_from_rec(rec)
+    cost_bps = max(0.0, _finite_float_or_none(economics.get("execution_cost_bps")) or 0.0)
+    funding_bps = max(0.0, _finite_float_or_none(economics.get("funding_cost_bps")) or 0.0)
+    live_reward_bps = (reward / current_price * 10_000.0) - cost_bps - funding_bps if current_price > 0 else -math.inf
+    live_risk_bps = (risk / current_price * 10_000.0) + cost_bps + funding_bps if current_price > 0 else math.inf
+    live_rr = live_reward_bps / live_risk_bps if live_risk_bps > 0 else None
+    if reward <= 0 or risk <= 0 or live_reward_bps <= 0:
+        blocks.append({"code": "LIVE_DIRECTIONAL_EDGE_NON_POSITIVE", "msg": "live TP/SL geometry no longer has positive net reward."})
+    elif live_rr is None or live_rr < 1.20:
+        blocks.append({"code": "LIVE_DIRECTIONAL_RR_TOO_LOW", "msg": f"live net reward:risk={live_rr if live_rr is not None else 'unknown'} below 1.20."})
+    return blocks
+
+
 def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, Any]]:
     """Fail-closed защита от исполнения сетки по уехавшей цене/стоимости.
 
@@ -3372,6 +3651,9 @@ def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, An
     Для grid-бота старт вне диапазона — это уже другая сделка с иным профилем
     риска, поэтому execute-path блокируется до повторного пересчёта рекомендации.
     """
+    if str(rec.get("bot_type") or "").strip().lower() == "directional_trend":
+        return _directional_trend_live_price_blocks(conn, rec)
+
     ctx = _trade_plan_price_context(rec)
     lower = ctx["range_lower"]
     upper = ctx["range_upper"]
@@ -3421,7 +3703,176 @@ def _execution_live_price_blocks(conn, rec: dict[str, Any]) -> list[dict[str, An
             })
     return blocks
 
+
+def _validate_directional_trend_plan_against_bybit_meta(
+    rec: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    require_meta: bool = False,
+    require_execution_plan: bool = False,
+) -> dict[str, Any]:
+    """Validate a recommendation-only single-position package.
+
+    This function validates the plan an operator/external executor may use. It
+    never submits an order and deliberately rejects grid aliases for the trend
+    strategy so the two execution contracts cannot be confused.
+    """
+    params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+    plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    levels = plan.get("levels") if isinstance(plan.get("levels"), dict) else {}
+    tp_block = levels.get("take_profit") if isinstance(levels.get("take_profit"), dict) else {}
+    sl_block = levels.get("stop_loss") if isinstance(levels.get("stop_loss"), dict) else {}
+    package = plan.get("external_execution_package") if isinstance(plan.get("external_execution_package"), dict) else {}
+    sizing = params.get("sizing") if isinstance(params.get("sizing"), dict) else {}
+    entry_package = package.get("entry") if isinstance(package.get("entry"), dict) else {}
+
+    errors: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+    snapped: dict[str, str] = {}
+
+    def err(code: str, msg: str) -> None:
+        errors.append({"code": code, "msg": msg})
+
+    def warn(code: str, msg: str) -> None:
+        warnings.append({"code": code, "msg": msg})
+
+    bot_type = str(rec.get("bot_type") or "").strip()
+    venue = str(rec.get("venue") or "").strip().lower()
+    symbol = str(rec.get("symbol") or "").strip().upper()
+    direction = str(rec.get("direction") or "").strip().lower()
+    account_mode = str(rec.get("account_mode") or params.get("account_mode") or package.get("account_mode") or "").strip().lower()
+    margin_mode = str(rec.get("margin_mode") or params.get("margin_mode") or package.get("margin_mode") or "").strip().lower()
+    reference = _finite_float_or_none(plan.get("reference_price"))
+    take_profit = _finite_float_or_none(tp_block.get("price"))
+    stop_loss = _finite_float_or_none(sl_block.get("price"))
+    leverage = _finite_float_or_none(params.get("leverage"))
+    qty = _finite_float_or_none(entry_package.get("qty"))
+    if qty is None:
+        qty = _finite_float_or_none(sizing.get("qty"))
+    target_notional = _finite_float_or_none(entry_package.get("target_notional_usdt"))
+    if target_notional is None:
+        target_notional = _finite_float_or_none(sizing.get("target_notional_usdt"))
+
+    if bot_type != "directional_trend":
+        err("BOT_TYPE_UNSUPPORTED", f"expected directional_trend, got {bot_type or 'unknown'}")
+    if venue != "linear":
+        err("VENUE_UNSUPPORTED", f"directional_trend supports only linear USDT perpetual, got {venue or 'unknown'}")
+    if direction not in {"long", "short"}:
+        err("DIRECTIONAL_TREND_DIRECTION_INVALID", f"directional_trend requires long/short, got {direction or 'unknown'}")
+    if account_mode != "unified":
+        err("ACCOUNT_MODE_UNSUPPORTED", f"directional_trend requires account_mode=unified, got {account_mode or 'missing'}")
+    if margin_mode != "isolated":
+        err("MARGIN_MODE_UNSUPPORTED", f"directional_trend requires margin_mode=isolated, got {margin_mode or 'missing'}")
+    if str(plan.get("strategy_family") or "") != "directional_trend":
+        err("DIRECTIONAL_TREND_CONTRACT_MISSING", "trade_plan.strategy_family must be directional_trend")
+    if str(plan.get("entry_model") or "") != "single_position_no_pyramiding":
+        err("DIRECTIONAL_TREND_ENTRY_MODEL_INVALID", "entry_model must be single_position_no_pyramiding")
+    if plan.get("averaging_allowed") is not False or plan.get("pyramiding_allowed") is not False:
+        err("DIRECTIONAL_TREND_POSITION_POLICY_INVALID", "averaging and pyramiding must both be false")
+    if package.get("recommendation_only") is not True or package.get("exchange_order_submitted") is not False:
+        err("EXTERNAL_EXECUTION_PACKAGE_INVALID", "package must explicitly state recommendation_only=true and exchange_order_submitted=false")
+    if not package and require_execution_plan:
+        err("EXTERNAL_EXECUTION_PACKAGE_MISSING", "single-position recommendation lacks an external execution package")
+
+    if reference is None or reference <= 0 or take_profit is None or take_profit <= 0 or stop_loss is None or stop_loss <= 0:
+        err("DIRECTIONAL_TREND_LEVELS_MISSING", "reference, take_profit and stop_loss must be finite positive prices")
+    elif direction == "long" and not (stop_loss < reference < take_profit):
+        err("DIRECTIONAL_TREND_GEOMETRY_INVALID", "LONG requires stop_loss < reference < take_profit")
+    elif direction == "short" and not (take_profit < reference < stop_loss):
+        err("DIRECTIONAL_TREND_GEOMETRY_INVALID", "SHORT requires take_profit < reference < stop_loss")
+
+    if leverage is None or leverage <= 0:
+        err("LEVERAGE_MISSING_FOR_EXECUTION", "directional_trend requires explicit positive leverage")
+    if qty is None or qty <= 0:
+        err("ORDER_QTY_MISSING", "directional_trend requires explicit positive qty")
+    if target_notional is None or target_notional <= 0:
+        err("ORDER_NOTIONAL_MISSING", "directional_trend requires explicit positive target_notional_usdt")
+
+    if not meta:
+        target = errors if require_meta else warnings
+        target.append({
+            "code": "BYBIT_META_UNAVAILABLE",
+            "msg": "instrument metadata unavailable; exact tick/qty/min-notional validation cannot be proven",
+        })
+    else:
+        category = str(meta.get("category") or "").strip().lower()
+        meta_symbol = str(meta.get("symbol") or "").strip().upper()
+        status = str(meta.get("status") or "").strip().lower()
+        contract_type = str(meta.get("contract_type") or "").strip().lower()
+        quote_coin = str(meta.get("quote_coin") or "").strip().upper()
+        settle_coin = str(meta.get("settle_coin") or "").strip().upper()
+        if category != "linear":
+            err("BYBIT_CATEGORY_MISMATCH", f"expected category=linear, got {category or 'missing'}")
+        if meta_symbol != symbol:
+            err("BYBIT_SYMBOL_MISMATCH", f"metadata symbol={meta_symbol or 'missing'} does not match {symbol}")
+        if status and status != "trading":
+            err("BYBIT_INSTRUMENT_NOT_TRADING", f"instrument status={meta.get('status')}")
+        if contract_type and contract_type.lower() != "linearperpetual":
+            err("BYBIT_CONTRACT_TYPE_UNSUPPORTED", f"contract_type={meta.get('contract_type')}")
+        if quote_coin and quote_coin != "USDT":
+            err("BYBIT_QUOTE_COIN_UNSUPPORTED", f"quote_coin={quote_coin}")
+        if settle_coin and settle_coin != "USDT":
+            err("BYBIT_SETTLE_COIN_UNSUPPORTED", f"settle_coin={settle_coin}")
+        if meta.get("is_pre_listing") is True:
+            err("BYBIT_PRE_LISTING_UNSUPPORTED", "pre-listing instruments are unsupported")
+
+        tick_size = _finite_float_or_none(meta.get("tick_size"))
+        qty_step = _finite_float_or_none(meta.get("qty_step"))
+        min_qty = _finite_float_or_none(meta.get("min_order_qty"))
+        max_qty = _finite_float_or_none(meta.get("max_order_qty"))
+        min_notional = _finite_float_or_none(meta.get("min_notional"))
+        min_leverage = _finite_float_or_none(meta.get("min_leverage"))
+        max_leverage = _finite_float_or_none(meta.get("max_leverage"))
+        leverage_step = _finite_float_or_none(meta.get("leverage_step"))
+
+        for name, value in (("reference_price", reference), ("take_profit", take_profit), ("stop_loss", stop_loss)):
+            if value is not None and tick_size is not None and tick_size > 0:
+                snapped_value = _quantize_to_step(value, tick_size, mode="nearest")
+                if snapped_value is not None:
+                    snapped[name] = _format_step_aligned(snapped_value, tick_size) or str(snapped_value)
+                    if abs(snapped_value - value) > max(1e-12, tick_size * 1e-6):
+                        err("DIRECTIONAL_PRICE_OFF_TICK", f"{name}={value} is not aligned to tick_size={tick_size}")
+        if qty is not None and qty_step is not None and qty_step > 0:
+            snapped_qty = _quantize_to_step(qty, qty_step, mode="down")
+            if snapped_qty is not None:
+                snapped["qty"] = _format_step_aligned(snapped_qty, qty_step) or str(snapped_qty)
+                if abs(snapped_qty - qty) > max(1e-12, qty_step * 1e-6):
+                    err("ORDER_QTY_OFF_STEP", f"qty={qty} is not aligned down to qty_step={qty_step}")
+        if qty is not None and min_qty is not None and qty < min_qty:
+            err("ORDER_QTY_BELOW_MIN", f"qty={qty} below min_order_qty={min_qty}")
+        if qty is not None and max_qty is not None and qty > max_qty:
+            err("ORDER_QTY_ABOVE_MAX", f"qty={qty} above max_order_qty={max_qty}")
+        computed_notional = qty * reference if qty is not None and reference is not None else target_notional
+        if min_notional is not None and computed_notional is not None and computed_notional < min_notional:
+            err("ORDER_NOTIONAL_BELOW_MIN", f"notional={computed_notional} below min_notional={min_notional}")
+        if leverage is not None and min_leverage is not None and leverage < min_leverage:
+            err("LEVERAGE_BELOW_MIN", f"leverage={leverage} below min_leverage={min_leverage}")
+        if leverage is not None and max_leverage is not None and leverage > max_leverage:
+            err("LEVERAGE_ABOVE_MAX", f"leverage={leverage} above max_leverage={max_leverage}")
+        if leverage is not None and leverage_step is not None and leverage_step > 0:
+            snapped_leverage = _quantize_to_step(leverage, leverage_step, mode="nearest")
+            if snapped_leverage is not None and abs(snapped_leverage - leverage) > max(1e-12, leverage_step * 1e-6):
+                err("LEVERAGE_OFF_STEP", f"leverage={leverage} not aligned to leverage_step={leverage_step}")
+
+    return {
+        "ok": not errors,
+        "critical": bool(errors),
+        "errors": errors,
+        "warnings": warnings,
+        "meta_checked": bool(meta),
+        "snapped_levels": snapped,
+        "execution_kind": "external_single_order_audit",
+        "exchange_order_submitted": False,
+    }
+
 def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str, Any], *, require_meta: bool = False, require_execution_plan: bool = False) -> dict[str, Any]:
+    if str(rec.get("bot_type") or "").strip() == "directional_trend":
+        return _validate_directional_trend_plan_against_bybit_meta(
+            rec,
+            meta,
+            require_meta=require_meta,
+            require_execution_plan=require_execution_plan,
+        )
     ctx = _trade_plan_price_context(rec)
     params = ctx["params"]
     plan = ctx["plan"]
@@ -3510,18 +3961,10 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             "msg": "У рекомендации нет полного trade_plan; execution-time preflight не может проверить reference/range/kill-switch/grid-step и должен блокировать запуск fail-closed.",
         })
 
-    # directional_trend is deliberately recommendation/shadow-only in this
-    # release.  It has an independent single-position contract and must never be
-    # interpreted through futures_grid execution geometry.
-    if bot_type == "directional_trend":
-        errors.append({
-            "code": "DIRECTIONAL_TREND_SHADOW_ONLY",
-            "msg": "directional_trend доступен только для shadow/outcome evidence; operator execution и materialization bot_instance заблокированы fail-closed.",
-        })
-    elif bot_type != "futures_grid":
+    if bot_type not in {"futures_grid", "directional_trend"}:
         errors.append({
             "code": "BOT_TYPE_UNSUPPORTED",
-            "msg": f"Неизвестный или неподдерживаемый для execution bot_type={bot_type or 'unknown'}; исполнимым остаётся только futures_grid.",
+            "msg": f"Неизвестный или неподдерживаемый для execution bot_type={bot_type or 'unknown'}.",
         })
     if venue != "linear":
         errors.append({
@@ -4332,7 +4775,7 @@ def _compute_live_validation_strategy_health(
             "code": "LIVE_VALIDATION_DIRECTION_LOSS_STREAK",
             "msg": (
                 f"{symbol_key} {direction_key}: последние {direction_summary['consecutive_losses']} независимых "
-                "остановленных ботов с exact execution evidence убыточны; новые запуски этого направления остановлены."
+                "остановленных strategy instances с exact execution evidence убыточны; новые запуски этого направления остановлены."
             ),
             "scope": "symbol_direction",
             "metrics": direction_summary,
@@ -4345,7 +4788,7 @@ def _compute_live_validation_strategy_health(
             "msg": (
                 f"{symbol_key} {direction_key}: exact execution evidence имеет отрицательные cumulative total и mean "
                 f"net PnL после минимальной выборки; median={direction_summary.get('median_realized_pnl_net')}, "
-                f"positive_rate={rate:.1%}. Tail-loss grid cohort не может оставаться открытым только из-за высокого win rate."
+                f"positive_rate={rate:.1%}. Tail-loss cohort не может оставаться открытым только из-за высокого win rate."
             ),
             "scope": "symbol_direction",
             "metrics": direction_summary,
@@ -4368,7 +4811,7 @@ def _compute_live_validation_strategy_health(
         blocks.append({
             "code": "LIVE_VALIDATION_PORTFOLIO_NEGATIVE_EXPECTANCY",
             "msg": (
-                "Весь futures_grid-контур имеет отрицательные cumulative total и mean net PnL по exact execution evidence; "
+                "Весь strategy-контур имеет отрицательные cumulative total и mean net PnL по exact execution evidence; "
                 "операторские запуски остановлены независимо от median/win rate до ревизии модели."
             ),
             "scope": "portfolio",
@@ -4885,7 +5328,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.2.0", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -5001,30 +5444,38 @@ def _require_admin_key(x_api_key: str | None, request: Request | None = None) ->
 
 
 def _is_supported_execution_direction(bot_type: str, venue: str, direction: str) -> bool:
-    return bot_type == "futures_grid" and venue == "linear" and direction in ("neutral", "long", "short")
+    if venue != "linear":
+        return False
+    if bot_type == "futures_grid":
+        return direction in ("neutral", "long", "short")
+    if bot_type == "directional_trend":
+        return direction in ("long", "short")
+    return False
 
 
 def _execution_symbol_direction_conflict_blocks(conn, rec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Fail closed when a one-way Linear USDT symbol already has another direction running.
+    """Protect one-way Linear symbols without breaking same-family scaling semantics.
 
-    The execution layer models Bybit Linear USDT futures grids as one-way/isolated
-    bots unless hedge-mode support is added explicitly. ``gate_candidate`` enforces
-    numeric symbol caps, but operators can intentionally raise ``max_symbol_bots``.
-    That must not allow a second local bot with an incompatible direction on the
-    same venue/symbol, because protective TP/SL, exposure and reconciliation would
-    no longer have a single directional source of truth.
+    ``futures_grid`` and ``directional_trend`` are incompatible execution
+    families on the same symbol because the repository has no hedge-mode or
+    exchange position reconciliation. Within one family, the historical
+    one-way contract remains intact: an additional same-direction audit
+    instance may be admitted when the configured symbol cap permits, while an
+    opposite or unknown direction fails closed.
     """
     venue = str(rec.get("venue") or "").strip().lower()
     symbol = str(rec.get("symbol") or "").strip().upper()
     direction = str(rec.get("direction") or "").strip().lower()
     bot_type = str(rec.get("bot_type") or "").strip()
-    if bot_type != "futures_grid" or venue != "linear" or direction not in {"neutral", "long", "short"}:
+    allowed = {"neutral", "long", "short"} if bot_type == "futures_grid" else {"long", "short"}
+    if bot_type not in {"futures_grid", "directional_trend"} or venue != "linear" or direction not in allowed:
         return []
 
     publication_root = str(rec.get("publication_root_rec_id") or rec.get("rec_id") or "").strip()
     blocks: list[dict[str, Any]] = []
     for bot in db.list_bot_instances(conn, status="running", limit=10000):
-        if str(bot.get("bot_type") or "").strip() != "futures_grid":
+        existing_type = str(bot.get("bot_type") or "").strip()
+        if existing_type not in {"futures_grid", "directional_trend"}:
             continue
         if str(bot.get("venue") or "").strip().lower() != venue:
             continue
@@ -5033,92 +5484,98 @@ def _execution_symbol_direction_conflict_blocks(conn, rec: dict[str, Any]) -> li
 
         mode = bot.get("mode") if isinstance(bot.get("mode"), dict) else {}
         existing_direction = str(mode.get("direction") or "").strip().lower()
-        if existing_direction not in {"neutral", "long", "short"}:
-            blocks.append(
-                {
-                    "code": "EXISTING_SYMBOL_DIRECTION_UNKNOWN",
-                    "msg": (
-                        f"{venue}:{symbol} already has running bot {bot.get('bot_id')} with unknown direction; "
-                        "one-way Linear USDT execution cannot prove TP/SL and exposure semantics."
-                    ),
-                    "bot_id": bot.get("bot_id"),
-                    "existing_direction": existing_direction or None,
-                    "candidate_direction": direction,
-                }
-            )
-            continue
-
         existing_root = str(bot.get("publication_root_rec_id") or bot.get("origin_rec_id") or "").strip()
         same_publication_root = bool(publication_root and existing_root == publication_root)
-        if same_publication_root and existing_direction == direction:
-            # Safe idempotent re-attachment: same chain, same one-way direction.
+
+        if existing_type != bot_type:
+            blocks.append({
+                "code": "SYMBOL_STRATEGY_ALREADY_RUNNING",
+                "msg": (
+                    f"{venue}:{symbol} already has running {existing_type}/{existing_direction or 'unknown'} "
+                    f"instance {bot.get('bot_id')}; cannot start {bot_type}/{direction} without explicit "
+                    "hedge-mode and exchange reconciliation support."
+                ),
+                "bot_id": bot.get("bot_id"),
+                "existing_bot_type": existing_type,
+                "candidate_bot_type": bot_type,
+                "existing_direction": existing_direction or None,
+                "candidate_direction": direction,
+                "same_publication_root": same_publication_root,
+            })
+            continue
+
+        existing_allowed = {"neutral", "long", "short"} if existing_type == "futures_grid" else {"long", "short"}
+        if existing_direction not in existing_allowed:
+            blocks.append({
+                "code": "EXISTING_SYMBOL_DIRECTION_UNKNOWN",
+                "msg": (
+                    f"{venue}:{symbol} already has running {existing_type} instance {bot.get('bot_id')} "
+                    "with unknown direction; one-way execution semantics cannot be proven."
+                ),
+                "bot_id": bot.get("bot_id"),
+                "existing_bot_type": existing_type,
+                "candidate_bot_type": bot_type,
+                "existing_direction": existing_direction or None,
+                "candidate_direction": direction,
+            })
             continue
 
         if existing_direction != direction:
-            blocks.append(
-                {
-                    "code": "OPPOSITE_SYMBOL_DIRECTION_RUNNING",
-                    "msg": (
-                        f"{venue}:{symbol} already has running {existing_direction} bot {bot.get('bot_id')}; "
-                        f"cannot start or reattach {direction} bot without explicit hedge-mode support."
-                    ),
-                    "bot_id": bot.get("bot_id"),
-                    "existing_direction": existing_direction,
-                    "candidate_direction": direction,
-                    "same_publication_root": same_publication_root,
-                }
-            )
+            blocks.append({
+                "code": "OPPOSITE_SYMBOL_DIRECTION_RUNNING",
+                "msg": (
+                    f"{venue}:{symbol} already has running {existing_type}/{existing_direction} instance "
+                    f"{bot.get('bot_id')}; cannot start or reattach {bot_type}/{direction} without "
+                    "explicit hedge-mode support."
+                ),
+                "bot_id": bot.get("bot_id"),
+                "existing_bot_type": existing_type,
+                "candidate_bot_type": bot_type,
+                "existing_direction": existing_direction,
+                "candidate_direction": direction,
+                "same_publication_root": same_publication_root,
+            })
     return blocks
 
-
 def _running_publication_root_bot_direction_blocks(existing_bot: dict[str, Any], rec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Block idempotent publication-chain reuse if the live bot is another side.
-
-    Reusing a live bot for a later recommendation in the same chain is only safe
-    while the executable one-way direction is unchanged. If the chain flips from
-    long to short (or directional to neutral), returning the existing bot would
-    falsely mark a different side as executed and hide exposure/TP/SL conflict.
-    """
+    """Allow publication-chain reuse only for the identical strategy contract."""
     if not existing_bot:
         return []
-    if str(rec.get("bot_type") or "").strip() != "futures_grid":
-        return []
-    if str(rec.get("venue") or "").strip().lower() != "linear":
-        return []
+    candidate_type = str(rec.get("bot_type") or "").strip()
+    candidate_venue = str(rec.get("venue") or "").strip().lower()
     candidate_direction = str(rec.get("direction") or "").strip().lower()
-    if candidate_direction not in {"neutral", "long", "short"}:
-        return []
-
+    existing_type = str(existing_bot.get("bot_type") or "").strip()
+    existing_venue = str(existing_bot.get("venue") or "").strip().lower()
     mode = existing_bot.get("mode") if isinstance(existing_bot.get("mode"), dict) else {}
     existing_direction = str(mode.get("direction") or "").strip().lower()
-    if existing_direction not in {"neutral", "long", "short"}:
-        return [
-            {
-                "code": "EXISTING_CHAIN_DIRECTION_UNKNOWN",
-                "msg": (
-                    f"publication-chain bot {existing_bot.get('bot_id')} has unknown direction; "
-                    "cannot prove one-way TP/SL/exposure semantics for idempotent reattach."
-                ),
-                "bot_id": existing_bot.get("bot_id"),
-                "existing_direction": existing_direction or None,
-                "candidate_direction": candidate_direction,
-            }
-        ]
-    if existing_direction != candidate_direction:
-        return [
-            {
-                "code": "PUBLICATION_CHAIN_DIRECTION_CHANGED",
-                "msg": (
-                    f"publication-chain bot {existing_bot.get('bot_id')} is {existing_direction}, "
-                    f"but candidate recommendation is {candidate_direction}; reattach would mark the wrong side executed."
-                ),
-                "bot_id": existing_bot.get("bot_id"),
-                "existing_direction": existing_direction,
-                "candidate_direction": candidate_direction,
-            }
-        ]
-    return []
-
+    if (
+        candidate_type == existing_type
+        and candidate_venue == existing_venue
+        and candidate_direction == existing_direction
+    ):
+        return []
+    direction_only_change = bool(
+        candidate_type == existing_type
+        and candidate_venue == existing_venue
+        and candidate_direction != existing_direction
+    )
+    return [{
+        "code": (
+            "PUBLICATION_CHAIN_DIRECTION_CHANGED"
+            if direction_only_change
+            else "PUBLICATION_CHAIN_EXECUTION_CONTRACT_CHANGED"
+        ),
+        "msg": (
+            f"publication-chain instance {existing_bot.get('bot_id')} is "
+            f"{existing_type}/{existing_direction or 'unknown'}, but candidate is "
+            f"{candidate_type}/{candidate_direction or 'unknown'}; idempotent reuse would attach the wrong strategy."
+        ),
+        "bot_id": existing_bot.get("bot_id"),
+        "existing_bot_type": existing_type,
+        "candidate_bot_type": candidate_type,
+        "existing_direction": existing_direction or None,
+        "candidate_direction": candidate_direction or None,
+    }]
 
 def _prefetch_execution_bybit_meta(conn, rec_id: str) -> dict[str, Any]:
     """Заранее подтягивает metadata Bybit без удержания write-lock SQLite.
@@ -5294,6 +5751,18 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
         "state": {
             "created_from_rec_id": rec_id,
             "operator": operator,
+            "execution_kind": (
+                "external_single_order_audit"
+                if str(rec.get("bot_type") or "") == "directional_trend"
+                else "external_grid_bot_audit"
+            ),
+            "recommendation_only": True,
+            "exchange_order_submitted": False,
+            "external_execution_package": (
+                ((rec_for_execution.get("params") or {}).get("trade_plan") or {}).get("external_execution_package")
+                if str(rec.get("bot_type") or "") == "directional_trend"
+                else None
+            ),
             "trade_count": 0,
             "realized_pnl": 0.0,
             "realized_pnl_gross": 0.0,
@@ -5349,7 +5818,7 @@ def _materialize_bot_from_rec(conn, rec_id: str, operator: str | None = None) ->
             raise HTTPException(status_code=409, detail="recommendation status changed during execution")
         db.log_decision(
             conn,
-            "BOT_STARTED",
+            "STRATEGY_AUDIT_STARTED",
             rec_id,
             operator,
             {

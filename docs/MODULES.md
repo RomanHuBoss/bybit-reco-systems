@@ -1,4 +1,12 @@
-## v1.1.0: directional trend shadow responsibilities
+## v1.2.0: profitability router and trend audit execution
+
+- `app/strategy_router.py`: validates comparable monetary evidence and selects a strategy by conservative risk-adjusted utility.
+- `app/recommender.py`: builds both candidates, invokes the router, preserves losing candidates for paired outcomes, and builds the trend single-order package.
+- `app/main.py`: validates and snaps single-position trend plans, applies live market/funding/risk/conflict preflight and creates an audit instance without exchange order submission.
+- `app/calibration.py`: continues separate grid/trend calibrators and supplies selected-policy/terminal monetary evidence to the router.
+- `app/ui/static/app.js`: displays router decision, utility/edge and the distinction between grid and one-position trend.
+
+## Historical v1.1.0: directional trend shadow responsibilities
 
 - `app/bot_types.py`: registers the separate trend family and its shadow-only boundary.
 - `app/recommender.py`: regime routing, trend score, one-position TP/SL plan, shadow publication, trend contract/version metadata and separate calibration eligibility.

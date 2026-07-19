@@ -1,4 +1,13 @@
-## Остаточные риски после v1.1.0 directional trend shadow
+## Остаточные риски после v1.2.0 strategy profitability router
+
+- Router сравнивает proxy-outcome evidence, а не фактические live fills. Даже положительные lower bounds и terminal holdout не доказывают будущую прибыльность.
+- Utility weights и minimum edge являются начальным versioned contract; их нельзя подбирать на terminal holdout или снижать ради большего числа запусков.
+- Grid и trend outcomes одного timestamp коррелированы. Сравнение должно оставаться paired и использовать purged temporal cohorts, а не считать строки независимыми испытаниями.
+- Реальное исполнение trend-пакета находится вне сервиса. Без read-only reconciliation нельзя доказать fill price, partial fills, fees, funding и TP/SL execution внешнего слоя.
+- В one-way account одновременно допускается только один strategy family на символ. Это снижает конфликт позиций, но может упустить независимые возможности; менять правило можно только вместе с hedge-mode/portfolio accounting.
+- Историческое имя `directional_trend_shadow_v1` сохранено ради совместимости lineage и может вводить оператора в заблуждение без актуальной документации; runtime permission определяется status/router/preflight, а не строкой версии контракта.
+
+## Исторические остаточные риски после v1.1.0 directional trend shadow
 
 - The score thresholds, ATR multipliers and 12-hour trend target are engineering priors, not proven optimums. They require purged walk-forward and prospective shadow validation.
 - 1m OHLCV cannot reveal the order of TP and SL inside one candle; such rows are censored. It also cannot attest queue priority, market impact or actual executable fills.

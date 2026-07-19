@@ -65,7 +65,7 @@ def _meta() -> dict[str, str]:
 def test_generated_linear_grid_uses_bybit_cross_margin() -> None:
     params = _generated("neutral")
     assert params["margin_mode"] == "cross"
-    assert _mode("linear", "neutral") == ("unified", "cross")
+    assert _mode("futures_grid", "linear", "neutral") == ("unified", "cross")
 
 
 def test_trade_plan_publishes_cross_margin_and_one_way_position_mode() -> None:
@@ -151,12 +151,13 @@ def test_release_docs_use_cross_margin_contract() -> None:
     logic = Path("docs/TRADING_LOGIC.md").read_text(encoding="utf-8").lower()
     assert "margin_mode=cross" in readme
     assert "margin_mode=cross" in logic
-    assert "margin_mode=isolated" not in readme
-    assert "margin_mode=isolated" not in logic
+    assert "directional_trend" in readme
+    assert "margin_mode=isolated" in readme
+    assert "single-position" in logic
 
 
 def test_release_version_and_outcome_contract_are_bumped() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.1.0"' in source
+    assert 'version="1.2.0"' in source
     assert _generated("long")["margin_mode"] == "cross"

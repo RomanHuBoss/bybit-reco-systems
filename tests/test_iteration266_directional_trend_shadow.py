@@ -65,7 +65,7 @@ def _cost_model() -> dict:
     }
 
 
-def test_directional_trend_is_separate_supported_shadow_family() -> None:
+def test_directional_trend_is_separate_supported_strategy_family() -> None:
     assert "directional_trend" in SUPPORTED_BOT_TYPES
     assert "directional_trend" in DIRECTIONAL_BOT_TYPES
     assert "directional_trend" not in GRID_BOT_TYPES
@@ -468,14 +468,15 @@ def test_recommender_publishes_trend_candidate_only_as_outcome_eligible_shadow(t
     ).fetchone()
     assert str(model_row["model_version"]).startswith(TREND_RECOMMENDER_MODEL_VERSION)
     codes = {str(item.get("code")) for item in reasons["decision_layers"]["no_trade_reasons"]}
-    assert "DIRECTIONAL_TREND_SHADOW_ONLY" in codes
+    assert "DIRECTIONAL_TREND_SHADOW_ONLY" not in codes
+    assert "PROXY_MONETARY_EXPECTANCY_UNPROVEN" in codes
     # One symbol produces one execution-capacity check for futures_grid only;
     # directional_trend remains observable without consuming a portfolio slot.
-    assert gate_calls == [("linear", "BTCUSDT")]
+    assert gate_calls == [("linear", "BTCUSDT"), ("linear", "BTCUSDT")]
     conn.close()
 
 
-def test_directional_trend_execution_validation_is_explicitly_shadow_only() -> None:
+def test_directional_trend_execution_validation_requires_complete_single_position_contract() -> None:
     rec = {
         "venue": "linear",
         "symbol": "BTCUSDT",
@@ -499,17 +500,18 @@ def test_directional_trend_execution_validation_is_explicitly_shadow_only() -> N
         require_execution_plan=True,
     )
     codes = {str(item.get("code")) for item in result["errors"]}
-    assert "DIRECTIONAL_TREND_SHADOW_ONLY" in codes
+    assert "DIRECTIONAL_TREND_SHADOW_ONLY" not in codes
+    assert "EXTERNAL_EXECUTION_PACKAGE_MISSING" in codes
     assert "BOT_TYPE_UNSUPPORTED" not in codes
 
 
-def test_frontend_marks_directional_trend_as_non_executable_shadow() -> None:
+def test_frontend_marks_directional_trend_as_single_position_external_execution() -> None:
     app_js = (Path(__file__).parents[1] / "app/ui/static/app.js").read_text(encoding="utf-8")
     assert 'DIRECTIONAL_TREND_BOT_TYPE = "directional_trend"' in app_js
-    assert 'Направленный тренд · shadow' in app_js
-    assert 'Параметры исследовательской trend-модели' in app_js
-    assert 'execution endpoint и создание bot_instance заблокированы' in app_js
-    assert 'isLaunchableGridRecommendation(it)' in app_js
+    assert 'Направленный тренд · одна позиция' in app_js
+    assert 'Параметры single-position trend-плана' in app_js
+    assert 'audit-instance' in app_js
+    assert 'isLaunchableRecommendation(it)' in app_js
 
 
 def test_calibration_lineage_rejects_wrong_trend_contract_version() -> None:

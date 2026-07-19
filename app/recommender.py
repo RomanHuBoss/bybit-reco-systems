@@ -14,7 +14,12 @@ from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
-from .bot_types import SUPPORTED_BOT_TYPES, SHADOW_ONLY_BOT_TYPES
+from .bot_types import SUPPORTED_BOT_TYPES
+from .strategy_router import (
+    COMPARISON_RETURN_BASIS,
+    ROUTER_VERSION as STRATEGY_ROUTER_VERSION,
+    select_strategy,
+)
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
 from .grid_math import (
     arithmetic_grid_commitment,
@@ -53,7 +58,7 @@ CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
     "PROXY_MONETARY_EXPECTANCY_NON_POSITIVE",
     "PROXY_OUTCOME_CENSORING_UNBOUNDED",
     "CALIBRATED_CONFIDENCE_UNAVAILABLE",
-    "DIRECTIONAL_TREND_SHADOW_ONLY",
+    "STRATEGY_ROUTER_NO_CLEAR_WINNER",
 })
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
@@ -1675,6 +1680,9 @@ def _build_trade_plan(
                 or (direction_norm == "short" and take_profit < price < stop_loss)
             )
         )
+        entry_side = "Buy" if direction_norm == "long" else "Sell"
+        exit_side = "Sell" if direction_norm == "long" else "Buy"
+        sizing = dict(params.get("sizing") or {})
         return {
             "strategy_family": "directional_trend",
             "strategy_contract_version": TREND_STRATEGY_CONTRACT_VERSION,
@@ -1689,7 +1697,7 @@ def _build_trade_plan(
                 "min_hours": 3,
                 "max_hours": int(BOT_HORIZONS.get("directional_trend", 12 * 3600) // 3600),
                 "label_horizon_hours": int(BOT_HORIZONS.get("directional_trend", 12 * 3600) // 3600),
-                "basis": "fixed_directional_trend_shadow_target_v1",
+                "basis": "fixed_directional_trend_target_v1",
             },
             "label_horizon_hours": int(BOT_HORIZONS.get("directional_trend", 12 * 3600) // 3600),
             "levels": {
@@ -1702,17 +1710,43 @@ def _build_trade_plan(
                     "pct": _round_price(params.get("stop_loss_pct"), decimals=4),
                 },
             },
-            "sizing": dict(params.get("sizing") or {}),
+            "sizing": sizing,
             "economics": dict(params.get("economics") or {}),
             "geometry_valid": geometry_valid,
+            "external_execution_package": {
+                "schema_version": "directional-single-order-package-v1",
+                "recommendation_only": True,
+                "exchange_order_submitted": False,
+                "requires_external_executor_or_manual_operator": True,
+                "category": "linear",
+                "symbol": str(params.get("symbol") or ""),
+                "account_mode": "unified",
+                "margin_mode": "isolated",
+                "leverage": params.get("leverage"),
+                "entry": {
+                    "side": entry_side,
+                    "order_type": "MarketOrProtectedLimit",
+                    "reference_price": _round_price(price, decimals=10),
+                    "qty": _round_price(sizing.get("qty"), decimals=12),
+                    "target_notional_usdt": _round_price(sizing.get("target_notional_usdt"), decimals=8),
+                    "reduce_only": False,
+                },
+                "exit": {
+                    "side": exit_side,
+                    "take_profit_price": _round_price(take_profit, decimals=10),
+                    "stop_loss_price": _round_price(stop_loss, decimals=10),
+                    "reduce_only": True,
+                },
+            },
             "close_conditions": [
                 "Первое однозначно наблюдаемое касание take_profit или stop_loss.",
                 "Истечение 12-часового label horizon с закрытием по boundary open.",
                 "Никакого усреднения или добавления позиции против движения.",
             ],
             "notes": (
-                "Shadow-only directional contract. Уровни предназначены для proxy-outcome "
-                "и сравнительного исследования; execution endpoint обязан блокировать запуск."
+                "Recommendation-only single-position contract. Сервис не отправляет Bybit order; "
+                "оператор или внешний execution-layer использует проверенный package и затем "
+                "фиксирует фактическое исполнение в audit lifecycle."
             ),
         }
 
@@ -2251,7 +2285,7 @@ def _plan_rr_metrics(
                 "rr": None,
                 "projected_net_reward_usdt": None,
                 "kill_switch_loss_usdt": None,
-                "basis": "generated_directional_trend_shadow_plan",
+                "basis": "generated_directional_trend_single_position_plan",
                 "reason": "incomplete_directional_trend_economics",
                 "is_empirical": False,
                 "is_heuristic_capture_score": False,
@@ -2492,8 +2526,10 @@ def _empirical_expectancy_metrics(model: LogRegScaler | None) -> dict[str, Any]:
     }
 
 
-def _mode(venue: str, direction: str) -> tuple[str, str]:
+def _mode(bot_type: str, venue: str, direction: str) -> tuple[str, str]:
     if venue == "linear":
+        if bot_type == "directional_trend":
+            return "unified", "isolated"
         return "unified", "cross"
     return venue, "default"
 
@@ -2749,12 +2785,13 @@ def _directional_trend_params(
     direction_bias_strength: float,
     atr_pct: float | None,
     cost_model: dict[str, Any],
+    risk_limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a single-position shadow contract for directional trend research.
+    """Build a recommendation-only single-position directional contract.
 
     The contract intentionally contains no grid levels, averaging or pyramiding.
-    It is sufficient for deterministic proxy-outcome labeling, but it is not an
-    executable Bybit order payload and remains shadow-only in this release.
+    It is sufficient for deterministic proxy-outcome labeling and for an external
+    executor/operator package, but this service still does not submit Bybit orders.
     """
     price_raw = _finite_or_none(f.get("price"))
     price_valid = price_raw is not None and price_raw > 0.0
@@ -2799,7 +2836,12 @@ def _directional_trend_params(
             take_profit = price * (1.0 - reward_pct)
             stop_loss = price * (1.0 + stop_pct)
 
-    target_notional = 25.0
+    normalized_limits = normalize_risk_limits(risk_limits or {}, risk_limits or {})
+    min_leverage = max(1, int(_safe_int_or_none(normalized_limits.get("min_leverage")) or 1))
+    max_leverage = max(min_leverage, int(_safe_int_or_none(normalized_limits.get("max_leverage")) or min_leverage))
+    selected_leverage = min(max_leverage, min_leverage)
+    max_notional = _finite_or_none(normalized_limits.get("max_position_notional_usdt"))
+    target_notional = min(25.0, float(max_notional)) if max_notional is not None and max_notional > 0 else 25.0
     provisional_qty = (target_notional / price) if price_valid else 0.0
     gross_reward_bps = reward_pct * 10_000.0
     gross_risk_bps = stop_pct * 10_000.0
@@ -2833,18 +2875,20 @@ def _directional_trend_params(
         "take_profit_pct": float(reward_pct * 100.0),
         "stop_loss_pct": float(stop_pct * 100.0),
         "label_horizon_hours": int(BOT_HORIZONS.get("directional_trend", 12 * 3600) // 3600),
-        "leverage": 1,
-        "margin_mode": "cross",
+        "leverage": int(selected_leverage),
+        "margin_mode": "isolated",
         "leverage_policy": {
-            "selected_leverage": 1,
-            "operator_minimum_approved": False,
-            "not_actionable_reason": "shadow_only_strategy",
-            "note": "directional_trend remains non-executable until separate outcome evidence is validated",
+            "min_operator_leverage": int(min_leverage),
+            "max_operator_leverage": int(max_leverage),
+            "selected_leverage": int(selected_leverage),
+            "operator_minimum_approved": True,
+            "note": "single-position trend plan uses the minimum operator-approved leverage",
         },
         "sizing": {
-            "mode": "shadow_target_notional",
+            "mode": "external_single_position_target_notional",
             "qty": float(provisional_qty),
             "target_notional_usdt": float(target_notional),
+            "estimated_margin_required_usdt": float(target_notional / max(1, selected_leverage)),
             "actual_bybit_filters_required": True,
         },
         "economics": {
@@ -2855,7 +2899,7 @@ def _directional_trend_params(
             "projected_net_reward_bps": float(projected_net_reward_bps),
             "projected_stop_loss_bps": float(projected_stop_loss_bps),
             "plan_rr": float(plan_rr) if plan_rr is not None and math.isfinite(plan_rr) else None,
-            "risk_profile": "shadow_research",
+            "risk_profile": "directional_single_position",
         },
         "cost_model": dict(cost_model),
     }
@@ -2884,6 +2928,7 @@ def _params(
             direction_bias_strength=direction_bias_strength,
             atr_pct=atr_pct_for_grid,
             cost_model=cost_model,
+            risk_limits=risk_limits,
         )
     price_input = _finite_or_none(f.get("price"))
     price_input_valid = price_input is not None and price_input > 0.0
@@ -3340,7 +3385,7 @@ def _params(
 # We include direction in the signature and require confirmation from distinct,
 # forward-moving closed-candle evidence within an interval-derived freshness window.
 _prev_recommended: dict[tuple, dict[str, int]] = {}
-PERSISTENCE_BOTS: set[str] = {"futures_grid"}
+PERSISTENCE_BOTS: set[str] = {"futures_grid", "directional_trend"}
 PERSISTENCE_STATE_APP_KEY = "reco_persistence_gate_v1"
 DIRECTION_STATE_APP_KEY = "reco_direction_stability_v1"
 
@@ -4401,6 +4446,73 @@ def _policy_observability_diagnostics(
         bot_type=bot_type,
         require_llm_verdict=bool(getattr(settings_obj, "llm_reviewer_enabled", False)),
     )
+
+
+def _apply_strategy_router(recs: list[dict[str, Any]]) -> None:
+    """Select one strategy per symbol using comparable monetary evidence.
+
+    Non-winning candidates remain in persistence as paired shadow competitors so
+    both bot-specific models keep learning from the same future market. When the
+    utility edge is not material, all otherwise-actionable candidates are held as
+    ``no_trade`` rather than picking a winner from noise.
+    """
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for rec in recs:
+        key = (str(rec.get("venue") or ""), str(rec.get("symbol") or ""))
+        grouped.setdefault(key, []).append(rec)
+
+    for peers in grouped.values():
+        decision = select_strategy(peers)
+        winner_rec_id = str(decision.get("winner_rec_id") or "")
+        router_status = str(decision.get("status") or "unknown")
+        for rec in peers:
+            rec_id = str(rec.get("rec_id") or "")
+            reasons = rec.setdefault("reasons", {})
+            candidate_eval = (decision.get("candidates") or {}).get(rec_id, {})
+            reasons["strategy_router"] = {
+                "router_version": STRATEGY_ROUTER_VERSION,
+                "status": router_status,
+                "reason_code": decision.get("reason_code"),
+                "winner_rec_id": winner_rec_id or None,
+                "winner_bot_type": decision.get("winner_bot_type"),
+                "winner_direction": decision.get("winner_direction"),
+                "winner_utility": decision.get("winner_utility"),
+                "utility_edge": decision.get("utility_edge"),
+                "relative_utility_edge": decision.get("relative_utility_edge"),
+                "candidate": candidate_eval,
+                "selection_basis": (
+                    "bot-specific calibrated probability + conservative monetary lower bounds "
+                    "+ terminal holdout + expected-shortfall penalty"
+                ),
+                "raw_score_used": False,
+            }
+            outcome_policy = reasons.get("outcome_policy") if isinstance(reasons.get("outcome_policy"), dict) else None
+            if router_status == "selected":
+                if rec_id != winner_rec_id and rec.get("status") in {"recommended", "active", "pending"}:
+                    rec["status"] = "suppressed"
+                    reasons["suppression"] = {
+                        "reason": "strategy_profitability_router",
+                        "winner_rec_id": winner_rec_id,
+                        "winner_bot_type": decision.get("winner_bot_type"),
+                        "winner_utility": decision.get("winner_utility"),
+                    }
+                    if outcome_policy is not None:
+                        outcome_policy["calibration_role"] = "paired_strategy_evaluation"
+                        outcome_policy["sample_role"] = "shadow_competitor"
+                        outcome_policy["reason"] = "non_winning_strategy_kept_for_paired_outcome"
+            elif rec.get("status") in {"recommended", "active", "pending"}:
+                rec["status"] = "no_trade"
+                reasons.setdefault("no_trade_reasons", []).append({
+                    "code": "STRATEGY_ROUTER_NO_CLEAR_WINNER",
+                    "msg": (
+                        "meta-router не нашёл стратегии с доказанно положительной и достаточно "
+                        "лучшей risk-adjusted monetary utility; публикация удержана как no_trade"
+                    ),
+                })
+                if outcome_policy is not None:
+                    outcome_policy["calibration_role"] = "paired_strategy_evaluation"
+                    outcome_policy["sample_role"] = "shadow_competitor"
+                    outcome_policy["reason"] = "router_no_clear_winner_kept_for_paired_outcome"
 
 
 class _CalibrationEvidenceContext:
@@ -5879,22 +5991,18 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 _dir_agg_cal["direction_confidence_calibrated"] = _dir_conf_pre
             # Block threshold 0.05 = 5% 1h ATR. Old value 0.018 was calibrated for 1m ATR
             # and blocked ALL symbols since typical 1h ATR for small caps is 3–8%.
-            # Portfolio capacity, drawdown and post-loss cooldown are execution
-            # gates. A shadow-only policy consumes no bot slot and must remain
-            # observable for paired research even while another strategy is live.
-            # Market/symbol safety filters still apply because they are part of
-            # the candidate policy being evaluated.
-            if bot_type in SHADOW_ONLY_BOT_TYPES:
-                risk_blocks = []
-            else:
-                risk_blocks = gate_candidate(
-                    conn,
-                    venue,
-                    sym,
-                    limits,
-                    cached_status=_cached_risk_status,
-                )
-                feasibility_blocks.extend(risk_blocks)
+            # Portfolio capacity, drawdown and post-loss cooldown are evaluated
+            # for both actionable strategy families. The losing router candidate
+            # is persisted as a paired outcome sample only after policy evaluation;
+            # it never bypasses market or portfolio safety gates.
+            risk_blocks = gate_candidate(
+                conn,
+                venue,
+                sym,
+                limits,
+                cached_status=_cached_risk_status,
+            )
+            feasibility_blocks.extend(risk_blocks)
             feasibility_blocks.extend(apply_market_shock_gate(market_shock, venue, bot_type, direction))
             fast_veto = compute_symbol_fast_veto(conn, venue, sym, ts_now, direction, feature_row=f)
             feasibility_blocks.extend(fast_veto.get("blocks") or [])
@@ -6063,7 +6171,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             )
 
             expected_rr = _expected_rr(bot_type, f, cost_model=cost_model)
-            account_mode, margin_mode = _mode(venue, direction)
+            account_mode, margin_mode = _mode(bot_type, venue, direction)
 
             blocks = list(feasibility_blocks)  # risk_blocks already included via feasibility_blocks.extend()
 
@@ -6095,15 +6203,6 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 risk_limits=limits,
             )
             no_trade_reasons: list[dict[str, str]] = list(thesis_no_trade_reasons)
-            if bot_type in SHADOW_ONLY_BOT_TYPES:
-                no_trade_reasons.append({
-                    "code": "DIRECTIONAL_TREND_SHADOW_ONLY",
-                    "msg": (
-                        "directional_trend в этой версии собирает отдельные proxy outcomes "
-                        "и не может быть исполнен оператором до независимой проверки expectancy, "
-                        "tail risk и calibration"
-                    ),
-                })
             leverage_policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
             if (
                 bot_type == "futures_grid"
@@ -6128,6 +6227,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "msg": f"market reference price is missing/non-positive/non-finite; {bot_type} recommendation is blocked fail-closed",
                 })
             # Add execution guide for UI "Details" panel.
+            params["symbol"] = sym
+            params["account_mode"] = account_mode
             params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params, cost_model=cost_model)
             if bot_type == "directional_trend":
                 _trend_levels = (params.get("trade_plan") or {}).get("levels", {})
@@ -6137,7 +6238,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "bot_type": bot_type,
                     "symbol": sym,
                     "strategy_family": "directional_trend",
-                    "shadow_only": True,
+                    "recommendation_only": True,
+                    "exchange_order_submitted": False,
                     "price_ref": params.get("price_ref"),
                     "take_profit": _trend_levels.get("take_profit", {}),
                     "stop_loss": _trend_levels.get("stop_loss", {}),
@@ -6148,7 +6250,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "economics": params.get("economics"),
                     "market_shock_state": (market_shock or {}).get("state"),
                     "market_shock_title": (market_shock or {}).get("title"),
-                    "operator_note": "Исследовательская shadow-ветка; запуск через execution API запрещён.",
+                    "external_execution_package": (params.get("trade_plan") or {}).get("external_execution_package"),
+                    "operator_note": "Single-position recommendation. Сервис создаёт audit instance, но не отправляет биржевой ордер.",
                 }
             else:
                 params["operator_sheet"] = {
@@ -6288,9 +6391,10 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 _trend_econ = params.get("economics") if isinstance(params.get("economics"), dict) else {}
                 params["risk_report"] = {
                     "decision": _risk_report_decision_for_status(status),
-                    "risk_profile": "shadow_research",
+                    "risk_profile": "directional_single_position",
                     "strategy_family": "directional_trend",
-                    "shadow_only": True,
+                    "recommendation_only": True,
+                    "exchange_order_submitted": False,
                     "projected_net_reward_bps": _finite_or_none(_trend_econ.get("projected_net_reward_bps")),
                     "projected_stop_loss_bps": _finite_or_none(_trend_econ.get("projected_stop_loss_bps")),
                     "plan_rr": _finite_or_none(_trend_econ.get("plan_rr")),
@@ -6302,8 +6406,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "rejection_reasons": [str(x.get("msg") or x.get("code") or "") for x in blocks[:8] if isinstance(x, dict)],
                     "no_trade_reasons": [str(x.get("msg") or x.get("code") or "") for x in no_trade_reasons[:8] if isinstance(x, dict)],
                     "warnings": [
-                        "Shadow-only: proxy outcome is not proof of live trend edge.",
-                        "Execution endpoint must reject directional_trend in this release.",
+                        "Proxy outcome is not proof of live trend edge.",
+                        "This service creates an audit package only and never submits a Bybit order.",
                     ],
                 }
 
@@ -6395,6 +6499,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "strategy_contract_version": (
                     TREND_STRATEGY_CONTRACT_VERSION if bot_type == "directional_trend" else "futures_grid_v26"
                 ),
+                "comparison_return_basis": COMPARISON_RETURN_BASIS,
             }
             reasons2["sentiment_agg"] = sent_agg
             reasons2["market_shock"] = market_shock
@@ -6591,42 +6696,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
     llm_review_stats = {"reviewed": 0, "vetoed": 0, "errors": 0, "skipped": 0}
 
     if recs:
-        # Publish only one best recommendation per (venue, symbol).
-        # Non-winning actionable ideas are preserved as suppressed alternatives with an explicit reason.
-        STATUS_PRIORITY = {"recommended": 0, "active": 1, "pending": 2, "blocked": 3, "no_trade": 4, "suppressed": 5}
-        best_map: dict[tuple[str, str], dict[str, Any]] = {}
-        for r in recs:
-            key = (r["venue"], r["symbol"])
-            cur = best_map.get(key)
-            if cur is None:
-                best_map[key] = r
-                continue
-            r_pri  = STATUS_PRIORITY.get(r["status"], 9)
-            c_pri  = STATUS_PRIORITY.get(cur["status"], 9)
-            if r_pri < c_pri:
-                best_map[key] = r  # better status wins unconditionally
-            elif r_pri == c_pri:
-                if r["confidence"] > cur["confidence"] or (
-                    r["confidence"] == cur["confidence"] and r["score"] > cur["score"]
-                ):
-                    best_map[key] = r
-
-        for r in recs:
-            key = (r["venue"], r["symbol"])
-            if best_map.get(key, {}).get("rec_id") != r["rec_id"]:
-                # Only suppress live candidates — preserve 'blocked'/'no_trade' for audit
-                if r["status"] in {"recommended", "active", "pending"}:
-                    winner = best_map.get(key, {})
-                    reasons = r.setdefault("reasons", {})
-                    reasons["suppression"] = {
-                        "reason": "cross_bot_competition",
-                        "winner_rec_id": winner.get("rec_id"),
-                        "winner_bot_type": winner.get("bot_type"),
-                        "winner_status": winner.get("status"),
-                        "winner_confidence": float(winner.get("confidence") or 0.0),
-                        "winner_score": float(winner.get("score") or 0.0),
-                    }
-                    r["status"] = "suppressed"
+        _apply_strategy_router(recs)
 
         # Apply persistence gate only to FINAL published recommendations.
         # This avoids confirming a bot that was internally recommended but then
@@ -6711,7 +6781,12 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             None,
             {
                 "count_all": len(recs),
-                "count_best": len(best_map),
+                "count_best": sum(
+                    1
+                    for r in recs
+                    if str((((r.get("reasons") or {}).get("strategy_router") or {}).get("winner_rec_id") or ""))
+                    == str(r.get("rec_id") or "")
+                ),
                 "count_recommended": status_counts["recommended"],
                 "count_active": status_counts["active"],
                 "count_pending": status_counts["pending"],

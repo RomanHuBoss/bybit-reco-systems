@@ -1,4 +1,14 @@
-## v1.1.0 - grid execution and directional trend shadow are different products
+## v1.2.0 - сначала meta-router, затем подходящий внешний способ исполнения
+
+- Один снимок рынка оценивается как `futures_grid` и как `directional_trend`.
+- Router сравнивает только проверенную денежную ожидаемость и tail risk; raw score не сравнивается.
+- `futures_grid` → внешний grid-bot workflow.
+- `directional_trend` → одна long/short позиция с TP/SL через ручной или внешний executor.
+- Подтверждение в интерфейсе создаёт только audit-instance. Сервис не отправляет Bybit order.
+- При недоказанной прибыльности или близком результате → `НЕ ТОРГОВАТЬ`.
+- Проигравшая модель продолжает получать paired proxy-outcome для обучения.
+
+## Historical v1.1.0 - grid execution and directional trend shadow
 
 - `futures_grid` remains the only operator-executable family. Neutral/long/short are grid inventory biases and still require range/mean-reversion evidence.
 - `directional_trend` is a separate single-position long/short research policy. It follows a coherent trend, has its own TP/SL, and never averages or pyramids against the move.
