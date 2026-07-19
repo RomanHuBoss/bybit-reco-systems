@@ -4875,7 +4875,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.76", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.77", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6313,16 +6313,20 @@ def api_trades(bot_id: str | None = None, limit: int = 200) -> dict[str, Any]:
 def api_outcomes_stats(
     scope: str = "current_policy",
     detail: str = "full",
+    recent_limit: int = 120,
 ) -> dict[str, Any]:
     """Return outcome proxies in an explicit evidence lineage.
 
-    The operator UI defaults to the exact policy currently running. Historical
-    outcomes remain available via ``scope=archive`` but are never blended into the
-    current-policy headline.
+    The operator UI defaults to the verified fingerprint currently running. Exact
+    calibration eligibility is returned as a separate, stricter cohort so shadow
+    exploration cannot masquerade as calibration evidence. Historical outcomes
+    remain available via ``scope=archive`` and are never blended into the current
+    fingerprint headline.
     """
     detail_norm = str(detail or "full").strip().lower()
     if detail_norm not in {"full", "summary"}:
         raise HTTPException(status_code=400, detail="detail must be full or summary")
+    recent_limit = _bounded_limit(recent_limit, default=120, max_value=6000)
     with closing(_get_conn()) as conn:
         active_risk_limits = normalize_risk_limits(
             db.get_active_risk_limits(conn),
@@ -6340,7 +6344,7 @@ def api_outcomes_stats(
                 current_model_version=RECOMMENDER_MODEL_VERSION,
                 policy_fingerprint=policy_fingerprint,
                 include_breakdowns=detail_norm == "full",
-                recent_limit=20 if detail_norm == "summary" else 120,
+                recent_limit=20 if detail_norm == "summary" else recent_limit,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

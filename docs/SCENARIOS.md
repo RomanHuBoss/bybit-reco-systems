@@ -1,3 +1,12 @@
+## Сценарий: один fingerprint, разные eligibility-когорты (v1.0.77)
+
+Два outcome могут иметь одинаковый проверенный policy fingerprint. Если первая
+строка прошла score/MR floors, explicit policy evaluation и label maturity, она
+получает `calibration_eligible`. Если вторая сохранилась как безопасный no-trade
+shadow и не прошла эти gate, она получает `shadow_exploration` с точными reason
+codes. Обе видны в fingerprint scope, но только первая входит в calibration
+evidence.
+
 ## Сценарий: положительный proxy P&L, но kill-switch (v1.0.76)
 
 1. Сетка успевает реализовать несколько прибыльных циклов.

@@ -1,3 +1,16 @@
+## 2026-07-19 - v1.0.77 - exact outcome eligibility and walk-forward evidence
+
+- Separated verified fingerprint scope from mutually exclusive calibration,
+  policy-evaluation, shadow, audit-only, other-policy and excluded cohorts.
+- Added `mean_reversion_score`, exact gate values and eligibility/decision reason
+  codes to the outcome API and operator journal.
+- Extended sparse materialized exact-policy candidate evidence retention from 14
+  to 90 days while keeping ordinary exploratory evidence at 14 days.
+- Added a purged timestamp-level offline walk-forward for score,
+  mean-reversion and direction; it evaluates existing floors without tuning or
+  changing production thresholds.
+- Kept the configured symbol universe and every trading threshold unchanged.
+
 ## 2026-07-17 - v1.0.76 - outcome audit semantics
 
 - Сохранены терминальные diagnostics завершённого grid outcome в существующем observability-контуре: `stopped`, `terminal_reason`, сторона/граница kill-switch, наблюдавшийся экстремум, консервативная цена ликвидации и net proxy return.

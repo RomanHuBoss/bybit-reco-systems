@@ -39,6 +39,8 @@ ACTIVE_PUBLICATION_STATUSES: frozenset[str] = frozenset({"recommended", "active"
 EXPIRABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "pending"})
 LLM_OUTCOME_READY_STATUSES: frozenset[str] = frozenset({"ok"})
 DATABASE_INSTANCE_ID_APP_KEY = "database_instance_id_v1"
+STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS = 14
+EXACT_POLICY_EVIDENCE_RETENTION_DAYS = 90
 
 
 def is_actionable_recommendation_status(status: Any) -> bool:
@@ -199,6 +201,10 @@ def _ensure_recommendation_outcome_policy_columns(conn: sqlite3.Connection) -> b
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_reco_model_outcome_scope "
         "ON recommendations(model_version, is_outcome_label_root, rec_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reco_exact_policy_retention "
+        "ON recommendations(policy_evaluation_eligible, is_outcome_label_root, ts)"
     )
     return added
 
@@ -4737,7 +4743,7 @@ def _outcome_scope_metadata(
     policy_fingerprint: str | None,
 ) -> dict[str, Any]:
     labels = {
-        "current_policy": "Текущая policy-когорта",
+        "current_policy": "Текущий идентификатор правил (все корневые исходы)",
         "current_model": "Текущая model lineage",
         "archive": "Исторический архив",
     }
@@ -4747,6 +4753,7 @@ def _outcome_scope_metadata(
         "current_model_version": str(current_model_version or "") or None,
         "policy_fingerprint": str(policy_fingerprint or "").strip().lower() or None,
         "is_historical_archive": scope == "archive",
+        "eligibility_cohorts_are_separate": True,
     }
 
 
@@ -4805,6 +4812,276 @@ def _outcome_row_scope_snapshot(
     }
 
 
+def _outcome_row_value(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _finite_outcome_number(value: Any) -> float | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _exact_outcome_integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return strict_integer(value)
+    except Exception:
+        return None
+
+
+def _outcome_decision_reason_codes(reasons: dict[str, Any]) -> list[str]:
+    """Return stable decision/risk codes without inventing operator prose."""
+    codes: list[str] = []
+    decision_layers = reasons.get("decision_layers")
+    decision_layers = decision_layers if isinstance(decision_layers, dict) else {}
+    risk_checks = reasons.get("risk_checks")
+    risk_checks = risk_checks if isinstance(risk_checks, dict) else {}
+    entries: list[Any] = []
+    for value in (
+        decision_layers.get("no_trade_reasons"),
+        risk_checks.get("blocks"),
+    ):
+        if isinstance(value, list):
+            entries.extend(value)
+    for entry in entries:
+        if isinstance(entry, dict):
+            code = str(entry.get("code") or entry.get("reason") or "").strip()
+        else:
+            code = str(entry or "").strip()
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _outcome_eligibility_snapshot(
+    row: Any,
+    scope_snapshot: dict[str, Any],
+    *,
+    active_policy_fingerprint: str | None,
+    now_ts_value: int,
+) -> dict[str, Any]:
+    """Explain the exact-policy gates for one immutable labeled outcome.
+
+    Fingerprint membership and calibration eligibility are deliberately different
+    axes.  A shadow row can share the active policy contract while still being
+    excluded from exact-policy calibration.  This read model exposes both facts
+    instead of collapsing them into a single, misleading "current policy" cohort.
+    """
+    reasons = scope_snapshot.get("reasons")
+    reasons = reasons if isinstance(reasons, dict) else {}
+    feature_snapshot = reasons.get("feature_snapshot")
+    feature_snapshot = feature_snapshot if isinstance(feature_snapshot, dict) else {}
+    outcome_policy = reasons.get("outcome_policy")
+    outcome_policy = outcome_policy if isinstance(outcome_policy, dict) else {}
+    policy_contract = outcome_policy.get("policy_contract")
+    policy_contract = policy_contract if isinstance(policy_contract, dict) else {}
+    selection = policy_contract.get("selection")
+    selection = selection if isinstance(selection, dict) else {}
+    calibration = policy_contract.get("calibration")
+    calibration = calibration if isinstance(calibration, dict) else {}
+
+    mean_reversion_score = _finite_outcome_number(
+        feature_snapshot.get("mean_reversion_score")
+    )
+    evidence_flag = _exact_outcome_integer(
+        feature_snapshot.get("mean_reversion_evidence_valid")
+    )
+    mean_reversion_evidence_valid = bool(
+        evidence_flag == 1
+        and mean_reversion_score is not None
+        and 0.0 <= mean_reversion_score <= 1.0
+    )
+    score = _finite_outcome_number(_outcome_row_value(row, "score"))
+    score_floor = _finite_outcome_number(selection.get("min_score_to_recommend"))
+    mean_reversion_floor = _finite_outcome_number(
+        selection.get("mean_reversion_min_score")
+    )
+
+    policy_evaluation_eligible = outcome_policy.get(
+        "policy_evaluation_eligible"
+    ) is True
+    outcome_eligible = outcome_policy.get("eligible") is True
+    stored_fingerprint = str(
+        scope_snapshot.get("policy_fingerprint") or ""
+    ).strip().lower()
+    active_fingerprint = str(active_policy_fingerprint or "").strip().lower()
+    active_policy_match: bool | None = None
+    if is_sha256_fingerprint(active_fingerprint):
+        active_policy_match = stored_fingerprint == active_fingerprint
+    contract_verified = bool(scope_snapshot.get("policy_contract_verified"))
+
+    row_ts = _exact_outcome_integer(_outcome_row_value(row, "ts"))
+    horizon_sec = _exact_outcome_integer(_outcome_row_value(row, "horizon_sec"))
+    grace_sec = _exact_outcome_integer(calibration.get("label_due_grace_sec"))
+    if grace_sec is None:
+        grace_sec = 120
+    expected_label_due_ts = (
+        int(row_ts + horizon_sec + grace_sec)
+        if row_ts is not None
+        and row_ts > 0
+        and horizon_sec is not None
+        and horizon_sec > 0
+        and grace_sec >= 0
+        else None
+    )
+    stored_label_due_ts = _exact_outcome_integer(outcome_policy.get("label_due_ts"))
+    label_available_ts = _exact_outcome_integer(
+        _outcome_row_value(row, "label_available_ts")
+    )
+    label_contract_valid = bool(
+        expected_label_due_ts is not None
+        and stored_label_due_ts == expected_label_due_ts
+        and label_available_ts is not None
+        and label_available_ts >= expected_label_due_ts
+    )
+    label_matured = bool(
+        stored_label_due_ts is not None
+        and label_available_ts is not None
+        and max(stored_label_due_ts, label_available_ts) <= int(now_ts_value)
+    )
+
+    score_gate_passed = bool(
+        score is not None and score_floor is not None and score >= score_floor
+    )
+    mean_reversion_gate_passed = bool(
+        mean_reversion_evidence_valid
+        and mean_reversion_floor is not None
+        and mean_reversion_score is not None
+        and mean_reversion_score >= mean_reversion_floor
+    )
+    calibration_eligible = bool(
+        active_policy_match is True
+        and contract_verified
+        and policy_evaluation_eligible
+        and score_gate_passed
+        and mean_reversion_gate_passed
+        and label_contract_valid
+        and label_matured
+    )
+
+    eligibility_reason_codes: list[str] = []
+
+    def _add_reason(code: str, condition: bool) -> None:
+        if condition and code not in eligibility_reason_codes:
+            eligibility_reason_codes.append(code)
+
+    _add_reason("ACTIVE_POLICY_UNSPECIFIED", active_policy_match is None)
+    _add_reason("ACTIVE_POLICY_FINGERPRINT_MISMATCH", active_policy_match is False)
+    _add_reason("POLICY_CONTRACT_UNVERIFIED", not contract_verified)
+    _add_reason("POLICY_EVALUATION_EXCLUDED", not policy_evaluation_eligible)
+    _add_reason("SCORE_INVALID", score is None)
+    _add_reason("SCORE_POLICY_FLOOR_MISSING", score_floor is None)
+    _add_reason(
+        "SCORE_BELOW_POLICY_FLOOR",
+        score is not None and score_floor is not None and score < score_floor,
+    )
+    _add_reason(
+        "MEAN_REVERSION_EVIDENCE_INVALID",
+        not mean_reversion_evidence_valid,
+    )
+    _add_reason(
+        "MEAN_REVERSION_POLICY_FLOOR_MISSING",
+        mean_reversion_floor is None,
+    )
+    _add_reason(
+        "MEAN_REVERSION_BELOW_POLICY_FLOOR",
+        mean_reversion_evidence_valid
+        and mean_reversion_floor is not None
+        and mean_reversion_score is not None
+        and mean_reversion_score < mean_reversion_floor,
+    )
+    _add_reason("LABEL_DUE_MISSING", stored_label_due_ts is None)
+    _add_reason(
+        "LABEL_DUE_CONTRACT_MISMATCH",
+        stored_label_due_ts is not None
+        and expected_label_due_ts is not None
+        and stored_label_due_ts != expected_label_due_ts,
+    )
+    _add_reason("LABEL_AVAILABILITY_MISSING", label_available_ts is None)
+    _add_reason(
+        "LABEL_AVAILABILITY_PREMATURE",
+        expected_label_due_ts is not None
+        and label_available_ts is not None
+        and label_available_ts < expected_label_due_ts,
+    )
+    _add_reason("LABEL_NOT_MATURED", not label_matured)
+
+    materialized_policy_eligible = _exact_outcome_integer(
+        _outcome_row_value(row, "policy_evaluation_eligible")
+    )
+    materialized_outcome_eligible = _exact_outcome_integer(
+        _outcome_row_value(row, "outcome_eligible")
+    )
+    _add_reason(
+        "MATERIALIZED_POLICY_ELIGIBILITY_MISMATCH",
+        materialized_policy_eligible in (0, 1)
+        and bool(materialized_policy_eligible) != policy_evaluation_eligible,
+    )
+    _add_reason(
+        "MATERIALIZED_OUTCOME_ELIGIBILITY_MISMATCH",
+        materialized_outcome_eligible in (0, 1)
+        and bool(materialized_outcome_eligible) != outcome_eligible,
+    )
+
+    sample_role = str(
+        outcome_policy.get("sample_role")
+        or scope_snapshot.get("sample_role")
+        or _outcome_row_value(row, "outcome_sample_role")
+        or ""
+    ).strip()
+    if active_policy_match is False:
+        cohort = "other_policy"
+    elif calibration_eligible:
+        cohort = "calibration_eligible"
+    elif policy_evaluation_eligible and contract_verified:
+        cohort = "policy_evaluation_candidate"
+    elif outcome_eligible and sample_role == "shadow_no_trade":
+        cohort = "shadow_exploration"
+    elif outcome_eligible:
+        cohort = "outcome_only"
+    else:
+        cohort = "excluded"
+
+    decision_reason_codes = _outcome_decision_reason_codes(reasons)
+    return {
+        "cohort": cohort,
+        "outcome_eligible": outcome_eligible,
+        "policy_evaluation_eligible": policy_evaluation_eligible,
+        "calibration_eligible": calibration_eligible,
+        "policy_reason": str(outcome_policy.get("reason") or "").strip() or None,
+        "eligibility_reason_codes": eligibility_reason_codes,
+        "decision_reason_codes": decision_reason_codes,
+        "reason_codes": list(dict.fromkeys(
+            eligibility_reason_codes + decision_reason_codes
+        )),
+        "gates": {
+            "active_policy_match": active_policy_match,
+            "policy_contract_verified": contract_verified,
+            "score": score,
+            "score_floor": score_floor,
+            "score_passed": score_gate_passed,
+            "mean_reversion_score": mean_reversion_score,
+            "mean_reversion_floor": mean_reversion_floor,
+            "mean_reversion_evidence_valid": mean_reversion_evidence_valid,
+            "mean_reversion_passed": mean_reversion_gate_passed,
+            "expected_label_due_ts": expected_label_due_ts,
+            "stored_label_due_ts": stored_label_due_ts,
+            "label_available_ts": label_available_ts,
+            "label_contract_valid": label_contract_valid,
+            "label_matured": label_matured,
+        },
+    }
+
+
 def get_outcomes_recent_enriched(
     conn: sqlite3.Connection,
     limit: int = 200,
@@ -4837,10 +5114,13 @@ def get_outcomes_recent_enriched(
         query_params.append(max(int(limit) * 8, int(limit)))
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
-                     o.horizon_sec, o.entry_close, o.exit_close, o.ret, o.success,
+                     o.horizon_sec, o.label_available_ts,
+                     o.entry_close, o.exit_close, o.ret, o.success,
                      r.direction AS reco_direction, r.status AS reco_status,
                      r.score, r.confidence, r.expected_rr, r.reasons_json,
                      r.model_version, r.is_outcome_label_root,
+                     r.outcome_eligible, r.policy_evaluation_eligible,
+                     r.outcome_sample_role,
                      obs.reason AS outcome_observability_reason,
                      obs.details_json AS outcome_observability_details_json
               FROM reco_outcomes o
@@ -4851,6 +5131,7 @@ def get_outcomes_recent_enriched(
         query_params,
     )
     out: list[dict[str, Any]] = []
+    eligibility_now_ts = now_ts()
     for row in cur.fetchall():
         if row["is_outcome_label_root"] is not None and not bool(int(row["is_outcome_label_root"] or 0)):
             continue
@@ -4866,6 +5147,13 @@ def get_outcomes_recent_enriched(
             continue
         dirs = _extract_outcome_directions(row["direction"], row["reco_direction"], row["reasons_json"])
         llm_review = _extract_llm_review_snapshot(row["reasons_json"])
+        eligibility = _outcome_eligibility_snapshot(
+            row,
+            scope_snapshot,
+            active_policy_fingerprint=policy_fingerprint,
+            now_ts_value=eligibility_now_ts,
+        )
+        mean_reversion_score = eligibility["gates"]["mean_reversion_score"]
         out.append({
             "rec_id": row["rec_id"],
             "ts": int(row["ts"]),
@@ -4877,12 +5165,21 @@ def get_outcomes_recent_enriched(
             "execution_direction": dirs["execution_direction"],
             "neutral_source": dirs["neutral_source"],
             "horizon_sec": int(row["horizon_sec"]),
+            "label_available_ts": (
+                int(row["label_available_ts"])
+                if row["label_available_ts"] is not None
+                else None
+            ),
             "entry_close": float(row["entry_close"]),
             "exit_close": float(row["exit_close"]),
             "ret": float(row["ret"]),
             "success": int(row["success"]),
             "reco_status": row["reco_status"],
             "score": float(row["score"]) if row["score"] is not None else None,
+            "mean_reversion_score": mean_reversion_score,
+            "mean_reversion_evidence_valid": eligibility["gates"][
+                "mean_reversion_evidence_valid"
+            ],
             "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
             "expected_rr": float(row["expected_rr"]) if row["expected_rr"] is not None else None,
             "llm_review": llm_review,
@@ -4890,6 +5187,11 @@ def get_outcomes_recent_enriched(
             "policy_fingerprint": scope_snapshot["policy_fingerprint"],
             "policy_contract_verified": scope_snapshot["policy_contract_verified"],
             "sample_role": scope_snapshot["sample_role"],
+            "policy_evaluation_eligible": eligibility[
+                "policy_evaluation_eligible"
+            ],
+            "calibration_eligible": eligibility["calibration_eligible"],
+            "eligibility": eligibility,
             "outcome_reason": str(row["outcome_observability_reason"] or "") or None,
             "outcome_diagnostics": _json_loads_mapping_or_default(
                 row["outcome_observability_details_json"],
@@ -5009,6 +5311,24 @@ def _archive_outcome_summary_fast(
             "actionable": actionable,
             "shadow_no_trade": shadow,
         },
+        "eligibility_summary": {
+            "available": False,
+            "reason": "archive_summary_avoids_unbounded_json_scan",
+            "cohorts_mutually_exclusive": True,
+            "standard_retention_days": STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS,
+            "exact_policy_retention_days": EXACT_POLICY_EVIDENCE_RETENTION_DAYS,
+        },
+        "eligibility_cohorts": {},
+        "eligibility_reason_counts": [],
+        "decision_reason_counts": [],
+        "evidence_retention": {
+            "standard_days": STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS,
+            "exact_policy_days": EXACT_POLICY_EVIDENCE_RETENTION_DAYS,
+            "exact_policy_selector": (
+                "materialized policy_evaluation_eligible root; calibration gates "
+                "remain re-verified at read/training time"
+            ),
+        },
         "llm_summary": {},
         "by_bot": [],
         "by_symbol": [],
@@ -5065,9 +5385,11 @@ def get_outcomes_stats(
         query_params.extend([current_model, current_model + "+%"])
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
-                     o.ret, o.success,
+                     o.horizon_sec, o.label_available_ts, o.ret, o.success,
                      r.direction AS reco_direction, r.status AS reco_status,
-                     r.reasons_json, r.is_outcome_label_root, r.model_version
+                     r.score, r.reasons_json, r.is_outcome_label_root,
+                     r.model_version, r.outcome_eligible,
+                     r.policy_evaluation_eligible, r.outcome_sample_role
               FROM reco_outcomes o
               LEFT JOIN recommendations r ON r.rec_id = o.rec_id
               WHERE {' AND '.join(where_parts)}
@@ -5081,6 +5403,26 @@ def get_outcomes_stats(
         "actionable": {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0},
         "shadow_no_trade": {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0},
     }
+    eligibility_cohort_buckets = {
+        name: {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0}
+        for name in (
+            "calibration_eligible",
+            "policy_evaluation_candidate",
+            "shadow_exploration",
+            "outcome_only",
+            "other_policy",
+            "excluded",
+        )
+    }
+    eligibility_gate_counts = {
+        "outcome_eligible_total": 0,
+        "policy_evaluation_eligible_total": 0,
+        "calibration_eligible_total": 0,
+        "mean_reversion_available_total": 0,
+        "mean_reversion_evidence_valid_total": 0,
+    }
+    eligibility_reason_counts: dict[str, int] = {}
+    decision_reason_counts: dict[str, int] = {}
     by_bot_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_symbol_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_raw_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -5107,6 +5449,7 @@ def get_outcomes_stats(
     }
 
     rows = cur.fetchall()
+    eligibility_now_ts = now_ts()
     for row in rows:
         scope_snapshot = _outcome_row_scope_snapshot(
             row,
@@ -5127,6 +5470,32 @@ def get_outcomes_stats(
         neutral_source = dirs["neutral_source"]
         success = int(row["success"] or 0)
         ret = float(row["ret"] or 0.0)
+        eligibility = _outcome_eligibility_snapshot(
+            row,
+            scope_snapshot,
+            active_policy_fingerprint=policy_fingerprint,
+            now_ts_value=eligibility_now_ts,
+        )
+        eligibility_cohort = str(eligibility["cohort"])
+        _accumulate_stat(
+            eligibility_cohort_buckets[eligibility_cohort],
+            success,
+            ret,
+        )
+        if eligibility["outcome_eligible"]:
+            eligibility_gate_counts["outcome_eligible_total"] += 1
+        if eligibility["policy_evaluation_eligible"]:
+            eligibility_gate_counts["policy_evaluation_eligible_total"] += 1
+        if eligibility["calibration_eligible"]:
+            eligibility_gate_counts["calibration_eligible_total"] += 1
+        if eligibility["gates"]["mean_reversion_score"] is not None:
+            eligibility_gate_counts["mean_reversion_available_total"] += 1
+        if eligibility["gates"]["mean_reversion_evidence_valid"]:
+            eligibility_gate_counts["mean_reversion_evidence_valid_total"] += 1
+        for code in eligibility["eligibility_reason_codes"]:
+            eligibility_reason_counts[code] = eligibility_reason_counts.get(code, 0) + 1
+        for code in eligibility["decision_reason_codes"]:
+            decision_reason_counts[code] = decision_reason_counts.get(code, 0) + 1
         reco_status = str(row["reco_status"] or "").strip().lower()
         reasons_mapping = scope_snapshot["reasons"]
         outcome_policy = reasons_mapping.get("outcome_policy") if isinstance(reasons_mapping, dict) else None
@@ -5318,6 +5687,40 @@ def get_outcomes_stats(
             "actionable": _cohort_summary(cohort_buckets["actionable"]),
             "shadow_no_trade": _cohort_summary(cohort_buckets["shadow_no_trade"]),
         },
+        "eligibility_summary": {
+            "available": True,
+            "fingerprint_scope_total": total,
+            **eligibility_gate_counts,
+            "cohorts_mutually_exclusive": True,
+            "standard_retention_days": STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS,
+            "exact_policy_retention_days": EXACT_POLICY_EVIDENCE_RETENTION_DAYS,
+        },
+        "eligibility_cohorts": {
+            name: _cohort_summary(bucket)
+            for name, bucket in eligibility_cohort_buckets.items()
+        },
+        "eligibility_reason_counts": [
+            {"code": code, "count": count}
+            for code, count in sorted(
+                eligibility_reason_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ],
+        "decision_reason_counts": [
+            {"code": code, "count": count}
+            for code, count in sorted(
+                decision_reason_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ],
+        "evidence_retention": {
+            "standard_days": STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS,
+            "exact_policy_days": EXACT_POLICY_EVIDENCE_RETENTION_DAYS,
+            "exact_policy_selector": (
+                "materialized policy_evaluation_eligible root; calibration gates "
+                "remain re-verified at read/training time"
+            ),
+        },
         "llm_summary": llm_summary,
         "by_bot": by_bot,
         "by_symbol": by_symbol,
@@ -5501,16 +5904,30 @@ def get_symbol_health(
     status_rank = {"disabled": 0, "missing": 1, "stale": 2, "ok": 3}
     return sorted(result, key=lambda x: (status_rank.get(str(x.get("status") or ""), 9), x["symbol"]))
 
-def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, int]:
+def prune_old_data(
+    conn: sqlite3.Connection,
+    retain_days: int = 7,
+    *,
+    exact_policy_retain_days: int = EXACT_POLICY_EVIDENCE_RETENTION_DAYS,
+) -> dict[str, int]:
     """Prune old rows from high-growth tables. Call periodically (e.g. once per hour).
-    Retains retain_days of data. Returns count of deleted rows per table.
+    Ordinary outcome evidence is bounded at 14 days.  Materialized exact-policy
+    candidate roots are retained longer so calibration can accumulate independent
+    cohorts across restarts without keeping the full exploratory archive hot.
+    Returns count of deleted rows per table.
     """
-    cutoff = now_ts() - retain_days * 86400
-    cutoff_14d = now_ts() - 14 * 86400  # sentiment: keep 14 days for EWMA
+    now = now_ts()
+    exact_policy_days = max(
+        STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS + 1,
+        int(exact_policy_retain_days),
+    )
+    cutoff = now - retain_days * 86400
+    cutoff_14d = now - STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS * 86400
+    cutoff_exact_policy = now - exact_policy_days * 86400
     deleted = {}
 
     # features: keep 1 day (used only for current cycle reference)
-    cur = conn.execute("DELETE FROM features WHERE ts < ?", (now_ts() - 86400,))
+    cur = conn.execute("DELETE FROM features WHERE ts < ?", (now - 86400,))
     deleted["features"] = cur.rowcount
 
     # market_regime: keep 7 days
@@ -5525,23 +5942,58 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     cur = conn.execute("DELETE FROM sentiment WHERE ts < ?", (cutoff_14d,))
     deleted["sentiment"] = cur.rowcount
 
-    # recommendations: keep 14 days — MUST match outcomes retention.
+    # recommendations: keep 14 days by default — MUST match outcomes retention.
     # get_outcomes_with_recs() uses an INNER JOIN on rec_id.
     # If recs are pruned at 7d but outcomes live 14d, the JOIN silently drops
     # all outcomes whose rec was already pruned → calibrator loses half its training data.
-    cur = conn.execute("DELETE FROM recommendations WHERE ts < ? AND status NOT IN ('executed','ignored')", (cutoff_14d,))
+    # Exact-policy candidate roots form a sparse, bounded 90-day evidence lane.
+    # The full JSON contract is still re-verified by calibration/read paths; the
+    # materialized flag is only a conservative retention selector.
+    cur = conn.execute(
+        """DELETE FROM recommendations
+              WHERE ts < ?
+                AND status NOT IN ('executed','ignored')
+                AND NOT (
+                    ts >= ?
+                    AND COALESCE(policy_evaluation_eligible, 0)=1
+                    AND COALESCE(is_outcome_label_root, 1)=1
+                )""",
+        (cutoff_14d, cutoff_exact_policy),
+    )
     deleted["recommendations"] = cur.rowcount
 
-    # reco_outcomes: keep 14 days (calibrator uses up to 6000 recent outcomes)
-    cur = conn.execute("DELETE FROM reco_outcomes WHERE ts < ?", (cutoff_14d,))
+    # reco_outcomes: ordinary rows keep 14 days; matching exact-policy roots keep
+    # the extended bounded window together with their immutable recommendation.
+    cur = conn.execute(
+        """DELETE FROM reco_outcomes
+              WHERE ts < ?
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM recommendations r
+                     WHERE r.rec_id=reco_outcomes.rec_id
+                       AND r.ts >= ?
+                       AND COALESCE(r.policy_evaluation_eligible, 0)=1
+                       AND COALESCE(r.is_outcome_label_root, 1)=1
+                )""",
+        (cutoff_14d, cutoff_exact_policy),
+    )
     deleted["reco_outcomes"] = cur.rowcount
 
     # Keep the independent denominator for exactly the same retained window as
     # recommendations/outcomes.  Otherwise censored roots disappear earlier and
     # can make the monetary gate fail open.
     cur = conn.execute(
-        "DELETE FROM reco_outcome_observability WHERE recommendation_ts < ?",
-        (cutoff_14d,),
+        """DELETE FROM reco_outcome_observability
+              WHERE recommendation_ts < ?
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM recommendations r
+                     WHERE r.rec_id=reco_outcome_observability.rec_id
+                       AND r.ts >= ?
+                       AND COALESCE(r.policy_evaluation_eligible, 0)=1
+                       AND COALESCE(r.is_outcome_label_root, 1)=1
+                )""",
+        (cutoff_14d, cutoff_exact_policy),
     )
     deleted["reco_outcome_observability"] = cur.rowcount
 
@@ -5550,7 +6002,6 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     # silently kills the 1d branch after the system has been running for a month, because
     # tf=86400 can never accumulate enough history again. Keep short TFs compact, but
     # retain enough slow-TF history for the actual inference contract.
-    now = now_ts()
     cutoff_ohlcv_1m = now - 30 * 86400
     cutoff_ohlcv_15_30m = now - 90 * 86400
     cutoff_ohlcv_1h_4h = now - 180 * 86400
@@ -5566,7 +6017,7 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     deleted["ohlcv"] = cur.rowcount
 
     # ticker_snap: keep 2 days (only latest snapshot is used at inference time)
-    cur = conn.execute("DELETE FROM ticker_snap WHERE ts < ?", (now_ts() - 2 * 86400,))
+    cur = conn.execute("DELETE FROM ticker_snap WHERE ts < ?", (now - 2 * 86400,))
     deleted["ticker_snap"] = cur.rowcount
 
     # funding_rate: keep 7 days (only current value used; history not queried)
@@ -5574,7 +6025,7 @@ def prune_old_data(conn: sqlite3.Connection, retain_days: int = 7) -> dict[str, 
     deleted["funding_rate"] = cur.rowcount
 
     # runtime_locks: drop stale leader locks so dead workers do not block takeover
-    cur = conn.execute("DELETE FROM runtime_locks WHERE heartbeat_ts < ?", (now_ts() - 2 * 86400,))
+    cur = conn.execute("DELETE FROM runtime_locks WHERE heartbeat_ts < ?", (now - 2 * 86400,))
     deleted["runtime_locks"] = cur.rowcount
 
     # open_interest: keep 7 days (oi_trend uses last 48 1h candles = 2 days)

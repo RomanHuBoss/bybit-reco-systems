@@ -1,3 +1,12 @@
+## Eligibility outcome и calibration lane (v1.0.77)
+
+Одинаковый policy fingerprint означает одинаковый immutable deployment contract,
+но не автоматический допуск строки к калибровке. Exact eligibility требует
+валидных score/MR evidence, прохождения сохранённых floors, явного
+`policy_evaluation_eligible=true`, проверенного contract hash и зрелого label с
+точным `label_available_ts`. Shadow exploration остаётся outcome-аудитом и не
+попадает в calibration cohort. Universe и production thresholds не изменены.
+
 ## Терминальный исход grid outcome (v1.0.76)
 
 Для `grid_label_v26` бинарный успех и денежный результат являются разными величинами:

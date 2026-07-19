@@ -1,3 +1,18 @@
+## Exact-policy evidence и offline walk-forward (v1.0.77)
+
+Версия 1.0.77 разделяет понятия «тот же проверенный policy fingerprint» и
+«допущено к калибровке». `/api/v1/outcomes/stats` теперь публикует
+взаимоисключающие eligibility-когорты, `mean_reversion_score`, gate values и
+причины допуска/исключения для каждой строки. Обычный outcome archive остаётся
+14-дневным, а sparse exact-policy candidate lane хранится 90 дней и повторно
+проверяется по immutable policy contract при чтении.
+
+В `scripts/offline_walk_forward.py` добавлен purged walk-forward по score,
+mean-reversion и direction. Он использует только labels, доступные до validation
+timestamp, и не подбирает production thresholds. Фактический разбор приложенного
+среза включён в каталог `docs`. Universe и торговые пороги в этой версии не
+менялись.
+
 ## Диагностика терминального исхода и строгая числовая семантика UI (v1.0.76)
 
 Версия 1.0.76 устраняет разрыв между математикой proxy outcome и операторским журналом. Расчётчик `grid_label_v26` и ранее корректно считал `success=1` только при положительном net proxy P&L и отсутствии kill-switch, однако при сохранении завершённой метки терялись терминальные diagnostics. Поэтому архив мог показывать положительный P&L рядом с «Неуспех», не объясняя, что причиной был пробой защитной границы.

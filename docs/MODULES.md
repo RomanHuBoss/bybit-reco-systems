@@ -1,3 +1,14 @@
+## v1.0.77: outcome eligibility and offline evidence
+
+- `app/db.py`: exact eligibility read model, reason counters and 14/90-day
+  selective retention.
+- `app/ui/static/app.js`: non-overlapping cohort table, gate reasons and
+  per-outcome score/mean-reversion columns.
+- `scripts/offline_walk_forward.py`: purged timestamp walk-forward using only
+  labels available before each validation timestamp.
+- `tests/test_iteration264_outcome_eligibility_walk_forward.py`: cohort,
+  retention, no-leakage and UI contracts.
+
 ## v1.0.76: outcome audit semantics
 
 - `app/outcomes.py`: формирует terminal reason и kill-switch diagnostics для завершённой proxy-метки.

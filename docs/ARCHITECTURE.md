@@ -1,3 +1,17 @@
+## Outcome eligibility read model - v1.0.77
+
+Outcome scope and calibration eligibility are orthogonal. `current_policy`
+filters by current model plus verified canonical policy fingerprint. Each retained
+root is then assigned to exactly one eligibility cohort from immutable
+`feature_snapshot` and `outcome_policy`: calibration eligible, policy-evaluation
+candidate, shadow exploration, outcome-only, other policy or excluded. API gate
+diagnostics never mutate the original recommendation.
+
+The hot evidence store has two bounded lanes: ordinary outcome evidence for 14
+days and materialized policy-evaluation roots for 90 days. The longer selector is
+intentionally conservative; training still verifies contract hash, active
+fingerprint, score/MR floors and label maturity.
+
 ## Outcome audit data flow - v1.0.76
 
 Завершённый proxy outcome проходит единый доказуемый путь: `_grid_outcome` формирует `(success, net_proxy_return)` и terminal diagnostics -> `compute_outcomes_cycle` передаёт их в `db.insert_outcome` -> существующий `reco_outcome_observability.details_json` сохраняет diagnostics атомарно с outcome lifecycle -> `get_outcomes_recent_enriched` присоединяет observability -> frontend показывает отдельные поля исхода, P&L и причины. Схема SQLite/PostgreSQL не изменена; используется уже существующий additive observability-контракт.

@@ -1,3 +1,16 @@
+## Остаточные риски после v1.0.77
+
+- Старые outcome exports не содержат `mean_reversion_score` и
+  `label_available_ts`; offline tool помечает coverage как неполный и не
+  импутирует значения.
+- 90-дневное retention window увеличивает размер sparse exact-policy lane;
+  selector ограничен materialized policy-evaluation roots, но ёмкость БД нужно
+  наблюдать.
+- Даже корректно разделённые cross-sectional rows одного timestamp не являются
+  независимыми испытаниями. Для решения о порогах нужны horizon-separated folds.
+- Eligibility API диагностический: он не подтверждает real execution или live
+  edge и не должен использоваться как команда запуска.
+
 ## Остаточные риски после v1.0.76
 
 - Новые labeled outcomes сохраняют терминальную причину и kill-switch diagnostics. Старые архивные строки не переписываются: если legacy outcome имеет положительный `ret` и `success=0`, но не содержит diagnostics, UI честно сообщает об отсутствии терминальной причины, а не реконструирует её задним числом.

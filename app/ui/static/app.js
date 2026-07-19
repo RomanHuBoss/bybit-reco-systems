@@ -295,6 +295,59 @@ function sampleRoleRu(value) {
   return labels[key] || humanizeOperatorText(value || "Не указано");
 }
 
+function outcomeEligibilityCohortRu(value) {
+  const key = String(value || "").trim().toLowerCase();
+  const labels = {
+    calibration_eligible: "Допущено к калибровке",
+    policy_evaluation_candidate: "Кандидат точного набора правил; проверка не завершена",
+    shadow_exploration: "Теневая исследовательская когорта; не калибровка",
+    outcome_only: "Только аудит исхода",
+    other_policy: "Другой идентификатор правил",
+    excluded: "Исключено",
+  };
+  return labels[key] || humanizeOperatorText(value || "Не указано");
+}
+
+function outcomeEligibilityReasonRu(value) {
+  const key = String(value || "").trim().toUpperCase();
+  const labels = {
+    ACTIVE_POLICY_UNSPECIFIED: "активный fingerprint не указан",
+    ACTIVE_POLICY_FINGERPRINT_MISMATCH: "fingerprint не совпадает с активным",
+    POLICY_CONTRACT_UNVERIFIED: "контракт policy не прошёл проверку",
+    POLICY_EVALUATION_EXCLUDED: "не пройден допуск policy evaluation",
+    SCORE_INVALID: "score отсутствует или некорректен",
+    SCORE_POLICY_FLOOR_MISSING: "в контракте отсутствует порог score",
+    SCORE_BELOW_POLICY_FLOOR: "score ниже действующего порога",
+    MEAN_REVERSION_EVIDENCE_INVALID: "mean reversion evidence некорректен",
+    MEAN_REVERSION_POLICY_FLOOR_MISSING: "в контракте отсутствует порог mean reversion",
+    MEAN_REVERSION_BELOW_POLICY_FLOOR: "mean reversion ниже действующего порога",
+    LABEL_DUE_MISSING: "не сохранён срок готовности label",
+    LABEL_DUE_CONTRACT_MISMATCH: "срок label не совпадает с контрактом",
+    LABEL_AVAILABILITY_MISSING: "не сохранён момент доступности label",
+    LABEL_AVAILABILITY_PREMATURE: "label объявлен доступным раньше допустимого срока",
+    LABEL_NOT_MATURED: "label ещё не созрел",
+    MATERIALIZED_POLICY_ELIGIBILITY_MISMATCH: "расхождение materialized policy eligibility",
+    MATERIALIZED_OUTCOME_ELIGIBILITY_MISMATCH: "расхождение materialized outcome eligibility",
+  };
+  return labels[key] || humanizeOperatorText(value || "Не указано");
+}
+
+function outcomeEligibilityReasonsText(row) {
+  const blockers = Array.isArray(row?.eligibility?.eligibility_reason_codes)
+    ? row.eligibility.eligibility_reason_codes
+    : [];
+  const decisions = Array.isArray(row?.eligibility?.decision_reason_codes)
+    ? row.eligibility.decision_reason_codes
+    : [];
+  const parts = blockers.length
+    ? [`Допуск: ${blockers.map(outcomeEligibilityReasonRu).join("; ")}`]
+    : ["Все проверки точного набора правил выполнены"];
+  if (decisions.length) {
+    parts.push(`Решение: ${decisions.map(humanizeOperatorText).join("; ")}`);
+  }
+  return parts.join(". ");
+}
+
 function empiricalStatusRu(value) {
   const key = String(value || "").trim().toLowerCase();
   const labels = {
@@ -3285,6 +3338,13 @@ async function loadOutcomes() {
   const actionableSummary = data.cohorts?.actionable || {};
   const shadowSummary = data.cohorts?.shadow_no_trade || {};
   const allRootsSummary = data.cohorts?.all_roots || s;
+  const eligibilitySummary = data.eligibility_summary || {};
+  const eligibilityCohorts = data.eligibility_cohorts || {};
+  const eligibilityCohortRows = Object.entries(eligibilityCohorts)
+    .map(([cohort, stats]) => ({ cohort, ...(stats || {}) }))
+    .filter(row => Number(row.total || 0) > 0);
+  const eligibilityReasonCounts = data.eligibility_reason_counts || [];
+  const decisionReasonCounts = data.decision_reason_counts || [];
   const headlineSummary = actionableSummary;
   const llmSummary = data.llm_summary || {};
   const byExecution = data.by_execution_direction || [];
@@ -3303,6 +3363,10 @@ async function loadOutcomes() {
   const total = Number(allRootsSummary.total || 0);
   const archiveTotal = Number(archiveRoots.total || 0);
   const actionableTotal = Number(actionableSummary.total || 0);
+  const exactPolicyCandidateTotal = Number(eligibilitySummary.policy_evaluation_eligible_total || 0);
+  const calibrationEligibleTotal = Number(eligibilitySummary.calibration_eligible_total || 0);
+  const meanReversionAvailableTotal = Number(eligibilitySummary.mean_reversion_available_total || 0);
+  const exactPolicyRetentionDays = Number(eligibilitySummary.exact_policy_retention_days || 0);
   const llmReviewed = Number(llmSummary.ok_total || 0);
   const llmDisagree = Number(llmSummary.disagree_total || 0);
   const llmDisagreeShare = llmReviewed > 0 ? `${((llmDisagree / llmReviewed) * 100).toFixed(1)}%` : "—";
@@ -3318,7 +3382,10 @@ async function loadOutcomes() {
       { label: "Текущие правила · среднее абсолютное изменение", value: `${Number(headlineSummary.avg_abs_ret || 0).toFixed(2)}%` },
       { label: "Выборка текущего набора правил", value: total },
       { label: "Текущие правила · общая доля успешных", value: allRootsSummary.win_rate !== null && allRootsSummary.win_rate !== undefined ? `${(Number(allRootsSummary.win_rate) * 100).toFixed(1)}%` : "—" },
-      { label: "Текущие правила · учебные наблюдения", value: Number(shadowSummary.total || 0) },
+      { label: "Теневая исследовательская когорта · учебные наблюдения, не калибровка", value: Number(shadowSummary.total || 0) },
+      { label: "Кандидаты оценки правил", value: exactPolicyCandidateTotal },
+      { label: "Допущено к калибровке", value: calibrationEligibleTotal },
+      { label: "Исходы с оценкой возврата к среднему", value: `${meanReversionAvailableTotal}/${total}` },
       { label: "Исторический архив", value: archiveTotal },
       { label: "Архивная доля успешных", value: archiveRoots.win_rate !== null && archiveRoots.win_rate !== undefined ? `${(Number(archiveRoots.win_rate) * 100).toFixed(1)}%` : "—" },
       { label: "Повторов убрано", value: Number(s.deduped_duplicates || 0) },
@@ -3328,7 +3395,25 @@ async function loadOutcomes() {
       { label: "Расхождение с LLM", value: `${llmDisagree} · ${llmDisagreeShare}` },
       { label: "Ошибки LLM", value: `${Number(llmSummary.error_total || 0)} · ${llmErrorShare}` },
     ])}
-    <p class="modal-note"><b>${escapeHtml(currentScope.label || "Выборка текущего набора правил")}</b> — единственный источник основной и подробной статистики. Исторический архив показан отдельными плитками и отдельным журналом; он не входит в текущую долю успешных. Идентификатор набора правил: <span class="wrap">${escapeHtml(String(currentScope.policy_fingerprint || "—").slice(0, 16))}</span>. Это оценка по свечам цены и объёма, а не подтверждение реального исполнения сделок или преимущества в реальной торговле.</p>
+    <p class="modal-note"><b>${escapeHtml(currentScope.label || "Выборка текущего набора правил")}</b> — это все корневые исходы с тем же проверенным идентификатором правил, а не автоматически калибровочная выборка. Точный набор правил и теневая исследовательская когорта разделены ниже и не пересекаются. Исторический архив не входит в текущую статистику. Идентификатор набора правил: <span class="wrap">${escapeHtml(String(currentScope.policy_fingerprint || "—").slice(0, 16))}</span>. Доказательства точного набора правил хранятся ${exactPolicyRetentionDays || "—"} дней; торговые пороги этим экраном не изменяются. Это оценка по свечам цены и объёма, а не подтверждение реального исполнения сделок или преимущества в реальной торговле.</p>
+    <div class="modal-section">
+      <div class="modal-section-title">Когорты допуска (не пересекаются)</div>
+      ${buildModalTable([
+        { label: "Когорта", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeEligibilityCohortRu(row.cohort))}</span>` },
+        { label: "Всего", render: row => escapeHtml(String(row.total || 0)) },
+        { label: "Доля", render: row => escapeHtml(formatShare(row.total, total)) },
+        { label: "Доля успешных", render: row => row.win_rate === null || row.win_rate === undefined ? "—" : escapeHtml(`${(Number(row.win_rate) * 100).toFixed(1)}%`) },
+        { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+      ], eligibilityCohortRows, { emptyText: "Когорты допуска пока не рассчитаны." })}
+      ${buildModalTable([
+        { label: "Причина исключения из точного набора правил", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeEligibilityReasonRu(row.code))}</span>` },
+        { label: "Наблюдений", render: row => escapeHtml(String(row.count || 0)) },
+      ], eligibilityReasonCounts, { emptyText: "Причин исключения нет: все доступные gate выполнены." })}
+      ${buildModalTable([
+        { label: "Причина решения", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.code || "—"))}</span>` },
+        { label: "Наблюдений", render: row => escapeHtml(String(row.count || 0)) },
+      ], decisionReasonCounts, { emptyText: "Коды причин решения не сохранены в этой выборке." })}
+    </div>
     <div class="modal-section">
       <div class="modal-section-title">На что стоит смотреть в первую очередь</div>
       ${renderOutcomeInsightCards(insights)}
@@ -3429,6 +3514,10 @@ async function loadOutcomes() {
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
         { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction) },
         { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Оценка допуска", render: row => toFiniteNumber(row.score) === null ? "—" : escapeHtml(formatDotNumber(row.score, 4)) },
+        { label: "Возврат к среднему", render: row => toFiniteNumber(row.mean_reversion_score) === null ? "—" : escapeHtml(formatDotNumber(row.mean_reversion_score, 4)) },
+        { label: "Когорта допуска", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeEligibilityCohortRu(row.eligibility?.cohort))}</span>` },
+        { label: "Причины допуска", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeEligibilityReasonsText(row))}</span>` },
         { label: "Статус LLM", render: row => renderLlmStatusBadge(row.llm_review?.status || "none") },
         { label: "Вывод LLM", render: row => renderDirectionBadge(row.llm_review?.thesis_direction || "neutral") },
         { label: "Решение LLM", render: row => renderDirectionBadge(row.llm_review?.execution_direction || "neutral") },
