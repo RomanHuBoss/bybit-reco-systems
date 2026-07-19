@@ -356,6 +356,7 @@ body {
 .dir-long  { color: var(--good); border-color: rgba(51,209,122,0.30); background: rgba(51,209,122,0.08); }
 .dir-short { color: var(--bad);  border-color: rgba(255,90,122,0.30); background: rgba(255,90,122,0.08); }
 .dir-neu   { color: #cbd5e1; border-color: rgba(148,163,184,0.28); background: rgba(148,163,184,0.08); }
+.dir-invalid { color: var(--warn); border-color: rgba(255,176,32,0.38); background: rgba(255,176,32,0.09); }
 
 .score-ui-cell {
   display: inline-flex;

@@ -603,7 +603,7 @@ def test_operator_shell_and_outcome_errors_are_strategy_neutral_and_fail_visible
     assert "timeTickCount" in js
     assert "index, array" not in js
     assert "function operatorBlockMessageRu" in js
-    assert "Single-position trend-план неполон" in js
+    assert "План одной направленной позиции неполон" in js
 
 
 def test_production_generated_trend_plan_round_trips_through_db_and_details(client_and_conn) -> None:

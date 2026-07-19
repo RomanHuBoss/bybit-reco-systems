@@ -1334,6 +1334,13 @@ def _operator_next_actions_for_reco(
     decision_layers = reasons.get("decision_layers") if isinstance(reasons.get("decision_layers"), dict) else {}
     economics = _first_mapping(params.get("economics"), (params.get("trade_plan") or {}).get("economics") if isinstance(params.get("trade_plan"), dict) else {})
     direction = str(rec.get("direction") or "neutral").strip().lower()
+    # Legacy rows and older API/test fixtures may omit bot_type.  Before the
+    # directional strategy existed every recommendation was a futures grid, so
+    # preserve that historical contract while keeping explicit trend rows fully
+    # isolated from grid remediation.
+    bot_type = str(rec.get("bot_type") or "futures_grid").strip().lower()
+    is_grid = bot_type == "futures_grid"
+    is_trend = bot_type == "directional_trend"
     leverage = _finite_float_or_none(params.get("leverage"))
     liq_buffer = _finite_float_or_none(ctx.get("liquidation_buffer_pct"))
     liq_floor = OPERATOR_MIN_LIQUIDATION_BUFFER_PCT
@@ -1373,7 +1380,39 @@ def _operator_next_actions_for_reco(
             "severity": severity,
         })
 
-    if "LIQUIDATION_BUFFER_TOO_LOW" in error_codes:
+    if is_trend and "DIRECTIONAL_TREND_DIRECTION_INVALID" in error_codes:
+        add(
+            "WAIT_FOR_CONFIRMED_TREND_DIRECTION",
+            "Ждать подтверждённого направления LONG или SHORT",
+            "Кандидат направленной стратегии не получил однозначного направления. Это не нейтральная сетка: позицию не открывать, пока новая публикация не сформирует подтверждённый LONG или SHORT.",
+            "warning",
+        )
+
+    if is_trend and ({"DIRECTIONAL_TREND_LEVELS_MISSING", "DIRECTIONAL_TREND_GEOMETRY_INVALID", "DIRECTIONAL_TREND_LIVE_GEOMETRY_UNVERIFIABLE"} & error_codes):
+        add(
+            "REBUILD_DIRECTIONAL_TREND_PLAN",
+            "Дождаться нового расчёта entry, TP и SL",
+            "План одной направленной позиции неполон либо его геометрия не подтверждена. Не переносите уровни вручную и не заменяйте такую позицию сеточной стратегией; дождитесь новой публикации со всеми тремя ценами.",
+            "danger",
+        )
+
+    if is_trend and ({"DIRECTIONAL_TREND_CONTRACT_MISSING", "DIRECTIONAL_TREND_POSITION_POLICY_INVALID", "DIRECTIONAL_TREND_ENTRY_MODEL_INVALID"} & error_codes):
+        add(
+            "REBUILD_DIRECTIONAL_TREND_CONTRACT",
+            "Пересчитать контракт одной направленной позиции",
+            "Контракт не подтверждает одну позицию без усреднения и наращивания объёма. Такой кандидат остаётся заблокированным до новой публикации; кандидат сеточной стратегии оценивается отдельно.",
+            "danger",
+        )
+
+    if is_trend and ({"TREND_EVENT_MODEL_NOT_READY", "TREND_FIRST_TOUCH_MODEL_REQUIRED", "TREND_FIRST_TOUCH_MODEL_UNAVAILABLE", "TREND_FIRST_TOUCH_ORDER_UNCERTAIN", "TREND_FIRST_TOUCH_EXPECTANCY_NON_POSITIVE"} & error_codes):
+        add(
+            "WAIT_FOR_TREND_FIRST_TOUCH_EVIDENCE",
+            "Ждать доказательств first-touch модели",
+            "Trend-позиция не допускается без подтверждённого порядка TP/SL и положительной консервативной денежной ожидаемости. Продолжайте накопление исходов; не подменяйте этот gate обычным win rate.",
+            "info",
+        )
+
+    if is_grid and "LIQUIDATION_BUFFER_TOO_LOW" in error_codes:
         buffer_txt = f"{liq_buffer:.2f}%" if liq_buffer is not None else "не оценён"
         lev_txt = f"{leverage:.8g}×" if leverage is not None else "текущее значение"
         policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
@@ -1397,7 +1436,7 @@ def _operator_next_actions_for_reco(
             "warning",
         )
 
-    if "GRID_NET_PROFIT_TOO_THIN" in error_codes or "GRID_NET_PROFIT_NON_POSITIVE" in error_codes or "GRID_GROSS_EDGE_BELOW_COSTS" in error_codes:
+    if is_grid and ("GRID_NET_PROFIT_TOO_THIN" in error_codes or "GRID_NET_PROFIT_NON_POSITIVE" in error_codes or "GRID_GROSS_EDGE_BELOW_COSTS" in error_codes):
         add(
             "WAIT_FOR_WIDER_NET_EDGE",
             "Ждать более широкой сеточной прибыли",
@@ -1421,7 +1460,7 @@ def _operator_next_actions_for_reco(
             "warning",
         )
 
-    if "CURRENT_PRICE_OUTSIDE_GRID_RANGE" in error_codes or "CURRENT_PRICE_BEYOND_KILL_SWITCH" in error_codes:
+    if is_grid and ("CURRENT_PRICE_OUTSIDE_GRID_RANGE" in error_codes or "CURRENT_PRICE_BEYOND_KILL_SWITCH" in error_codes):
         add(
             "REFRESH_STALE_PRICE_PLAN",
             "Дождаться нового расчёта уровней",
@@ -1429,7 +1468,7 @@ def _operator_next_actions_for_reco(
             "danger",
         )
 
-    if status_norm == "no_trade" and ("operator_leverage_profile_not_actionable" in no_trade_blob or "operator_minimum" in no_trade_blob):
+    if is_grid and status_norm == "no_trade" and ("operator_leverage_profile_not_actionable" in no_trade_blob or "operator_minimum" in no_trade_blob):
         lev_txt = f"{leverage:.8g}×" if leverage is not None else "текущем профиле плеча 3–5×"
         add(
             "DO_NOT_LAUNCH_PROFILE_NOT_ACTIONABLE",
@@ -1437,7 +1476,7 @@ def _operator_next_actions_for_reco(
             f"Идея оценена при {lev_txt}, но не прошла операторский профиль без ослабления правил риска. Оставьте решение «Не торговать»: ручной запуск такой сетки обойдёт обязательное условие безопасности.",
             "warning",
         )
-    if "signal_quality_too_low_for_operator_minimum" in no_trade_blob:
+    if is_grid and "signal_quality_too_low_for_operator_minimum" in no_trade_blob:
         add(
             "WAIT_FOR_STRONGER_SIGNAL_OR_RANGE",
             "Ждать более сильного сигнала или устойчивого бокового режима",
@@ -1445,13 +1484,20 @@ def _operator_next_actions_for_reco(
             "warning",
         )
     if "atr_too_high_for_operator_minimum" in no_trade_blob or "unsafe_volatility_or_execution_cost" in no_trade_blob or "высокая волатильность" in warning_blob:
+        volatility_detail = (
+            "Высокая волатильность повышает риск выхода из диапазона и ликвидационного сценария для сетки. Без новой публикации при более спокойном рынке торговлю не начинать."
+            if is_grid
+            else "Высокая волатильность делает entry/TP/SL и допустимый размер single-position сделки ненадёжными. Дождитесь новой trend-публикации; не расширяйте SL и не заменяйте позицию сеткой вручную."
+            if is_trend
+            else "Высокая волатильность делает торговый план ненадёжным. Дождитесь новой публикации."
+        )
         add(
             "WAIT_FOR_LOWER_VOLATILITY",
             "Ждать снижения волатильности",
-            "Высокая волатильность повышает риск выхода из диапазона и ликвидационного сценария для сетки. Без новой публикации при более спокойном рынке торговлю не начинать.",
+            volatility_detail,
             "warning",
         )
-    if "insufficient_net_edge_for_operator_minimum" in no_trade_blob:
+    if is_grid and "insufficient_net_edge_for_operator_minimum" in no_trade_blob:
         add(
             "WAIT_FOR_WIDER_NET_EDGE",
             "Ждать более широкой сеточной прибыли",
@@ -1465,7 +1511,7 @@ def _operator_next_actions_for_reco(
             "Издержки исполнения и неблагоприятный платёж финансирования ухудшают чистый результат. Дождитесь свежих данных об издержках и ставке; возможное получение платежа не считать гарантированным преимуществом.",
             "info",
         )
-    if "тренд" in warning_blob or "trend" in warning_blob:
+    if is_grid and ("тренд" in warning_blob or "trend" in warning_blob):
         add(
             "AVOID_GRID_IN_STRONG_TREND",
             "Не запускать сетку против сильного тренда",
@@ -1480,14 +1526,14 @@ def _operator_next_actions_for_reco(
             "info",
         )
 
-    if "INSUFFICIENT_MTF_HISTORY_FOR_GRID" in error_codes:
+    if is_grid and "INSUFFICIENT_MTF_HISTORY_FOR_GRID" in error_codes:
         add(
             "WAIT_FOR_MTF_HISTORY",
             "Дождаться закрытых свечей на нескольких интервалах",
             "Фьючерсная сетка не публикуется без как минимум трёх закрытых временных интервалов. Продолжайте сбор свечей и дождитесь новой публикации; не добавляйте вручную будущие или незакрытые свечи.",
             "info",
         )
-    if "RANGE_EDGE_TOO_WEAK_FOR_GRID" in error_codes or "MARKET_TOO_TRENDY_FOR_GRID" in error_codes:
+    if is_grid and ("RANGE_EDGE_TOO_WEAK_FOR_GRID" in error_codes or "MARKET_TOO_TRENDY_FOR_GRID" in error_codes):
         add(
             "WAIT_FOR_RANGE_REGIME",
             "Ждать устойчивого бокового режима",
@@ -1495,10 +1541,17 @@ def _operator_next_actions_for_reco(
             "warning",
         )
     if "LIQUIDITY_UNKNOWN" in error_codes or "LIQUIDITY_TOO_LOW" in error_codes or "LIQUIDITY_LOW_FUTURES" in error_codes:
+        liquidity_detail = (
+            "Оборот, разница цен покупки и продажи и ликвидность не подтверждают безопасность фьючерсной сетки. Дождитесь свежих рыночных данных либо исключите инструмент из списка доступных для торговли."
+            if is_grid
+            else "Оборот, спред и ликвидность не подтверждают исполнимость single-position trend-сделки. Дождитесь свежих данных либо исключите инструмент; сеточная геометрия здесь не применяется."
+            if is_trend
+            else "Оборот, спред и ликвидность не подтверждают безопасное исполнение. Дождитесь свежих данных либо исключите инструмент."
+        )
         add(
             "WAIT_FOR_CONFIRMED_LIQUIDITY",
             "Проверить ликвидность",
-            "Оборот, разница цен покупки и продажи и ликвидность не подтверждают безопасность фьючерсной сетки. Дождитесь свежих рыночных данных либо исключите инструмент из списка доступных для торговли.",
+            liquidity_detail,
             "warning",
         )
 
@@ -5408,7 +5461,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.1", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

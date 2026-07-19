@@ -169,8 +169,8 @@ def test_api_status_explains_zero_actionable_snapshot(tmp_path: Path, monkeypatc
 def test_release_version_and_static_cache_bust_are_updated() -> None:
     main_source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
     index = INDEX_HTML.read_text(encoding="utf-8")
-    assert 'version="1.4.0"' in main_source
-    assert "build=1.4.0" in index
+    assert 'version="1.4.1"' in main_source
+    assert "build=1.4.1" in index
 
 
 def test_operator_release_documents_match_the_v168_ui_contract() -> None:
@@ -184,7 +184,7 @@ def test_operator_release_documents_match_the_v168_ui_contract() -> None:
         xml = archive.read("word/document.xml").decode("utf-8")
     text = unescape(re.sub(r"<[^>]+>", " ", xml))
     text = re.sub(r"\s+", " ", text)
-    assert "Версия документа: 1.4.0" in text
+    assert "Версия документа: 1.4.1" in text
     assert "шесть фиксированных колонок" in text
     assert "Скачать диагностику JSON" in text
     assert "Исход по правилам стратегии" in text

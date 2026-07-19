@@ -1,3 +1,10 @@
+## Остаточные риски после v1.4.1 strategy-native Details fix
+
+- A blocked `directional_trend/neutral` row is expected during parallel candidate evaluation; it is evidence that direction was not confirmed, not a third «neutral trend» strategy.
+- Machine codes remain visible for audit. Exact Russian mappings cover the main strategy guards, but a newly introduced code may temporarily fall back to sanitized source text until documentation/UI mapping is updated.
+- Legacy rows without `bot_type` are intentionally classified as `futures_grid`; if an externally modified database contains old non-grid rows without identity, they remain semantically unverifiable.
+- This release fixes operator presentation/remediation isolation; it does not prove strategy profitability or enable exchange order submission.
+
 ## Остаточные риски после v1.4.0 strategy observability audit
 
 - Durable waiting rows доказывают наличие обязательства рассчитать outcome, но не гарантируют наличие будущего непрерывного 1m path или funding history.

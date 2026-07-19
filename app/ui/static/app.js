@@ -206,7 +206,7 @@ function directionRu(dir) {
   const normalized = String(dir || "").trim().toLowerCase();
   if (normalized === "long") return "Покупка (рост)";
   if (normalized === "short") return "Продажа (снижение)";
-  return "Нейтральная сетка";
+  return "Нейтрально / направления нет";
 }
 
 function operatorStatusRu(status) {
@@ -629,6 +629,26 @@ function botTypeLabel(botType) {
   return "—";
 }
 
+function strategyDirectionRu(botType, dir) {
+  const strategy = String(botType || "").trim().toLowerCase();
+  const normalized = String(dir || "").trim().toLowerCase();
+  if (normalized === "long" || normalized === "short") return directionRu(normalized);
+  if (strategy === SUPPORTED_GRID_BOT_TYPE) return "Нейтральная сетка";
+  if (strategy === DIRECTIONAL_TREND_BOT_TYPE) return "Направление не определено";
+  return directionRu(normalized);
+}
+
+function strategyDirectionBadge(botType, dir) {
+  const strategy = String(botType || "").trim().toLowerCase();
+  const normalized = String(dir || "").trim().toLowerCase();
+  if (normalized === "long") return `<span class="dir-badge dir-long">▲ ${escapeHtml(strategyDirectionRu(strategy, normalized))}</span>`;
+  if (normalized === "short") return `<span class="dir-badge dir-short">▼ ${escapeHtml(strategyDirectionRu(strategy, normalized))}</span>`;
+  const isGrid = strategy === SUPPORTED_GRID_BOT_TYPE;
+  const prefix = isGrid ? "•" : "!";
+  const cls = isGrid ? "dir-neu" : "dir-invalid";
+  return `<span class="dir-badge ${cls}">${prefix} ${escapeHtml(strategyDirectionRu(strategy, normalized))}</span>`;
+}
+
 function isDirectionalTrendSinglePosition(it) {
   return String(it?.bot_type || "") === DIRECTIONAL_TREND_BOT_TYPE;
 }
@@ -988,8 +1008,8 @@ function operatorNextActionsHtml(it) {
         ${actions.map(a => `
           <div class="small-block ${a.severity === "danger" ? "small-block-critical" : ""}">
             <code>${escapeHtml(a.code || "ACTION")}</code><br>
-            <b>${escapeHtml(humanizeOperatorText(a.title || "Действие"))}</b><br>
-            ${escapeHtml(humanizeOperatorText(a.detail || ""))}
+            <b>${escapeHtml(a.title || "Действие")}</b><br>
+            ${escapeHtml(a.detail || "")}
           </div>
         `).join("")}
       </div>
@@ -1636,7 +1656,7 @@ function buildOperatorFieldSpecs(it, ov) {
     const eventReady = eventModel.ready === true;
     return [
       { label: "Стратегия", value: "Направленный тренд · одна позиция", help: "Отдельная single-position стратегия, а не направленная сетка. Система формирует проверяемый пакет для ручного или внешнего исполнения." },
-      { label: "Направление", value: directionRu((it || {}).direction), help: "LONG следует за подтверждённым ростом, SHORT — за подтверждённым снижением." },
+      { label: "Направление", value: strategyDirectionRu((it || {}).bot_type, (it || {}).direction), help: "LONG следует за подтверждённым ростом, SHORT — за подтверждённым снижением." },
       { label: "Модель входа", value: "Одна позиция, без усреднения", help: "Позиция не увеличивается против движения и не использует grid-levels." },
       { label: "Расчётная цена входа", value: formatBybitPrice(plan.reference_price ?? params.price_ref, it?.bybit_meta || {}, "nearest"), mono: true },
       { label: "Цель прибыли", value: formatBybitPrice(takeProfit.price, it?.bybit_meta || {}, "nearest"), mono: true },
@@ -1721,7 +1741,7 @@ function buildOperatorFieldSpecs(it, ov) {
     ? "—"
     : `Цель ${tpDistancePct === null ? "—" : formatPercentDot(tpDistancePct, 2, false)} / ограничение ${slDistancePct === null ? "—" : formatPercentDot(slDistancePct, 2, false)}`;
   const fields = [
-    { label: "Направление", value: directionRu((it || {}).direction), mono: false, help: "Покупка рассчитана на рост цены, продажа — на снижение. Нейтральная сетка работает внутри диапазона и не должна подменяться направленной целью прибыли." },
+    { label: "Направление", value: strategyDirectionRu((it || {}).bot_type, (it || {}).direction), mono: false, help: "Покупка рассчитана на рост цены, продажа — на снижение. Нейтральная сетка работает внутри диапазона и не должна подменяться направленной целью прибыли." },
     { label: "Размер позиции", value: positionValue, copyValue: positionNotional !== null ? formatDotNumber(positionNotional, 4, false) : positionValue, mono: true, help: "Наибольший оценочный номинальный объём позиции в худшем сценарии. Количество рассчитывается по неблагоприятной цене диапазона, чтобы не занизить риск." },
     { label: "Время работы", value: botLifetimeValue, copyValue: botLifetimeValue, help: "Рекомендуемый горизонт удержания бота, а не срок действия самой рекомендации." },
     { label: "Требуемая маржа", value: capitalValue, copyValue: marginRequired !== null ? formatDotNumber(marginRequired, 4, false) : capitalValue, help: "Оценочная сумма USDT, которую нужно выделить под сетку с указанным плечом. Используется более консервативная оценка для худшего сценария." },
@@ -1813,10 +1833,17 @@ function operatorBlockMessageRu(item) {
     ACCOUNT_MODE_UNSUPPORTED: "Режим счёта не соответствует контракту выбранной стратегии.",
     MARGIN_MODE_MISSING: "Не сохранён режим маржи. Исполнение блокируется fail-closed.",
     MARGIN_MODE_UNSUPPORTED: "Режим маржи не соответствует контракту выбранной стратегии.",
-    DIRECTIONAL_TREND_CONTRACT_MISSING: "Single-position trend-план неполон или не помечен как directional_trend.",
-    DIRECTIONAL_TREND_POSITION_POLICY_INVALID: "Trend-позиция должна явно запрещать усреднение и pyramiding.",
-    EXTERNAL_EXECUTION_PACKAGE_INVALID: "Внешний пакет исполнения не подтверждает recommendation-only режим и отсутствие отправленного биржевого ордера.",
-    EXTERNAL_EXECUTION_PACKAGE_MISSING: "Для trend-рекомендации отсутствует обязательный single-order пакет внешнего исполнения.",
+    ACCOUNT_MODE_LEGACY_ALIAS: "В рекомендации сохранён устаревший алиас режима счёта. Нужна новая публикация с каноническим account mode.",
+    MIN_LEVERAGE_PER_BOT_AT_EXECUTION: "Кредитное плечо ниже минимального значения, разрешённого текущим операторским профилем.",
+    GRID_STEP_LEVELS_MISMATCH: "Число интервалов сетки не совпадает с числом сохранённых уровней. Такой grid-план нельзя запускать.",
+    DIRECTIONAL_TREND_CONTRACT_MISSING: "План одной направленной позиции неполон или не помечен как directional_trend.",
+    DIRECTIONAL_TREND_GEOMETRY_INVALID: "TP/SL-геометрия trend-позиции неполна или противоречит выбранному направлению.",
+    DIRECTIONAL_TREND_DIRECTION_INVALID: "Для trend-позиции не определено направление LONG или SHORT.",
+    DIRECTIONAL_TREND_LEVELS_MISSING: "Для trend-позиции отсутствуют корректные положительные цены входа, TP или SL.",
+    SHADOW_EVIDENCE: "Прокси-исходы предназначены для исследования и не доказывают преимущество в реальной торговле.",
+    DIRECTIONAL_TREND_POSITION_POLICY_INVALID: "Направленная позиция должна явно запрещать усреднение и наращивание объёма.",
+    EXTERNAL_EXECUTION_PACKAGE_INVALID: "Внешний пакет исполнения не подтверждает рекомендательный режим и отсутствие отправленного биржевого ордера.",
+    EXTERNAL_EXECUTION_PACKAGE_MISSING: "Для trend-рекомендации отсутствует обязательный пакет одной внешней сделки.",
     LEVERAGE_MISSING_FOR_EXECUTION: "Не указано положительное кредитное плечо для исполнения trend-позиции.",
     ORDER_QTY_MISSING: "Не указано положительное количество контракта для single-position сделки.",
     TARGET_NOTIONAL_MISSING: "Не указан положительный целевой номинал позиции.",
@@ -1830,10 +1857,16 @@ function operatorBlockMessageRu(item) {
 
 function uniqueBlockerItems(items) {
   const seen = new Set();
+  const genericCodes = new Set(["", "warn", "risk", "no_trade", "block", "bybit", "bybit_warn"]);
   return (Array.isArray(items) ? items : []).filter((item) => {
     const msgKey = String(item?.msg || "").trim().toLowerCase();
     const codeKey = String(item?.code || "").trim().toLowerCase();
-    const key = msgKey || `${codeKey}|${String(item?.critical ?? "")}`;
+    // A concrete machine code describes one invariant even when the same guard
+    // arrives through both stored blocks and live Bybit validation with slightly
+    // different prose.  Generic buckets still deduplicate by message.
+    const key = !genericCodes.has(codeKey)
+      ? `code:${codeKey}`
+      : msgKey || `${codeKey}|${String(item?.critical ?? "")}`;
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1924,12 +1957,22 @@ function buildDetailsHtml(it) {
   const noTradeDecision = status === "no_trade";
   const pendingDecision = status === "pending";
   const decisionClass = launchable ? "go" : explicitHardBlocked ? "stop" : "wait";
+  const hardBlockCodes = new Set([
+    ...blocks.map(item => String(item?.code || "").trim().toUpperCase()),
+    ...bybitErrors.map(item => String(item?.code || "").trim().toUpperCase()),
+  ]);
+  const trendCandidateStructurallyInvalid = trendSingle && [
+    "DIRECTIONAL_TREND_GEOMETRY_INVALID",
+    "DIRECTIONAL_TREND_DIRECTION_INVALID",
+    "DIRECTIONAL_TREND_LEVELS_MISSING",
+    "DIRECTIONAL_TREND_CONTRACT_MISSING",
+  ].some(code => hardBlockCodes.has(code));
   const decisionTitle = trendSingle && launchable
     ? "Трендовая позиция выбрана meta-router"
     : launchable
     ? "Можно запускать после предпроверки"
     : explicitHardBlocked
-      ? "Не запускать"
+      ? (trendCandidateStructurallyInvalid ? "Trend-кандидат отклонён" : "Не запускать")
       : noTradeDecision
         ? "Не запускать сейчас"
         : pendingDecision
@@ -1940,9 +1983,11 @@ function buildDetailsHtml(it) {
     : launchable
     ? "Проверьте цену, актуальность, риск и экономику; затем используйте блок параметров запуска для создания бота."
     : explicitHardBlocked
-      ? (trendSingle
-          ? "Есть жёсткая причина, запрещающая создание single-position trend-плана. Фактическая причина показана сразу под этим решением."
-          : "Есть жёсткая причина, запрещающая ручное создание сеточного бота. Фактическая причина показана сразу под этим решением.")
+      ? (trendCandidateStructurallyInvalid
+          ? "Это отдельный кандидат направленной стратегии: он отклонён до построения исполнимой позиции и не является нейтральной сеткой. Кандидат сеточной стратегии по этому символу, если он существует, отображается отдельной строкой."
+          : trendSingle
+            ? "Есть жёсткая причина, запрещающая создание single-position trend-плана. Фактическая причина показана сразу под этим решением."
+            : "Есть жёсткая причина, запрещающая ручное создание сеточного бота. Фактическая причина показана сразу под этим решением.")
       : noTradeDecision
         ? (trendSingle
             ? "«Не торговать» означает: направленную позицию сейчас не открывать. Причина показана сразу под этим решением и отделена от относительного ранга в таблице."
@@ -1972,7 +2017,7 @@ function buildDetailsHtml(it) {
     : [];
   const factorWarnings = riskReportWarnings.length
     ? []
-    : (reasons.top_negative_factors || []).slice(0, 4).map(item => ({ code: "WARN", msg: item.msg || item.text || item.feature || "", critical: false }));
+    : (reasons.top_negative_factors || []).slice(0, 4).map(item => ({ code: String(item.code || item.feature || "WARN").trim().toUpperCase(), msg: item.msg || item.text || item.feature || "", critical: false }));
   const blockerItems = uniqueBlockerItems([
     ...blocks.map(b => ({ code: b.code || "BLOCK", msg: b.msg || "" , critical: true })),
     ...normalizedRiskRejected,
@@ -2007,7 +2052,7 @@ function buildDetailsHtml(it) {
         <div class="decision-title-row">
           <div>
             <h3>${escapeHtml(it.symbol)} · ${escapeHtml(decisionTitle)}</h3>
-            <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${escapeHtml(botTypeLabel(it.bot_type))}<span class="operator-sub-sep">·</span>${statusBadgeHtml(operatorEffectiveStatus(it))}</div>
+            <div class="operator-subtitle operator-subtitle-inline">${escapeHtml(botTypeLabel(it.bot_type))}<span class="operator-sub-sep">·</span>${strategyDirectionBadge(it.bot_type, it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(operatorEffectiveStatus(it))}</div>
           </div>
           <button class="ghost-chip" data-act="show-tech">Технические данные</button>
         </div>
@@ -2292,7 +2337,8 @@ function formatAgeHuman(sec) {
   return `${(s / 86400).toFixed(1)}д`;
 }
 
-function renderDirectionBadge(dir) {
+function renderDirectionBadge(dir, botType = "") {
+  if (botType) return strategyDirectionBadge(botType, dir);
   const value = String(dir || "neutral").toLowerCase();
   const cls = value === "long" ? "dir-long" : value === "short" ? "dir-short" : "dir-neu";
   return `<span class="dir-badge ${cls}">${escapeHtml(directionRu(value))}</span>`;
@@ -2883,7 +2929,7 @@ function buildRecommendationHistoryHtml(data) {
     { label: "Операторских цепочек", value: data?.publication_root_count ?? 0 },
     { label: "Независимых окон исхода", value: data?.outcome_root_count ?? 0 },
     { label: "Смен направления", value: data?.direction_change_count ?? 0 },
-    { label: "Последняя рекомендация", html: latest ? `${directionBadge(latest.direction)} ${statusBadgeHtml(data?.latest_effective_status || latest.stored_status)}` : "—" },
+    { label: "Последняя рекомендация", html: latest ? `${strategyDirectionBadge(latest.bot_type || data?.bot_type, latest.direction)} ${statusBadgeHtml(data?.latest_effective_status || latest.stored_status)}` : "—" },
     { label: "Возраст последней", value: latest ? (latest.timestamp_valid === false ? "Некорректная метка времени" : formatAgeHuman(latest.age_sec)) : "—" },
     { label: "Первая в окне", value: formatTs(data?.first_ts) },
   ];
@@ -2891,7 +2937,7 @@ function buildRecommendationHistoryHtml(data) {
   const table = buildModalTable([
     { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
     { label: "Возраст", render: row => escapeHtml(row.timestamp_valid === false ? "Некорректная метка времени" : formatAgeHuman(row.age_sec)) },
-    { label: "Направление", render: row => directionBadge(row.direction) },
+    { label: "Направление", render: row => strategyDirectionBadge(row.bot_type || data?.bot_type, row.direction) },
     { label: "Ценовой план", className: "wrap", render: row => {
         const g = row.price_geometry || {};
         if (g.kind === "directional_trend") return escapeHtml(`Вход ${formatDotNumber(g.reference_price, 8, false)} · TP ${formatDotNumber(g.take_profit, 8, false)} · SL ${formatDotNumber(g.stop_loss, 8, false)}`);
@@ -3356,7 +3402,7 @@ function renderRecoTable(items) {
           ${symbolLinksHtml(it)}
         </div>
       </td>
-      <td>${directionBadge(it.direction)}</td>
+      <td>${strategyDirectionBadge(it.bot_type, it.direction)}</td>
       <td>${planRrCell(it)}</td>
       <td>${empiricalExpectancyCell(it)}</td>
       <td data-cell="status">${operatorDecisionCell(it)}</td>
@@ -3378,10 +3424,10 @@ function renderRecoTable(items) {
   }
 }
 function directionBadge(dir) {
-  if (!dir || dir === "neutral") return `<span class="dir-badge dir-neu">• Нейтральная сетка</span>`;
-  if (dir === "long")  return `<span class="dir-badge dir-long">▲ Покупка (рост)</span>`;
-  if (dir === "short") return `<span class="dir-badge dir-short">▼ Продажа (снижение)</span>`;
-  return `<span class="dir-badge dir-neu">• ${escapeHtml(directionRu(dir))}</span>`;
+  const normalized = String(dir || "").trim().toLowerCase();
+  if (normalized === "long") return `<span class="dir-badge dir-long">▲ ${escapeHtml(directionRu(normalized))}</span>`;
+  if (normalized === "short") return `<span class="dir-badge dir-short">▼ ${escapeHtml(directionRu(normalized))}</span>`;
+  return `<span class="dir-badge dir-neu">• ${escapeHtml(directionRu(normalized))}</span>`;
 }
 
 // ── details panel ─────────────────────────────────────────────────────────────
@@ -3855,8 +3901,8 @@ async function loadOutcomes() {
       <div class="modal-section-title">Стратегии и типы терминальных событий</div>
       ${buildModalTable([
         { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
-        { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Исполнимое направление", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction, row.bot_type) },
+        { label: "Исполнимое направление", render: row => renderDirectionBadge(row.execution_direction, row.bot_type) },
         { label: "Всего", render: row => escapeHtml(String(row.total || 0)) },
         { label: "Доля успешных", render: row => row.win_rate == null ? "—" : escapeHtml(`${(Number(row.win_rate) * 100).toFixed(1)}%`) },
         { label: "Средний net результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
@@ -3891,8 +3937,8 @@ async function loadOutcomes() {
     <div class="modal-section">
       <div class="modal-section-title">2. Что хотел алгоритм и во что это превратилось</div>
       ${buildModalTable([
-        { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction, row.bot_type) },
+        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction, row.bot_type) },
         { label: "Тип нейтрального сигнала", render: row => renderNeutralSourceTag(row.neutral_source) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
         { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
@@ -3958,8 +4004,8 @@ async function loadOutcomes() {
       ${buildModalTable([
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
         { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
-        { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction, row.bot_type) },
+        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction, row.bot_type) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
         { label: "Доля успешных", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
         { label: "Средний результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
@@ -3973,8 +4019,8 @@ async function loadOutcomes() {
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
         { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
         { label: "Событие", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
-        { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction) },
-        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction, row.bot_type) },
+        { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction, row.bot_type) },
         { label: "Оценка допуска", render: row => toFiniteNumber(row.score) === null ? "—" : escapeHtml(formatDotNumber(row.score, 4)) },
         { label: "Возврат к среднему", render: row => toFiniteNumber(row.mean_reversion_score) === null ? "—" : escapeHtml(formatDotNumber(row.mean_reversion_score, 4)) },
         { label: "Когорта допуска", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeEligibilityCohortRu(row.eligibility?.cohort))}</span>` },
@@ -4044,7 +4090,7 @@ async function loadDecisions() {
       { label: "Действие", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.action || "—"))}</span>` },
       { label: "Символ", render: row => escapeHtml(row.symbol || "—") },
       { label: "Стратегия", render: row => escapeHtml(row.bot_type ? botTypeLabel(row.bot_type) : "Общесистемное") },
-      { label: "Направление", render: row => row.direction ? renderDirectionBadge(row.direction) : "—" },
+      { label: "Направление", render: row => row.direction ? renderDirectionBadge(row.direction, row.bot_type) : "—" },
       { label: "Статус рекомендации", render: row => row.recommendation_status ? pillStatus(row.recommendation_status) : "—" },
       { label: "Оператор", render: row => escapeHtml(row.operator || "система") },
       { label: "Идентификатор", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },

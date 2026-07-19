@@ -1,3 +1,18 @@
+## 2026-07-19 - v1.4.1 - strategy-native Details semantics
+
+### Fixed
+- Interpret `neutral` by strategy family: `futures_grid` renders «Нейтральная сетка», while `directional_trend` renders «Направление не определено» and cannot masquerade as a grid.
+- Render the strategy label before its direction in Details, recommendations, history, outcomes, health and journal surfaces.
+- Separate operator remediation by strategy: grid-only range/grid advice is never attached to a trend candidate; trend receives only direction, entry/TP/SL, contract and first-touch actions.
+- Stop re-humanizing already localized backend action titles/details, which previously corrupted otherwise correct Russian text.
+- Add exact Russian explanations for common trend/grid execution guards and deduplicate repeated concrete guard codes across stored and live validation.
+- Preserve legacy compatibility by treating rows without `bot_type` as historical `futures_grid` rows.
+
+### Compatibility
+- No database migration or `.env` change is required.
+- Trading mathematics, outcome contracts, model identities and profitability-router thresholds are unchanged.
+- The service remains recommendation/audit-only and adds no private Bybit order submission.
+
 ## 2026-07-19 - v1.4.0 - strategy observability, durable outcome schedule and history UI
 
 ### Fixed

@@ -42,6 +42,7 @@ def _operator_field_harness() -> str:
         "fmtPrice",
         "formatUsdValue",
         "directionRu",
+        "strategyDirectionRu",
         "splitLinearSymbol",
         "firstFiniteValue",
         "firstFiniteField",
@@ -55,7 +56,8 @@ def _operator_field_harness() -> str:
     available_helpers = [name for name in helper_names if re.search(rf"function {re.escape(name)}\([^)]*\) \{{", source)]
     fns.extend(available_helpers)
     fns.append("buildOperatorFieldSpecs")
-    return "\n".join(_extract_js_function(source, name) for name in fns) + "\n"
+    constants = "const SUPPORTED_GRID_BOT_TYPE = 'futures_grid';\nconst DIRECTIONAL_TREND_BOT_TYPE = 'directional_trend';\n"
+    return constants + "\n".join(_extract_js_function(source, name) for name in fns) + "\n"
 
 
 def test_operator_risk_math_is_hidden_when_backend_exit_payload_direction_mismatches() -> None:

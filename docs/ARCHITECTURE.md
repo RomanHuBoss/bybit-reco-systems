@@ -1,3 +1,9 @@
+## Strategy-native operator projection — v1.4.1
+
+`bot_type` is the discriminator for every operator-facing direction label and remediation path. `neutral` is not a global product name: under `futures_grid` it is a valid neutral inventory geometry; under `directional_trend` it means the mandatory LONG/SHORT direction was not established and the candidate is structurally invalid. API rows remain independent; frontend rendering must never infer strategy from `direction` alone.
+
+The remediation layer follows the same boundary. Grid guards may produce range/grid actions; trend guards may produce only single-position direction/entry/TP/SL/first-touch actions. Legacy rows without `bot_type` are interpreted as `futures_grid`, matching the historical schema contract. Concrete blocker codes are deduplicated across stored and live-validation sources without merging different strategies or generic warnings.
+
 ## Strategy observability data flow — v1.4.0
 
 `recommendation persistence → observability schedule → outcome worker → canonical event → enriched API → Details/History/Outcomes/Health` is one auditable chain. The persistence transaction immediately records the due timestamp for each supported strategy root. Read APIs join by `outcome_root_rec_id`, batch tracking for list views, and preserve `bot_type` in journal and aggregate projections. Health verifies cross-table identity and event-type invariants.

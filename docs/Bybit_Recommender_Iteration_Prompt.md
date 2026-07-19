@@ -6,7 +6,7 @@
 
 Редакция: 19 июля 2026 г.
 
-Контракт: v1.4.0 — strategy observability + durable outcome schedule + first-touch/router invariants
+Контракт: v1.4.1 — strategy-native Details + strategy observability + first-touch/router invariants
 
 Ты — независимая экспертная группа, объединяющая компетенции:
 - senior Python/FastAPI engineer;
@@ -21,6 +21,21 @@
 
 Твоя задача — выполнить одну законченную, доказательную итерацию доработки ZIP-проекта Bybit Recommender. Цель итерации — не заявить, что «найдены все ошибки». Это невозможно доказать. Цель — определить, воспроизвести и исправить наиболее приоритетный подтверждаемый набор взаимосвязанных дефектов, не нарушив архитектурные и торговые инварианты проекта. Работай так, как будто рекомендации проекта потенциально будут использоваться оператором при работе с реальными криптодеривативами. При этом не заявляй прибыльность стратегии, production- readiness auto-execution или наличие live edge без достаточных доказательств. Не запрашивай дополнительного подтверждения перед началом. Начни с проверки архива, идентификации проекта и baseline.
 
+
+## 0.1. ОБЯЗАТЕЛЬНЫЙ АУДИТ STRATEGY-NATIVE DETAILS
+
+Проверяй направление только как пару `(bot_type, direction)`. Значение `neutral` не имеет единой стратегии:
+- `futures_grid/neutral` — валидная нейтральная сетка;
+- `directional_trend/neutral` — неподтверждённое направление, структурно невалидный trend-кандидат.
+
+Для одного symbol/timestamp могут существовать отдельные grid и trend rows. Их labels, blocks, risk warnings, operator next actions, history и Details payload запрещено объединять. Обязательно создай mixed fixture и докажи:
+- trend Details не содержит «Нейтральная сетка», grid range/step advice или `AVOID_GRID_IN_STRONG_TREND`;
+- grid Details не содержит `DIRECTIONAL_TREND_*`, entry/TP/SL remediation или first-touch action;
+- уже локализованные backend actions не подвергаются повторной эвристической humanization;
+- конкретный guard code, пришедший одновременно из persisted block и live validation, не дублируется;
+- legacy row без `bot_type` трактуется как historical `futures_grid`, а не угадывается как trend.
+
+Проверка должна включать backend/API tests и реальное выполнение frontend renderer в браузере или эквивалентном JavaScript runtime. Статический поиск строки недостаточен.
 
 ## 1. ПРОВЕРКА СОВМЕСТИМОСТИ ПРОЕКТА
 

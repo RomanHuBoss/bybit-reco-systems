@@ -1,3 +1,9 @@
+## Strategy family precedes direction semantics — v1.4.1
+
+The pair `(bot_type, direction)` is the minimum semantic identity. Valid examples are `futures_grid/neutral`, `futures_grid/long`, `futures_grid/short`, `directional_trend/long` and `directional_trend/short`. `directional_trend/neutral` is not a neutral trend product and not a grid: it is a blocked candidate with unconfirmed direction. The operator UI must say «Направление не определено» and must not offer grid remediation.
+
+This version changes presentation and safe next-action routing only. Grid economics, trend TP/SL first-touch mathematics, outcome labels, model calibration and strategy-profitability routing remain unchanged.
+
 ## Strategy-native operator projection and outcome lifecycle — v1.4.0
 
 Trading semantics are now preserved end-to-end. A `directional_trend` record exposes the entry, TP and SL saved in its single-position `trade_plan`; it must never derive exits from grid kill-switch bounds. A `futures_grid` record exposes reference price, range, grid count and outer kill-switches; directional grid TP/SL presentation remains a view over the appropriate outer bounds. This projection affects operator validation and display only; label contracts and router thresholds are unchanged.

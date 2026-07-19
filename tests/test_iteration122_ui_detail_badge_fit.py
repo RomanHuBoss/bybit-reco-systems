@@ -12,7 +12,7 @@ def test_details_subtitle_no_long_bot_type_badge() -> None:
     assert "botTypePillHtml(it.bot_type, true)" not in app_js
     assert "Bybit Linear USDT Futures Grid" not in app_js
     assert "Linear USDT Grid" not in app_js
-    assert "directionBadge(it.direction)" in app_js
+    assert "strategyDirectionBadge(it.bot_type, it.direction)" in app_js
     assert "statusBadgeHtml(operatorEffectiveStatus(it))" in app_js
 
 

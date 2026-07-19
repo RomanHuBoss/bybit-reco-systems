@@ -1,3 +1,17 @@
+## Strategy-native Details scenarios — v1.4.1
+
+### Trend candidate with `direction=neutral`
+Expected: «Направленный тренд · одна позиция» + «Направление не определено» + blocked status. The decision says this is a rejected directional candidate and that any grid candidate is a separate row. Only trend-specific blockers/actions may appear.
+
+### Neutral futures grid
+Expected: «Фьючерсная сетка» + «Нейтральная сетка». Range/grid guards and remediation remain available. No `DIRECTIONAL_TREND_*` blocker or single-position action may appear.
+
+### Same symbol, two strategy candidates
+Each recommendation has its own `rec_id`, `bot_type`, blocks and Details payload. Opening one row must not concatenate the labels, blockers or next actions of the competitor.
+
+### Legacy row without `bot_type`
+Expected: treated as historical `futures_grid` for operator remediation; it must not be reclassified as trend.
+
 ## Сквозные сценарии наблюдаемости — v1.4.0
 
 ### Trend опубликован, горизонт ещё не созрел

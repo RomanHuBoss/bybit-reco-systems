@@ -1,3 +1,9 @@
+# Актуализация контракта — 19 июля 2026 г., v1.4.1
+
+Обязателен аудит strategy-native operator semantics: любое направление трактуется только вместе с `bot_type`; `directional_trend/neutral` должно отображаться как неподтверждённое направление, а не как «Нейтральная сетка». Проверяй раздельность blocks, next actions, labels и details payload для двух кандидатов одного symbol/timestamp. Grid-only remediation запрещена в trend Details, trend-only remediation — в grid Details. Legacy missing `bot_type` допускается только как historical futures_grid fallback.
+
+---
+
 # Актуализация контракта — 19 июля 2026 г., v1.4.0
 
 Дополнительно обязателен сквозной аудит grid/trend наблюдаемости: durable pre-horizon schedule, strategy-native Details/History geometry, canonical terminal events, strategy-aware Journal/Outcomes/Health, browser execution of history graphs and fail-visible API errors. Канонический source находится в `docs/Bybit_Recommender_Iteration_Prompt.md`.

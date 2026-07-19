@@ -79,7 +79,7 @@ def test_static_shell_uses_plain_russian_operator_language() -> None:
 
 def test_direction_and_status_badges_are_understandable_without_trading_english() -> None:
     directions = _run_js(["directionRu"], "[directionRu('long'), directionRu('short'), directionRu('neutral')]")
-    assert directions == ["Покупка (рост)", "Продажа (снижение)", "Нейтральная сетка"]
+    assert directions == ["Покупка (рост)", "Продажа (снижение)", "Нейтрально / направления нет"]
     statuses = _run_js(
         ["operatorStatusRu"],
         "['recommended','active','pending','blocked','no_trade','suppressed','expired','executed','ignored'].map(operatorStatusRu)",

@@ -1,3 +1,10 @@
+## v1.4.1: strategy-native direction and remediation ownership
+
+- `app/main.py`: `_operator_next_actions_for_reco` gates every strategy-specific action by `bot_type`; missing legacy `bot_type` defaults to historical `futures_grid`.
+- `app/ui/static/app.js`: `strategyDirectionRu` and `strategyDirectionBadge` render `(bot_type, direction)` together; Details uses strategy-native titles, blocker translations and backend-localized actions.
+- `app/ui/static/styles.css`: `dir-invalid` distinguishes an unconfirmed trend direction from a valid neutral grid.
+- `tests/test_iteration270_strategy_native_direction_ui.py`: regression coverage for API isolation, labels, remediation, localization and deduplication.
+
 ## v1.4.0: strategy observability and operator-history responsibilities
 
 - `app/db.py` — durable pre-horizon outcome schedule, canonical event persistence, per-strategy counts, semantic-integrity checks, batch outcome tracking and immutable history geometry.
