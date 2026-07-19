@@ -134,7 +134,7 @@ def test_shadow_no_trade_does_not_reuse_opposite_direction(tmp_path: Path) -> No
 
 
 def test_calibration_identity_changes_when_shadow_sampling_contract_changes() -> None:
-    assert RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v10-terminal-selected-policy-money"
+    assert RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v11-separated-operator-outcome-lineage"
     assert BOT_CALIB_KEYS["futures_grid"] == "logreg_futures_grid_v21"
     assert GLOBAL_LOGREG_KEY == "logreg_global_v21"
     assert DIRECTION_CALIBRATION_KEY == "platt_direction_v14"

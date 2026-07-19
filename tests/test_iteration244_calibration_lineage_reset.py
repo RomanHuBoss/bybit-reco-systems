@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app import calibration, db, recommender
 
-CURRENT_MODEL = "bybit-taxonomy-v10-terminal-selected-policy-money"
+CURRENT_MODEL = "bybit-taxonomy-v11-separated-operator-outcome-lineage"
 
 
 def _recommendation(

@@ -134,6 +134,7 @@ def test_calibration_outcome_reader_streams_and_compacts_reasons() -> None:
         "reasons_json": raw["reasons_json"],
         "model_version": raw["model_version"],
         "publication_root_rec_id": raw["rec_id"],
+        "outcome_root_rec_id": raw["rec_id"],
         "is_outcome_label_root": 1,
     }
     conn = _StreamingGuardConnection([row])

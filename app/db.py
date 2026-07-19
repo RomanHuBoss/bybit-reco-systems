@@ -140,9 +140,22 @@ def _ensure_recommendation_publication_columns(conn: sqlite3.Connection) -> None
     cols = _table_columns(conn, "recommendations")
     if "publication_root_rec_id" not in cols:
         conn.execute("ALTER TABLE recommendations ADD COLUMN publication_root_rec_id TEXT")
+    if "outcome_root_rec_id" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN outcome_root_rec_id TEXT")
     if "is_outcome_label_root" not in cols:
         conn.execute("ALTER TABLE recommendations ADD COLUMN is_outcome_label_root INTEGER NOT NULL DEFAULT 1")
+    conn.execute(
+        """UPDATE recommendations
+              SET outcome_root_rec_id = COALESCE(
+                    NULLIF(TRIM(outcome_root_rec_id), ''),
+                    NULLIF(TRIM(publication_root_rec_id), ''),
+                    rec_id
+                  )
+            WHERE outcome_root_rec_id IS NULL
+               OR TRIM(COALESCE(outcome_root_rec_id, '')) = ''"""
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reco_publication_root_ts ON recommendations(publication_root_rec_id, ts DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reco_outcome_lineage_ts ON recommendations(outcome_root_rec_id, ts DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reco_outcome_root_ts ON recommendations(is_outcome_label_root, ts DESC)")
 
 
@@ -447,6 +460,8 @@ def _recommendation_publication_backfill_needed(conn: sqlite3.Connection) -> boo
                FROM recommendations
               WHERE publication_root_rec_id IS NULL
                  OR TRIM(COALESCE(publication_root_rec_id, '')) = ''
+                 OR outcome_root_rec_id IS NULL
+                 OR TRIM(COALESCE(outcome_root_rec_id, '')) = ''
                  OR is_outcome_label_root IS NULL
               LIMIT 1"""
     )
@@ -456,11 +471,16 @@ def _recommendation_publication_backfill_needed(conn: sqlite3.Connection) -> boo
 
 def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int:
     cols = _table_columns(conn, "recommendations")
-    if "publication_root_rec_id" not in cols or "is_outcome_label_root" not in cols:
+    if (
+        "publication_root_rec_id" not in cols
+        or "outcome_root_rec_id" not in cols
+        or "is_outcome_label_root" not in cols
+    ):
         return 0
 
     cur = conn.execute(
-        """SELECT rec_id, ts, reasons_json, publication_root_rec_id, is_outcome_label_root
+        """SELECT rec_id, ts, reasons_json, publication_root_rec_id,
+                     outcome_root_rec_id, is_outcome_label_root
                FROM recommendations
                ORDER BY ts ASC, rec_id ASC"""
     )
@@ -469,7 +489,7 @@ def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int
         return 0
 
     lineage_by_rec_id: dict[str, str] = {}
-    updates: list[tuple[str, int, str]] = []
+    updates: list[tuple[str, str, int, str]] = []
 
     for row in rows:
         rec_id = str(row["rec_id"] or "")
@@ -489,16 +509,23 @@ def backfill_recommendation_publication_lineage(conn: sqlite3.Connection) -> int
         lineage_by_rec_id[rec_id] = root_rec_id
 
         current_root = str(row["publication_root_rec_id"] or "").strip()
+        current_outcome_root = str(row["outcome_root_rec_id"] or "").strip()
         try:
             current_label_root = int(row["is_outcome_label_root"] or 0)
         except Exception:
             current_label_root = 0
-        if current_root != root_rec_id or current_label_root != is_label_root:
-            updates.append((root_rec_id, is_label_root, rec_id))
+        if (
+            current_root != root_rec_id
+            or current_outcome_root != root_rec_id
+            or current_label_root != is_label_root
+        ):
+            updates.append((root_rec_id, root_rec_id, is_label_root, rec_id))
 
     if updates:
         conn.executemany(
-            "UPDATE recommendations SET publication_root_rec_id=?, is_outcome_label_root=? WHERE rec_id=?",
+            """UPDATE recommendations
+                  SET publication_root_rec_id=?, outcome_root_rec_id=?, is_outcome_label_root=?
+                WHERE rec_id=?""",
             updates,
         )
     return len(updates)
@@ -588,13 +615,18 @@ def repair_async_llm_pending_publication_chains(conn: sqlite3.Connection) -> int
     horizon expires or an outcome is already present.
     """
     cols = _table_columns(conn, "recommendations")
-    if "publication_root_rec_id" not in cols or "is_outcome_label_root" not in cols:
+    if (
+        "publication_root_rec_id" not in cols
+        or "outcome_root_rec_id" not in cols
+        or "is_outcome_label_root" not in cols
+    ):
         return 0
 
     cur = conn.execute(
         """SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction,
-                     r.status, r.reasons_json, r.params_json, r.features_ref_ts,
-                     r.publication_root_rec_id, r.is_outcome_label_root,
+                     r.status, r.ttl_sec, r.reasons_json, r.params_json, r.features_ref_ts,
+                     r.publication_root_rec_id, r.outcome_root_rec_id,
+                     r.is_outcome_label_root,
                      CASE WHEN o.rec_id IS NULL THEN 0 ELSE 1 END AS has_outcome
               FROM recommendations r
               LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
@@ -605,7 +637,7 @@ def repair_async_llm_pending_publication_chains(conn: sqlite3.Connection) -> int
         return 0
 
     active_chains: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-    updates: list[tuple[str, int, str]] = []
+    updates: list[tuple[str, str, int, str]] = []
 
     for row in rows:
         venue = str(row["venue"] or "")
@@ -622,6 +654,7 @@ def repair_async_llm_pending_publication_chains(conn: sqlite3.Connection) -> int
             prev = None
 
         current_root = str(row["publication_root_rec_id"] or rec_id).strip() or rec_id
+        current_outcome_root = str(row["outcome_root_rec_id"] or current_root).strip() or current_root
         try:
             current_is_root = int(row["is_outcome_label_root"] or 0)
         except Exception:
@@ -632,10 +665,46 @@ def repair_async_llm_pending_publication_chains(conn: sqlite3.Connection) -> int
             continue
 
         if prev is not None:
-            desired_root = str(prev.get("root_rec_id") or prev.get("rec_id") or rec_id)
-            desired_is_root = 1 if rec_id == desired_root else 0
-            if current_root != desired_root or current_is_root != desired_is_root:
-                updates.append((desired_root, desired_is_root, rec_id))
+            desired_outcome_root = str(
+                prev.get("outcome_root_rec_id") or prev.get("rec_id") or rec_id
+            )
+            live_publication_root = str(
+                prev.get("publication_root_rec_id") or prev.get("rec_id") or rec_id
+            )
+            publication_started_ts = int(prev.get("publication_started_ts") or 0)
+            publication_ttl_sec = int(prev.get("publication_ttl_sec") or 0)
+            publication_expired = bool(
+                publication_ttl_sec > 0
+                and ts >= publication_started_ts + publication_ttl_sec
+            )
+
+            # Repair the historical duplicate label lineage, but do not revive an
+            # operator publication after its TTL.  Once the prior operator chain
+            # has expired, the current row remains (or becomes) a fresh publication
+            # root while sharing the still-open statistical outcome root.
+            desired_publication_root = current_root
+            if not publication_expired:
+                desired_publication_root = live_publication_root
+            elif not desired_publication_root:
+                desired_publication_root = rec_id
+            desired_is_root = 0
+            if (
+                current_root != desired_publication_root
+                or current_outcome_root != desired_outcome_root
+                or current_is_root != desired_is_root
+            ):
+                updates.append(
+                    (
+                        desired_publication_root,
+                        desired_outcome_root,
+                        desired_is_root,
+                        rec_id,
+                    )
+                )
+            if publication_expired:
+                prev["publication_root_rec_id"] = desired_publication_root
+                prev["publication_started_ts"] = ts
+                prev["publication_ttl_sec"] = int(row["ttl_sec"] or 0)
             continue
 
         params = _json_loads_mapping_or_default(row["params_json"], {})
@@ -645,21 +714,38 @@ def repair_async_llm_pending_publication_chains(conn: sqlite3.Connection) -> int
         effective_horizon_sec = _backfill_effective_horizon_sec(bot_type, params)
         lock_until_ts = int(pseudo_entry_ts) + int(effective_horizon_sec)
 
-        desired_root = current_root or rec_id
-        desired_is_root = 1 if desired_root == rec_id else 0
-        if current_root != desired_root or current_is_root != desired_is_root:
-            updates.append((desired_root, desired_is_root, rec_id))
-        if desired_is_root:
+        desired_publication_root = current_root or rec_id
+        desired_outcome_root = current_outcome_root or desired_publication_root
+        desired_is_root = 1 if desired_outcome_root == rec_id else 0
+        if (
+            current_root != desired_publication_root
+            or current_outcome_root != desired_outcome_root
+            or current_is_root != desired_is_root
+        ):
+            updates.append(
+                (
+                    desired_publication_root,
+                    desired_outcome_root,
+                    desired_is_root,
+                    rec_id,
+                )
+            )
+        if desired_is_root and not bool(int(row["has_outcome"] or 0)):
             active_chains[key] = {
                 "rec_id": rec_id,
-                "root_rec_id": desired_root,
+                "outcome_root_rec_id": desired_outcome_root,
                 "lock_until_ts": int(lock_until_ts),
+                "publication_root_rec_id": desired_publication_root,
+                "publication_started_ts": ts,
+                "publication_ttl_sec": int(row["ttl_sec"] or 0),
             }
 
     if not updates:
         return 0
     conn.executemany(
-        "UPDATE recommendations SET publication_root_rec_id=?, is_outcome_label_root=? WHERE rec_id=?",
+        """UPDATE recommendations
+              SET publication_root_rec_id=?, outcome_root_rec_id=?, is_outcome_label_root=?
+            WHERE rec_id=?""",
         updates,
     )
     return len(updates)
@@ -669,6 +755,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     migration_path = MIGRATION_INIT_SQL
     if getattr(conn, "db_engine", "sqlite") == POSTGRES:
         migration_path = MIGRATION_INIT_SQL.with_name("init_postgres.sql")
+    # Standalone init SQL contains indexes for the current schema. On an existing
+    # database ``CREATE TABLE IF NOT EXISTS`` does not add new columns, so an index
+    # that references the additive column would fail before the normal runtime
+    # upgrader gets a chance to run. Upgrade publication lineage first when the
+    # table already exists, then execute the complete idempotent bootstrap script.
+    if _table_columns(conn, "recommendations"):
+        _ensure_recommendation_publication_columns(conn)
     sql = migration_path.read_text(encoding="utf-8")
     conn.executescript(sql)
     conn.execute("""CREATE TABLE IF NOT EXISTS runtime_locks (
@@ -1053,7 +1146,7 @@ _RECOMMENDATION_COLUMNS: tuple[str, ...] = (
     "rec_id", "ts", "venue", "symbol", "bot_type", "direction", "account_mode", "margin_mode",
     "score", "confidence", "expected_rr", "risk_score",
     "params_json", "reasons_json", "blocks_json", "status", "ttl_sec", "model_version", "features_ref_ts",
-    "publication_root_rec_id", "is_outcome_label_root",
+    "publication_root_rec_id", "outcome_root_rec_id", "is_outcome_label_root",
     "outcome_eligible", "policy_evaluation_eligible", "outcome_sample_role",
     "risk_checks_passed", "risk_blocks_empty", "llm_review_status",
 )
@@ -1115,6 +1208,16 @@ def _normalize_recommendation_payload(r: dict[str, Any]) -> tuple[Any, ...]:
     is_outcome_label_root = _normalize_outcome_root_flag(
         r.get("is_outcome_label_root", publication_root_rec_id == rec_id)
     )
+    outcome_root_rec_id = str(
+        r.get("outcome_root_rec_id")
+        or (rec_id if is_outcome_label_root else publication_root_rec_id)
+    ).strip()
+    if not outcome_root_rec_id:
+        raise ValueError("recommendation.outcome_root_rec_id must be non-empty")
+    if is_outcome_label_root and outcome_root_rec_id != rec_id:
+        raise ValueError(
+            "recommendation outcome label root must reference its own rec_id"
+        )
     materialized_outcome_policy = _materialize_outcome_policy_fields(r["reasons"])
     return (
         rec_id,
@@ -1137,6 +1240,7 @@ def _normalize_recommendation_payload(r: dict[str, Any]) -> tuple[Any, ...]:
         str(r["model_version"]),
         _normalize_recommendation_integer("recommendation.features_ref_ts", r["features_ref_ts"]),
         publication_root_rec_id,
+        outcome_root_rec_id,
         is_outcome_label_root,
         *materialized_outcome_policy,
     )
@@ -1151,11 +1255,13 @@ def _normalize_stored_recommendation_payload(row: Any) -> tuple[Any, ...]:
         values[idx] = _json_dumps_canonical(_json_loads_or_default(values[idx], default))
     values[16] = _normalize_recommendation_integer("recommendation.ttl_sec", values[16])
     values[18] = _normalize_recommendation_integer("recommendation.features_ref_ts", values[18])
-    values[20] = int(values[20])
-    for idx in (21, 22, 24, 25):
+    values[19] = str(values[19]).strip()
+    values[20] = str(values[20]).strip()
+    values[21] = int(values[21])
+    for idx in (22, 23, 25, 26):
         values[idx] = int(values[idx] or 0)
-    values[23] = str(values[23]).strip() if values[23] not in (None, "") else None
-    values[26] = str(values[26]).strip().lower() if values[26] not in (None, "") else None
+    values[24] = str(values[24]).strip() if values[24] not in (None, "") else None
+    values[27] = str(values[27]).strip().lower() if values[27] not in (None, "") else None
     return tuple(values)
 
 
@@ -2520,6 +2626,7 @@ def list_live_validation_records(conn: sqlite3.Connection, limit: int = 200) -> 
             "bot_id": bot["bot_id"],
             "rec_id": rec_id,
             "publication_root_rec_id": bot.get("publication_root_rec_id") or rec.get("publication_root_rec_id") or rec_id,
+            "outcome_root_rec_id": rec.get("outcome_root_rec_id") or rec_id,
             "venue": bot.get("venue"),
             "symbol": bot.get("symbol"),
             "bot_type": bot.get("bot_type"),
@@ -2615,6 +2722,7 @@ def get_recommendations(
             "model_version": r["model_version"],
             "features_ref_ts": r["features_ref_ts"],
             "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+            "outcome_root_rec_id": str(r["outcome_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
             "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
         })
         if len(rows) >= int(top_n):
@@ -2660,7 +2768,8 @@ def get_recommendation_history(
         f"""SELECT rec_id, ts, venue, symbol, bot_type, direction, score,
                    confidence, expected_rr, risk_score, reasons_json, status,
                    ttl_sec, model_version, features_ref_ts,
-                   publication_root_rec_id, is_outcome_label_root
+                   publication_root_rec_id, outcome_root_rec_id,
+                   is_outcome_label_root
               FROM recommendations
              WHERE {where_sql}
              ORDER BY ts DESC, rec_id DESC
@@ -2702,6 +2811,7 @@ def get_recommendation_history(
             "model_version": r["model_version"],
             "features_ref_ts": r["features_ref_ts"],
             "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+            "outcome_root_rec_id": str(r["outcome_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
             "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
         })
     return rows, total
@@ -2739,6 +2849,7 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str, *, for_updat
         "model_version": r["model_version"],
         "features_ref_ts": r["features_ref_ts"],
         "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+        "outcome_root_rec_id": str(r["outcome_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
         "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
     }
 
@@ -3132,7 +3243,8 @@ def get_outcomes_with_recs(
                   o.horizon_sec, o.label_available_ts, o.entry_close, o.exit_close,
                   o.success, o.ret,
                   r.score, r.status, r.reasons_json, r.model_version,
-                  r.publication_root_rec_id, r.is_outcome_label_root
+                  r.publication_root_rec_id, r.outcome_root_rec_id,
+                  r.is_outcome_label_root
            FROM reco_outcomes o
            JOIN recommendations r ON r.rec_id = o.rec_id
            WHERE COALESCE(r.is_outcome_label_root, 1) = 1
@@ -3203,6 +3315,9 @@ def get_outcomes_with_recs(
                     "model_version": str(row["model_version"] or ""),
                     "publication_root_rec_id": str(
                         row["publication_root_rec_id"] or row["rec_id"]
+                    ),
+                    "outcome_root_rec_id": str(
+                        row["outcome_root_rec_id"] or row["rec_id"]
                     ),
                     "is_outcome_label_root": bool(root_flag),
                 })
@@ -3933,6 +4048,7 @@ def get_recent_llm_review_candidates(
             "model_version": r["model_version"],
             "features_ref_ts": r["features_ref_ts"],
             "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+            "outcome_root_rec_id": str(r["outcome_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
             "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
         })
     return out

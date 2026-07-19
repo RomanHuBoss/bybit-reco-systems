@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS recommendations (
   model_version TEXT NOT NULL,
   features_ref_ts INTEGER NOT NULL,
   publication_root_rec_id TEXT,
+  outcome_root_rec_id TEXT,
   is_outcome_label_root INTEGER NOT NULL DEFAULT 1,
   outcome_eligible INTEGER,
   policy_evaluation_eligible INTEGER,
@@ -86,6 +87,7 @@ CREATE INDEX IF NOT EXISTS idx_reco_symbol ON recommendations(venue, symbol, ts 
 CREATE INDEX IF NOT EXISTS idx_reco_status_ts ON recommendations(status, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_venue_status_ts ON recommendations(venue, status, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_publication_root_ts ON recommendations(publication_root_rec_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reco_outcome_lineage_ts ON recommendations(outcome_root_rec_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_outcome_root_ts ON recommendations(is_outcome_label_root, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reco_model_outcome_scope ON recommendations(model_version, is_outcome_label_root, rec_id);
 

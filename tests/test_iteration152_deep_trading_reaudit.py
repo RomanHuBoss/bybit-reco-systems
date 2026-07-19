@@ -145,7 +145,7 @@ def test_expire_stale_recommendations_expires_fresh_child_when_root_chain_ttl_el
     assert db.get_recommendation_by_id(conn, "R-exp-child")["status"] == "expired"
 
 
-def test_recent_publication_dedupe_does_not_extend_expired_root_chain() -> None:
+def test_recent_publication_dedupe_resets_operator_chain_but_reuses_open_outcome_root() -> None:
     conn = _conn()
     now = db.now_ts()
     root = _rec("R-old-root", now - 3600, ttl_sec=900)
@@ -159,8 +159,12 @@ def test_recent_publication_dedupe_does_not_extend_expired_root_chain() -> None:
 
     assert candidate["status"] == "recommended"
     assert candidate["publication_root_rec_id"] == "R-new-candidate"
-    assert candidate["is_outcome_label_root"] is True
-    assert "publication_dedupe" not in candidate.get("reasons", {})
+    assert candidate["outcome_root_rec_id"] == "R-old-root"
+    assert candidate["is_outcome_label_root"] is False
+    dedupe = candidate["reasons"]["publication_dedupe"]
+    assert dedupe["decision"] == "publish_fresh_operator_root"
+    assert dedupe["operator_chain_reset"] is True
+    assert dedupe["open_position_lock"] is True
 
 
 def test_operator_filter_excludes_effectively_expired_chain_from_active_list() -> None:

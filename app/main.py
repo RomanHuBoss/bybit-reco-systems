@@ -1703,6 +1703,11 @@ def _operator_decision_context_for_reco(
         "recommendation_age_sec": age_sec,
         "recommendation_row_age_sec": age_sec,
         "publication_root_rec_id": chain_ctx.get("publication_root_rec_id"),
+        "outcome_root_rec_id": str(
+            rec.get("outcome_root_rec_id")
+            or rec.get("rec_id")
+            or ""
+        ).strip() or None,
         "publication_chain_started_ts": chain_ctx.get("publication_chain_started_ts"),
         "publication_chain_updated_ts": chain_ctx.get("publication_chain_updated_ts"),
         "publication_chain_timestamp_valid": chain_ctx.get("publication_chain_timestamp_valid"),
@@ -4875,7 +4880,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.77", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.78", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -5578,24 +5583,42 @@ def api_recommendation_history(
 
         previous_direction: str | None = None
         previous_status: str | None = None
-        previous_root: str | None = None
+        previous_publication_root: str | None = None
+        previous_outcome_root: str | None = None
         items: list[dict[str, Any]] = []
-        root_ids: set[str] = set()
+        publication_root_ids: set[str] = set()
+        outcome_root_ids: set[str] = set()
         direction_changes = 0
         status_changes = 0
         for index, row in enumerate(rows):
             ts_value = _safe_int_or_none(row.get("ts"))
             direction = str(row.get("direction") or "neutral").strip().lower() or "neutral"
             stored_status = str(row.get("status") or "unknown").strip().lower() or "unknown"
-            root_id = str(row.get("publication_root_rec_id") or row.get("rec_id") or "").strip()
-            is_root = bool(row.get("is_outcome_label_root")) or root_id == str(row.get("rec_id") or "")
+            rec_id = str(row.get("rec_id") or "").strip()
+            publication_root_id = str(
+                row.get("publication_root_rec_id") or rec_id
+            ).strip() or rec_id
+            outcome_root_id = str(
+                row.get("outcome_root_rec_id") or publication_root_id or rec_id
+            ).strip() or publication_root_id or rec_id
+            is_publication_root = bool(rec_id and publication_root_id == rec_id)
+            is_outcome_root = bool(row.get("is_outcome_label_root"))
             direction_changed = previous_direction is not None and direction != previous_direction
             status_changed = previous_status is not None and stored_status != previous_status
-            root_changed = previous_root is not None and root_id != previous_root
+            publication_root_changed = (
+                previous_publication_root is not None
+                and publication_root_id != previous_publication_root
+            )
+            outcome_root_changed = (
+                previous_outcome_root is not None
+                and outcome_root_id != previous_outcome_root
+            )
             direction_changes += int(direction_changed)
             status_changes += int(status_changed)
-            if root_id:
-                root_ids.add(root_id)
+            if publication_root_id:
+                publication_root_ids.add(publication_root_id)
+            if outcome_root_id:
+                outcome_root_ids.add(outcome_root_id)
 
             timestamp_state = _recommendation_timestamp_state(ts_value, now_ts=now)
             item = dict(row)
@@ -5605,16 +5628,19 @@ def api_recommendation_history(
                 "timestamp_future_skew_sec": timestamp_state.get("future_skew_sec"),
                 "age_sec": timestamp_state.get("age_sec"),
                 "stored_status": stored_status,
-                "publication_kind": "root" if is_root else "update",
+                "publication_kind": "root" if is_publication_root else "update",
+                "outcome_kind": "root" if is_outcome_root else "shared_label_window",
                 "sequence": index + 1,
                 "direction_changed": bool(direction_changed),
                 "status_changed": bool(status_changed),
-                "publication_root_changed": bool(root_changed),
+                "publication_root_changed": bool(publication_root_changed),
+                "outcome_root_changed": bool(outcome_root_changed),
             })
             items.append(item)
             previous_direction = direction
             previous_status = stored_status
-            previous_root = root_id
+            previous_publication_root = publication_root_id
+            previous_outcome_root = outcome_root_id
 
         latest = items[-1] if items else None
         latest_effective_status = None
@@ -5643,7 +5669,8 @@ def api_recommendation_history(
             "latest_rec_id": latest.get("rec_id") if latest else None,
             "latest_effective_status": latest_effective_status,
             "latest_operator_context": (latest_augmented or {}).get("operator_decision_context", {}),
-            "publication_root_count": len(root_ids),
+            "publication_root_count": len(publication_root_ids),
+            "outcome_root_count": len(outcome_root_ids),
             "direction_change_count": int(direction_changes),
             "status_change_count": int(status_changes),
         }

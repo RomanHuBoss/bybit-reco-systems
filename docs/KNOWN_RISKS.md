@@ -1,3 +1,11 @@
+## Остаточные риски после v1.0.78
+
+- Закрыт HIGH-дефект: operator TTL больше не разрешает новый перекрывающийся same-direction outcome-root. Свежая операторская публикация и статистический sample имеют отдельные roots.
+- Новая model identity исключает старые actionable roots из текущей calibration lineage; после обновления система штатно должна заново накопить пригодные v11 outcomes. Это может продлить `no_trade` и не является основанием снижать gates.
+- 12-часовой horizon сохранён как канонический контракт, но его оптимальность не доказана. 6/12/24 должны сравниваться отдельными versioned targets с purged walk-forward, одинаковыми costs и regime-aware diagnostics.
+- Lock разделён только для точного `(venue, symbol, bot_type, direction)`. Противоположные направления и разные символы могут иметь перекрывающиеся окна; temporal validation всё равно обязана применять purge/embargo и cross-sectional cohort controls.
+- OHLCV proxy не доказывает queue priority, реальные fills, market impact или live edge.
+
 ## Остаточные риски после v1.0.77
 
 - Старые outcome exports не содержат `mean_reversion_score` и

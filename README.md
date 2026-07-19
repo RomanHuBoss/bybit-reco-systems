@@ -1,3 +1,11 @@
+## Разделение operator TTL и outcome horizon (v1.0.78)
+
+Версия 1.0.78 устраняет смешение двух разных временных контрактов. `RECO_TTL_SEC` остаётся **операторским TTL свежести**: после его истечения прежняя publication-chain не может быть исполнена и новый подтверждённый сигнал вправе получить свежий `publication_root_rec_id`. Статистическая независимость задаётся отдельно: пока исходная псевдо-позиция того же `(venue, symbol, bot_type, direction)` находится внутри label horizon, свежая операторская публикация наследует её `outcome_root_rec_id`, получает `is_outcome_label_root=false` и не создаёт второй перекрывающийся обучающий пример.
+
+Для поддерживаемого `futures_grid` канонический horizon сохранён равным 12 часам. Это не эмпирически доказанный оптимум, а действующий target contract `grid_label_v26`: 6 часов быстрее дают метки, но чаще обрезают медленный цикл сетки и наблюдение funding; 24 часа дают более полный путь, но вдвое замедляют накопление независимых когорт и сильнее смешивают режимы. Менять 12 часов без отдельного purged walk-forward сравнения 6/12/24 нельзя: это меняет целевую переменную, maturity/embargo и пригодность всей калибровочной lineage. В этой итерации label math не менялась.
+
+В SQLite/PostgreSQL добавлена materialized-колонка `recommendations.outcome_root_rec_id`. Operator history теперь отдельно показывает операторские publication roots и независимые outcome windows. Model identity повышена до `bybit-taxonomy-v11-separated-operator-outcome-lineage`, поэтому прежние потенциально перекрывающиеся actionable roots не используются как evidence новой модели.
+
 ## Exact-policy evidence и offline walk-forward (v1.0.77)
 
 Версия 1.0.77 разделяет понятия «тот же проверенный policy fingerprint» и
@@ -589,7 +597,8 @@ ruff check app tests main.py
 - `FUTURES_COLLECT_INTERVAL_SEC` — интервал обновления funding/open-interest;
 - `RISK_LIMITS_JSON` — runtime risk caps; `max_concurrent_bots` и `max_symbol_bots` дополнительно clamp-ятся к product cap 50 Futures Grid Bots, даже если оператор передал большее значение; `min_leverage` задаёт минимальное операторское плечо для actionable futures-grid идей, `max_leverage`, `max_position_notional_usdt` и `max_margin_per_bot_usdt` блокируют публикацию/запуск grid-рекомендаций, если расчётный leverage/notional/margin превышает операторский лимит; shipped-профиль использует интервал `min_leverage=3` и `max_leverage=5`: 3x является базовым actionable минимумом, 4-5x выбираются адаптивно только при более сильной экономике/качестве сигнала; значения ниже 3x должны быть осознанным safety-cap, при котором идеи не становятся actionable автоматически;
 - `CALIB_MIN_SAMPLES` — минимум данных для calibration fit;
-- `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для подавления почти идентичных повторных публикаций одной и той же идеи; после этого окна same-direction сигнал всё равно не откроет новый outcome-root, пока предыдущая псевдо-сделка той же chain не доживёт до своего horizon или не получит outcome;
+- `RECO_TTL_SEC` — операторская свежесть publication-chain (по умолчанию auto: `max(900, RECO_INTERVAL_SEC × 15)`). После TTL прежнюю рекомендацию нельзя исполнять; это не закрывает её статистическое outcome-window;
+- `RECO_REPUBLISH_COOLDOWN_SEC` — cooldown для near-identical updates внутри ещё свежей operator publication-chain. После operator TTL новый подтверждённый сигнал может начать свежий `publication_root_rec_id`, но до созревания прежней псевдо-позиции наследует её `outcome_root_rec_id` и не становится новым label-root;
 - `OUTCOME_HORIZON_FALLBACK_SEC` — fallback horizon для legacy/неизвестных bot_type;
 - `ADMIN_API_KEY` — ключ для mutating endpoints; если ключ пуст, mutating API разрешён только с loopback (`127.0.0.1` / `::1` / `localhost`). Для любого удалённо доступного стенда ключ обязателен;
 - `MASTER_KEY` — Fernet-ключ для шифрования секретов. Теперь валидируется fail-fast на старте: битое значение больше не принимается молча;
@@ -654,20 +663,21 @@ ruff check app tests main.py
 
 ## Жизненный цикл исполнения
 1. кандидат `futures_grid` сначала удерживается в `pending`, пока два разных последовательно закрытых evidence snapshots (`features_ref_ts`) независимо не пройдут score/risk/economics gates; повторный recommender-cycle на той же свече не увеличивает счётчик; после подтверждения новый actionable выпуск публикуется как `recommended`;
-2. если same-direction сигнал пришёл, пока предыдущая корневая идея по этому `(venue, symbol, bot_type, direction)` ещё находится внутри своего outcome-horizon, новый `publication_root` не создаётся даже при material-upgrade: запись принудительно сохраняется как `active` в существующей publication-chain, чтобы outcome-labeling имитировал одну открытую псевдо-сделку, а не серию повторных входов;
-3. если сигнал повторился уже после закрытия псевдо-сделки, но внутри republish-cooldown и без material upgrade, он тоже сохраняется как `active` в той же publication-chain: запись остаётся исполнимой для оператора, но её lineage указывает на прежний `publication_root_rec_id`, поэтому outcome/calibration считают только корневую публикацию; если предыдущий bot этой chain уже остановлен, новый `execute` обязан создать новый running-бот, а не вернуть старый stopped-instance;
-4. если включён `LLM_REVIEWER_ENABLED=1`, actionable grid-рекомендация получает `pending` до `llm_review.status=ok`; без OK-вердикта `recommended/active` в UI/API не показываются как запускаемые, а hold ограничен `LLM_REVIEWER_PENDING_TIMEOUT_SEC`;
-5. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
-6. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
-7. перед созданием `bot_instance` сервис повторно проверяет текущие риск-лимиты, свежесть candles/ticker, live-price относительно диапазона/kill-switch, текущий best bid/ask spread и net economics, актуальный market shock / fast-veto и базовую Bybit-валидность сетки; instrument metadata Bybit подгружается заранее, вне SQLite write-lock, чтобы медленный upstream не блокировал collector/recommender; при ошибке возвращается `409`, а в `decision_log` пишется `EXECUTION_BLOCKED` или `EXECUTION_PRECHECK_BLOCKED`;
-8. если preflight пройден, создаётся `bot_instance`, recommendation переводится в `executed`;
-9. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
-10. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
-11. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
+2. если same-direction сигнал пришёл, пока текущая operator publication-chain ещё свежа, запись сохраняется как `active`, наследует её `publication_root_rec_id` и тот же `outcome_root_rec_id`;
+3. если operator TTL уже истёк, но исходная псевдо-позиция ещё внутри outcome-horizon, новый подтверждённый сигнал публикуется как свежий `recommended` со своим `publication_root_rec_id`, однако наследует прежний `outcome_root_rec_id` и получает `is_outcome_label_root=false`; оператор видит актуальную идею, а outcome/calibration не получают второй перекрывающийся sample;
+4. только после созревания прежнего outcome-horizon либо наличия сохранённого outcome следующая идея может стать одновременно новым publication-root и новым outcome-root; republish-cooldown после закрытия псевдо-позиции по-прежнему подавляет нематериальные повторы;
+5. если включён `LLM_REVIEWER_ENABLED=1`, actionable grid-рекомендация получает `pending` до `llm_review.status=ok`; без OK-вердикта `recommended/active` в UI/API не показываются как запускаемые, а hold ограничен `LLM_REVIEWER_PENDING_TIMEOUT_SEC`;
+6. проигравшие альтернативы по тому же `(venue, symbol)` уходят в `suppressed` с явной причиной в `reasons.suppression`;
+7. оператор вызывает `/recommendations/{rec_id}/action` с `executed` для `recommended` или `active`;
+8. перед созданием `bot_instance` сервис повторно проверяет текущие риск-лимиты, свежесть candles/ticker, live-price относительно диапазона/kill-switch, текущий best bid/ask spread и net economics, актуальный market shock / fast-veto и базовую Bybit-валидность сетки; instrument metadata Bybit подгружается заранее, вне SQLite write-lock, чтобы медленный upstream не блокировал collector/recommender; при ошибке возвращается `409`, а в `decision_log` пишется `EXECUTION_BLOCKED` или `EXECUTION_PRECHECK_BLOCKED`;
+9. если preflight пройден, создаётся `bot_instance`, recommendation переводится в `executed`;
+10. realized trades/PnL пишутся через `/bots/{bot_id}/trades`;
+11. risk engine использует `bot_instances` + `trades` для cooldown и дневного PnL / DD;
+12. бот останавливается через `/bots/{bot_id}/stop` или `stop_bot=true` в trade request.
 
 ### Семантика статусов recommendation
 - `recommended` — новый actionable сигнал, который прошёл подтверждение на двух разных закрытых evidence snapshots и готов к исполнению;
-- `active` — повторно актуальный signal-update внутри уже открытой publication-chain; возникает либо при обычном cooldown-reuse, либо при жёстком same-direction pseudo-position lock до завершения horizon. Исполним, но не считается новым выпуском и не создаёт отдельный outcome-root;
+- `active` — повторно актуальный signal-update внутри ещё свежей operator publication-chain; наследует оба root и не создаёт отдельный outcome-root. После operator TTL новый подтверждённый сигнал становится свежим `recommended`, но может продолжать прежнее outcome-window;
 - `pending` — временный gate-hold перед исполнением, включая ожидание второго отличающегося закрытого evidence snapshot; не является `no_trade`, но не исполним до финального `recommended`/`active` либо fail-closed отказа;
 - `suppressed` — скрытая альтернатива, проигравшая dedupe/selector и сохранённая только для аудита.
 

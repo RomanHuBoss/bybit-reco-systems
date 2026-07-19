@@ -604,7 +604,7 @@ function outcomeObservabilityReasonRu(value) {
 
 function isTechnicalIdentifierField(key) {
   return new Set([
-    "rec_id", "publication_root_rec_id", "model_version", "policy_fingerprint",
+    "rec_id", "publication_root_rec_id", "outcome_root_rec_id", "model_version", "policy_fingerprint",
     "database_instance_id", "runtime_owner", "owner", "lock_key",
   ]).has(String(key || ""));
 }
@@ -2533,7 +2533,8 @@ function buildRecommendationHistoryHtml(data) {
   const latest = items.length ? items[items.length - 1] : null;
   const summary = [
     { label: "Публикаций", value: `${data?.returned ?? 0}${data?.truncated ? ` из ${data?.items_total ?? "?"}` : ""}` },
-    { label: "Цепочек", value: data?.publication_root_count ?? 0 },
+    { label: "Операторских цепочек", value: data?.publication_root_count ?? 0 },
+    { label: "Независимых окон исхода", value: data?.outcome_root_count ?? 0 },
     { label: "Смен направления", value: data?.direction_change_count ?? 0 },
     { label: "Последняя рекомендация", html: latest ? `${directionBadge(latest.direction)} ${statusBadgeHtml(data?.latest_effective_status || latest.stored_status)}` : "—" },
     { label: "Возраст последней", value: latest ? (latest.timestamp_valid === false ? "Некорректная метка времени" : formatAgeHuman(latest.age_sec)) : "—" },
@@ -2546,7 +2547,8 @@ function buildRecommendationHistoryHtml(data) {
     { label: "Направление", render: row => directionBadge(row.direction) },
     { label: "Статус в БД", render: row => pillStatus(row.stored_status || row.status) },
     { label: "Проверка LLM", render: row => renderLlmStatusBadge(row.llm_status || "none") },
-    { label: "Тип", render: row => escapeHtml(row.publication_kind === "root" ? "новая идея" : "обновление") },
+    { label: "Публикация", render: row => escapeHtml(row.publication_kind === "root" ? "новая операторская идея" : "обновление цепочки") },
+    { label: "Разметка", render: row => escapeHtml(row.outcome_kind === "root" ? "новое окно исхода" : "общее окно исхода") },
     { label: "RR плана", render: row => {
         const value = toFiniteNumber(row.plan_rr);
         return escapeHtml(value === null ? "—" : formatDotNumber(value, 2, false));
@@ -2563,7 +2565,8 @@ function buildRecommendationHistoryHtml(data) {
         const marks = [];
         if (row.direction_changed) marks.push("смена направления");
         if (row.status_changed) marks.push("смена статуса");
-        if (row.publication_root_changed) marks.push("новая цепочка");
+        if (row.publication_root_changed) marks.push("новая операторская цепочка");
+        if (row.outcome_root_changed) marks.push("новое независимое окно исхода");
         return escapeHtml(marks.join(", ") || "—");
       }
     },
@@ -2612,7 +2615,8 @@ function localizeObjectForDisplay(value, key = "") {
   if (value && typeof value === "object") {
     const keyLabels = {
       ts: "Время", action: "Действие", operator: "Оператор", status: "Статус",
-      rec_id: "Идентификатор рекомендации", publication_root_rec_id: "Корневой идентификатор публикации",
+      rec_id: "Идентификатор рекомендации", publication_root_rec_id: "Корневой идентификатор операторской публикации",
+      outcome_root_rec_id: "Корневой идентификатор независимого окна исхода",
       entry_ts: "Время начала наблюдения", entry_price: "Начальная цена",
       label_available_ts: "Время готовности результата", event_ts: "Время события",
       candle_high: "Максимум свечи", candle_low: "Минимум свечи", candle_volume: "Объём свечи",

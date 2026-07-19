@@ -1,3 +1,11 @@
+## Dual lineage: operator publication и statistical outcome - v1.0.78
+
+Recommendation persistence materializes two orthogonal roots. `publication_root_rec_id` governs operator freshness, list collapse, execution idempotency and one-running-bot constraints. `outcome_root_rec_id` governs statistical label identity; only `is_outcome_label_root=true` rows are independently labeled.
+
+Data flow: candidate -> locate open same-direction outcome root by label horizon -> locate live operator publication by TTL -> either reuse both roots, create a fresh publication root sharing the old outcome root, or create both new roots after maturity. SQLite/PostgreSQL bootstrap adds and backfills the outcome lineage before creating its index, so an existing database upgrades additively.
+
+The canonical `futures_grid` horizon remains 12 hours. It is part of the versioned label target and calibration embargo, not an operator freshness value.
+
 ## Outcome eligibility read model - v1.0.77
 
 Outcome scope and calibration eligibility are orthogonal. `current_policy`
@@ -396,7 +404,8 @@ Duplicated persisted grid/funding fields are one contract. Valid duplicates must
 
 ### Что считается источником истины
 - market data snapshot — SQLite tables `ohlcv`, `ticker_snap`, `features`;
-- publication-chain — `recommendations.publication_root_rec_id`;
+- operator publication-chain — `recommendations.publication_root_rec_id`;
+- statistical outcome-chain — `recommendations.outcome_root_rec_id` plus `is_outcome_label_root`;
 - operator-facing recommendation list делает adaptive raw-scan перед collapse, чтобы длинная одна chain не вытесняла остальные уникальные идеи из `top_n`;
 - operator execution state — `bot_instances`;
 - realised operator/audit events — `trades`, `decision_log`.

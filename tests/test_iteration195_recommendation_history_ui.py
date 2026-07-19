@@ -55,7 +55,16 @@ def history_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         client.close()
 
 
-def _row(rec_id: str, ts: int, *, direction: str, status: str, llm_status: str, root: str | None = None):
+def _row(
+    rec_id: str,
+    ts: int,
+    *,
+    direction: str,
+    status: str,
+    llm_status: str,
+    root: str | None = None,
+    outcome_root: str | None = None,
+):
     return {
         "rec_id": rec_id,
         "ts": ts,
@@ -83,7 +92,8 @@ def _row(rec_id: str, ts: int, *, direction: str, status: str, llm_status: str, 
         "model_version": "test",
         "features_ref_ts": ts,
         "publication_root_rec_id": root or rec_id,
-        "is_outcome_label_root": root is None,
+        "outcome_root_rec_id": outcome_root or root or rec_id,
+        "is_outcome_label_root": outcome_root is None and root is None,
     }
 
 
@@ -123,6 +133,14 @@ def test_history_endpoint_returns_ordered_publications_and_latest_identity(histo
         [
             _row("R-root", now - 300, direction="long", status="recommended", llm_status="ok"),
             _row("R-update", now - 180, direction="long", status="active", llm_status="ok", root="R-root"),
+            _row(
+                "R-fresh-operator",
+                now - 120,
+                direction="long",
+                status="recommended",
+                llm_status="ok",
+                outcome_root="R-root",
+            ),
             _row("R-flip", now - 60, direction="short", status="pending", llm_status="pending"),
         ],
     )
@@ -133,12 +151,23 @@ def test_history_endpoint_returns_ordered_publications_and_latest_identity(histo
     assert response.status_code == 200
     payload = response.json()
     assert payload["latest_rec_id"] == "R-flip"
-    assert payload["items_total"] == 3
-    assert [item["rec_id"] for item in payload["items"]] == ["R-root", "R-update", "R-flip"]
+    assert payload["items_total"] == 4
+    assert [item["rec_id"] for item in payload["items"]] == [
+        "R-root",
+        "R-update",
+        "R-fresh-operator",
+        "R-flip",
+    ]
     assert payload["items"][0]["publication_kind"] == "root"
     assert payload["items"][1]["publication_kind"] == "update"
-    assert payload["items"][2]["direction_changed"] is True
-    assert payload["items"][2]["llm_status"] == "pending"
+    assert payload["items"][2]["publication_kind"] == "root"
+    assert payload["items"][2]["outcome_kind"] == "shared_label_window"
+    assert payload["items"][2]["publication_root_changed"] is True
+    assert payload["items"][2]["outcome_root_changed"] is False
+    assert payload["items"][3]["direction_changed"] is True
+    assert payload["items"][3]["llm_status"] == "pending"
+    assert payload["publication_root_count"] == 3
+    assert payload["outcome_root_count"] == 2
 
 
 def test_ui_has_modal_timeline_and_preserves_selected_recommendation_identity():

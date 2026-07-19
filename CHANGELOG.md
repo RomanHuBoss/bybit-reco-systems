@@ -1,3 +1,16 @@
+## 2026-07-19 - v1.0.78 - separate operator freshness from outcome lineage
+
+- Fixed a HIGH publication/outcome lifecycle defect: an expired 15-minute operator chain could previously open another `is_outcome_label_root=1` while the original 12-hour pseudo-position was still alive.
+- Added additive `recommendations.outcome_root_rec_id` lineage for SQLite and PostgreSQL, including runtime upgrade/backfill and indexes.
+- Preserved `RECO_TTL_SEC` as operator freshness: a confirmed signal after TTL gets a fresh actionable publication root instead of resurrecting the stale chain.
+- Reused the still-open outcome root until the exact label horizon matures or an outcome exists; repeated rows remain audit data but are not independent labels.
+- Corrected historical maintenance repair so it can join duplicated statistical roots without collapsing a post-TTL operator publication.
+- Extended recommendation-history API/UI to distinguish operator chains from independent outcome windows.
+- Started a clean calibration lineage with `bybit-taxonomy-v11-separated-operator-outcome-lineage`; `grid_label_v26` and the canonical 12-hour `futures_grid` target are unchanged.
+- Added `tests/test_iteration265_operator_outcome_horizon_separation.py` and synchronized persistence/history/version regressions.
+- Baseline: 1201 tests collected; monolithic run timed out in the harness after 15 minutes at 83%, then all 1201 nodes passed in 16 deterministic non-overlapping batches. Post-check: 1206/1206 passed in exhaustive batches; the new five-test regression passed twice and the relevant module suite passed 132 tests.
+- `pip check` retains the external MoviePy/Pillow conflict in the shared environment; `ruff` is unavailable. Live PostgreSQL integration and live Bybit/network checks were not run without a disposable DSN/explicit need.
+
 ## 2026-07-19 - v1.0.77 - exact outcome eligibility and walk-forward evidence
 
 - Separated verified fingerprint scope from mutually exclusive calibration,

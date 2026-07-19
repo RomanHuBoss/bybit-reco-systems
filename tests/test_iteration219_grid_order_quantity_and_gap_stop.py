@@ -221,4 +221,4 @@ def test_daily_loss_fallback_uses_off_grid_active_order_count() -> None:
 def test_outcome_contract_is_bumped_for_order_quantity_and_gap_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.0.77"' in source
+    assert 'version="1.0.78"' in source

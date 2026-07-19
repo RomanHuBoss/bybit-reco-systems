@@ -46,6 +46,7 @@ class _FakePostgresConn:
                     "model_version": "test",
                     "features_ref_ts": 1,
                     "publication_root_rec_id": "R-1",
+                    "outcome_root_rec_id": "R-1",
                     "is_outcome_label_root": 1,
                 }
             )
@@ -90,6 +91,8 @@ def test_standalone_migrations_include_publication_root_running_guards() -> None
         assert "idx_bot_publication_root_status" in payload
         assert "idx_bot_running_publication_root_unique" in payload
         assert "publication_root_rec_id" in payload
+        assert "outcome_root_rec_id" in payload
+        assert "idx_reco_outcome_lineage_ts" in payload
 
 
 def test_release_history_does_not_require_audit_report_artifacts() -> None:

@@ -1,3 +1,11 @@
+## Operator freshness и независимая outcome-lineage - v1.0.78
+
+`publication_root_rec_id` и `outcome_root_rec_id` имеют разные обязанности. Первый определяет свежую операторскую идею, её TTL, UI-collapse и idempotent bot lifecycle. Второй определяет единственную размечаемую псевдо-позицию для `(venue, symbol, bot_type, direction)` до конца label horizon.
+
+Пока operator publication-chain не истекла, same-direction updates получают `active` и наследуют оба root. После `RECO_TTL_SEC` старая цепочка неисполняема; новый подтверждённый сигнал может стать свежим `recommended` и собственным publication-root, но при незавершённом outcome-window он сохраняет старый `outcome_root_rec_id` и `is_outcome_label_root=false`. Новый независимый label-root разрешён только после maturity прежнего 12-часового `futures_grid` horizon либо после сохранения его outcome.
+
+12 часов остаются каноническим target contract `grid_label_v26`, а не заявлением об оптимальности. 6/12/24 часа нельзя сравнивать простым изменением константы: меняются label target, `label_available_ts`, embargo, funding-event exposure и скорость накопления неперекрывающихся когорт. Выбор другого horizon требует отдельной versioned offline purged walk-forward итерации; текущий fix меняет только lineage, не outcome math.
+
 ## Eligibility outcome и calibration lane (v1.0.77)
 
 Одинаковый policy fingerprint означает одинаковый immutable deployment contract,
@@ -470,8 +478,10 @@ UI обязан показывать этот блок рядом с execution/l
 - присылать в этот сервис агрегированные realised trade rows для аудита.
 
 
-## Инвариант publication-chain
-Для одной publication-chain допускается не более одного `running` bot_instance. Это не просто UI-правило: инвариант обеспечивается persistence-слоем, чтобы гонка двух операторских `execute` не создавала две параллельные позиции на один и тот же рекомендательный корень.
+## Инварианты publication-chain и outcome-chain
+Для одной operator publication-chain допускается не более одного `running` bot_instance. Это не просто UI-правило: инвариант обеспечивается persistence-слоем, чтобы гонка двух операторских `execute` не создавала две параллельные позиции на один и тот же рекомендательный корень.
+
+Outcome-chain является отдельной статистической lineage. Несколько последовательных operator publication roots могут ссылаться на один `outcome_root_rec_id`, если старый операторский TTL уже истёк, но псевдо-позиция ещё не достигла maturity. Только строка с `is_outcome_label_root=true` получает самостоятельный proxy outcome и входит в текущую calibration candidate lineage.
 
 ## Signal durability и immutable UI identity
 

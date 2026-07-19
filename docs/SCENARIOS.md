@@ -1,3 +1,15 @@
+## Сценарий: operator TTL истёк, outcome horizon ещё открыт (v1.0.78)
+
+1. Первая LONG-рекомендация создаёт `publication_root_rec_id=R1`, `outcome_root_rec_id=R1`, `is_outcome_label_root=true`.
+2. В пределах operator TTL повторный подтверждённый LONG сохраняется как `active` и наследует оба root.
+3. После operator TTL прежняя publication-chain становится неисполняемой. Новый подтверждённый LONG публикуется как свежий `recommended` с `publication_root_rec_id=R2`.
+4. Пока 12-часовая псевдо-позиция R1 не созрела, R2 сохраняет `outcome_root_rec_id=R1` и `is_outcome_label_root=false`. Оператор получает свежую идею, но training sample не удваивается.
+5. После maturity R1 либо сохранённого outcome следующая рекомендация может стать новым независимым outcome-root.
+
+## Сценарий: сравнение 6/12/24-часового horizon
+
+Production не переключает horizon ad hoc. Исследовательская итерация должна создать отдельные versioned targets, применить одинаковый purged walk-forward/embargo, сравнить monetary expectancy, censoring, regime stability и скорость накопления независимых cohorts. До такого сравнения канонический 12-часовой контракт сохраняется.
+
 ## Сценарий: один fingerprint, разные eligibility-когорты (v1.0.77)
 
 Два outcome могут иметь одинаковый проверенный policy fingerprint. Если первая
@@ -516,11 +528,13 @@ Expected behavior:
 - recommender не публикует actionable рекомендации до прохождения warm-up;
 - backfill расширяет историю до минимально достаточного окна.
 
-## 2. Повторный same-direction сигнал внутри открытой publication-chain
+## 2. Повторный same-direction сигнал внутри свежей publication-chain
 Ожидаемое поведение:
-- новая запись может получить `active`, а не новый outcome-root;
-- старый publication_root_rec_id сохраняется;
+- новая запись получает `active`;
+- старые `publication_root_rec_id` и `outcome_root_rec_id` сохраняются;
 - outcome labeling не удваивает псевдо-позицию.
+
+Если operator TTL уже истёк, создаётся новый publication-root, но старый outcome-root сохраняется до maturity.
 
 ## 3. Operator execution подтверждает рекомендацию
 Ожидаемое поведение:

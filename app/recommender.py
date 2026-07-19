@@ -40,7 +40,7 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v10-terminal-selected-policy-money"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v11-separated-operator-outcome-lineage"
 DIRECTION_CALIBRATION_KEY = "platt_direction_v14"
 CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v3"
 POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
@@ -4620,6 +4620,81 @@ def _recommendation_row_is_publication_actionable(row: Any) -> bool:
     return target in LLM_REVIEW_ELIGIBLE_STATUSES
 
 
+def _recommendation_row_is_open_outcome_root(row: Any) -> bool:
+    """Return whether a persisted root still represents an actionable label sample.
+
+    Operator TTL may have changed the row status to ``expired`` while its proxy
+    position is still inside the label horizon.  That expiration must prevent
+    execution, but it must not create a second overlapping outcome root.
+    """
+    if _recommendation_row_is_publication_actionable(row):
+        return True
+    status_value = row.get("status") if isinstance(row, dict) else row["status"]
+    if str(status_value or "").strip().lower() != "expired":
+        return False
+    # ``expired`` is written only by the TTL worker from recommended/active/pending
+    # states.  Legacy rows may predate materialized outcome-policy columns, so the
+    # status transition itself is the durable evidence that this was an operator
+    # publication rather than a blocked/no-trade sample.
+    return True
+
+
+def _publication_row_payload(row: Any) -> dict[str, Any]:
+    rec_id = str(row["rec_id"] or "")
+    publication_root_rec_id = str(
+        row["publication_root_rec_id"] or rec_id
+    ).strip() or rec_id
+    outcome_root_rec_id = str(
+        row["outcome_root_rec_id"] or publication_root_rec_id
+    ).strip() or publication_root_rec_id
+    return {
+        "rec_id": rec_id,
+        "ts": row["ts"],
+        "score": row["score"],
+        "confidence": row["confidence"],
+        "expected_rr": row["expected_rr"],
+        "status": row["status"],
+        "params": db._json_loads_or_default(row["params_json"], {}),
+        "publication_root_rec_id": publication_root_rec_id,
+        "outcome_root_rec_id": outcome_root_rec_id,
+        "is_outcome_label_root": bool(int(row["is_outcome_label_root"] or 0)),
+    }
+
+
+def _find_latest_live_publication(
+    conn, rec: dict[str, Any], ts_now: int
+) -> dict[str, Any] | None:
+    """Find the newest unexpired operator publication chain for the same idea."""
+    cur = conn.execute(
+        """SELECT * FROM recommendations
+           WHERE venue=? AND symbol=? AND bot_type=? AND direction=?
+             AND status IN ('recommended','active','executed','pending') AND ts < ?
+           ORDER BY ts DESC LIMIT 64""",
+        (
+            str(rec.get("venue") or ""),
+            str(rec.get("symbol") or ""),
+            str(rec.get("bot_type") or ""),
+            str(rec.get("direction") or "neutral"),
+            int(ts_now),
+        ),
+    )
+    for row in cur.fetchall():
+        if not _recommendation_row_is_publication_actionable(row):
+            continue
+        payload = _publication_row_payload(row)
+        expiry = db.recommendation_chain_expiry_context(
+            conn,
+            rec_id=str(row["rec_id"]),
+            publication_root_rec_id=payload["publication_root_rec_id"],
+            row_ts=row["ts"],
+            ttl_sec=row["ttl_sec"],
+            ts_now=ts_now,
+        )
+        if not expiry.get("is_publication_chain_expired"):
+            return payload
+    return None
+
+
 
 def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_sec: int) -> dict[str, Any] | None:
     if cooldown_sec <= 0:
@@ -4642,28 +4717,18 @@ def _find_recent_publication(conn, rec: dict[str, Any], ts_now: int, cooldown_se
     for row in cur.fetchall():
         if not _recommendation_row_is_publication_actionable(row):
             continue
-        publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
+        payload = _publication_row_payload(row)
         expiry = db.recommendation_chain_expiry_context(
             conn,
             rec_id=str(row["rec_id"]),
-            publication_root_rec_id=publication_root_rec_id,
+            publication_root_rec_id=payload["publication_root_rec_id"],
             row_ts=row["ts"],
             ttl_sec=row["ttl_sec"],
             ts_now=ts_now,
         )
         if expiry.get("is_publication_chain_expired"):
             continue
-        return {
-            "rec_id": row["rec_id"],
-            "ts": row["ts"],
-            "score": row["score"],
-            "confidence": row["confidence"],
-            "expected_rr": row["expected_rr"],
-            "status": row["status"],
-            "params": db._json_loads_or_default(row["params_json"], {}),
-            "publication_root_rec_id": publication_root_rec_id,
-            "is_outcome_label_root": bool(int(row["is_outcome_label_root"] or 0)),
-        }
+        return payload
     return None
 
 
@@ -4714,7 +4779,8 @@ def _find_open_shadow_outcome_root(
     cur = conn.execute(
         """SELECT r.rec_id, r.ts, r.features_ref_ts, r.bot_type, r.status,
                   r.params_json, r.reasons_json, r.model_version,
-                  r.publication_root_rec_id, r.is_outcome_label_root
+                  r.publication_root_rec_id, r.outcome_root_rec_id,
+                  r.is_outcome_label_root
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.venue=? AND r.symbol=? AND r.bot_type=? AND r.direction=?
@@ -4756,10 +4822,16 @@ def _find_open_shadow_outcome_root(
         lock_until_ts = int(pseudo_entry_ts) + int(effective_horizon_sec)
         if int(ts_now) >= lock_until_ts:
             continue
-        root_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
+        publication_root_id = str(
+            row["publication_root_rec_id"] or row["rec_id"]
+        ).strip() or str(row["rec_id"])
+        outcome_root_id = str(
+            row["outcome_root_rec_id"] or row["rec_id"]
+        ).strip() or str(row["rec_id"])
         return {
             "rec_id": row["rec_id"],
-            "publication_root_rec_id": root_id,
+            "publication_root_rec_id": publication_root_id,
+            "outcome_root_rec_id": outcome_root_id,
             "effective_horizon_sec": int(effective_horizon_sec),
             "lock_until_ts": int(lock_until_ts),
         }
@@ -4783,13 +4855,15 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
     cur = conn.execute(
         """SELECT r.rec_id, r.ts, r.ttl_sec, r.features_ref_ts, r.bot_type, r.status,
                   r.score, r.confidence, r.expected_rr,
-                  r.params_json, r.reasons_json, r.publication_root_rec_id, r.is_outcome_label_root
+                  r.params_json, r.reasons_json, r.publication_root_rec_id,
+                  r.outcome_root_rec_id, r.is_outcome_label_root,
+                  r.outcome_eligible, r.outcome_sample_role
            FROM recommendations r
            LEFT JOIN reco_outcomes o ON o.rec_id = r.rec_id
            WHERE r.venue=? AND r.symbol=? AND r.bot_type=? AND r.direction=?
              AND COALESCE(r.is_outcome_label_root, 1) = 1
              AND o.rec_id IS NULL
-             AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'expired', 'ignored')
+             AND r.status NOT IN ('blocked', 'no_trade', 'suppressed', 'ignored')
              AND r.ts < ?
            ORDER BY r.ts DESC LIMIT 16""",
         (
@@ -4805,7 +4879,7 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
         return None
 
     for row in rows:
-        if not _recommendation_row_is_publication_actionable(row):
+        if not _recommendation_row_is_open_outcome_root(row):
             continue
         params = db._json_loads_or_default(row["params_json"], {})
         effective_horizon_sec, _ = _resolve_effective_horizon(
@@ -4830,17 +4904,12 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
         lock_until_ts = int(pseudo_entry_ts) + int(effective_horizon_sec)
         if int(ts_now) >= lock_until_ts:
             continue
-        publication_root_rec_id = str(row["publication_root_rec_id"] or row["rec_id"]).strip() or str(row["rec_id"])
-        expiry = db.recommendation_chain_expiry_context(
-            conn,
-            rec_id=str(row["rec_id"]),
-            publication_root_rec_id=publication_root_rec_id,
-            row_ts=row["ts"],
-            ttl_sec=row["ttl_sec"],
-            ts_now=ts_now,
-        )
-        if expiry.get("is_publication_chain_expired"):
-            continue
+        publication_root_rec_id = str(
+            row["publication_root_rec_id"] or row["rec_id"]
+        ).strip() or str(row["rec_id"])
+        outcome_root_rec_id = str(
+            row["outcome_root_rec_id"] or row["rec_id"]
+        ).strip() or str(row["rec_id"])
         return {
             "rec_id": row["rec_id"],
             "ts": row["ts"],
@@ -4850,6 +4919,7 @@ def _find_open_publication_position(conn, rec: dict[str, Any], ts_now: int, fall
             "status": row["status"],
             "params": params if isinstance(params, dict) else {},
             "publication_root_rec_id": publication_root_rec_id,
+            "outcome_root_rec_id": outcome_root_rec_id,
             "is_outcome_label_root": True,
             "open_position_lock": True,
             "effective_horizon_sec": int(effective_horizon_sec),
@@ -4891,25 +4961,77 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
                 }
                 rec["status"] = "no_trade"
                 rec["publication_root_rec_id"] = previous_root_rec_id
+                rec["outcome_root_rec_id"] = str(
+                    prev_shadow_root.get("outcome_root_rec_id")
+                    or prev_shadow_root.get("rec_id")
+                    or previous_root_rec_id
+                ).strip() or previous_root_rec_id
                 rec["is_outcome_label_root"] = False
             continue
 
         if not _is_llm_review_eligible_status(rec.get("status")):
             continue
 
-        prev_open_root = _find_open_publication_position(conn, rec, ts_now, fallback_horizon_sec)
+        prev_open_root = _find_open_publication_position(
+            conn, rec, ts_now, fallback_horizon_sec
+        )
         if prev_open_root is not None:
-            _material_upgrade_ignored, diagnostics = _recent_publication_dedupe_material_upgrade(prev_open_root, rec)
+            live_publication = _find_latest_live_publication(conn, rec, ts_now)
+            comparison_base = live_publication or prev_open_root
+            _material_upgrade_ignored, diagnostics = _recent_publication_dedupe_material_upgrade(
+                comparison_base, rec
+            )
             reasons = rec.setdefault("reasons", {})
-            previous_root_rec_id = str(prev_open_root.get("publication_root_rec_id") or prev_open_root.get("rec_id") or "").strip() or str(prev_open_root.get("rec_id") or "")
+            outcome_root_rec_id = str(
+                prev_open_root.get("outcome_root_rec_id")
+                or prev_open_root.get("rec_id")
+                or ""
+            ).strip() or str(prev_open_root.get("rec_id") or "")
+
+            if live_publication is not None:
+                previous_publication_root = str(
+                    live_publication.get("publication_root_rec_id")
+                    or live_publication.get("rec_id")
+                    or ""
+                ).strip() or str(live_publication.get("rec_id") or "")
+                reasons["publication_dedupe"] = {
+                    "cooldown_sec": int(cooldown_sec),
+                    "previous_rec_id": live_publication.get("rec_id"),
+                    "previous_root_rec_id": previous_publication_root,
+                    "previous_outcome_root_rec_id": outcome_root_rec_id,
+                    "previous_ts": live_publication.get("ts"),
+                    "previous_status": live_publication.get("status"),
+                    "decision": "reuse_active",
+                    "active_reuse": True,
+                    "operator_chain_reset": False,
+                    "suppressed": False,
+                    "material_upgrade": False,
+                    "open_position_lock": True,
+                    "lock_reason": "existing_same_direction_pseudo_position",
+                    "effective_horizon_sec": int(prev_open_root.get("effective_horizon_sec") or 0),
+                    "lock_until_ts": int(prev_open_root.get("lock_until_ts") or 0),
+                    **diagnostics,
+                }
+                rec["status"] = "active"
+                rec["publication_root_rec_id"] = previous_publication_root
+                rec["outcome_root_rec_id"] = outcome_root_rec_id
+                rec["is_outcome_label_root"] = False
+                continue
+
+            # The prior operator publication has expired, but its statistical
+            # pseudo-position has not. Publish a fresh actionable operator root
+            # without manufacturing a second overlapping label sample.
+            current_rec_id = str(rec.get("rec_id") or "").strip()
             reasons["publication_dedupe"] = {
                 "cooldown_sec": int(cooldown_sec),
                 "previous_rec_id": prev_open_root.get("rec_id"),
-                "previous_root_rec_id": previous_root_rec_id,
+                "previous_root_rec_id": prev_open_root.get("publication_root_rec_id"),
+                "previous_outcome_root_rec_id": outcome_root_rec_id,
                 "previous_ts": prev_open_root.get("ts"),
                 "previous_status": prev_open_root.get("status"),
-                "decision": "reuse_active",
-                "active_reuse": True,
+                "decision": "publish_fresh_operator_root",
+                "active_reuse": False,
+                "operator_chain_reset": True,
                 "suppressed": False,
                 "material_upgrade": False,
                 "open_position_lock": True,
@@ -4918,8 +5040,8 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
                 "lock_until_ts": int(prev_open_root.get("lock_until_ts") or 0),
                 **diagnostics,
             }
-            rec["status"] = "active"
-            rec["publication_root_rec_id"] = previous_root_rec_id
+            rec["publication_root_rec_id"] = current_rec_id
+            rec["outcome_root_rec_id"] = outcome_root_rec_id
             rec["is_outcome_label_root"] = False
             continue
 
@@ -4947,10 +5069,16 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
         }
         if material_upgrade:
             rec["publication_root_rec_id"] = str(rec.get("rec_id") or "")
+            rec["outcome_root_rec_id"] = str(rec.get("rec_id") or "")
             rec["is_outcome_label_root"] = True
         else:
             rec["status"] = "active"
             rec["publication_root_rec_id"] = previous_root_rec_id
+            rec["outcome_root_rec_id"] = str(
+                prev.get("outcome_root_rec_id")
+                or prev.get("rec_id")
+                or previous_root_rec_id
+            ).strip() or previous_root_rec_id
             rec["is_outcome_label_root"] = False
 
 

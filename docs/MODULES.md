@@ -1,3 +1,12 @@
+## v1.0.78: operator/outcome lineage separation
+
+- `app/recommender.py`: independently resolves live operator publication TTL and open statistical outcome horizon.
+- `app/db.py`: additive `outcome_root_rec_id` schema, backfill, serializers and maintenance repair.
+- `app/main.py`: history API exposes publication/outcome root counts and kinds separately.
+- `app/ui/static/app.js`: operator history labels fresh publications and shared outcome windows explicitly.
+- `migrations/init*.sql`: dual-backend outcome-lineage column and index.
+- `tests/test_iteration265_operator_outcome_horizon_separation.py`: red/green lifecycle, maturity, repair and SQLite upgrade contracts.
+
 ## v1.0.77: outcome eligibility and offline evidence
 
 - `app/db.py`: exact eligibility read model, reason counters and 14/90-day
