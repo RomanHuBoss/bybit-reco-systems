@@ -1,3 +1,21 @@
+## Сквозные сценарии наблюдаемости — v1.4.0
+
+### Trend опубликован, горизонт ещё не созрел
+
+В БД сразу существуют recommendation root и `reco_outcome_observability(state=waiting, reason=scheduled_for_label_horizon)`. «Детали» и «Здоровье» показывают срок созревания. В `reco_outcomes` строки ещё нет — это нормальное состояние.
+
+### Grid или trend сформировал outcome
+
+Observability становится `labeled`; grid показывает `GRID_OUTCOME`, trend — `TP_FIRST`, `SL_FIRST` или `HORIZON_EXIT`. Журнал и архив сохраняют strategy identity, а история связывает outcome с `outcome_root_rec_id`.
+
+### Исторический уровень отсутствует
+
+Точка без persisted TP/SL либо range/kill-switch не соединяется линией с соседними публикациями. UI показывает разрыв доказательств, а не синтетическую геометрию.
+
+### API вернул повреждённый JSON
+
+Окно показывает явную ошибку чтения/отображения. Пустая статистика не подставляется и ошибка рендеринга истории не называется сетевой ошибкой.
+
 ## Сценарии first-touch directional trend — v1.3.0
 
 ### TP достигнут первым

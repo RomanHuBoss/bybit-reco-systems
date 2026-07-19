@@ -1,3 +1,11 @@
+## Остаточные риски после v1.4.0 strategy observability audit
+
+- Durable waiting rows доказывают наличие обязательства рассчитать outcome, но не гарантируют наличие будущего непрерывного 1m path или funding history.
+- Историческая геометрия воспроизводит сохранённый план; legacy-строки без уровней остаются разрывом и не восстанавливаются догадкой.
+- Health semantic-integrity checks обнаруживают известные cross-table нарушения, но не заменяют резервное копирование и внешнюю проверку PostgreSQL production dataset.
+- UI smoke-тесты проверяют mixed grid/trend fixtures и browser rendering, но не доказывают корректность конкретной биржевой сделки или live edge.
+- Strategy-specific labels и router math не менялись; ошибки модели, режимный сдвиг и proxy/live execution gap остаются.
+
 ## Остаточные риски после v1.3.0 first-touch event model
 
 - Вероятностная uncertainty является консервативным validation bound, а не доказанной индивидуальной confidence interval для каждой сделки.

@@ -299,7 +299,7 @@ def test_status_and_frontend_expose_first_touch_readiness() -> None:
     assert "First-touch EV" in ui_source
 
 
-def test_release_documents_and_iterative_pdf_match_v130_contract() -> None:
+def test_release_documents_and_iterative_pdf_match_current_contract() -> None:
     from html import unescape
     import re
     from zipfile import ZipFile
@@ -313,7 +313,7 @@ def test_release_documents_and_iterative_pdf_match_v130_contract() -> None:
 
     prompt_text = "\n".join(page.extract_text() or "" for page in PdfReader(prompt_pdf).pages)
     for expected in (
-        "v1.3.0",
+        "v1.4.0",
         "directional_trend",
         "TP_FIRST",
         "SL_FIRST",
@@ -330,7 +330,7 @@ def test_release_documents_and_iterative_pdf_match_v130_contract() -> None:
     with ZipFile(operator_docx) as archive:
         xml = archive.read("word/document.xml").decode("utf-8")
     operator_text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", xml)))
-    assert "Версия документа: 1.3.0" in operator_text
+    assert "Версия документа: 1.4.0" in operator_text
     assert "P(TP раньше SL)" in operator_text
     assert "AMBIGUOUS" in operator_text
 

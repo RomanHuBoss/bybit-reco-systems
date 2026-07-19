@@ -6,7 +6,7 @@
 
 Редакция: 19 июля 2026 г.
 
-Контракт: v1.3.0 — strategy-profitability-router-v2 + trend first-touch event model
+Контракт: v1.4.0 — strategy observability + durable outcome schedule + first-touch/router invariants
 
 Ты — независимая экспертная группа, объединяющая компетенции:
 - senior Python/FastAPI engineer;
@@ -1006,6 +1006,7 @@ P5:
 - proxy outcome не называется доказательством live edge.
 
 Для strategy-profitability router отдельно проверь:
+- canonical router identity строго равна `strategy-profitability-router-v2`;
 - grid и trend не сравниваются по raw score;
 - trend допускается только при exact-policy fitted first-touch model;
 - консервативная нижняя P(TP_FIRST) выше верхней P(SL_FIRST);
@@ -1562,6 +1563,20 @@ node --check app/ui/static/app.js python -m pytest -q Дополнительно
 
 Не заявляй, что fix находится в архиве, пока не проверишь повторно распакованную копию.
 
+
+## 13.9. ОБЯЗАТЕЛЬНЫЙ СКВОЗНОЙ АУДИТ GRID/TREND НАБЛЮДАЕМОСТИ
+
+Если изменяются strategy families, outcome, API, БД или операторский UI, обязательно проверь обе стратегии end-to-end:
+- recommendation сохраняет точный `bot_type`, immutable `params_json`, publication/outcome roots и eligibility materialization;
+- `reco_outcome_observability` существует уже до созревания горизонта и содержит точный `label_due_ts`;
+- `futures_grid` отображает reference/range/grid count/kill-switch, а `directional_trend` — single-position entry/TP/SL; запрещено выводить trend через grid kill-switch или наоборот;
+- журнал решений содержит symbol, strategy family, direction и recommendation status;
+- окно исходов сохраняет канонические события `GRID_OUTCOME` и `TP_FIRST / SL_FIRST / HORIZON_EXIT`, а `AMBIGUOUS` остаётся censored;
+- Health показывает очереди, исходы и calibrators отдельно по grid/trend и проверяет cross-table semantic integrity;
+- история строится по persisted geometry, не по текущим exchange metadata; отсутствие уровня разрывает линию;
+- графики проверяются исполнением JavaScript или browser smoke, а не только поиском строк в source;
+- malformed API/JSON и ошибки рендера показываются явно и не маскируются пустыми данными либо сообщением «ошибка сети»;
+- SQLite fresh/upgrade и PostgreSQL dialect paths проверяются теми же strategy-specific invariants.
 
 ## 14. ФОРМАТ ОТВЕТА ПОЛЬЗОВАТЕЛЮ
 

@@ -65,7 +65,7 @@ def _visible_html() -> str:
 def test_static_shell_uses_plain_russian_operator_language() -> None:
     visible = _visible_html()
     for required in [
-        "Фьючерсная сетка — Панель оператора", "Ручной режим", "Показывать строк",
+        "Bybit Recommender — Сетка и тренд", "Ручной режим", "Показывать строк",
         "Можно торговать", "Ожидает проверки", "Заблокировано", "Не торговать",
         "Скрыто системой", "RR плана", "Доходность по наблюдениям",
     ]:

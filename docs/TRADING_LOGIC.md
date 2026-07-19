@@ -1,3 +1,9 @@
+## Strategy-native operator projection and outcome lifecycle — v1.4.0
+
+Trading semantics are now preserved end-to-end. A `directional_trend` record exposes the entry, TP and SL saved in its single-position `trade_plan`; it must never derive exits from grid kill-switch bounds. A `futures_grid` record exposes reference price, range, grid count and outer kill-switches; directional grid TP/SL presentation remains a view over the appropriate outer bounds. This projection affects operator validation and display only; label contracts and router thresholds are unchanged.
+
+Every outcome-eligible root is registered in `reco_outcome_observability` in the same transaction as recommendation persistence. `scheduled_for_label_horizon` means the outcome exists as a future obligation, not that a profit/loss has already been calculated. Grid and trend mature independently by `outcome_root_rec_id`. A missing minute, ambiguous first touch or invalid strategy contract is shown as censored/waiting evidence and is never replaced by an inferred result.
+
 ## First-touch trend outcome и денежный допуск — v1.3.0
 
 ### Событийная семантика

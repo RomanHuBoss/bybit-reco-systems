@@ -1,3 +1,9 @@
+## Strategy observability data flow — v1.4.0
+
+`recommendation persistence → observability schedule → outcome worker → canonical event → enriched API → Details/History/Outcomes/Health` is one auditable chain. The persistence transaction immediately records the due timestamp for each supported strategy root. Read APIs join by `outcome_root_rec_id`, batch tracking for list views, and preserve `bot_type` in journal and aggregate projections. Health verifies cross-table identity and event-type invariants.
+
+Historical price geometry is read solely from immutable `params_json`. Current Bybit metadata may validate the latest recommendation but cannot rewrite older points. Frontend charts are strategy-specific and fail visibly; missing geometry starts a new SVG segment.
+
 ## Trend first-touch event architecture — v1.3.0
 
 Data flow для `directional_trend`:

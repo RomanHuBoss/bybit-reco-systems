@@ -375,12 +375,22 @@ def _ensure_outcome_label_availability_column(conn: sqlite3.Connection) -> None:
 def _ensure_outcome_event_type_column(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "reco_outcomes")
     if "event_type" not in cols:
-        # Legacy binary outcomes remain queryable but are excluded from the
-        # v2 directional first-touch event model. New trend rows persist one of
-        # TP_FIRST / SL_FIRST / HORIZON_EXIT; ambiguous chronology is censored.
+        # Legacy trend outcomes remain queryable but are excluded from the v2
+        # directional first-touch event model. Grid outcomes have one canonical
+        # terminal class and can be materialized without inventing chronology.
         conn.execute(
             "ALTER TABLE reco_outcomes ADD COLUMN event_type TEXT NOT NULL DEFAULT 'LEGACY_BINARY'"
         )
+    # The additive v1.3 migration assigned LEGACY_BINARY to every pre-existing
+    # row, including grid rows whose economic semantics were already known. Keep
+    # the durable column canonical so DB inspection, archive summaries and the UI
+    # agree even before any new outcomes are written.
+    conn.execute(
+        """UPDATE reco_outcomes
+              SET event_type='GRID_OUTCOME'
+            WHERE bot_type='futures_grid'
+              AND UPPER(TRIM(COALESCE(event_type, ''))) <> 'GRID_OUTCOME'"""
+    )
 
 
 def _ensure_bot_publication_root_columns(conn: sqlite3.Connection) -> None:
@@ -605,7 +615,7 @@ def _backfill_effective_horizon_sec(bot_type: str, params: dict[str, Any] | None
     if explicit_sec is not None:
         return int(_bounded_hours(explicit_sec / 3600.0) * 3600)
 
-    builtin = {"futures_grid": 12 * 3600}.get(bot_type)
+    builtin = {"futures_grid": 12 * 3600, "directional_trend": 12 * 3600}.get(bot_type)
     if builtin is not None:
         return int(builtin)
 
@@ -797,6 +807,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         # операцией через `repair_async_llm_pending_publication_chains()`.
         backfill_recommendation_publication_lineage(conn)
     _ensure_bot_publication_root_columns(conn)
+    _materialize_outcome_observability_for_recommendations(conn)
     ensure_database_instance_id(conn, commit=False)
     conn.commit()
 
@@ -1081,6 +1092,56 @@ def _table_count_and_range(conn: sqlite3.Connection, table: str) -> dict[str, in
     }
 
 
+def _count_by_column(conn: sqlite3.Connection, table: str, column: str) -> dict[str, int]:
+    rows = conn.execute(
+        f"SELECT {column} AS bucket, COUNT(*) AS c FROM {table} GROUP BY {column} ORDER BY {column}"
+    ).fetchall()
+    return {
+        str(row["bucket"] or "unknown"): int(row["c"] or 0)
+        for row in rows
+    }
+
+
+def get_outcome_semantic_integrity(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return cross-table outcome invariants without decoding unbounded JSON."""
+    row = conn.execute(
+        """SELECT
+                 COALESCE(SUM(CASE WHEN r.rec_id IS NULL THEN 1 ELSE 0 END), 0) AS orphan_outcome_total,
+                 COALESCE(SUM(CASE WHEN obs.rec_id IS NULL THEN 1 ELSE 0 END), 0) AS missing_observability_total,
+                 COALESCE(SUM(CASE WHEN obs.rec_id IS NOT NULL AND LOWER(TRIM(COALESCE(obs.state, ''))) <> 'labeled' THEN 1 ELSE 0 END), 0) AS non_labeled_observability_total,
+                 COALESCE(SUM(CASE WHEN r.rec_id IS NOT NULL AND (
+                       o.ts <> r.ts OR o.venue <> r.venue OR o.symbol <> r.symbol
+                       OR o.bot_type <> r.bot_type OR o.direction <> r.direction
+                 ) THEN 1 ELSE 0 END), 0) AS recommendation_identity_mismatch_total,
+                 COALESCE(SUM(CASE
+                       WHEN o.bot_type='futures_grid'
+                            AND UPPER(TRIM(COALESCE(o.event_type, '')))='GRID_OUTCOME' THEN 0
+                       WHEN o.bot_type='directional_trend'
+                            AND UPPER(TRIM(COALESCE(o.event_type, ''))) IN (
+                                'TP_FIRST', 'SL_FIRST', 'HORIZON_EXIT', 'LEGACY_BINARY'
+                            ) THEN 0
+                       ELSE 1
+                 END), 0) AS invalid_event_type_total,
+                 COALESCE(SUM(CASE WHEN o.bot_type='directional_trend'
+                       AND UPPER(TRIM(COALESCE(o.event_type, '')))='AMBIGUOUS'
+                       THEN 1 ELSE 0 END), 0) AS persisted_ambiguous_total
+            FROM reco_outcomes o
+            LEFT JOIN recommendations r ON r.rec_id=o.rec_id
+            LEFT JOIN reco_outcome_observability obs ON obs.rec_id=o.rec_id"""
+    ).fetchone()
+    fields = (
+        "orphan_outcome_total",
+        "missing_observability_total",
+        "non_labeled_observability_total",
+        "recommendation_identity_mismatch_total",
+        "invalid_event_type_total",
+        "persisted_ambiguous_total",
+    )
+    metrics = {field: int(row[field] or 0) if row else 0 for field in fields}
+    metrics["ok"] = all(metrics[field] == 0 for field in fields)
+    return metrics
+
+
 def get_database_continuity_status(conn: sqlite3.Connection) -> dict[str, Any]:
     """Expose safe continuity evidence without returning a path, DSN or secret."""
     recs = _table_count_and_range(conn, "recommendations")
@@ -1090,9 +1151,13 @@ def get_database_continuity_status(conn: sqlite3.Connection) -> dict[str, Any]:
         "database_instance_id": ensure_database_instance_id(conn),
         "engine": str(getattr(conn, "db_engine", SQLITE) or SQLITE),
         "recommendations_total": recs["count"],
+        "recommendations_by_bot_type": _count_by_column(conn, "recommendations", "bot_type"),
         "first_recommendation_ts": recs["first_ts"],
         "latest_recommendation_ts": recs["latest_ts"],
         "outcomes_total": outcomes["count"],
+        "outcomes_by_bot_type": _count_by_column(conn, "reco_outcomes", "bot_type"),
+        "outcomes_by_event_type": _count_by_column(conn, "reco_outcomes", "event_type"),
+        "outcome_semantic_integrity": get_outcome_semantic_integrity(conn),
         "first_outcome_ts": outcomes["first_ts"],
         "latest_outcome_ts": outcomes["latest_ts"],
         "decision_log_total": decisions["count"],
@@ -1277,6 +1342,134 @@ def _normalize_stored_recommendation_payload(row: Any) -> tuple[Any, ...]:
     return tuple(values)
 
 
+def _planned_outcome_due_ts_from_recommendation_row(row: Any) -> int | None:
+    recommendation_ts = strict_integer(row["ts"])
+    bot_type = str(row["bot_type"] or "").strip()
+    if recommendation_ts is None or recommendation_ts <= 0:
+        return None
+    reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+    outcome_policy = reasons.get("outcome_policy") if isinstance(reasons.get("outcome_policy"), dict) else {}
+    stored_due = strict_integer(outcome_policy.get("label_due_ts"))
+    if stored_due is not None and stored_due >= recommendation_ts:
+        return int(stored_due)
+    horizon = POLICY_LABEL_HORIZONS_SEC.get(bot_type)
+    if horizon is None:
+        return None
+    return int(recommendation_ts + int(horizon) + int(POLICY_LABEL_GRACE_SEC))
+
+
+def _materialize_outcome_observability_for_recommendations(
+    conn: sqlite3.Connection,
+    rec_ids: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, int]:
+    """Materialize the durable outcome schedule before the worker's first attempt.
+
+    A recommendation is observable from publication time, not only after its
+    12-hour label horizon has matured.  ``last_attempt_ts=0`` distinguishes a
+    scheduled root from a worker attempt and lets Details/Health show the exact
+    due time for both grid and trend without fabricating an outcome.
+
+    Existing labeled outcomes are also backfilled into the ledger so upgraded
+    databases satisfy the same cross-table invariants as fresh databases.
+    """
+    filtered_ids = list(dict.fromkeys(
+        str(value or "").strip() for value in (rec_ids or []) if str(value or "").strip()
+    ))
+    id_filter = ""
+    id_params: list[Any] = []
+    if filtered_ids:
+        placeholders = ",".join("?" for _ in filtered_ids)
+        id_filter = f" AND r.rec_id IN ({placeholders})"
+        id_params = list(filtered_ids)
+
+    inserted_labeled = 0
+    labeled_cur = conn.execute(
+        f"""SELECT o.rec_id, o.ts, o.bot_type, o.event_type, o.label_available_ts
+               FROM reco_outcomes o
+               JOIN recommendations r ON r.rec_id=o.rec_id
+               LEFT JOIN reco_outcome_observability obs ON obs.rec_id=o.rec_id
+              WHERE obs.rec_id IS NULL{id_filter}""",
+        id_params,
+    )
+    while True:
+        batch = labeled_cur.fetchmany(500)
+        if not batch:
+            break
+        for row in batch:
+            recommendation_ts = strict_integer(row["ts"])
+            if recommendation_ts is None or recommendation_ts <= 0:
+                continue
+            label_due_ts = strict_integer(row["label_available_ts"])
+            if label_due_ts is None or label_due_ts < recommendation_ts:
+                horizon = POLICY_LABEL_HORIZONS_SEC.get(str(row["bot_type"] or "").strip())
+                label_due_ts = (
+                    recommendation_ts + int(horizon) + int(POLICY_LABEL_GRACE_SEC)
+                    if horizon is not None
+                    else None
+                )
+            conn.execute(
+                """INSERT INTO reco_outcome_observability(
+                         rec_id, recommendation_ts, label_due_ts, last_attempt_ts,
+                         state, reason, details_json
+                       ) VALUES(?,?,?,?,?,?,?)
+                       ON CONFLICT(rec_id) DO NOTHING""",
+                (
+                    str(row["rec_id"]), int(recommendation_ts), label_due_ts,
+                    int(label_due_ts or recommendation_ts), "labeled",
+                    "existing_outcome_materialized",
+                    _json_dumps_safe({
+                        "bot_type": str(row["bot_type"] or ""),
+                        "event_type": str(row["event_type"] or "LEGACY_BINARY").strip().upper(),
+                        "materialized_from_existing_outcome": True,
+                    }),
+                ),
+            )
+            inserted_labeled += 1
+
+    supported_sql, supported_params = sql_in_clause("r.bot_type")
+    scheduled_cur = conn.execute(
+        f"""SELECT r.rec_id, r.ts, r.bot_type, r.reasons_json
+               FROM recommendations r
+               LEFT JOIN reco_outcomes o ON o.rec_id=r.rec_id
+               LEFT JOIN reco_outcome_observability obs ON obs.rec_id=r.rec_id
+              WHERE COALESCE(r.is_outcome_label_root, 1)=1
+                AND r.outcome_eligible=1
+                AND {supported_sql}
+                AND o.rec_id IS NULL
+                AND obs.rec_id IS NULL{id_filter}
+              ORDER BY r.ts, r.rec_id""",
+        [*supported_params, *id_params],
+    )
+    inserted_waiting = 0
+    while True:
+        batch = scheduled_cur.fetchmany(500)
+        if not batch:
+            break
+        for row in batch:
+            recommendation_ts = strict_integer(row["ts"])
+            label_due_ts = _planned_outcome_due_ts_from_recommendation_row(row)
+            if recommendation_ts is None or recommendation_ts <= 0 or label_due_ts is None:
+                continue
+            conn.execute(
+                """INSERT INTO reco_outcome_observability(
+                         rec_id, recommendation_ts, label_due_ts, last_attempt_ts,
+                         state, reason, details_json
+                       ) VALUES(?,?,?,?,?,?,?)
+                       ON CONFLICT(rec_id) DO NOTHING""",
+                (
+                    str(row["rec_id"]), int(recommendation_ts), int(label_due_ts), 0,
+                    "waiting", "scheduled_for_label_horizon",
+                    _json_dumps_safe({
+                        "bot_type": str(row["bot_type"] or ""),
+                        "scheduled_at_publication": True,
+                        "label_due_ts": int(label_due_ts),
+                    }),
+                ),
+            )
+            inserted_waiting += 1
+    return {"labeled": inserted_labeled, "waiting": inserted_waiting}
+
+
 def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
     """Append immutable recommendation audit rows, allowing exact retry idempotency.
 
@@ -1310,6 +1503,9 @@ def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]],
             stored = conn.execute(select_sql, (rec_id,)).fetchone()
             if stored is None or _normalize_stored_recommendation_payload(stored) != payload:
                 raise ValueError(f"rec_id={rec_id} already exists with different payload")
+        _materialize_outcome_observability_for_recommendations(
+            conn, list(payload_by_id)
+        )
         _release_savepoint(conn, savepoint)
     except Exception:
         _rollback_to_savepoint(conn, savepoint)
@@ -2742,6 +2938,181 @@ def get_recommendations(
     return rows
 
 
+def _optional_finite_float(value: Any) -> float | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _nested_price(mapping: dict[str, Any], *path: str) -> float | None:
+    current: Any = mapping
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, dict):
+        current = current.get("price")
+    return _optional_finite_float(current)
+
+
+def recommendation_price_geometry(bot_type: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Return only persisted, strategy-native price levels for historical charts.
+
+    Older rows may predate ``trade_plan`` materialization, so exact top-level
+    recommendation fields are accepted as a compatibility fallback.  Current
+    exchange metadata is deliberately not consulted: history must reproduce the
+    levels that were stored with that publication, not silently re-snap them.
+    """
+    plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    reference = (
+        _optional_finite_float(plan.get("reference_price"))
+        or _optional_finite_float(params.get("price_ref"))
+        or _optional_finite_float(params.get("reference_price"))
+    )
+    if str(bot_type or "") == "directional_trend":
+        return {
+            "kind": "directional_trend",
+            "reference_price": reference,
+            "take_profit": (
+                _nested_price(plan, "levels", "take_profit")
+                or _optional_finite_float(params.get("take_profit_price"))
+            ),
+            "stop_loss": (
+                _nested_price(plan, "levels", "stop_loss")
+                or _optional_finite_float(params.get("stop_loss_price"))
+            ),
+        }
+    return {
+        "kind": "futures_grid",
+        "reference_price": reference,
+        "range_lower": _nested_price(plan, "levels", "range", "lower")
+            or _optional_finite_float(params.get("price_range_lower")),
+        "range_upper": _nested_price(plan, "levels", "range", "upper")
+            or _optional_finite_float(params.get("price_range_upper")),
+        "kill_lower": (
+            _nested_price(plan, "levels", "kill_switch", "lower")
+            or _optional_finite_float(params.get("kill_switch_lower"))
+        ),
+        "kill_upper": (
+            _nested_price(plan, "levels", "kill_switch", "upper")
+            or _optional_finite_float(params.get("kill_switch_upper"))
+        ),
+        "grid_count": strict_integer(params.get("grid_count") or params.get("grid_levels")),
+    }
+
+
+def _outcome_tracking_from_joined_row(row: Any, *, outcome_root_rec_id: str) -> dict[str, Any]:
+    details = _json_loads_mapping_or_default(row["outcome_details_json"], {})
+    event_type = (
+        str(row["outcome_event_type"] or details.get("event_type") or "").strip().upper()
+        or None
+    )
+    return {
+        "outcome_root_rec_id": outcome_root_rec_id,
+        "state": str(row["outcome_state"] or ("labeled" if row["outcome_rec_id"] else "waiting")),
+        "reason": str(row["outcome_reason"] or "") or None,
+        "recommendation_ts": strict_integer(row["outcome_recommendation_ts"]),
+        "label_due_ts": strict_integer(row["outcome_label_due_ts"]),
+        "last_attempt_ts": strict_integer(row["outcome_last_attempt_ts"]),
+        "event_type": event_type,
+        "success": None if row["outcome_success"] is None else int(row["outcome_success"]),
+        "ret": _optional_finite_float(row["outcome_ret"]),
+        "entry_close": _optional_finite_float(row["outcome_entry_close"]),
+        "exit_close": _optional_finite_float(row["outcome_exit_close"]),
+        "label_available_ts": strict_integer(row["outcome_label_available_ts"]),
+        "diagnostics": details,
+    }
+
+
+def get_outcome_tracking(conn: sqlite3.Connection, outcome_root_rec_id: str) -> dict[str, Any]:
+    root_id = str(outcome_root_rec_id or "").strip()
+    if not root_id:
+        return {
+            "outcome_root_rec_id": None,
+            "state": "unavailable",
+            "reason": "missing_outcome_root",
+            "event_type": None,
+            "success": None,
+            "ret": None,
+            "diagnostics": {},
+        }
+    row = conn.execute(
+        """SELECT o.rec_id AS outcome_rec_id, o.event_type AS outcome_event_type,
+                  o.success AS outcome_success, o.ret AS outcome_ret,
+                  o.entry_close AS outcome_entry_close, o.exit_close AS outcome_exit_close,
+                  o.label_available_ts AS outcome_label_available_ts,
+                  obs.state AS outcome_state, obs.reason AS outcome_reason,
+                  obs.recommendation_ts AS outcome_recommendation_ts,
+                  obs.label_due_ts AS outcome_label_due_ts,
+                  obs.last_attempt_ts AS outcome_last_attempt_ts,
+                  obs.details_json AS outcome_details_json
+             FROM (SELECT ? AS root_id) roots
+             LEFT JOIN reco_outcomes o ON o.rec_id=roots.root_id
+             LEFT JOIN reco_outcome_observability obs ON obs.rec_id=roots.root_id""",
+        (root_id,),
+    ).fetchone()
+    if row is None:
+        return {"outcome_root_rec_id": root_id, "state": "waiting", "reason": None, "event_type": None,
+                "success": None, "ret": None, "diagnostics": {}}
+    return _outcome_tracking_from_joined_row(row, outcome_root_rec_id=root_id)
+
+
+def get_outcome_tracking_many(
+    conn: sqlite3.Connection,
+    outcome_root_rec_ids: list[str] | tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    """Batch outcome tracking for recommendation lists without N+1 queries."""
+    root_ids = list(dict.fromkeys(
+        str(value or "").strip() for value in outcome_root_rec_ids if str(value or "").strip()
+    ))
+    result: dict[str, dict[str, Any]] = {
+        root_id: {
+            "outcome_root_rec_id": root_id,
+            "state": "waiting",
+            "reason": None,
+            "event_type": None,
+            "success": None,
+            "ret": None,
+            "diagnostics": {},
+        }
+        for root_id in root_ids
+    }
+    for offset in range(0, len(root_ids), 300):
+        chunk = root_ids[offset:offset + 300]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""WITH roots AS (
+                    SELECT rec_id AS root_id FROM reco_outcomes WHERE rec_id IN ({placeholders})
+                    UNION
+                    SELECT rec_id AS root_id FROM reco_outcome_observability WHERE rec_id IN ({placeholders})
+                )
+                SELECT roots.root_id,
+                       o.rec_id AS outcome_rec_id, o.event_type AS outcome_event_type,
+                       o.success AS outcome_success, o.ret AS outcome_ret,
+                       o.entry_close AS outcome_entry_close, o.exit_close AS outcome_exit_close,
+                       o.label_available_ts AS outcome_label_available_ts,
+                       obs.state AS outcome_state, obs.reason AS outcome_reason,
+                       obs.recommendation_ts AS outcome_recommendation_ts,
+                       obs.label_due_ts AS outcome_label_due_ts,
+                       obs.last_attempt_ts AS outcome_last_attempt_ts,
+                       obs.details_json AS outcome_details_json
+                  FROM roots
+                  LEFT JOIN reco_outcomes o ON o.rec_id=roots.root_id
+                  LEFT JOIN reco_outcome_observability obs ON obs.rec_id=roots.root_id""",
+            [*chunk, *chunk],
+        ).fetchall()
+        for row in rows:
+            root_id = str(row["root_id"])
+            result[root_id] = _outcome_tracking_from_joined_row(
+                row, outcome_root_rec_id=root_id
+            )
+    return result
+
+
 def get_recommendation_history(
     conn: sqlite3.Connection,
     *,
@@ -2750,83 +3121,82 @@ def get_recommendation_history(
     bot_type: str | None = None,
     limit: int = 500,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Return recent publication rows for one market pair in chronological order.
-
-    The operator UI needs the raw publication sequence rather than a collapsed
-    snapshot so recommendation changes can be inspected.  The query reads only
-    persisted decision fields; it does not pretend that historical Bybit runtime
-    guards can be reconstructed from today's market metadata.
-    """
+    """Return strategy-aware recommendation publications in chronological order."""
     venue_norm = str(venue or "").strip().lower()
     symbol_norm = str(symbol or "").strip().upper()
     bot_type_norm = str(bot_type or "").strip()
     max_rows = max(1, min(int(limit or 500), 2000))
 
-    where = ["venue=?", "symbol=?"]
+    where = ["r.venue=?", "r.symbol=?"]
     params: list[Any] = [venue_norm, symbol_norm]
     if bot_type_norm:
-        where.append("bot_type=?")
+        where.append("r.bot_type=?")
         params.append(bot_type_norm)
     where_sql = " AND ".join(where)
 
     count_row = conn.execute(
-        f"SELECT COUNT(*) AS c FROM recommendations WHERE {where_sql}",
-        params,
+        f"SELECT COUNT(*) AS c FROM recommendations r WHERE {where_sql}", params
     ).fetchone()
     total = int(count_row["c"] or 0) if count_row else 0
 
-    # Read newest rows under the cap, then reverse for a left-to-right timeline.
     cur = conn.execute(
-        f"""SELECT rec_id, ts, venue, symbol, bot_type, direction, score,
-                   confidence, expected_rr, risk_score, reasons_json, status,
-                   ttl_sec, model_version, features_ref_ts,
-                   publication_root_rec_id, outcome_root_rec_id,
-                   is_outcome_label_root
-              FROM recommendations
+        f"""SELECT r.rec_id, r.ts, r.venue, r.symbol, r.bot_type, r.direction, r.score,
+                   r.confidence, r.expected_rr, r.risk_score, r.params_json, r.reasons_json, r.status,
+                   r.ttl_sec, r.model_version, r.features_ref_ts,
+                   r.publication_root_rec_id, r.outcome_root_rec_id, r.is_outcome_label_root,
+                   o.rec_id AS outcome_rec_id, o.event_type AS outcome_event_type,
+                   o.success AS outcome_success, o.ret AS outcome_ret,
+                   o.entry_close AS outcome_entry_close, o.exit_close AS outcome_exit_close,
+                   o.label_available_ts AS outcome_label_available_ts,
+                   obs.state AS outcome_state, obs.reason AS outcome_reason,
+                   obs.recommendation_ts AS outcome_recommendation_ts,
+                   obs.label_due_ts AS outcome_label_due_ts,
+                   obs.last_attempt_ts AS outcome_last_attempt_ts,
+                   obs.details_json AS outcome_details_json
+              FROM recommendations r
+              LEFT JOIN reco_outcomes o
+                ON o.rec_id=COALESCE(NULLIF(r.outcome_root_rec_id, ''), r.rec_id)
+              LEFT JOIN reco_outcome_observability obs
+                ON obs.rec_id=COALESCE(NULLIF(r.outcome_root_rec_id, ''), r.rec_id)
              WHERE {where_sql}
-             ORDER BY ts DESC, rec_id DESC
+             ORDER BY r.ts DESC, r.rec_id DESC
              LIMIT ?""",
         [*params, max_rows],
     )
     newest_first = cur.fetchall()
     rows: list[dict[str, Any]] = []
     for r in reversed(newest_first):
+        params_mapping = _json_loads_mapping_or_default(r["params_json"], {})
         reasons = _json_loads_mapping_or_default(r["reasons_json"], {})
         llm_review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
         operator_metrics = reasons.get("operator_metrics") if isinstance(reasons.get("operator_metrics"), dict) else {}
         plan_rr = operator_metrics.get("plan_rr") if isinstance(operator_metrics.get("plan_rr"), dict) else {}
         empirical = operator_metrics.get("empirical_expectancy") if isinstance(operator_metrics.get("empirical_expectancy"), dict) else {}
         empirical_ci = empirical.get("confidence_interval") if isinstance(empirical.get("confidence_interval"), dict) else {}
+        trend_event = reasons.get("trend_event_model") if isinstance(reasons.get("trend_event_model"), dict) else {}
+        outcome_root = str(r["outcome_root_rec_id"] or r["rec_id"]).strip() or str(r["rec_id"])
         rows.append({
-            "rec_id": r["rec_id"],
-            "ts": r["ts"],
-            "venue": r["venue"],
-            "symbol": r["symbol"],
-            "bot_type": r["bot_type"],
-            "direction": r["direction"],
-            "score": r["score"],
-            "confidence": r["confidence"],
-            "expected_rr": r["expected_rr"],
-            "plan_rr": plan_rr.get("rr"),
-            "plan_rr_status": plan_rr.get("status") or "unavailable",
+            "rec_id": r["rec_id"], "ts": r["ts"], "venue": r["venue"], "symbol": r["symbol"],
+            "bot_type": r["bot_type"], "direction": r["direction"], "score": r["score"],
+            "confidence": r["confidence"], "expected_rr": r["expected_rr"],
+            "plan_rr": plan_rr.get("rr"), "plan_rr_status": plan_rr.get("status") or "unavailable",
             "empirical_expectancy_status": empirical.get("status") or "insufficient",
-            "empirical_mean_return": empirical.get("mean_return"),
-            "empirical_rr": empirical.get("empirical_rr"),
+            "empirical_mean_return": empirical.get("mean_return"), "empirical_rr": empirical.get("empirical_rr"),
             "empirical_confidence_interval_lower": empirical_ci.get("lower"),
             "empirical_confidence_interval_upper": empirical_ci.get("upper"),
             "empirical_confidence_level": empirical_ci.get("level"),
-            "empirical_return_samples": empirical.get("return_samples"),
-            "risk_score": r["risk_score"],
-            "status": r["status"],
-            "llm_status": str(llm_review.get("status") or "none").strip().lower() or "none",
-            "ttl_sec": r["ttl_sec"],
-            "model_version": r["model_version"],
-            "features_ref_ts": r["features_ref_ts"],
+            "empirical_return_samples": empirical.get("return_samples"), "risk_score": r["risk_score"],
+            "status": r["status"], "llm_status": str(llm_review.get("status") or "none").strip().lower() or "none",
+            "ttl_sec": r["ttl_sec"], "model_version": r["model_version"], "features_ref_ts": r["features_ref_ts"],
             "publication_root_rec_id": str(r["publication_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
-            "outcome_root_rec_id": str(r["outcome_root_rec_id"] or r["rec_id"]).strip() or r["rec_id"],
+            "outcome_root_rec_id": outcome_root,
             "is_outcome_label_root": bool(int(r["is_outcome_label_root"] or 0)),
+            "price_geometry": recommendation_price_geometry(str(r["bot_type"]), params_mapping),
+            "trend_event_model": trend_event,
+            "outcome_tracking": _outcome_tracking_from_joined_row(r, outcome_root_rec_id=outcome_root),
         })
     return rows, total
+
 
 def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
     sql = "SELECT * FROM recommendations WHERE rec_id=?"
@@ -3493,6 +3863,7 @@ OUTCOME_OBSERVABILITY_STATES: frozenset[str] = frozenset({
 })
 POLICY_LABEL_HORIZONS_SEC: dict[str, int] = {
     "futures_grid": 12 * 3600,
+    "directional_trend": 12 * 3600,
 }
 POLICY_LABEL_GRACE_SEC = 120
 OUTCOME_WORKER_CYCLE_APP_KEY = "outcome_worker_cycle"
@@ -3784,7 +4155,30 @@ def get_policy_outcome_observability(
     }
 
 
+def _canonical_outcome_event_type(o: dict[str, Any]) -> str:
+    bot_type = str(o.get("bot_type") or "").strip().lower()
+    raw_diagnostics = o.get("diagnostics")
+    diagnostic_event = (
+        str(raw_diagnostics.get("event_type") or "").strip().upper()
+        if isinstance(raw_diagnostics, dict)
+        else ""
+    )
+    explicit = str(o.get("event_type") or "").strip().upper()
+    event_type = explicit or diagnostic_event
+    if bot_type == "futures_grid":
+        return "GRID_OUTCOME"
+    if bot_type == "directional_trend":
+        event_type = event_type or "LEGACY_BINARY"
+        if event_type == "AMBIGUOUS":
+            raise ValueError("AMBIGUOUS trend paths must be censored, not inserted as outcomes")
+        if event_type not in {"TP_FIRST", "SL_FIRST", "HORIZON_EXIT", "LEGACY_BINARY"}:
+            raise ValueError(f"unsupported directional_trend event_type={event_type}")
+        return event_type
+    return event_type or "LEGACY_BINARY"
+
+
 def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
+    canonical_event_type = _canonical_outcome_event_type(o)
     conn.execute(
         """INSERT OR REPLACE INTO reco_outcomes(
             rec_id, ts, venue, symbol, bot_type, direction, horizon_sec, label_available_ts,
@@ -3793,15 +4187,12 @@ def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
         (
             o["rec_id"], o["ts"], o["venue"], o["symbol"], o["bot_type"], o["direction"], o["horizon_sec"],
             o.get("label_available_ts"), o["entry_close"], o["exit_close"], o["ret"], o["success"],
-            str(
-                o.get("event_type")
-                or ((o.get("diagnostics") or {}).get("event_type") if isinstance(o.get("diagnostics"), dict) else "")
-                or ("GRID_OUTCOME" if str(o.get("bot_type") or "") == "futures_grid" else "LEGACY_BINARY")
-            ).strip().upper(),
+            canonical_event_type,
         ),
     )
     raw_diagnostics = o.get("diagnostics")
     diagnostics = dict(raw_diagnostics) if isinstance(raw_diagnostics, dict) else {}
+    diagnostics["event_type"] = canonical_event_type
     diagnostics.setdefault("bot_type", o.get("bot_type"))
     diagnostics.setdefault("success", int(o["success"]))
     diagnostics.setdefault("net_proxy_return", float(o["ret"]))
@@ -3844,12 +4235,16 @@ def get_outcome_worker_liveness(
     if stale_after is None or stale_after <= 0:
         raise ValueError("worker_stale_after_sec must be a positive integer")
 
-    horizon = int(POLICY_LABEL_HORIZONS_SEC["futures_grid"])
     grace = int(POLICY_LABEL_GRACE_SEC)
+    horizon_case = "CASE r.bot_type " + " ".join(
+        f"WHEN '{bot_type}' THEN {int(horizon)}"
+        for bot_type, horizon in sorted(POLICY_LABEL_HORIZONS_SEC.items())
+    ) + f" ELSE {int(POLICY_LABEL_HORIZONS_SEC['futures_grid'])} END"
     due_expr = (
         f"CASE WHEN obs.label_due_ts IS NOT NULL AND obs.label_due_ts >= r.ts "
-        f"THEN obs.label_due_ts ELSE r.ts + {horizon + grace} END"
+        f"THEN obs.label_due_ts ELSE r.ts + ({horizon_case}) + {grace} END"
     )
+    supported_sql, supported_params = sql_in_clause("r.bot_type")
     safe_shadow_expr = """(
         r.status = 'no_trade'
         AND r.outcome_eligible = 1
@@ -3870,7 +4265,7 @@ def get_outcome_worker_liveness(
              LEFT JOIN reco_outcome_observability obs ON obs.rec_id=r.rec_id
             WHERE COALESCE(r.is_outcome_label_root, 1)=1
               AND r.ts > 0
-              AND r.bot_type='futures_grid'
+              AND {supported_sql}
               AND o.rec_id IS NULL
               AND COALESCE(obs.state, '') <> 'censored'
               AND r.status NOT IN ('blocked', 'suppressed', 'pending')
@@ -3888,7 +4283,7 @@ def get_outcome_worker_liveness(
                    COALESCE(SUM(CASE WHEN obs.last_attempt_ts IS NOT NULL AND obs.last_attempt_ts > 0 THEN 1 ELSE 0 END), 0) AS attempted_total,
                    MIN({due_expr}) AS oldest_due_ts
               {eligibility}""",
-        (int(now_value),),
+        (*supported_params, int(now_value)),
     ).fetchone()
     matured_pending_total = int(summary["matured_pending_total"] or 0) if summary else 0
     unattempted_total = int(summary["unattempted_total"] or 0) if summary else 0
@@ -3902,9 +4297,90 @@ def get_outcome_worker_liveness(
                AND (obs.last_attempt_ts IS NULL OR obs.last_attempt_ts <= 0)
              ORDER BY {due_expr} ASC, r.rec_id ASC
              LIMIT 10""",
-        (int(now_value),),
+        (*supported_params, int(now_value)),
     ).fetchall()
     sample_rec_ids = [str(row["rec_id"]) for row in sample_rows]
+
+    by_bot_rows = conn.execute(
+        f"""SELECT r.bot_type,
+                   COUNT(*) AS matured_pending_total,
+                   COALESCE(SUM(CASE WHEN obs.last_attempt_ts IS NULL OR obs.last_attempt_ts <= 0 THEN 1 ELSE 0 END), 0) AS unattempted_total,
+                   COALESCE(SUM(CASE WHEN obs.last_attempt_ts IS NOT NULL AND obs.last_attempt_ts > 0 THEN 1 ELSE 0 END), 0) AS attempted_total,
+                   MIN({due_expr}) AS oldest_due_ts
+              {eligibility}
+             GROUP BY r.bot_type
+             ORDER BY r.bot_type""",
+        (*supported_params, int(now_value)),
+    ).fetchall()
+    by_bot_type: dict[str, dict[str, Any]] = {}
+    for bot_row in by_bot_rows:
+        bot_oldest = strict_integer(bot_row["oldest_due_ts"])
+        by_bot_type[str(bot_row["bot_type"])] = {
+            "matured_pending_total": int(bot_row["matured_pending_total"] or 0),
+            "unattempted_total": int(bot_row["unattempted_total"] or 0),
+            "attempted_total": int(bot_row["attempted_total"] or 0),
+            "oldest_due_ts": bot_oldest,
+            "oldest_due_age_sec": None if bot_oldest is None else max(0, int(now_value) - bot_oldest),
+        }
+    for supported_bot_type in POLICY_LABEL_HORIZONS_SEC:
+        by_bot_type.setdefault(supported_bot_type, {
+            "matured_pending_total": 0,
+            "unattempted_total": 0,
+            "attempted_total": 0,
+            "oldest_due_ts": None,
+            "oldest_due_age_sec": None,
+        })
+
+    scheduled_where = f"""
+             FROM reco_outcome_observability obs
+             JOIN recommendations r ON r.rec_id=obs.rec_id
+             LEFT JOIN reco_outcomes o ON o.rec_id=r.rec_id
+            WHERE COALESCE(r.is_outcome_label_root, 1)=1
+              AND r.outcome_eligible=1
+              AND {supported_sql}
+              AND o.rec_id IS NULL
+              AND obs.state='waiting'
+              AND obs.label_due_ts > ?
+    """
+    scheduled_params: list[Any] = [*supported_params, int(now_value)]
+    if require_llm_verdict:
+        scheduled_where += f"""
+              AND (r.llm_review_status='ok' OR {llm_shadow_expr})
+        """
+    scheduled_summary = conn.execute(
+        f"""SELECT COUNT(*) AS scheduled_waiting_total,
+                   MIN(obs.label_due_ts) AS next_due_ts
+              {scheduled_where}""",
+        scheduled_params,
+    ).fetchone()
+    scheduled_waiting_total = (
+        int(scheduled_summary["scheduled_waiting_total"] or 0)
+        if scheduled_summary else 0
+    )
+    next_due_ts = strict_integer(scheduled_summary["next_due_ts"]) if scheduled_summary else None
+    scheduled_by_bot_rows = conn.execute(
+        f"""SELECT r.bot_type, COUNT(*) AS scheduled_waiting_total,
+                   MIN(obs.label_due_ts) AS next_due_ts
+              {scheduled_where}
+             GROUP BY r.bot_type
+             ORDER BY r.bot_type""",
+        scheduled_params,
+    ).fetchall()
+    for scheduled_row in scheduled_by_bot_rows:
+        bot_name = str(scheduled_row["bot_type"] or "")
+        bot_next_due = strict_integer(scheduled_row["next_due_ts"])
+        bucket = by_bot_type.setdefault(bot_name, {})
+        bucket["scheduled_waiting_total"] = int(
+            scheduled_row["scheduled_waiting_total"] or 0
+        )
+        bucket["next_due_ts"] = bot_next_due
+        bucket["next_due_in_sec"] = (
+            None if bot_next_due is None else max(0, int(bot_next_due) - int(now_value))
+        )
+    for bucket in by_bot_type.values():
+        bucket.setdefault("scheduled_waiting_total", 0)
+        bucket.setdefault("next_due_ts", None)
+        bucket.setdefault("next_due_in_sec", None)
 
     raw_cycle = get_app_config_json(conn, OUTCOME_WORKER_CYCLE_APP_KEY, default={})
     worker_cycle = dict(raw_cycle) if isinstance(raw_cycle, dict) else {}
@@ -3968,6 +4444,11 @@ def get_outcome_worker_liveness(
         "matured_pending_total": matured_pending_total,
         "unattempted_total": unattempted_total,
         "attempted_total": attempted_total,
+        "scheduled_waiting_total": scheduled_waiting_total,
+        "next_due_ts": next_due_ts,
+        "next_due_in_sec": (
+            None if next_due_ts is None else max(0, int(next_due_ts) - int(now_value))
+        ),
         "oldest_due_ts": oldest_due_ts,
         "oldest_due_age_sec": (
             None
@@ -3975,6 +4456,7 @@ def get_outcome_worker_liveness(
             else max(0, int(now_value) - int(oldest_due_ts))
         ),
         "sample_unattempted_rec_ids": sample_rec_ids,
+        "by_bot_type": by_bot_type,
         "require_llm_verdict": bool(require_llm_verdict),
         "checked_ts": int(now_value),
         "worker_stale_after_sec": int(stale_after),
@@ -5034,6 +5516,18 @@ def _outcome_eligibility_snapshot(
         and mean_reversion_score is not None
         and 0.0 <= mean_reversion_score <= 1.0
     )
+    bot_type = str(_outcome_row_value(row, "bot_type") or "").strip()
+    trend_flag_raw = feature_snapshot.get("trend_evidence_valid")
+    trend_flag = trend_flag_raw is True or _exact_outcome_integer(trend_flag_raw) == 1
+    trend_strength = _finite_outcome_number(feature_snapshot.get("trend_strength"))
+    trend_coherence = _finite_outcome_number(feature_snapshot.get("coherence"))
+    trend_regime = str(feature_snapshot.get("regime") or "").strip().lower()
+    trend_evidence_valid = bool(
+        trend_flag
+        and trend_strength is not None and 0.0 <= trend_strength <= 1.0
+        and trend_coherence is not None and 0.0 <= trend_coherence <= 1.0
+        and trend_regime == "trend"
+    )
     score = _finite_outcome_number(_outcome_row_value(row, "score"))
     score_floor = _finite_outcome_number(selection.get("min_score_to_recommend"))
     mean_reversion_floor = _finite_outcome_number(
@@ -5092,12 +5586,14 @@ def _outcome_eligibility_snapshot(
         and mean_reversion_score is not None
         and mean_reversion_score >= mean_reversion_floor
     )
+    strategy_evidence_kind = "trend" if bot_type == "directional_trend" else "mean_reversion"
+    strategy_evidence_passed = trend_evidence_valid if bot_type == "directional_trend" else mean_reversion_gate_passed
     calibration_eligible = bool(
         active_policy_match is True
         and contract_verified
         and policy_evaluation_eligible
         and score_gate_passed
-        and mean_reversion_gate_passed
+        and strategy_evidence_passed
         and label_contract_valid
         and label_matured
     )
@@ -5118,21 +5614,21 @@ def _outcome_eligibility_snapshot(
         "SCORE_BELOW_POLICY_FLOOR",
         score is not None and score_floor is not None and score < score_floor,
     )
-    _add_reason(
-        "MEAN_REVERSION_EVIDENCE_INVALID",
-        not mean_reversion_evidence_valid,
-    )
-    _add_reason(
-        "MEAN_REVERSION_POLICY_FLOOR_MISSING",
-        mean_reversion_floor is None,
-    )
-    _add_reason(
-        "MEAN_REVERSION_BELOW_POLICY_FLOOR",
-        mean_reversion_evidence_valid
-        and mean_reversion_floor is not None
-        and mean_reversion_score is not None
-        and mean_reversion_score < mean_reversion_floor,
-    )
+    if bot_type == "directional_trend":
+        _add_reason("TREND_EVIDENCE_INVALID", not trend_evidence_valid)
+        _add_reason("TREND_STRENGTH_INVALID", trend_strength is None or not (0.0 <= trend_strength <= 1.0))
+        _add_reason("TREND_COHERENCE_INVALID", trend_coherence is None or not (0.0 <= trend_coherence <= 1.0))
+        _add_reason("TREND_REGIME_MISMATCH", trend_regime != "trend")
+    else:
+        _add_reason("MEAN_REVERSION_EVIDENCE_INVALID", not mean_reversion_evidence_valid)
+        _add_reason("MEAN_REVERSION_POLICY_FLOOR_MISSING", mean_reversion_floor is None)
+        _add_reason(
+            "MEAN_REVERSION_BELOW_POLICY_FLOOR",
+            mean_reversion_evidence_valid
+            and mean_reversion_floor is not None
+            and mean_reversion_score is not None
+            and mean_reversion_score < mean_reversion_floor,
+        )
     _add_reason("LABEL_DUE_MISSING", stored_label_due_ts is None)
     _add_reason(
         "LABEL_DUE_CONTRACT_MISMATCH",
@@ -5207,6 +5703,12 @@ def _outcome_eligibility_snapshot(
             "mean_reversion_floor": mean_reversion_floor,
             "mean_reversion_evidence_valid": mean_reversion_evidence_valid,
             "mean_reversion_passed": mean_reversion_gate_passed,
+            "trend_evidence_valid": trend_evidence_valid,
+            "trend_strength": trend_strength,
+            "trend_coherence": trend_coherence,
+            "trend_regime": trend_regime or None,
+            "strategy_evidence_kind": strategy_evidence_kind,
+            "strategy_evidence_passed": strategy_evidence_passed,
             "expected_label_due_ts": expected_label_due_ts,
             "stored_label_due_ts": stored_label_due_ts,
             "label_available_ts": label_available_ts,
@@ -5249,7 +5751,7 @@ def get_outcomes_recent_enriched(
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                      o.horizon_sec, o.label_available_ts,
-                     o.entry_close, o.exit_close, o.ret, o.success,
+                     o.entry_close, o.exit_close, o.ret, o.success, o.event_type,
                      r.direction AS reco_direction, r.status AS reco_status,
                      r.score, r.confidence, r.expected_rr, r.reasons_json,
                      r.model_version, r.is_outcome_label_root,
@@ -5308,6 +5810,7 @@ def get_outcomes_recent_enriched(
             "exit_close": float(row["exit_close"]),
             "ret": float(row["ret"]),
             "success": int(row["success"]),
+            "event_type": str(row["event_type"] or "LEGACY_BINARY").strip().upper(),
             "reco_status": row["reco_status"],
             "score": float(row["score"]) if row["score"] is not None else None,
             "mean_reversion_score": mean_reversion_score,
@@ -5433,6 +5936,68 @@ def _archive_outcome_summary_fast(
         "actionable_total": int(actionable["total"]),
         "executed_audit_total": int(row["executed_audit_total"] or 0) if row else 0,
     }
+
+    grouped_where = [*where_parts, root_expr]
+    event_rows = conn.execute(
+        f"""SELECT COALESCE(NULLIF(TRIM(o.event_type), ''), 'LEGACY_BINARY') AS event_type,
+                   COUNT(*) AS total
+              FROM reco_outcomes o
+              LEFT JOIN recommendations r ON r.rec_id=o.rec_id
+             WHERE {' AND '.join(grouped_where)}
+             GROUP BY COALESCE(NULLIF(TRIM(o.event_type), ''), 'LEGACY_BINARY')
+             ORDER BY event_type""",
+        supported_params,
+    ).fetchall()
+    event_type_counts = {
+        str(event_row["event_type"] or "LEGACY_BINARY").strip().upper(): int(event_row["total"] or 0)
+        for event_row in event_rows
+    }
+
+    bot_rows = conn.execute(
+        f"""SELECT o.bot_type,
+                   COUNT(*) AS total,
+                   COALESCE(SUM(CASE WHEN o.success=1 THEN 1 ELSE 0 END), 0) AS wins,
+                   COALESCE(SUM(o.ret), 0.0) AS ret_sum,
+                   COALESCE(SUM(ABS(o.ret)), 0.0) AS abs_ret_sum
+              FROM reco_outcomes o
+              LEFT JOIN recommendations r ON r.rec_id=o.rec_id
+             WHERE {' AND '.join(grouped_where)}
+             GROUP BY o.bot_type
+             ORDER BY total DESC, o.bot_type""",
+        supported_params,
+    ).fetchall()
+    archive_by_bot: list[dict[str, Any]] = []
+    for bot_row in bot_rows:
+        bot_summary = _summary(
+            int(bot_row["total"] or 0),
+            int(bot_row["wins"] or 0),
+            float(bot_row["ret_sum"] or 0.0),
+            float(bot_row["abs_ret_sum"] or 0.0),
+        )
+        archive_by_bot.append({
+            "bot_type": str(bot_row["bot_type"] or "unknown"),
+            "raw_direction": "all",
+            "execution_direction": "all",
+            **bot_summary,
+        })
+
+    event_by_bot_rows = conn.execute(
+        f"""SELECT o.bot_type,
+                   COALESCE(NULLIF(TRIM(o.event_type), ''), 'LEGACY_BINARY') AS event_type,
+                   COUNT(*) AS total
+              FROM reco_outcomes o
+              LEFT JOIN recommendations r ON r.rec_id=o.rec_id
+             WHERE {' AND '.join(grouped_where)}
+             GROUP BY o.bot_type, COALESCE(NULLIF(TRIM(o.event_type), ''), 'LEGACY_BINARY')
+             ORDER BY o.bot_type, event_type""",
+        supported_params,
+    ).fetchall()
+    event_type_counts_by_bot: dict[str, dict[str, int]] = {}
+    for event_row in event_by_bot_rows:
+        bot_type = str(event_row["bot_type"] or "unknown")
+        event_type = str(event_row["event_type"] or "LEGACY_BINARY").strip().upper()
+        event_type_counts_by_bot.setdefault(bot_type, {})[event_type] = int(event_row["total"] or 0)
+
     return {
         "scope": _outcome_scope_metadata(
             "archive",
@@ -5464,7 +6029,12 @@ def _archive_outcome_summary_fast(
             ),
         },
         "llm_summary": {},
-        "by_bot": [],
+        "event_type_counts": dict(sorted(event_type_counts.items())),
+        "event_type_counts_by_bot": {
+            bot_type: dict(sorted(counts.items()))
+            for bot_type, counts in sorted(event_type_counts_by_bot.items())
+        },
+        "by_bot": archive_by_bot,
         "by_symbol": [],
         "by_raw_direction": [],
         "by_execution_direction": [],
@@ -5519,7 +6089,7 @@ def get_outcomes_stats(
         query_params.extend([current_model, current_model + "+%"])
     cur = conn.execute(
         f"""SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
-                     o.horizon_sec, o.label_available_ts, o.ret, o.success,
+                     o.horizon_sec, o.label_available_ts, o.ret, o.success, o.event_type,
                      r.direction AS reco_direction, r.status AS reco_status,
                      r.score, r.reasons_json, r.is_outcome_label_root,
                      r.model_version, r.outcome_eligible,
@@ -5554,6 +6124,8 @@ def get_outcomes_stats(
         "calibration_eligible_total": 0,
         "mean_reversion_available_total": 0,
         "mean_reversion_evidence_valid_total": 0,
+        "trend_evidence_available_total": 0,
+        "trend_evidence_valid_total": 0,
     }
     eligibility_reason_counts: dict[str, int] = {}
     decision_reason_counts: dict[str, int] = {}
@@ -5566,6 +6138,8 @@ def get_outcomes_stats(
     by_llm_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_llm_engine_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_llm_matrix_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    event_type_counts: dict[str, int] = {}
+    event_type_counts_by_bot: dict[str, dict[str, int]] = {}
 
     true_neutral_total = 0
     futures_neutral_total = 0
@@ -5604,6 +6178,11 @@ def get_outcomes_stats(
         neutral_source = dirs["neutral_source"]
         success = int(row["success"] or 0)
         ret = float(row["ret"] or 0.0)
+        event_type = str(row["event_type"] or "LEGACY_BINARY").strip().upper()
+        bot_type = str(row["bot_type"] or "unknown").strip() or "unknown"
+        event_type_counts[event_type] = event_type_counts.get(event_type, 0) + 1
+        bot_events = event_type_counts_by_bot.setdefault(bot_type, {})
+        bot_events[event_type] = bot_events.get(event_type, 0) + 1
         eligibility = _outcome_eligibility_snapshot(
             row,
             scope_snapshot,
@@ -5626,6 +6205,10 @@ def get_outcomes_stats(
             eligibility_gate_counts["mean_reversion_available_total"] += 1
         if eligibility["gates"]["mean_reversion_evidence_valid"]:
             eligibility_gate_counts["mean_reversion_evidence_valid_total"] += 1
+        if eligibility["gates"]["trend_strength"] is not None:
+            eligibility_gate_counts["trend_evidence_available_total"] += 1
+        if eligibility["gates"]["trend_evidence_valid"]:
+            eligibility_gate_counts["trend_evidence_valid_total"] += 1
         for code in eligibility["eligibility_reason_codes"]:
             eligibility_reason_counts[code] = eligibility_reason_counts.get(code, 0) + 1
         for code in eligibility["decision_reason_codes"]:
@@ -5856,6 +6439,11 @@ def get_outcomes_stats(
             ),
         },
         "llm_summary": llm_summary,
+        "event_type_counts": dict(sorted(event_type_counts.items())),
+        "event_type_counts_by_bot": {
+            bot_type: dict(sorted(counts.items()))
+            for bot_type, counts in sorted(event_type_counts_by_bot.items())
+        },
         "by_bot": by_bot,
         "by_symbol": by_symbol,
         "by_raw_direction": by_raw_direction,

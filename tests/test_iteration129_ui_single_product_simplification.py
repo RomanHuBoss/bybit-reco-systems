@@ -6,11 +6,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_operator_ui_uses_single_product_title_without_long_bot_label() -> None:
+def test_operator_ui_names_both_supported_strategy_families_without_legacy_product_label() -> None:
     index = (ROOT / "app/ui/static/index.html").read_text(encoding="utf-8")
     app_js = (ROOT / "app/ui/static/app.js").read_text(encoding="utf-8")
 
-    assert "Фьючерсная сетка — Панель оператора" in index
+    assert "Bybit Recommender — Сетка и тренд" in index
     assert "Bybit Linear USDT Futures Grid" not in index
     assert "Bybit Linear USDT Futures Grid" not in app_js
     assert "Linear USDT Grid" not in app_js

@@ -1,3 +1,24 @@
+## 2026-07-19 - v1.4.0 - strategy observability, durable outcome schedule and history UI
+
+### Fixed
+- Separated Details price/exit projection by strategy: trend uses persisted single-position entry/TP/SL; grid retains range and kill-switch semantics.
+- Added canonical outcome event rendering and per-strategy/event archive distributions across current outcomes and history.
+- Added strategy identity to the decision journal and strategy-specific outcome/calibrator queues to Health.
+- Fixed the recommendation-history SVG crash for two or more points (`Array.from` callback incorrectly assumed a third array argument).
+- Broke chart paths across missing persisted geometry instead of inventing continuity.
+- Made malformed outcomes/history API responses visible to the operator instead of silently showing empty data or a misleading network error.
+
+### Persistence and health
+- Materialize a durable `reco_outcome_observability` waiting row at recommendation publication for both `futures_grid` and `directional_trend`.
+- Backfill missing labeled observability for existing outcomes during additive bootstrap.
+- Added per-strategy recommendation/outcome/event counts and semantic-integrity invariants.
+- Added batched outcome tracking for recommendation lists to avoid N+1 database reads.
+
+### Compatibility
+- No manual SQL or `.env` changes are required; schema remains additive-compatible with SQLite/PostgreSQL.
+- `grid_label_v26`, `directional_trend_label_v2`, first-touch model semantics and strategy-router thresholds are unchanged.
+- Private exchange order endpoints remain absent.
+
 ## 2026-07-19 - v1.3.0 - directional trend first-touch event model
 
 ### Changed

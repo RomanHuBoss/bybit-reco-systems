@@ -1,3 +1,10 @@
+## v1.4.0: strategy observability and operator-history responsibilities
+
+- `app/db.py` — durable pre-horizon outcome schedule, canonical event persistence, per-strategy counts, semantic-integrity checks, batch outcome tracking and immutable history geometry.
+- `app/main.py` — strategy-native exit projection, enriched Details/list APIs, strategy-aware decision journal and health readiness degradation on outcome inconsistency.
+- `app/ui/static/app.js` — distinct grid/trend Details, outcomes, health, journal and price-history rendering; visible failures instead of silent empty states.
+- `app/ui/static/styles.css` — strategy history graph lines, legends and responsive operator tables.
+
 ## v1.3.0: first-touch trend event model
 
 - `app/trend_events.py` — трёхклассовая softmax-модель `TP_FIRST / SL_FIRST / HORIZON_EXIT`, chronological holdout, purging, persistence и plan-specific monetary assessment.

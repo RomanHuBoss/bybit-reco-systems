@@ -1,3 +1,11 @@
+## Сквозная наблюдаемость grid и trend (v1.4.0)
+
+Версия 1.4.0 устраняет разрыв между strategy-specific торговой математикой, БД и операторским интерфейсом. Для `futures_grid` и `directional_trend` API «Детали», журнал решений, окно исходов, здоровье системы и история теперь используют один и тот же `bot_type`, один `outcome_root_rec_id` и канонический terminal event. Trend TP/SL читаются только из сохранённого single-position `trade_plan`; grid продолжает использовать диапазон, grid count и внешние kill-switch границы. Ни одна ветка не реконструируется через геометрию другой стратегии.
+
+При публикации любого outcome-eligible root в `reco_outcome_observability` сразу создаётся durable строка `waiting` с точным `label_due_ts`. Поэтому до истечения 12 часов оператор видит отдельные очереди grid/trend, срок ближайшего созревания и причину ожидания вместо ложного нуля. После формирования outcome канонические типы — `GRID_OUTCOME` для grid и `TP_FIRST / SL_FIRST / HORIZON_EXIT` для trend; `AMBIGUOUS` остаётся только censored evidence. Health дополнительно проверяет orphan outcomes, отсутствие observability, identity mismatch и неканонические события.
+
+История хранит и отображает persisted price geometry без пересчёта по текущим Bybit metadata. Trend-график строит линии entry/TP/SL, grid-график — reference/range/kill-switch. Пропущенный уровень разрывает линию вместо выдуманного соединения. Исправлена runtime-ошибка многоточечного SVG-графика, из-за которой история падала при двух и более публикациях. Проект остаётся recommendation/audit-only: эти изменения не добавляют private Bybit order submission.
+
 ## First-touch модель исходов directional trend (v1.3.0)
 
 Версия 1.3.0 заменяет упрощённую бинарную интерпретацию trend-outcome на явный событийный контракт. Для каждой независимой `directional_trend`-позиции сохраняется один из результатов: `TP_FIRST`, `SL_FIRST`, `HORIZON_EXIT` или `AMBIGUOUS`. `TP_FIRST` означает, что TP доказанно достигнут раньше SL; `SL_FIRST` — обратный порядок; `HORIZON_EXIT` — ни одна граница не достигнута до окончания 12-часового горизонта; `AMBIGUOUS` — одна минутная свеча затронула обе границы либо порядок недоказуем. Неоднозначные наблюдения цензурируются и не используются как класс обучения.

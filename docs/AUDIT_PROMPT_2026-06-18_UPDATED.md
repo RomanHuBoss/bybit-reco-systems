@@ -1,3 +1,9 @@
+# Актуализация контракта — 19 июля 2026 г., v1.4.0
+
+Дополнительно обязателен сквозной аудит grid/trend наблюдаемости: durable pre-horizon schedule, strategy-native Details/History geometry, canonical terminal events, strategy-aware Journal/Outcomes/Health, browser execution of history graphs and fail-visible API errors. Канонический source находится в `docs/Bybit_Recommender_Iteration_Prompt.md`.
+
+---
+
 # Актуализация контракта — 19 июля 2026 г., v1.3.0
 
 Канонический итерационный промпт поставки находится в `../Bybit_Recommender_Iteration_Prompt.pdf`, а поддерживаемый source — `docs/Bybit_Recommender_Iteration_Prompt.md`. Они заменяют устаревшие ограничения этого исторического файла в части strategy scope.

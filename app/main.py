@@ -980,12 +980,66 @@ def _directional_exit_qty_for_reco(rec: dict[str, Any], reference_price: Any) ->
 
 def _directional_exit_payload_for_reco(rec: dict[str, Any]) -> dict[str, Any]:
     ctx = _trade_plan_price_context(rec)
-    levels = directional_exit_levels(
-        rec.get("direction"),
-        ctx.get("kill_switch_lower"),
-        ctx.get("kill_switch_upper"),
-    ).as_dict()
-    direction = str(levels.get("direction") or "neutral").strip().lower()
+    bot_type = str(rec.get("bot_type") or "").strip().lower()
+    direction_raw = str(rec.get("direction") or "neutral").strip().lower()
+
+    if bot_type == "directional_trend":
+        # A trend recommendation is a single-position contract.  Its TP/SL are
+        # explicit levels and must never be reconstructed from futures-grid
+        # kill-switch bounds.  Reading those bounds here used to make a correct
+        # persisted trend plan look empty or, for malformed mixed payloads,
+        # display the wrong economics in Details.
+        params = ctx.get("params") if isinstance(ctx.get("params"), dict) else {}
+        plan = ctx.get("plan") if isinstance(ctx.get("plan"), dict) else {}
+        plan_levels = ctx.get("levels") if isinstance(ctx.get("levels"), dict) else {}
+        tp_block = plan_levels.get("take_profit") if isinstance(plan_levels.get("take_profit"), dict) else {}
+        sl_block = plan_levels.get("stop_loss") if isinstance(plan_levels.get("stop_loss"), dict) else {}
+        package = (
+            plan.get("external_execution_package")
+            if isinstance(plan.get("external_execution_package"), dict)
+            else {}
+        )
+        package_exit = package.get("exit") if isinstance(package.get("exit"), dict) else {}
+        operator_sheet = (
+            params.get("operator_sheet") if isinstance(params.get("operator_sheet"), dict) else {}
+        )
+        take_profit = _first_finite_from_mappings(
+            [tp_block, params, package_exit, operator_sheet],
+            ("price", "take_profit", "take_profit_price"),
+        )[1]
+        stop_loss = _first_finite_from_mappings(
+            [sl_block, params, package_exit, operator_sheet],
+            ("price", "stop_loss", "stop_loss_price"),
+        )[1]
+        direction = direction_raw if direction_raw in {"long", "short"} else "neutral"
+        levels = {
+            "direction": direction,
+            "take_profit": take_profit,
+            "stop_loss": stop_loss,
+            "kill_switch_lower": None,
+            "kill_switch_upper": None,
+            "take_profit_label": "Take Profit",
+            "stop_loss_label": "Stop Loss",
+            "geometry": (
+                f"{direction}: explicit single-position TP/SL"
+                if direction in {"long", "short"}
+                else "directional_trend requires long or short direction"
+            ),
+            "has_directional_take_profit": direction in {"long", "short"},
+            "level_source": "directional_trend_trade_plan",
+        }
+    else:
+        # Directional futures_grid retains its established semantics: the outer
+        # kill-switch on the profitable side is the operator TP and the opposite
+        # boundary is the SL.  Neutral grid has no single directional TP.
+        levels = directional_exit_levels(
+            rec.get("direction"),
+            ctx.get("kill_switch_lower"),
+            ctx.get("kill_switch_upper"),
+        ).as_dict()
+        direction = str(levels.get("direction") or "neutral").strip().lower()
+        levels["level_source"] = "futures_grid_kill_switch"
+
     reference_price = ctx.get("reference_price")
     levels["reference_price"] = reference_price
     qty_context = _directional_exit_qty_for_reco(rec, reference_price)
@@ -1794,8 +1848,29 @@ def _operator_decision_context_for_reco(
     return context
 
 
-def _augment_reco_for_ui(rec: dict[str, Any], *, conn: Any | None = None) -> dict[str, Any]:
+def _augment_reco_for_ui(
+    rec: dict[str, Any],
+    *,
+    conn: Any | None = None,
+    outcome_tracking_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     out = dict(rec)
+    outcome_root_id = str(out.get("outcome_root_rec_id") or out.get("rec_id") or "").strip()
+    out["outcome_tracking"] = (
+        dict(outcome_tracking_override)
+        if isinstance(outcome_tracking_override, dict)
+        else db.get_outcome_tracking(conn, outcome_root_id)
+        if conn is not None and outcome_root_id
+        else {
+            "outcome_root_rec_id": outcome_root_id or None,
+            "state": "unavailable",
+            "reason": "database_connection_unavailable",
+            "event_type": None,
+            "success": None,
+            "ret": None,
+            "diagnostics": {},
+        }
+    )
     out["directional_exit_levels"] = _directional_exit_payload_for_reco(out)
     venue = str(out.get("venue") or "")
     symbol = str(out.get("symbol") or "")
@@ -5333,7 +5408,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.3.0", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.0", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -5969,7 +6044,20 @@ def api_recommendations(
         snapshot_age_sec = None if snapshot_ts is None else max(0, int(time.time()) - int(snapshot_ts))
         snapshot_stale_after_sec = max(180, int(settings.reco_interval_sec) * 3)
         snapshot_is_stale = bool(snapshot_age_sec is not None and snapshot_age_sec > snapshot_stale_after_sec)
-        augmented_items = [_augment_reco_for_ui(item, conn=conn) for item in raw_items]
+        outcome_tracking_by_root = db.get_outcome_tracking_many(
+            conn,
+            [str(item.get("outcome_root_rec_id") or item.get("rec_id") or "") for item in raw_items],
+        )
+        augmented_items = [
+            _augment_reco_for_ui(
+                item,
+                conn=conn,
+                outcome_tracking_override=outcome_tracking_by_root.get(
+                    str(item.get("outcome_root_rec_id") or item.get("rec_id") or "").strip()
+                ),
+            )
+            for item in raw_items
+        ]
         effective_status_counts: dict[str, int] = {}
         for item in augmented_items:
             effective = str(item.get("effective_status") or item.get("status") or "unknown").strip().lower() or "unknown"
@@ -6913,8 +7001,12 @@ def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
     limit = _bounded_limit(limit, default=200, max_value=1000)
     with closing(_get_conn()) as conn:
         rows = conn.execute(
-            """SELECT ts, action, rec_id, operator, details_json
-               FROM decision_log ORDER BY ts DESC LIMIT ?""",
+            """SELECT d.ts, d.action, d.rec_id, d.operator, d.details_json,
+                      r.venue, r.symbol, r.bot_type, r.direction,
+                      r.status AS recommendation_status, r.model_version
+                 FROM decision_log d
+                 LEFT JOIN recommendations r ON r.rec_id=d.rec_id
+                ORDER BY d.ts DESC, d.id DESC LIMIT ?""",
             (limit,),
         ).fetchall()
         out = []
@@ -6924,6 +7016,12 @@ def api_decisions(limit: int = 200) -> list[dict[str, Any]]:
                 "action": r["action"],
                 "rec_id": r["rec_id"],
                 "operator": r["operator"],
+                "venue": r["venue"],
+                "symbol": r["symbol"],
+                "bot_type": r["bot_type"],
+                "direction": r["direction"],
+                "recommendation_status": r["recommendation_status"],
+                "model_version": r["model_version"],
                 "details": _json_loads_mapping_or_default(r["details_json"], {}),
             })
         return out
@@ -7721,12 +7819,20 @@ def _operator_runtime_readiness(
     collector_state: str,
     background_threads: dict[str, Any],
     runtime_provenance: dict[str, Any] | None = None,
+    database_continuity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     if not bool(schema_status.get("migration_applied")):
         issues.append({"code": "DATABASE_MIGRATION_MISSING", "message": "не все outcome-поля присутствуют в БД"})
     elif int(schema_status.get("materialization_pending") or 0) > 0:
         issues.append({"code": "DATABASE_MATERIALIZATION_PENDING", "message": "миграция применена, но часть старых рекомендаций ещё не материализована"})
+    continuity = database_continuity if isinstance(database_continuity, dict) else {}
+    outcome_integrity = continuity.get("outcome_semantic_integrity") if isinstance(continuity.get("outcome_semantic_integrity"), dict) else {}
+    if outcome_integrity and not bool(outcome_integrity.get("ok")):
+        issues.append({
+            "code": "OUTCOME_SEMANTIC_INTEGRITY_FAILED",
+            "message": "обнаружено рассогласование исходов с рекомендациями, observability или каноническими типами событий",
+        })
     outcome_state = str(outcome_worker.get("state") or "unknown").lower()
     if outcome_state in {"stalled", "error"}:
         issues.append({"code": f"OUTCOME_WORKER_{outcome_state.upper()}", "message": "контур исходов не продвигает очередь"})
@@ -8077,6 +8183,7 @@ def api_status() -> dict[str, Any]:
             collector_state=collector_runtime_state,
             background_threads=background_threads,
             runtime_provenance=runtime_provenance,
+            database_continuity=database_continuity,
         )
 
         inference_ready_bot_count = sum(1 for info in bot_status.values() if bool(info.get("fitted")))

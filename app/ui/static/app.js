@@ -592,6 +592,16 @@ function decisionActionRu(value) {
 function outcomeObservabilityReasonRu(value) {
   const code = String(value ?? "").trim();
   const labels = {
+    scheduled_for_label_horizon: "Исход зарегистрирован и ожидает созревания горизонта",
+    label_horizon_not_mature: "Горизонт исхода ещё не созрел",
+    outcome_not_matured: "Исход ещё не созрел",
+    existing_outcome_materialized: "Состояние восстановлено по уже записанному исходу",
+    missing_tradeable_entry_candle: "Нет подтверждённой минутной свечи для торгового входа",
+    incomplete_horizon_candles: "Минутный ряд до конца горизонта неполон",
+    missing_horizon_candle: "Отсутствует обязательная минутная свеча внутри горизонта",
+    missing_funding_history: "Недоступна обязательная история funding",
+    directional_trend_contract_invalid: "Повреждён контракт направленной trend-сделки",
+    ambiguous_tp_sl_touch: "TP и SL затронуты одной минутной свечой; порядок не наблюдаем",
     intrabar_extreme_order_unobservable: "Не удалось однозначно определить порядок касаний цен внутри одной свечи",
     intrabar_replacement_fill_timing_unobservable: "Не удалось однозначно определить момент исполнения перевыставленной заявки внутри свечи",
     kill_switch_intrabar_order_unobservable: "Не удалось однозначно определить порядок срабатывания аварийной границы внутри свечи",
@@ -1376,6 +1386,30 @@ function buildPriceFreshnessFields(it, ov) {
       : chainExpiresIn !== null && chainExpiresIn !== undefined
         ? `цепочка: осталось ${formatDurationValue(chainExpiresIn)}`
         : "Срок действия цепочки не задан";
+  if (String(it?.bot_type || "") === "directional_trend") {
+    const levels = it?.params?.trade_plan?.levels || {};
+    const backendExit = it?.directional_exit_levels && typeof it.directional_exit_levels === "object"
+      ? it.directional_exit_levels
+      : {};
+    const tp = toFiniteNumber(backendExit.take_profit ?? levels?.take_profit?.price ?? it?.params?.take_profit_price);
+    const sl = toFiniteNumber(backendExit.stop_loss ?? levels?.stop_loss?.price ?? it?.params?.stop_loss_price);
+    const px = toFiniteNumber(currentPrice);
+    const direction = String(it?.direction || "long").toLowerCase();
+    const tpDistance = px === null || tp === null || px <= 0 ? null : (direction === "short" ? (px - tp) : (tp - px)) / px * 100;
+    const slDistance = px === null || sl === null || px <= 0 ? null : (direction === "short" ? (sl - px) : (px - sl)) / px * 100;
+    const between = px !== null && tp !== null && sl !== null && px >= Math.min(tp, sl) && px <= Math.max(tp, sl);
+    return [
+      { label: "Цена входа", value: ov.entryRef, mono: true, help: "Расчётная опорная цена single-position trend-сделки; перед внешним исполнением должна быть сопоставлена с текущей ценой." },
+      { label: "Текущая цена", value: formatBybitPrice(currentPrice, meta, "nearest"), mono: true, help: "Последняя доступная биржевая цена. Нужна для проверки, не были ли TP или SL уже достигнуты и не устарел ли вход." },
+      { label: "Отклонение от входа", value: drift == null ? "—" : formatPercentDot(drift, 2, true), help: "Отклонение текущей цены от расчётного входа single-position плана." },
+      { label: "Положение цены", value: px === null ? "нет текущей цены" : (between ? "между TP и SL" : "за пределами TP/SL"), help: "Для допуска текущая цена должна сохранять исходную геометрию entry–TP–SL; уже пройденная граница делает план устаревшим." },
+      { label: "До take-profit", value: tpDistance === null ? "—" : formatPercentDot(tpDistance, 2, true), help: "Направленное расстояние от текущей цены до take-profit. Отрицательное значение означает, что цель уже пройдена." },
+      { label: "До stop-loss", value: slDistance === null ? "—" : formatPercentDot(slDistance, 2, true), help: "Направленный запас от текущей цены до stop-loss. Отрицательное значение означает, что защитная граница уже пройдена." },
+      { label: "Возраст цены", value: tickerAge == null ? "—" : formatDurationValue(tickerAge), help: "Возраст последнего биржевого снимка; stale-price блокирует формирование исполнимого single-order package." },
+      { label: "Возраст текущей строки", value: `${recAge == null ? "—" : formatDurationValue(recAge)} · ${ttlText}`, help: "Возраст текущей публикации trend-плана и остаток operator TTL." },
+      { label: "Возраст идеи с первого сигнала", value: `${chainAge == null ? "—" : formatDurationValue(chainAge)} · обновлений: ${chainUpdates ?? "—"} · ${chainTtlText}`, help: `Возраст trend-идеи с начала публикационной цепочки. Старт: ${formatTs(chainStartedTs)}.` },
+    ];
+  }
   return [
     {
       label: "Цена входа",
@@ -1459,6 +1493,30 @@ function buildRiskEconomicsFields(it) {
   const routerUtility = toFiniteNumber(routerCandidate.utility);
   const routerEdge = toFiniteNumber(router.utility_edge);
   const routerWinner = String(router.winner_bot_type || "");
+  if (String(it?.bot_type || "") === "directional_trend") {
+    const eventModel = it?.reasons?.trend_event_model && typeof it.reasons.trend_event_model === "object" ? it.reasons.trend_event_model : {};
+    const tpFirst = toFiniteNumber(eventModel.tp_first_probability);
+    const slFirst = toFiniteNumber(eventModel.sl_first_probability);
+    const timeout = toFiniteNumber(eventModel.horizon_exit_probability);
+    const eventEv = toFiniteNumber(eventModel.event_expected_net_return);
+    const eventEvLower = toFiniteNumber(eventModel.event_expected_net_return_lower_bound);
+    return [
+      { label: "Выбор стратегии", value: router.status === "selected" ? `${botTypeLabel(routerWinner)} · utility ${routerUtility === null ? "—" : formatReturnFraction(routerUtility)}` : humanizeOperatorText(router.reason_code || router.status || "нет решения"), help: "Meta-router сравнивает grid и trend только по сопоставимой calibrated monetary utility." },
+      { label: "Преимущество победителя", value: routerEdge === null ? "—" : formatReturnFraction(routerEdge), help: "Разница utility с ближайшим допустимым конкурентом; при малом преимуществе выбирается no_trade." },
+      { label: "Предзапусковая проверка", value: preflightStatusRu(ctx.preflight_status), help: "Проверяет live-price, TP/SL, tickSize, qtyStep, notional, margin, funding и конфликт стратегии по символу." },
+      { label: "Профиль риска", value: riskProfileRu(ctx.risk_profile), help: "Сводная оценка риска single-position сделки до stop-loss и лимитов капитала." },
+      { label: "RR entry–TP/SL", value: planRr === null ? "—" : formatDotNumber(planRr, 2, false), help: "Отношение чистого payoff при TP к модулю чистого убытка при SL; не является вероятностью достижения TP." },
+      { label: "Net TP / net SL", value: `${planReward === null ? "—" : formatUsdValue(planReward)} / ${planLoss === null ? "—" : formatUsdValue(planLoss)}`, help: "Денежные сценарии одной позиции после оценочных издержек; знак SL должен быть неблагоприятным." },
+      { label: "P(TP_FIRST) / P(SL_FIRST)", value: `${tpFirst === null ? "—" : formatPercentDot(tpFirst * 100, 1, false)} / ${slFirst === null ? "—" : formatPercentDot(slFirst * 100, 1, false)}`, help: "Отдельная multiclass first-touch модель оценивает порядок достижения границ, а не просто знак цены через 12 часов." },
+      { label: "P(HORIZON_EXIT)", value: timeout === null ? "—" : formatPercentDot(timeout * 100, 1, false), help: "Вероятность выхода по времени без однозначного достижения TP или SL." },
+      { label: "First-touch EV", value: eventEv === null ? "—" : formatReturnFraction(eventEv), help: "Денежная ожидаемость по трём событиям с costs/funding." },
+      { label: "Нижняя граница first-touch EV", value: eventEvLower === null ? "—" : formatReturnFraction(eventEvLower), help: "Консервативная EV после учёта uncertainty; должна быть положительной для допуска trend." },
+      { label: "Доходность по наблюдениям", value: empiricalValue, help: `Отдельная trend-выборка текущей lineage. Статус: ${empiricalStatusRu(empiricalStatus)}; наблюдений: ${empiricalSamples}; временных групп: ${empiricalClusters}/${empiricalMinClusters}.` },
+      { label: "Худший хвост trend-наблюдений", value: empiricalTailValue, help: "Expected shortfall и empirical RR только по single-position trend-outcomes." },
+      { label: "Расходы на исполнение", value: ctx.execution_cost_bps == null ? "—" : formatBps(ctx.execution_cost_bps, 2, false), help: "Оценка round-trip комиссий, spread и slippage для одной позиции." },
+      { label: "Платёж финансирования", value: ctx.funding_cost_bps == null ? "—" : formatBps(ctx.funding_cost_bps, 2, false), help: "Неблагоприятный funding за фактический горизонт single-position сделки." },
+    ];
+  }
   return [
     {
       label: "Выбор стратегии",
@@ -1580,9 +1638,9 @@ function buildOperatorFieldSpecs(it, ov) {
       { label: "Стратегия", value: "Направленный тренд · одна позиция", help: "Отдельная single-position стратегия, а не направленная сетка. Система формирует проверяемый пакет для ручного или внешнего исполнения." },
       { label: "Направление", value: directionRu((it || {}).direction), help: "LONG следует за подтверждённым ростом, SHORT — за подтверждённым снижением." },
       { label: "Модель входа", value: "Одна позиция, без усреднения", help: "Позиция не увеличивается против движения и не использует grid-levels." },
-      { label: "Расчётная цена входа", value: formatBybitPrice(plan.reference_price ?? params.price_ref, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
-      { label: "Цель прибыли", value: formatBybitPrice(takeProfit.price, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
-      { label: "Ограничение убытка", value: formatBybitPrice(stopLoss.price, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
+      { label: "Расчётная цена входа", value: formatBybitPrice(plan.reference_price ?? params.price_ref, it?.bybit_meta || {}, "nearest"), mono: true },
+      { label: "Цель прибыли", value: formatBybitPrice(takeProfit.price, it?.bybit_meta || {}, "nearest"), mono: true },
+      { label: "Ограничение убытка", value: formatBybitPrice(stopLoss.price, it?.bybit_meta || {}, "nearest"), mono: true },
       { label: "Номинал позиции", value: targetNotional === null ? "—" : formatUsdValue(targetNotional), help: "Расчётный номинал одной позиции после Bybit qty-step preflight и runtime risk caps." },
       { label: "Расчётный RR", value: planRr === null ? "—" : formatDotNumber(planRr, 2, false), help: "Проектный reward/risk после оценочных издержек; не доказательство live edge." },
       { label: "P(TP раньше SL)", value: tpFirst === null ? "—" : formatPercentDot(tpFirst * 100.0, 1, false), help: "Вероятность того, что цель прибыли будет достигнута раньше ограничения убытка по отдельной first-touch модели." },
@@ -1748,6 +1806,28 @@ function riskReportMessageItem(item, fallbackCode, critical = true) {
   return { code: fallbackCode, msg: String(item || ""), critical };
 }
 
+function operatorBlockMessageRu(item) {
+  const code = String(item?.code || "").trim().toUpperCase();
+  const labels = {
+    ACCOUNT_MODE_MISSING: "Не сохранён режим счёта. Исполнение блокируется, потому что сервис не должен угадывать account mode.",
+    ACCOUNT_MODE_UNSUPPORTED: "Режим счёта не соответствует контракту выбранной стратегии.",
+    MARGIN_MODE_MISSING: "Не сохранён режим маржи. Исполнение блокируется fail-closed.",
+    MARGIN_MODE_UNSUPPORTED: "Режим маржи не соответствует контракту выбранной стратегии.",
+    DIRECTIONAL_TREND_CONTRACT_MISSING: "Single-position trend-план неполон или не помечен как directional_trend.",
+    DIRECTIONAL_TREND_POSITION_POLICY_INVALID: "Trend-позиция должна явно запрещать усреднение и pyramiding.",
+    EXTERNAL_EXECUTION_PACKAGE_INVALID: "Внешний пакет исполнения не подтверждает recommendation-only режим и отсутствие отправленного биржевого ордера.",
+    EXTERNAL_EXECUTION_PACKAGE_MISSING: "Для trend-рекомендации отсутствует обязательный single-order пакет внешнего исполнения.",
+    LEVERAGE_MISSING_FOR_EXECUTION: "Не указано положительное кредитное плечо для исполнения trend-позиции.",
+    ORDER_QTY_MISSING: "Не указано положительное количество контракта для single-position сделки.",
+    TARGET_NOTIONAL_MISSING: "Не указан положительный целевой номинал позиции.",
+    BYBIT_META_UNAVAILABLE: "Метаданные инструмента Bybit недоступны; tick, lot, minNotional и тип контракта нельзя подтвердить.",
+    DIRECTIONAL_TREND_LIVE_GEOMETRY_UNVERIFIABLE: "По свежей цене нельзя доказать, что entry, TP и SL остаются исполнимыми.",
+    FUNDING_EXTREME_AT_EXECUTION: "Текущий funding ухудшает экономику сделки сверх разрешённого предела.",
+    SYMBOL_STRATEGY_ALREADY_RUNNING: "По символу уже работает несовместимая стратегия; одновременный grid и trend запрещены.",
+  };
+  return labels[code] || humanizeOperatorText(item?.msg || item?.message || item?.reason || code);
+}
+
 function uniqueBlockerItems(items) {
   const seen = new Set();
   return (Array.isArray(items) ? items : []).filter((item) => {
@@ -1758,6 +1838,55 @@ function uniqueBlockerItems(items) {
     seen.add(key);
     return true;
   });
+}
+
+function outcomeTrackingHtml(it) {
+  const tracking = it?.outcome_tracking && typeof it.outcome_tracking === "object"
+    ? it.outcome_tracking
+    : {};
+  const state = String(tracking.state || "unavailable").toLowerCase();
+  const rawEventType = String(tracking.event_type || tracking.diagnostics?.event_type || "").trim();
+  const eventType = canonicalOutcomeEventType(tracking.event_type, tracking.diagnostics || {});
+  const hasObservedEventType = Boolean(rawEventType);
+  const stateLabels = {
+    waiting: "Ожидает созревания / обработки",
+    labeled: "Исход сформирован",
+    censored: "Наблюдение цензурировано",
+    unavailable: "Состояние недоступно",
+  };
+  const resultHtml = state === "labeled"
+    ? renderOutcomeResult(tracking.success, tracking.diagnostics, eventType, it?.bot_type)
+    : `<span class="neutral-note">${escapeHtml(stateLabels[state] || healthStatusRu(state))}</span>`;
+  const fields = [
+    { label: "Состояние окна исхода", html: resultHtml },
+    { label: "Тип события", value: hasObservedEventType ? outcomeEventTypeRu(eventType) : "—" },
+    { label: "Расчётный результат", value: state === "labeled" ? renderOutcomeReturn(tracking.ret) : "—" },
+    { label: "Интерпретация", value: (state === "labeled" || state === "censored")
+        ? outcomeReasonText({
+            bot_type: it?.bot_type,
+            event_type: hasObservedEventType ? eventType : null,
+            success: tracking.success,
+            ret: tracking.ret,
+            outcome_diagnostics: tracking.diagnostics || {},
+          })
+        : "Исход ещё не сформирован; текущая рекомендация не должна трактоваться как победа или поражение." },
+    { label: "Срок созревания", value: formatTs(tracking.label_due_ts) },
+    { label: "Последняя попытка", value: formatTs(tracking.last_attempt_ts) },
+    { label: "Причина состояния", value: humanizeOperatorText(tracking.reason || "—") },
+    { label: "Корень независимого окна", value: tracking.outcome_root_rec_id || "—" },
+  ];
+  return `
+    <div class="operator-card outcome-tracking-card">
+      <h3>Состояние исхода и разметки</h3>
+      <p class="helper-text">Для trend тип first-touch и денежная прибыльность отображаются раздельно. Для grid результат отражает экономику сетки и защитные границы.</p>
+      <div class="operator-grid two decision-context-grid">
+        ${fields.map(field => field.html !== undefined
+          ? `<div class="field-box"><label>${escapeHtml(field.label)}</label><div class="field-static">${field.html}</div></div>`
+          : fieldBox(field.label, field.value, null, "", "")
+        ).join("")}
+      </div>
+    </div>
+  `;
 }
 
 function buildDetailsHtml(it) {
@@ -1811,9 +1940,13 @@ function buildDetailsHtml(it) {
     : launchable
     ? "Проверьте цену, актуальность, риск и экономику; затем используйте блок параметров запуска для создания бота."
     : explicitHardBlocked
-      ? "Есть жёсткая причина, запрещающая ручное создание сеточного бота. Фактическая причина показана сразу под этим решением."
+      ? (trendSingle
+          ? "Есть жёсткая причина, запрещающая создание single-position trend-плана. Фактическая причина показана сразу под этим решением."
+          : "Есть жёсткая причина, запрещающая ручное создание сеточного бота. Фактическая причина показана сразу под этим решением.")
       : noTradeDecision
-        ? "«Не торговать» означает: сетку сейчас не запускать. Это не техническая блокировка Bybit; причина показана сразу под этим решением и отделена от относительного ранга в таблице."
+        ? (trendSingle
+            ? "«Не торговать» означает: направленную позицию сейчас не открывать. Причина показана сразу под этим решением и отделена от относительного ранга в таблице."
+            : "«Не торговать» означает: сетку сейчас не запускать. Это не техническая блокировка Bybit; причина показана сразу под этим решением и отделена от относительного ранга в таблице.")
         : pendingDecision
           ? "Рекомендация ожидает завершения проверки LLM. Это не отказ и не техническая блокировка Bybit; дождитесь статуса «Можно торговать» либо окончательного запрета."
           : "Рекомендация пока не готова к ручному запуску. Дождитесь новой публикации или новой предзапусковой проверки.";
@@ -1860,12 +1993,13 @@ function buildDetailsHtml(it) {
       <div class="operator-card ${blockersCardClass}">
         <h3>${escapeHtml(blockersTitle)}</h3>
         <div class="small-blocks">
-          ${blockerItems.map(b => `<div class="small-block ${b.critical ? "small-block-critical" : ""}"><span class="diagnostic-code" title="Технический код для журнала">${escapeHtml(b.code)}</span><br>${escapeHtml(humanizeOperatorText(b.msg))}</div>`).join("")}
+          ${blockerItems.map(b => `<div class="small-block ${b.critical ? "small-block-critical" : ""}"><span class="diagnostic-code" title="Технический код для журнала">${escapeHtml(b.code)}</span><br>${escapeHtml(operatorBlockMessageRu(b))}</div>`).join("")}
         </div>
       </div>
     `
     : "";
   const nextActionsHtml = operatorNextActionsHtml(it);
+  const outcomeTrackingCard = outcomeTrackingHtml(it);
 
   return `
     <div class="operator-sheet compact-details-sheet operator-minimal-sheet">
@@ -1885,6 +2019,8 @@ function buildDetailsHtml(it) {
       ${nextActionsHtml}
 
       ${launchDecisionDiagnosticsHtml(it, scoreMeta)}
+
+      ${outcomeTrackingCard}
 
       <div class="operator-card price-freshness-card">
         <div class="operator-card-heading">
@@ -2162,15 +2298,45 @@ function renderDirectionBadge(dir) {
   return `<span class="dir-badge ${cls}">${escapeHtml(directionRu(value))}</span>`;
 }
 
-function renderOutcomeResult(success, diagnostics) {
-  const value = toStrictInteger(success);
-  if (value !== 0 && value !== 1) {
-    return '<span class="outcome-result outcome-result-unknown">Неизвестно</span>';
-  }
+function outcomeEventTypeRu(value) {
+  const eventType = String(value || "").trim().toUpperCase();
+  const labels = {
+    TP_FIRST: "TP раньше SL",
+    SL_FIRST: "SL раньше TP",
+    HORIZON_EXIT: "Выход по времени",
+    AMBIGUOUS: "Порядок TP/SL не наблюдаем",
+    GRID_OUTCOME: "Итог сеточной стратегии",
+    LEGACY_BINARY: "Legacy binary outcome",
+  };
+  return labels[eventType] || (eventType || "Событие не указано");
+}
+
+function canonicalOutcomeEventType(eventType, diagnostics) {
+  const explicit = String(eventType || "").trim().toUpperCase();
+  if (explicit) return explicit;
   const details = diagnostics && typeof diagnostics === "object" ? diagnostics : {};
+  return String(details.event_type || "").trim().toUpperCase() || "LEGACY_BINARY";
+}
+
+function renderOutcomeResult(success, diagnostics, eventType = null, botType = null) {
+  const value = toStrictInteger(success);
+  const details = diagnostics && typeof diagnostics === "object" ? diagnostics : {};
+  const canonicalEvent = String(eventType || details.event_type || "LEGACY_BINARY").trim().toUpperCase();
+  const eventLabel = ({TP_FIRST:"TP раньше SL",SL_FIRST:"SL раньше TP",HORIZON_EXIT:"Выход по времени",AMBIGUOUS:"Порядок TP/SL не наблюдаем",GRID_OUTCOME:"Итог сеточной стратегии",LEGACY_BINARY:"Legacy binary outcome"})[canonicalEvent] || canonicalEvent;
+  if (canonicalEvent === "AMBIGUOUS") {
+    return '<span class="outcome-result outcome-result-unknown">Цензурировано · TP/SL в одной свече</span>';
+  }
+  if (value !== 0 && value !== 1) {
+    return `<span class="outcome-result outcome-result-unknown">Неизвестно · ${escapeHtml(eventLabel)}</span>`;
+  }
   const stopped = details.stopped === true || details.terminal_reason === "kill_switch_breached";
   const ok = value === 1;
-  const label = ok ? "Успех" : (stopped ? "Неуспех · kill-switch" : "Неуспех");
+  let label;
+  if (String(botType || details.bot_type || "") === "directional_trend" || ["TP_FIRST", "SL_FIRST", "HORIZON_EXIT"].includes(canonicalEvent)) {
+    label = `${eventLabel} · ${ok ? "прибыльно" : "неприбыльно"}`;
+  } else {
+    label = ok ? "Успех сетки" : (stopped ? "Неуспех сетки · kill-switch" : "Неуспех сетки");
+  }
   return `<span class="outcome-result ${ok ? "outcome-result-win" : "outcome-result-loss"}">${escapeHtml(label)}</span>`;
 }
 
@@ -2186,7 +2352,25 @@ function outcomeReasonText(row) {
     : {};
   const success = toStrictInteger(item.success);
   const ret = toFiniteNumber(item.ret);
+  const eventType = String(item.event_type || details.event_type || "LEGACY_BINARY").trim().toUpperCase();
+  const botType = String(item.bot_type || details.bot_type || "");
   const stopped = details.stopped === true || details.terminal_reason === "kill_switch_breached";
+
+  if (botType === "directional_trend" || ["TP_FIRST", "SL_FIRST", "HORIZON_EXIT", "AMBIGUOUS"].includes(eventType)) {
+    if (eventType === "TP_FIRST") {
+      return `Take-profit был однозначно достигнут раньше stop-loss. Экономический результат после издержек: ${renderOutcomeReturn(ret)}; TP_FIRST и прибыльность показываются раздельно.`;
+    }
+    if (eventType === "SL_FIRST") {
+      return `Stop-loss был однозначно достигнут раньше take-profit. Экономический результат после издержек: ${renderOutcomeReturn(ret)}.`;
+    }
+    if (eventType === "HORIZON_EXIT") {
+      return `За горизонт ни TP, ни SL не были однозначно достигнуты; позиция оценена по выходу во времени. Результат ${renderOutcomeReturn(ret)} не считается достижением TP.`;
+    }
+    if (eventType === "AMBIGUOUS") {
+      return "TP и SL попали в одну минутную свечу, поэтому порядок first-touch не наблюдаем. Наблюдение должно быть цензурировано и не использоваться как успех или поражение.";
+    }
+    return `Trend-outcome имеет legacy-семантику; net результат ${renderOutcomeReturn(ret)}. Для обучения first-touch такая строка не должна считаться современной точной меткой.`;
+  }
 
   if (stopped) {
     const side = details.kill_switch_breach_side === "upper"
@@ -2199,20 +2383,20 @@ function outcomeReasonText(row) {
     const boundaryText = boundary === null ? "" : ` на границе ${String(boundary)}`;
     const observedText = observed === null ? "" : `; наблюдавшийся экстремум ${String(observed)}`;
     const pnlText = ret === null ? "" : `; итоговый net proxy P&L ${renderOutcomeReturn(ret)}`;
-    return `Сработал ${side} kill-switch${boundaryText}${observedText}${pnlText}. Срабатывание защиты означает неуспешный исход независимо от знака proxy P&L.`;
+    return `Сработал ${side} kill-switch${boundaryText}${observedText}${pnlText}. Срабатывание защиты означает неуспешный grid-outcome независимо от знака proxy P&L.`;
   }
   if (success === 1) {
     return ret === null
-      ? "Защитные границы не нарушены; числовой proxy P&L недоступен."
-      : `Защитные границы не нарушены; net proxy P&L ${renderOutcomeReturn(ret)}.`;
+      ? "Защитные границы сетки не нарушены; числовой proxy P&L недоступен."
+      : `Защитные границы сетки не нарушены; net proxy P&L ${renderOutcomeReturn(ret)}.`;
   }
   if (success === 0) {
     if (ret !== null && ret > 0) {
-      return "Положительный net proxy P&L, но терминальная причина отсутствует в legacy-архиве; сохранённый исход остаётся неуспешным.";
+      return "Положительный net proxy P&L, но терминальная причина отсутствует в legacy-архиве; сохранённый grid-outcome остаётся неуспешным.";
     }
     return ret === null
-      ? "Неуспешный исход; числовой proxy P&L или терминальная диагностика недоступны."
-      : `Net proxy P&L ${renderOutcomeReturn(ret)} не прошёл критерий успешного исхода.`;
+      ? "Неуспешный grid-outcome; числовой proxy P&L или терминальная диагностика недоступны."
+      : `Net proxy P&L ${renderOutcomeReturn(ret)} не прошёл критерий успешного grid-outcome.`;
   }
   return "Исход или терминальная диагностика имеют недопустимый формат.";
 }
@@ -2589,6 +2773,85 @@ function buildRecommendationTimelineSvg(items) {
   `;
 }
 
+function buildStrategyPriceTimelineSvg(items) {
+  const rows = Array.isArray(items)
+    ? items.filter(row => row?.timestamp_valid !== false && toFiniteNumber(row?.ts) !== null && row?.price_geometry)
+    : [];
+  if (!rows.length) return `<div class="timeline-empty">Ценовая геометрия истории отсутствует.</div>`;
+  const botType = String(rows[rows.length - 1]?.bot_type || rows[0]?.bot_type || "futures_grid");
+  const keys = botType === "directional_trend"
+    ? [
+        { key: "take_profit", label: "TP", cls: "strategy-line-tp" },
+        { key: "reference_price", label: "Вход", cls: "strategy-line-entry" },
+        { key: "stop_loss", label: "SL", cls: "strategy-line-sl" },
+      ]
+    : [
+        { key: "kill_upper", label: "Kill ↑", cls: "strategy-line-kill" },
+        { key: "range_upper", label: "Диапазон ↑", cls: "strategy-line-range" },
+        { key: "reference_price", label: "Опорная цена", cls: "strategy-line-entry" },
+        { key: "range_lower", label: "Диапазон ↓", cls: "strategy-line-range" },
+        { key: "kill_lower", label: "Kill ↓", cls: "strategy-line-kill" },
+      ];
+  const points = [];
+  rows.forEach(row => keys.forEach(series => {
+    const value = toFiniteNumber(row?.price_geometry?.[series.key]);
+    if (value !== null) points.push(value);
+  }));
+  if (!points.length) return `<div class="timeline-empty">В публикациях отсутствуют числовые уровни цены.</div>`;
+
+  const width = 920, height = 330, left = 88, right = 32, top = 24, bottom = 64;
+  const plotWidth = width - left - right, plotHeight = height - top - bottom;
+  const timestamps = rows.map(row => Number(row.ts));
+  const minTs = Math.min(...timestamps), maxTs = Math.max(...timestamps), span = Math.max(1, maxTs - minTs);
+  let minPrice = Math.min(...points), maxPrice = Math.max(...points);
+  const pad = Math.max((maxPrice - minPrice) * 0.08, Math.abs(maxPrice || 1) * 0.002, 1e-9);
+  minPrice -= pad; maxPrice += pad;
+  const priceSpan = Math.max(1e-12, maxPrice - minPrice);
+  const xFor = ts => left + ((Number(ts) - minTs) / span) * plotWidth;
+  const yFor = value => top + ((maxPrice - Number(value)) / priceSpan) * plotHeight;
+
+  const horizontalTicks = Array.from({ length: 5 }, (_unused, index) => {
+    const ratio = index / 4;
+    const value = maxPrice - priceSpan * ratio;
+    const y = top + plotHeight * ratio;
+    return `<line class="timeline-grid-line" x1="${left}" y1="${y}" x2="${width-right}" y2="${y}"></line>
+      <text class="timeline-axis-label" x="${left-10}" y="${y+4}" text-anchor="end">${escapeHtml(formatDotNumber(value, 6, false))}</text>`;
+  }).join("");
+
+  const paths = keys.map(series => {
+    const sampled = rows.map(row => ({ ts: Number(row.ts), value: toFiniteNumber(row?.price_geometry?.[series.key]) }));
+    const valid = sampled.filter(point => point.value !== null);
+    if (!valid.length) return "";
+    // A missing persisted level is an evidentiary gap.  Break the SVG path
+    // instead of drawing a synthetic line across publications that do not carry
+    // comparable geometry.
+    let d = "";
+    let segmentOpen = false;
+    sampled.forEach(point => {
+      if (point.value === null) {
+        segmentOpen = false;
+        return;
+      }
+      d += `${segmentOpen ? " L" : " M"} ${xFor(point.ts).toFixed(2)} ${yFor(point.value).toFixed(2)}`;
+      segmentOpen = true;
+    });
+    const circles = valid.map(point => `<circle class="${series.cls}" cx="${xFor(point.ts).toFixed(2)}" cy="${yFor(point.value).toFixed(2)}" r="3"><title>${escapeHtml(`${series.label}: ${formatDotNumber(point.value, 8, false)} · ${formatTs(point.ts)}`)}</title></circle>`).join("");
+    return `<path class="strategy-price-path ${series.cls}" d="${d.trim()}"></path>${circles}`;
+  }).join("");
+
+  const timeTickCount = Math.min(5, Math.max(2, rows.length));
+  const timeTicks = Array.from({ length: timeTickCount }, (_unused, index) => {
+    const ratio = timeTickCount === 1 ? 0 : index / (timeTickCount - 1);
+    const ts = Math.round(minTs + span * ratio), x = left + plotWidth * ratio;
+    return `<line class="timeline-grid-line timeline-grid-line-vertical" x1="${x}" y1="${top}" x2="${x}" y2="${height-bottom}"></line>
+      <text class="timeline-time-label" x="${x}" y="${height-24}" text-anchor="middle">${escapeHtml(new Date(ts*1000).toLocaleString("ru-RU", {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}))}</text>`;
+  }).join("");
+  const legend = keys.map(series => `<span><i class="timeline-legend-line ${series.cls}"></i>${escapeHtml(series.label)}</span>`).join("");
+  return `<div class="recommendation-timeline" role="img" aria-label="Динамика ценовой геометрии стратегии">
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">${horizontalTicks}${timeTicks}${paths}</svg>
+  </div><div class="timeline-legend">${legend}</div>`;
+}
+
 function sortRecommendationHistoryRowsNewestFirst(items) {
   if (!Array.isArray(items)) return [];
   return [...items].sort((left, right) => {
@@ -2615,6 +2878,7 @@ function buildRecommendationHistoryHtml(data) {
   const tableItems = sortRecommendationHistoryRowsNewestFirst(items);
   const latest = items.length ? items[items.length - 1] : null;
   const summary = [
+    { label: "Стратегия", value: botTypeLabel(data?.bot_type || latest?.bot_type || "—") },
     { label: "Публикаций", value: `${data?.returned ?? 0}${data?.truncated ? ` из ${data?.items_total ?? "?"}` : ""}` },
     { label: "Операторских цепочек", value: data?.publication_root_count ?? 0 },
     { label: "Независимых окон исхода", value: data?.outcome_root_count ?? 0 },
@@ -2628,6 +2892,18 @@ function buildRecommendationHistoryHtml(data) {
     { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
     { label: "Возраст", render: row => escapeHtml(row.timestamp_valid === false ? "Некорректная метка времени" : formatAgeHuman(row.age_sec)) },
     { label: "Направление", render: row => directionBadge(row.direction) },
+    { label: "Ценовой план", className: "wrap", render: row => {
+        const g = row.price_geometry || {};
+        if (g.kind === "directional_trend") return escapeHtml(`Вход ${formatDotNumber(g.reference_price, 8, false)} · TP ${formatDotNumber(g.take_profit, 8, false)} · SL ${formatDotNumber(g.stop_loss, 8, false)}`);
+        return escapeHtml(`Опора ${formatDotNumber(g.reference_price, 8, false)} · диапазон ${formatDotNumber(g.range_lower, 8, false)}—${formatDotNumber(g.range_upper, 8, false)} · kill ${formatDotNumber(g.kill_lower, 8, false)}—${formatDotNumber(g.kill_upper, 8, false)}`);
+      }
+    },
+    { label: "Исход", render: row => {
+        const tracking = row.outcome_tracking || {};
+        if (String(tracking.state || "") !== "labeled") return `<span class="neutral-note">${escapeHtml(healthStatusRu(tracking.state || "waiting"))}</span>`;
+        return renderOutcomeResult(tracking.success, tracking.diagnostics, tracking.event_type, row.bot_type);
+      }
+    },
     { label: "Статус в БД", render: row => pillStatus(row.stored_status || row.status) },
     { label: "Проверка LLM", render: row => renderLlmStatusBadge(row.llm_status || "none") },
     { label: "Публикация", render: row => escapeHtml(row.publication_kind === "root" ? "новая операторская идея" : "обновление цепочки") },
@@ -2663,6 +2939,10 @@ function buildRecommendationHistoryHtml(data) {
       ${buildRecommendationTimelineSvg(items)}
     </div>
     <div class="modal-section">
+      <div class="modal-section-title">Динамика ценовой геометрии стратегии</div>
+      ${buildStrategyPriceTimelineSvg(items)}
+    </div>
+    <div class="modal-section">
       <div class="modal-section-title">Журнал публикаций</div>
       ${table}
     </div>
@@ -2681,15 +2961,27 @@ async function fetchRecommendationHistory(meta, limit = 500) {
 }
 
 async function loadRecommendationHistory(meta = currentMeta) {
+  let data;
   try {
-    const data = await fetchRecommendationHistory(meta, 500);
-    if (!data) {
-      showModal("История рекомендации", "Не удалось загрузить историю по выбранной паре.");
-      return;
-    }
-    showModalHtml(`История ${data.symbol || meta?.symbol || "рекомендации"}`, buildRecommendationHistoryHtml(data));
+    data = await fetchRecommendationHistory(meta, 500);
   } catch (e) {
     showModal("История рекомендации", "Ошибка сети при загрузке истории.");
+    return;
+  }
+  if (!data) {
+    showModal("История рекомендации", "Не удалось загрузить историю по выбранной паре.");
+    return;
+  }
+  try {
+    showModalHtml(`История ${data.symbol || meta?.symbol || "рекомендации"}`, buildRecommendationHistoryHtml(data));
+  } catch (e) {
+    showModalHtml("Ошибка отображения истории", `
+      <div class="modal-section">
+        <div class="modal-section-title">История получена, но не может быть безопасно отображена</div>
+        <p class="modal-note">Данные не подменялись вымышленной линией или пустым графиком. Техническая причина:</p>
+        <pre class="json-box">${escapeHtml(String(e?.message || e || "history_render_error"))}</pre>
+      </div>
+    `);
   }
 }
 
@@ -3198,9 +3490,14 @@ async function loadHealth() {
   const outcomeWorker = systemStatus.outcome_worker || {};
   const databaseSchema = systemStatus.database_schema || {};
   const databaseContinuity = systemStatus.database_continuity || {};
+  const outcomeIntegrity = databaseContinuity.outcome_semantic_integrity || {};
   const runtimeProvenance = systemStatus.runtime_provenance || {};
   const botCalibrator = systemStatus.bot_calibrators?.futures_grid || {};
   const trendCalibrator = systemStatus.bot_calibrators?.directional_trend || {};
+  const trendFirstTouch = systemStatus.trend_first_touch_model || {};
+  const outcomeByBot = outcomeWorker.by_bot_type || {};
+  const gridOutcomeQueue = outcomeByBot.futures_grid || {};
+  const trendOutcomeQueue = outcomeByBot.directional_trend || {};
   const backgroundThreads = Object.entries(systemStatus.background_threads || {}).map(([name, info]) => ({
     name,
     ...(info || {}),
@@ -3289,6 +3586,9 @@ async function loadHealth() {
         { label: "Значение", render: row => `<span class="wrap">${escapeHtml(String(row.value ?? "—"))}</span>` },
       ], [
         { name: "Состояние outcome-worker", value: healthStatusRu(outcomeWorker.state || "unknown") },
+        { name: "Ожидают созревания горизонта", value: outcomeWorker.scheduled_waiting_total ?? 0 },
+        { name: "Ближайшее созревание", value: formatTs(outcomeWorker.next_due_ts) },
+        { name: "До ближайшего созревания", value: formatAgeHuman(outcomeWorker.next_due_in_sec) },
         { name: "Созревших в очереди", value: outcomeWorker.matured_pending_total ?? "—" },
         { name: "Не предпринималась попытка", value: outcomeWorker.unattempted_total ?? "—" },
         { name: "Обработано в последнем цикле", value: outcomeWorker.last_cycle?.rows_examined ?? outcomeWorker.rows_examined ?? "—" },
@@ -3301,11 +3601,34 @@ async function loadHealth() {
         { name: "Исходов в БД", value: databaseContinuity.outcomes_total ?? "—" },
         { name: "Первая рекомендация", value: formatTs(databaseContinuity.first_recommendation_ts) },
         { name: "Последняя рекомендация", value: formatTs(databaseContinuity.latest_recommendation_ts) },
-        { name: "Денежная ожидаемость", value: empiricalStatusRu(botCalibrator.expectancy_status || "insufficient") },
-        { name: "Наблюдений текущих правил", value: botCalibrator.policy_eligible_outcomes_total ?? 0 },
-        { name: "До денежного минимума", value: botCalibrator.monetary_sample_gap ?? "—" },
-        { name: "До вероятностного минимума", value: botCalibrator.probability_sample_gap ?? "—" },
-        { name: "Независимые временные группы", value: `${botCalibrator.temporal_cluster_count ?? 0}/${botCalibrator.minimum_temporal_clusters ?? 0}` },
+        { name: "Grid · ожидают горизонта", value: gridOutcomeQueue.scheduled_waiting_total ?? 0 },
+        { name: "Grid · ближайшее созревание", value: formatTs(gridOutcomeQueue.next_due_ts) },
+        { name: "Grid · созревших в очереди", value: gridOutcomeQueue.matured_pending_total ?? 0 },
+        { name: "Trend · ожидают горизонта", value: trendOutcomeQueue.scheduled_waiting_total ?? 0 },
+        { name: "Trend · ближайшее созревание", value: formatTs(trendOutcomeQueue.next_due_ts) },
+        { name: "Trend · созревших в очереди", value: trendOutcomeQueue.matured_pending_total ?? 0 },
+        { name: "Grid · исходов в БД", value: databaseContinuity.outcomes_by_bot_type?.futures_grid ?? 0 },
+        { name: "Trend · исходов в БД", value: databaseContinuity.outcomes_by_bot_type?.directional_trend ?? 0 },
+        { name: "Семантическая целостность исходов", value: outcomeIntegrity.ok === true ? "Норма" : (outcomeIntegrity.ok === false ? "Нарушена" : "—") },
+        { name: "Исходов без рекомендации", value: outcomeIntegrity.orphan_outcome_total ?? "—" },
+        { name: "Исходов без observability", value: outcomeIntegrity.missing_observability_total ?? "—" },
+        { name: "Observability не labeled", value: outcomeIntegrity.non_labeled_observability_total ?? "—" },
+        { name: "Несовпадений identity рекомендации/исхода", value: outcomeIntegrity.recommendation_identity_mismatch_total ?? "—" },
+        { name: "Неканонических типов событий", value: outcomeIntegrity.invalid_event_type_total ?? "—" },
+        { name: "Сохранённых AMBIGUOUS вместо censoring", value: outcomeIntegrity.persisted_ambiguous_total ?? "—" },
+        { name: "Grid · денежная ожидаемость", value: empiricalStatusRu(botCalibrator.expectancy_status || "insufficient") },
+        { name: "Grid · наблюдений текущих правил", value: botCalibrator.policy_eligible_outcomes_total ?? 0 },
+        { name: "Grid · до денежного минимума", value: botCalibrator.monetary_sample_gap ?? "—" },
+        { name: "Grid · временные группы", value: `${botCalibrator.temporal_cluster_count ?? 0}/${botCalibrator.minimum_temporal_clusters ?? 0}` },
+        { name: "Trend · binary-калибратор", value: trendCalibrator.fitted ? "обучен" : "накопление данных" },
+        { name: "Trend first-touch · состояние", value: trendFirstTouch.fitted ? "обучена" : (trendFirstTouch.status || "накопление данных") },
+        { name: "Trend first-touch · наблюдений", value: trendFirstTouch.n_samples ?? trendFirstTouch.policy_eligible_outcomes_total ?? 0 },
+        { name: "Trend first-touch · TP_FIRST", value: trendFirstTouch.class_counts?.TP_FIRST ?? 0 },
+        { name: "Trend first-touch · SL_FIRST", value: trendFirstTouch.class_counts?.SL_FIRST ?? 0 },
+        { name: "Trend first-touch · HORIZON_EXIT", value: trendFirstTouch.class_counts?.HORIZON_EXIT ?? 0 },
+        { name: "Trend first-touch · terminal holdout", value: trendFirstTouch.holdout_status || "—" },
+        { name: "Trend first-touch · log-loss", value: trendFirstTouch.holdout_log_loss ?? "—" },
+        { name: "Trend first-touch · uncertainty", value: trendFirstTouch.probability_error_bound ?? "—" },
       ], { emptyText: "Диагностика исходов недоступна." })}
     </div>
     <div class="modal-section">
@@ -3412,7 +3735,16 @@ async function loadOutcomes() {
   try {
     data = await currentRes.json();
     archiveData = await archiveRes.json();
-  } catch (e) { return; }
+  } catch (e) {
+    showModalHtml("Ошибка загрузки исходов", `
+      <div class="modal-section">
+        <div class="modal-section-title">Ответ API невозможно прочитать</div>
+        <p class="modal-note">Сервис вернул повреждённый или не-JSON ответ. Данные не подменялись пустой статистикой.</p>
+        <pre class="json-box">${escapeHtml(String(e?.message || e || "unknown_json_error"))}</pre>
+      </div>
+    `);
+    return;
+  }
   if (!currentRes.ok || !archiveRes.ok) {
     showModal("Ошибка загрузки исходов", {
       current_policy: data,
@@ -3445,6 +3777,17 @@ async function loadOutcomes() {
   const llmByEngine = data.llm_engine_alignment || [];
   const llmMatrix = data.llm_engine_matrix || [];
   const byBot = data.by_bot || [];
+  const eventTypeCounts = data.event_type_counts || {};
+  const eventTypeCountsByBot = data.event_type_counts_by_bot || {};
+  const eventTypeRows = Object.entries(eventTypeCounts).map(([event_type, count]) => ({ event_type, count }));
+  const eventTypeByBotRows = Object.entries(eventTypeCountsByBot).flatMap(([bot_type, counts]) =>
+    Object.entries(counts || {}).map(([event_type, count]) => ({ bot_type, event_type, count }))
+  );
+  const archiveEventTypeRows = Object.entries(archiveData?.event_type_counts || {}).map(([event_type, count]) => ({ event_type, count }));
+  const archiveEventTypeByBotRows = Object.entries(archiveData?.event_type_counts_by_bot || {}).flatMap(([bot_type, counts]) =>
+    Object.entries(counts || {}).map(([event_type, count]) => ({ bot_type, event_type, count }))
+  );
+  const archiveByBot = archiveData?.by_bot || [];
   const bySymbol = (data.by_symbol || []).slice(0, 30);
   const recent = (data.recent || []).slice(0, 80);
   const archiveRecent = (archiveData?.recent || []).slice(0, 20);
@@ -3456,6 +3799,8 @@ async function loadOutcomes() {
   const exactPolicyCandidateTotal = Number(eligibilitySummary.policy_evaluation_eligible_total || 0);
   const calibrationEligibleTotal = Number(eligibilitySummary.calibration_eligible_total || 0);
   const meanReversionAvailableTotal = Number(eligibilitySummary.mean_reversion_available_total || 0);
+  const trendEvidenceAvailableTotal = Number(eligibilitySummary.trend_evidence_available_total || 0);
+  const trendEvidenceValidTotal = Number(eligibilitySummary.trend_evidence_valid_total || 0);
   const exactPolicyRetentionDays = Number(eligibilitySummary.exact_policy_retention_days || 0);
   const llmReviewed = Number(llmSummary.ok_total || 0);
   const llmDisagree = Number(llmSummary.disagree_total || 0);
@@ -3475,7 +3820,9 @@ async function loadOutcomes() {
       { label: "Теневая исследовательская когорта · учебные наблюдения, не калибровка", value: Number(shadowSummary.total || 0) },
       { label: "Кандидаты оценки правил", value: exactPolicyCandidateTotal },
       { label: "Допущено к калибровке", value: calibrationEligibleTotal },
-      { label: "Исходы с оценкой возврата к среднему", value: `${meanReversionAvailableTotal}/${total}` },
+      { label: "Grid-исходы с оценкой возврата к среднему", value: meanReversionAvailableTotal },
+      { label: "Trend-исходы с доступным трендовым evidence", value: trendEvidenceAvailableTotal },
+      { label: "Trend-исходы с валидным трендовым evidence", value: trendEvidenceValidTotal },
       { label: "Исторический архив", value: archiveTotal },
       { label: "Архивная доля успешных", value: archiveRoots.win_rate !== null && archiveRoots.win_rate !== undefined ? `${(Number(archiveRoots.win_rate) * 100).toFixed(1)}%` : "—" },
       { label: "Повторов убрано", value: Number(s.deduped_duplicates || 0) },
@@ -3503,6 +3850,27 @@ async function loadOutcomes() {
         { label: "Причина решения", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.code || "—"))}</span>` },
         { label: "Наблюдений", render: row => escapeHtml(String(row.count || 0)) },
       ], decisionReasonCounts, { emptyText: "Коды причин решения не сохранены в этой выборке." })}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Стратегии и типы терминальных событий</div>
+      ${buildModalTable([
+        { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
+        { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction) },
+        { label: "Исполнимое направление", render: row => renderDirectionBadge(row.execution_direction) },
+        { label: "Всего", render: row => escapeHtml(String(row.total || 0)) },
+        { label: "Доля успешных", render: row => row.win_rate == null ? "—" : escapeHtml(`${(Number(row.win_rate) * 100).toFixed(1)}%`) },
+        { label: "Средний net результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+      ], byBot, { emptyText: "Исходы по стратегиям пока не накоплены." })}
+      ${buildModalTable([
+        { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
+        { label: "Тип события", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
+        { label: "Количество", render: row => escapeHtml(String(row.count || 0)) },
+      ], eventTypeByBotRows, { emptyText: "Терминальные события по стратегиям пока отсутствуют." })}
+      ${buildModalTable([
+        { label: "Тип события · всего", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
+        { label: "Количество", render: row => escapeHtml(String(row.count || 0)) },
+      ], eventTypeRows, { emptyText: "Терминальные события пока отсутствуют." })}
+      <p class="modal-note">Grid и trend не объединяются в одну экономическую интерпретацию: GRID_OUTCOME отражает сеточный P&amp;L/kill-switch, а TP_FIRST, SL_FIRST и HORIZON_EXIT — порядок границ single-position trend.</p>
     </div>
     <div class="modal-section">
       <div class="modal-section-title">На что стоит смотреть в первую очередь</div>
@@ -3589,6 +3957,7 @@ async function loadOutcomes() {
       <div class="modal-section-title">7. По символу (топ 30)</div>
       ${buildModalTable([
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
+        { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
         { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction) },
         { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
@@ -3602,6 +3971,8 @@ async function loadOutcomes() {
       ${buildModalTable([
         { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
+        { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
+        { label: "Событие", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
         { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction) },
         { label: "Направление после проверок", render: row => renderDirectionBadge(row.execution_direction) },
         { label: "Оценка допуска", render: row => toFiniteNumber(row.score) === null ? "—" : escapeHtml(formatDotNumber(row.score, 4)) },
@@ -3614,7 +3985,7 @@ async function loadOutcomes() {
         { label: "Совпадение", render: row => renderAgreementBadge(row.llm_review?.agree_with_engine) },
         { label: "Уверенность LLM", render: row => row.llm_review?.confidence === null || row.llm_review?.confidence === undefined ? '—' : escapeHtml(formatDotNumber(row.llm_review.confidence, 2)) },
         { label: "Тип нейтрального сигнала", render: row => renderNeutralSourceTag(row.neutral_source) },
-        { label: "Исход по правилам стратегии", render: row => renderOutcomeResult(row.success, row.outcome_diagnostics) },
+        { label: "Исход по правилам стратегии", render: row => renderOutcomeResult(row.success, row.outcome_diagnostics, row.event_type, row.bot_type) },
         { label: "Расчётный net proxy P&L", render: row => escapeHtml(renderOutcomeReturn(row.ret)) },
         { label: "Причина исхода", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeReasonText(row))}</span>` },
         { label: "Горизонт", render: row => escapeHtml(formatAgeHuman(row.horizon_sec)) },
@@ -3624,14 +3995,32 @@ async function loadOutcomes() {
       ], recent, { emptyText: "В текущем наборе правил завершённых наблюдений пока нет. Данные появятся после окончания установленного горизонта наблюдения.", compact: true, maxHeight: 420 })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">9. Исторический архив (последние 20; не входит в основную статистику)</div>
+      <div class="modal-section-title">9. Исторический архив (не входит в основную статистику)</div>
+      ${buildModalTable([
+        { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
+        { label: "Всего", render: row => escapeHtml(String(row.total || 0)) },
+        { label: "Доля успешных", render: row => row.win_rate == null ? "—" : escapeHtml(`${(Number(row.win_rate) * 100).toFixed(1)}%`) },
+        { label: "Средний net результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
+      ], archiveByBot, { emptyText: "Архивные исходы по стратегиям отсутствуют." })}
+      ${buildModalTable([
+        { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
+        { label: "Тип события", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
+        { label: "Количество", render: row => escapeHtml(String(row.count || 0)) },
+      ], archiveEventTypeByBotRows, { emptyText: "Архивные типы событий по стратегиям отсутствуют." })}
+      ${buildModalTable([
+        { label: "Тип события · всего", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
+        { label: "Количество", render: row => escapeHtml(String(row.count || 0)) },
+      ], archiveEventTypeRows, { emptyText: "Архивные типы событий отсутствуют." })}
+      <div class="modal-section-title">Последние 20 архивных исходов</div>
       ${buildModalTable([
         { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
         { label: "Символ", render: row => `<span class="wrap">${escapeHtml(row.symbol || "—")}</span>` },
+        { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
+        { label: "Событие", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
         { label: "Модель", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.model_version || "—")}</span>` },
         { label: "Набор правил", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
         { label: "Роль", render: row => `<span class="neutral-note">${escapeHtml(sampleRoleRu(row.sample_role || row.reco_status || "legacy"))}</span>` },
-        { label: "Исход по правилам стратегии", render: row => renderOutcomeResult(row.success, row.outcome_diagnostics) },
+        { label: "Исход по правилам стратегии", render: row => renderOutcomeResult(row.success, row.outcome_diagnostics, row.event_type, row.bot_type) },
         { label: "Расчётный net proxy P&L", render: row => escapeHtml(renderOutcomeReturn(row.ret)) },
         { label: "Причина исхода", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeReasonText(row))}</span>` },
         { label: "Идентификатор рекомендации", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
@@ -3646,7 +4035,23 @@ async function loadDecisions() {
   const res = await fetch("/api/v1/decisions?limit=200");
   let data;
   try { data = await res.json(); } catch (e) { return; }
-  showModal("Журнал решений", data);
+  if (!res.ok) { showModal("Ошибка загрузки журнала", data); return; }
+  const rows = Array.isArray(data) ? data : [];
+  const html = `
+    <p class="modal-note">Журнал связывает операторское или системное действие с рекомендацией, символом и семейством стратегии. Записи без rec_id относятся к общесистемным операциям.</p>
+    ${buildModalTable([
+      { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
+      { label: "Действие", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.action || "—"))}</span>` },
+      { label: "Символ", render: row => escapeHtml(row.symbol || "—") },
+      { label: "Стратегия", render: row => escapeHtml(row.bot_type ? botTypeLabel(row.bot_type) : "Общесистемное") },
+      { label: "Направление", render: row => row.direction ? renderDirectionBadge(row.direction) : "—" },
+      { label: "Статус рекомендации", render: row => row.recommendation_status ? pillStatus(row.recommendation_status) : "—" },
+      { label: "Оператор", render: row => escapeHtml(row.operator || "система") },
+      { label: "Идентификатор", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
+      { label: "Детали", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(JSON.stringify(row.details || {})))}</span>` },
+    ], rows, { emptyText: "Журнал решений пуст.", compact: true, maxHeight: 520 })}
+  `;
+  showModalHtml("Журнал решений", html);
 }
 
 async function loadRisk() {
