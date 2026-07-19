@@ -2904,6 +2904,7 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 
 BOT_CALIB_KEYS: dict[str, str] = {
     "futures_grid": "logreg_futures_grid_v21",
+    "directional_trend": "logreg_directional_trend_v1",
 }
 GLOBAL_LOGREG_KEY = "logreg_global_v21"
 

@@ -1,3 +1,18 @@
+## 2026-07-19 - v1.1.0 - add independent directional trend shadow policy
+
+- Added `directional_trend` as a separate Bybit Linear USDT Perpetual research family; existing neutral/long/short `futures_grid` semantics are unchanged.
+- Added trend-specific multi-timeframe scoring and routing: strong coherent trends are rewarded, while mean-reversion evidence is not a trend gate.
+- Added a single-position TP/SL contract with no grid levels, averaging or pyramiding.
+- Kept the new family fail-closed and shadow-only: `status=no_trade`, `DIRECTIONAL_TREND_SHADOW_ONLY`, no `bot_instance`, and explicit execution-preflight rejection.
+- Added `directional_trend_label_v1` outcome labeling from an exact continuous 1m path, including same-candle TP/SL censoring, stop-gap handling, funding settlements and round-trip costs.
+- Added separate trend audit/model/calibrator identities; the legacy global diagnostic remains futures-grid-only and does not pool incompatible labels.
+- Updated API/UI/operator artifacts to display trend research plans and calibrator readiness without presenting them as executable grids.
+- Added `tests/test_iteration266_directional_trend_shadow.py` with red-to-green coverage for scoring, routing, plan geometry, outcome chronology, lineage, UI and execution boundary.
+- Database schema and `.env` contract are unchanged.
+
+- Baseline: 1206/1206 tests passed in 16 deterministic non-overlapping batches. Post-check: 1222/1222 passed; the new 16-test regression passed twice, the focused compatibility suite passed 102 tests, and PostgreSQL dialect/locking suites passed 20 tests.
+- SQLite fresh-schema and existing-database upgrade checks passed. `pip check` retains the external MoviePy/Pillow conflict; `ruff` is unavailable. Live PostgreSQL integration and live Bybit/network tests were not run without a disposable DSN or explicit network need.
+
 ## 2026-07-19 - v1.0.78 - separate operator freshness from outcome lineage
 
 - Fixed a HIGH publication/outcome lifecycle defect: an expired 15-minute operator chain could previously open another `is_outcome_label_root=1` while the original 12-hour pseudo-position was still alive.

@@ -1,3 +1,13 @@
+## Остаточные риски после v1.1.0 directional trend shadow
+
+- The score thresholds, ATR multipliers and 12-hour trend target are engineering priors, not proven optimums. They require purged walk-forward and prospective shadow validation.
+- 1m OHLCV cannot reveal the order of TP and SL inside one candle; such rows are censored. It also cannot attest queue priority, market impact or actual executable fills.
+- A single-position proxy omits real account margin, liquidation, partial fills and operational latency. The branch is therefore non-executable by design.
+- Trend and grid can be simultaneously attractive under transitional regimes. Current routing preserves both audit rows but does not yet provide a validated capital-allocation policy between families.
+- Cross-symbol correlation can make apparently separate outcomes one market event. Calibration still requires non-overlapping temporal cohorts and should additionally be reviewed by regime and symbol cluster before any execution proposal.
+- The 12-hour horizon may be too short or too long for some symbols. Changing it requires a new label/model lineage and matching purge/embargo, not an environment toggle.
+- Live PostgreSQL behavior was not tested without an explicitly disposable DSN; dialect/unit coverage remains mandatory but is not equivalent to a live integration run.
+
 ## Остаточные риски после v1.0.78
 
 - Закрыт HIGH-дефект: operator TTL больше не разрешает новый перекрывающийся same-direction outcome-root. Свежая операторская публикация и статистический sample имеют отдельные roots.

@@ -16,6 +16,7 @@ settings = load_settings()
 
 BOT_HORIZONS: dict[str, int] = {
     "futures_grid": 12 * 3600,
+    "directional_trend": 12 * 3600,
 }
 HORIZON_SEC_DEFAULT = 30 * 60
 OUTCOME_MAX_ROWS_EXAMINED_PER_CYCLE = 2000
@@ -60,6 +61,7 @@ def _resolve_effective_horizon(bot_type: str, params: dict | None, fallback_hori
     def _bounded_hours(hours: float) -> float:
         bounds = {
             "futures_grid": (6.0, 48.0),
+            "directional_trend": (3.0, 24.0),
         }
         lo, hi = bounds.get(bot_type, (0.5, 72.0))
         return max(lo, min(hi, float(hours)))
@@ -97,6 +99,8 @@ def _is_supported_direction(bot_type: str, venue: str, direction: str) -> bool:
     direction_norm = str(direction or "").strip().lower()
     if bot_type == "futures_grid":
         return venue_norm == "linear" and direction_norm in ("neutral", "long", "short")
+    if bot_type == "directional_trend":
+        return venue_norm == "linear" and direction_norm in ("long", "short")
     return False
 
 
@@ -568,6 +572,247 @@ def _signed_return(entry: float, exitp: float, direction: str) -> float:
     if direction_norm == "long":
         return raw
     return 0.0
+
+
+def _directional_trend_outcome(
+    conn,
+    venue: str,
+    symbol: str,
+    entry: float,
+    exitp: float,
+    ts_start: int,
+    ts_end: int,
+    direction: str,
+    params: dict | None,
+    *,
+    diagnostics: dict[str, object] | None = None,
+) -> tuple[int, float] | None:
+    """Label one non-pyramiding directional position from exact 1m candles.
+
+    The first unambiguous TP/SL touch terminates the position. If one candle can
+    reach both levels, OHLC cannot reveal which event happened first and the row
+    is censored rather than assigned an optimistic chronology. A stop gap uses
+    the observed open (worse than the trigger); a favourable TP gap is capped at
+    the persisted TP. The terminal horizon uses the exact boundary open.
+    """
+    params = params if isinstance(params, dict) else {}
+    direction_norm = normalize_execution_direction(direction)
+    if direction_norm not in {"long", "short"}:
+        _record_outcome_failure(diagnostics, "invalid_direction", direction=direction_norm)
+        return None
+    if not math.isfinite(float(entry)) or float(entry) <= 0.0:
+        _record_outcome_failure(diagnostics, "invalid_entry_price", entry=entry)
+        return None
+
+    strategy_family = str(params.get("strategy_family") or "").strip()
+    entry_model = str(params.get("entry_model") or "").strip()
+    if strategy_family != "directional_trend" or entry_model != "single_position_no_pyramiding":
+        _record_outcome_failure(
+            diagnostics,
+            "invalid_directional_trend_contract",
+            strategy_family=strategy_family,
+            entry_model=entry_model,
+        )
+        return None
+
+    trade_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+    levels = trade_plan.get("levels") if isinstance(trade_plan.get("levels"), dict) else {}
+    tp_block = levels.get("take_profit") if isinstance(levels.get("take_profit"), dict) else {}
+    sl_block = levels.get("stop_loss") if isinstance(levels.get("stop_loss"), dict) else {}
+    take_profit = _finite_positive_or_none(tp_block.get("price"))
+    stop_loss = _finite_positive_or_none(sl_block.get("price"))
+    entry_f = float(entry)
+    if take_profit is None or stop_loss is None:
+        _record_outcome_failure(diagnostics, "missing_directional_tp_sl")
+        return None
+    if direction_norm == "long" and not (float(stop_loss) < entry_f < float(take_profit)):
+        _record_outcome_failure(diagnostics, "invalid_directional_tp_sl_geometry")
+        return None
+    if direction_norm == "short" and not (float(take_profit) < entry_f < float(stop_loss)):
+        _record_outcome_failure(diagnostics, "invalid_directional_tp_sl_geometry")
+        return None
+
+    start_ts = strict_integer(ts_start)
+    end_ts = strict_integer(ts_end)
+    if (
+        start_ts is None
+        or end_ts is None
+        or start_ts <= 0
+        or end_ts <= start_ts
+        or (end_ts - start_ts) % 60 != 0
+    ):
+        _record_outcome_failure(diagnostics, "invalid_directional_trend_horizon")
+        return None
+    rows = _iter_1m_candles(conn, venue, symbol, start_ts, end_ts)
+    if not rows or any(not _is_valid_outcome_candle(row) for row in rows):
+        _record_outcome_failure(diagnostics, "invalid_or_missing_ohlcv_window")
+        return None
+
+    funding_model = _extract_inventory_funding_model(params)
+    if funding_model.get("valid") is not True:
+        _record_outcome_failure(
+            diagnostics,
+            "invalid_funding_contract",
+            issues=list(funding_model.get("issues") or []),
+        )
+        return None
+    exact_schedule_known = bool(
+        strict_integer(funding_model.get("next_funding_ts")) is not None
+        and strict_integer(funding_model.get("funding_interval_sec")) is not None
+    )
+
+    exit_reason = "horizon"
+    exit_price = float(exitp)
+    exit_ts = int(ts_end)
+    max_favourable = 0.0
+    max_adverse = 0.0
+
+    expected_row_ts = int(start_ts)
+    for row in rows:
+        row_ts = int(row["ts"])
+        if row_ts != expected_row_ts:
+            _record_outcome_failure(
+                diagnostics,
+                "missing_1m_candle_before_directional_exit",
+                expected_ts=expected_row_ts,
+                observed_ts=row_ts,
+            )
+            return None
+        row_open = float(row["open"])
+        row_high = float(row["high"])
+        row_low = float(row["low"])
+
+        if direction_norm == "long":
+            max_favourable = max(max_favourable, (row_high - entry_f) / entry_f)
+            max_adverse = min(max_adverse, (row_low - entry_f) / entry_f)
+            if row_open <= float(stop_loss):
+                exit_reason, exit_price, exit_ts = "stop_loss_gap", row_open, row_ts
+                break
+            if row_open >= float(take_profit):
+                exit_reason, exit_price, exit_ts = "take_profit", float(take_profit), row_ts
+                break
+            tp_hit = row_high >= float(take_profit)
+            sl_hit = row_low <= float(stop_loss)
+        else:
+            max_favourable = max(max_favourable, (entry_f - row_low) / entry_f)
+            max_adverse = min(max_adverse, (entry_f - row_high) / entry_f)
+            if row_open >= float(stop_loss):
+                exit_reason, exit_price, exit_ts = "stop_loss_gap", row_open, row_ts
+                break
+            if row_open <= float(take_profit):
+                exit_reason, exit_price, exit_ts = "take_profit", float(take_profit), row_ts
+                break
+            tp_hit = row_low <= float(take_profit)
+            sl_hit = row_high >= float(stop_loss)
+
+        if tp_hit and sl_hit:
+            _record_outcome_failure(
+                diagnostics,
+                "directional_tp_sl_intrabar_order_unobservable",
+                event_ts=row_ts,
+                take_profit=float(take_profit),
+                stop_loss=float(stop_loss),
+            )
+            return None
+        if tp_hit:
+            exit_reason, exit_price, exit_ts = "take_profit", float(take_profit), row_ts
+            break
+        if sl_hit:
+            exit_reason, exit_price, exit_ts = "stop_loss", float(stop_loss), row_ts
+            break
+        expected_row_ts += 60
+
+    if exit_reason == "horizon" and expected_row_ts != int(end_ts):
+        _record_outcome_failure(
+            diagnostics,
+            "incomplete_1m_directional_horizon",
+            expected_ts=expected_row_ts,
+            horizon_end_ts=int(end_ts),
+        )
+        return None
+
+    if not math.isfinite(exit_price) or exit_price <= 0.0:
+        _record_outcome_failure(diagnostics, "invalid_exit_price", exit_price=exit_price)
+        return None
+
+    # Funding observability is required only while the position is actually
+    # open. Requiring settlements through the full nominal horizon after an
+    # earlier TP/SL would delay or censor an already terminated trade.
+    expected_event_times = (
+        _exact_funding_event_times(funding_model, ts_start, exit_ts)
+        if exact_schedule_known
+        else []
+    )
+    settlement_rows = db.get_funding_settlements(conn, symbol, ts_start, exit_ts)
+    settled_by_ts = {int(row["ts"]): float(row["funding_rate"]) for row in settlement_rows}
+    if exact_schedule_known:
+        missing = [event_ts for event_ts in expected_event_times if event_ts < int(exit_ts) and event_ts not in settled_by_ts]
+        if missing:
+            _record_outcome_failure(
+                diagnostics,
+                "missing_funding_settlement",
+                transient=True,
+                missing_event_ts=missing[0],
+                missing_count=len(missing),
+            )
+            return None
+    else:
+        expected_count = _int_from_params(
+            funding_model.get("expected_funding_events"), 0, minimum=0, maximum=1000
+        )
+        if expected_count > 0 and int(exit_ts) > int(ts_start) and not settled_by_ts:
+            _record_outcome_failure(
+                diagnostics,
+                "funding_settlement_history_unavailable",
+                transient=True,
+                expected_funding_events=expected_count,
+            )
+            return None
+
+    execution_cost_bps, _ = _extract_cost_components(params)
+    execution_cost_rate = max(0.0, float(execution_cost_bps)) / 10_000.0
+    direction_slot = 1 if direction_norm == "long" else -1
+    funding_return = 0.0
+    for event_ts, funding_rate in sorted(settled_by_ts.items()):
+        # Exit and funding at the same timestamp are not ordered by OHLC. Exclude
+        # that event rather than fabricating whether the position was still open.
+        if int(event_ts) >= int(exit_ts):
+            continue
+        event_price = _get_open_at_exact(conn, venue, symbol, int(event_ts)) or entry_f
+        funding_cash = _signed_settled_funding_pnl(direction_slot, event_price, funding_rate)
+        funding_return += funding_cash / entry_f
+
+    gross_return = _signed_return(entry_f, exit_price, direction_norm)
+    net_return = gross_return - execution_cost_rate + funding_return
+    success = int(
+        exit_reason not in {"stop_loss", "stop_loss_gap"}
+        and math.isfinite(net_return)
+        and net_return > 1e-12
+    )
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update({
+            "outcome_model": "directional_trend_single_position_v1",
+            "strategy_family": "directional_trend",
+            "entry_model": "single_position_no_pyramiding",
+            "direction": direction_norm,
+            "entry_price": entry_f,
+            "exit_price": float(exit_price),
+            "exit_ts": int(exit_ts),
+            "exit_reason": exit_reason,
+            "take_profit": float(take_profit),
+            "stop_loss": float(stop_loss),
+            "gross_return": float(gross_return),
+            "execution_cost_bps": float(execution_cost_bps),
+            "funding_return": float(funding_return),
+            "net_return": float(net_return),
+            "mfe": float(max_favourable),
+            "mae": float(max_adverse),
+            "averaging_allowed": False,
+            "pyramiding_allowed": False,
+            "proxy_only": True,
+        })
+    return success, float(net_return)
 
 
 # Outcome 'ret' is used later for diagnostics/calibration summaries.
@@ -1996,6 +2241,7 @@ def compute_outcomes_cycle(
         ret_proxy: float
         success: int
         exitp: float
+        diagnostics: dict[str, object] = {}
 
         if bot_type in GRID_BOTS:
             ep = _get_open_at_exact(conn, venue, symbol, ts_exit)
@@ -2011,7 +2257,6 @@ def compute_outcomes_cycle(
                 )
                 continue
             exitp = ep
-            diagnostics: dict[str, object] = {}
             grid_result = _grid_outcome(
                 conn,
                 venue,
@@ -2070,6 +2315,74 @@ def compute_outcomes_cycle(
                 )
                 continue
             success, ret_proxy = grid_result
+
+        elif bot_type == "directional_trend":
+            ep = _get_open_at_exact(conn, venue, symbol, ts_exit)
+            if ep is None:
+                record_observability(
+                    conn,
+                    rec_id=rec_id,
+                    recommendation_ts=ts0,
+                    label_due_ts=label_available_ts,
+                    state="waiting",
+                    reason="missing_exit_open",
+                    details={"venue": venue, "symbol": symbol, "horizon_end_ts": ts_exit},
+                )
+                continue
+            exitp = ep
+            trend_result = _directional_trend_outcome(
+                conn,
+                venue,
+                symbol,
+                entry,
+                exitp,
+                entry_ts,
+                ts_exit,
+                direction,
+                params,
+                diagnostics=diagnostics,
+            )
+            if trend_result is None:
+                reason = str(diagnostics.get("reason") or "directional_trend_outcome_unavailable")
+                transient = diagnostics.get("transient") is True
+                details = {
+                    "venue": venue,
+                    "symbol": symbol,
+                    "entry_ts": entry_ts,
+                    "entry_price": entry,
+                    "label_available_ts": label_available_ts,
+                    "reason": reason,
+                    "transient": transient,
+                }
+                details.update({
+                    key: value for key, value in diagnostics.items()
+                    if key not in {"reason", "transient"}
+                })
+                record_observability(
+                    conn,
+                    rec_id=rec_id,
+                    recommendation_ts=ts0,
+                    label_due_ts=label_available_ts,
+                    state="waiting" if transient else "censored",
+                    reason=reason,
+                    details=details,
+                )
+                _log_outcome_decision_once(
+                    conn,
+                    "OUTCOME_WAIT_DIRECTIONAL_TREND_DATA" if transient else "OUTCOME_SKIP_INVALID_DIRECTIONAL_TREND_CONTRACT",
+                    rec_id,
+                    details,
+                    cooldown_sec=3600 if transient else 21600,
+                )
+                continue
+            success, ret_proxy = trend_result
+            exitp_diag = diagnostics.get("exit_price")
+            try:
+                parsed_exit = float(exitp_diag)
+            except (TypeError, ValueError):
+                parsed_exit = float(exitp)
+            if math.isfinite(parsed_exit) and parsed_exit > 0.0:
+                exitp = parsed_exit
 
         else:
             record_observability(

@@ -14,7 +14,7 @@ from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
 from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
-from .bot_types import SUPPORTED_BOT_TYPES
+from .bot_types import SUPPORTED_BOT_TYPES, SHADOW_ONLY_BOT_TYPES
 from .llm_review import OllamaCandleReviewer, build_review_payload, normalize_direction, PROMPT_VERSION
 from .grid_math import (
     arithmetic_grid_commitment,
@@ -44,12 +44,16 @@ RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v11-separated-operator-outcome-linea
 DIRECTION_CALIBRATION_KEY = "platt_direction_v14"
 CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v3"
 POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
+TREND_STRATEGY_CONTRACT_VERSION = "directional_trend_shadow_v1"
+TREND_OUTCOME_LABEL_VERSION = "directional_trend_label_v1"
+TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v1"
 CALIBRATION_LABEL_GRACE_SEC = 120
 CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
     "PROXY_MONETARY_EXPECTANCY_UNPROVEN",
     "PROXY_MONETARY_EXPECTANCY_NON_POSITIVE",
     "PROXY_OUTCOME_CENSORING_UNBOUNDED",
     "CALIBRATED_CONFIDENCE_UNAVAILABLE",
+    "DIRECTIONAL_TREND_SHADOW_ONLY",
 })
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
@@ -1657,6 +1661,61 @@ def _build_trade_plan(
     atr_source = "1h" if atr_pct_1h > 0 else "1m"
 
     atr_abs_used = (price * atr_pct_slow) if (price is not None and atr_pct_slow > 0) else None
+
+    if bot_type == "directional_trend":
+        take_profit = _finite_or_none(params.get("take_profit_price"))
+        stop_loss = _finite_or_none(params.get("stop_loss_price"))
+        direction_norm = str(direction or "").strip().lower()
+        geometry_valid = bool(
+            price is not None
+            and take_profit is not None
+            and stop_loss is not None
+            and (
+                (direction_norm == "long" and stop_loss < price < take_profit)
+                or (direction_norm == "short" and take_profit < price < stop_loss)
+            )
+        )
+        return {
+            "strategy_family": "directional_trend",
+            "strategy_contract_version": TREND_STRATEGY_CONTRACT_VERSION,
+            "outcome_label_version": TREND_OUTCOME_LABEL_VERSION,
+            "reference_price": _round_price(price, decimals=10),
+            "direction": direction_norm,
+            "entry_model": "single_position_no_pyramiding",
+            "averaging_allowed": False,
+            "pyramiding_allowed": False,
+            "decision_timeframes": {"macro": "4h/1h", "entry": "15m", "monitor": "1m"},
+            "expected_horizon": {
+                "min_hours": 3,
+                "max_hours": int(BOT_HORIZONS.get("directional_trend", 12 * 3600) // 3600),
+                "label_horizon_hours": int(BOT_HORIZONS.get("directional_trend", 12 * 3600) // 3600),
+                "basis": "fixed_directional_trend_shadow_target_v1",
+            },
+            "label_horizon_hours": int(BOT_HORIZONS.get("directional_trend", 12 * 3600) // 3600),
+            "levels": {
+                "take_profit": {
+                    "price": _round_price(take_profit, decimals=10),
+                    "pct": _round_price(params.get("take_profit_pct"), decimals=4),
+                },
+                "stop_loss": {
+                    "price": _round_price(stop_loss, decimals=10),
+                    "pct": _round_price(params.get("stop_loss_pct"), decimals=4),
+                },
+            },
+            "sizing": dict(params.get("sizing") or {}),
+            "economics": dict(params.get("economics") or {}),
+            "geometry_valid": geometry_valid,
+            "close_conditions": [
+                "Первое однозначно наблюдаемое касание take_profit или stop_loss.",
+                "Истечение 12-часового label horizon с закрытием по boundary open.",
+                "Никакого усреднения или добавления позиции против движения.",
+            ],
+            "notes": (
+                "Shadow-only directional contract. Уровни предназначены для proxy-outcome "
+                "и сравнительного исследования; execution endpoint обязан блокировать запуск."
+            ),
+        }
+
     decision_tfs = {"macro": "1h", "entry": "15m", "monitor": "1m"}
     horizon = {"min_hours": 6, "max_hours": 48}
 
@@ -1806,6 +1865,8 @@ def _make_factor(feature: str, value: Any, weight: float, msg: str) -> dict[str,
 def _direction(bot_type: str, agg: dict[str, Any]) -> str:
     raw_direction = str((agg or {}).get("direction") or "neutral").lower()
     if bot_type == "futures_grid" and raw_direction in ("long", "short", "neutral"):
+        return raw_direction
+    if bot_type == "directional_trend" and raw_direction in ("long", "short"):
         return raw_direction
     return "neutral"
 
@@ -1964,7 +2025,13 @@ def _score(
         neg.append(_make_factor(feature, value, weight, msg))
 
     raw = 0.0
+    summary = "Неизвестная стратегия не должна получать положительный score."
     if bot_type == "futures_grid":
+        summary = (
+            "Рекомендация оценивает пригодность символа для grid-стратегии: "
+            "ищется диапазонный рынок с контролируемой волатильностью, "
+            "приемлемыми издержками и исполнимым bias по направлению."
+        )
         raw += 1.35 * range_score
         raw += 0.22 * coherence
         raw += 0.16 * regime_conf
@@ -2014,13 +2081,58 @@ def _score(
             add_neg("adverse_funding_cost_bps", adverse_funding_cost_bps, -0.18 * min(1.0, adverse_funding_cost_bps / 12.0), "ожидаемый funding-carry ухудшает экономику grid")
         if spread > 0.0:
             add_neg("spread_bps", spread, -0.18 * min(1.0, spread / 5.0), "спред ухудшает fills")
+    elif bot_type == "directional_trend":
+        summary = (
+            "Shadow-рекомендация оценивает самостоятельный directional trend edge: "
+            "нужны согласованный multi-timeframe тренд, подтверждённое направление, "
+            "приемлемая волатильность и издержки. Mean-reversion не является gate."
+        )
+        direction_sign = 1.0 if direction == "long" else (-1.0 if direction == "short" else 0.0)
+        signed_sentiment = direction_sign * effective_sent
+        regime_is_trend = 1.0 if str(agg.get("regime") or "") == "trend" else 0.0
+        range_penalty = _clamp((range_score - 0.55) / 0.45, 0.0, 1.0)
+
+        raw += 1.20 * trend_strength
+        raw += 0.72 * direction_strength
+        raw += 0.52 * coherence
+        raw += 0.30 * regime_conf
+        raw += 0.22 * regime_is_trend
+        raw += 0.12 * signed_sentiment
+        raw -= 0.38 * atr_penalty
+        raw -= 0.48 * cost_penalty
+        raw -= 0.25 * range_penalty
+        if direction == "neutral":
+            raw -= 1.25
+
+        if trend_strength > 0.0:
+            add_pos("trend_strength", trend_strength, 1.20 * trend_strength, "сила тренда поддерживает directional strategy")
+        if direction_strength > 0.0:
+            add_pos("direction_strength", direction_strength, 0.72 * direction_strength, "направление выражено на агрегате таймфреймов")
+        if coherence > 0.0:
+            add_pos("coherence", coherence, 0.52 * coherence, "таймфреймы подтверждают одно направление")
+        if regime_conf > 0.0:
+            add_pos("regime_confidence", regime_conf, 0.30 * regime_conf, "режим trend определён уверенно")
+        if regime_is_trend:
+            add_pos("trend_regime", regime_is_trend, 0.22, "агрегатор классифицирует рынок как trend")
+        if signed_sentiment > 0.0:
+            add_pos("effective_sentiment", abs(effective_sent), 0.12 * signed_sentiment, "сентимент совпадает с направлением тренда")
+        elif signed_sentiment < 0.0:
+            add_neg("effective_sentiment", abs(effective_sent), 0.12 * signed_sentiment, "сентимент против направления тренда")
+        if direction == "neutral":
+            add_neg("direction", "neutral", -1.25, "directional trend требует явный long или short")
+        if atr_pct > 0.0:
+            add_neg("atr_pct", atr_pct, -0.38 * atr_penalty, "волатильность увеличивает stop distance и tail risk")
+        if economic_cost_bps > 0.0:
+            add_neg("economic_cost_bps", economic_cost_bps, -0.48 * cost_penalty, "издержки уменьшают directional payoff")
+        if range_penalty > 0.0:
+            add_neg("range_score", range_score, -0.25 * range_penalty, "выраженная диапазонность ослабляет trend thesis")
     else:
         raw = 0.0
 
     score = float(_clamp(raw / 2.2, -1.0, 1.0))
     conf0 = float(_clamp(_sigmoid(raw * 2.1), 0.0, 1.0))
     reasons = {
-        "summary": "Рекомендация оценивает пригодность символа для grid-стратегии: ищется диапазонный рынок с контролируемой волатильностью, приемлемыми издержками и исполнимым bias по направлению.",
+        "summary": summary,
         "top_positive_factors": sorted(pos, key=lambda x: abs(float(x.get("weight") or 0.0)), reverse=True)[:5],
         "top_negative_factors": sorted(neg, key=lambda x: abs(float(x.get("weight") or 0.0)), reverse=True)[:5],
         "cost_model": {
@@ -2084,6 +2196,27 @@ def _expected_rr(bot_type: str, f: dict[str, Any], cost_model: dict[str, Any] | 
         float(cost_model.get("execution_cost_bps") or cost_model.get("total_cost_bps") or 0.0) / 10000.0,
     )
 
+    if bot_type == "directional_trend":
+        strengths = agg.get("strength") or {}
+        direction_strength = _clamp(
+            abs(
+                _finite_float(
+                    strengths.get("all") if isinstance(strengths, dict) else strengths,
+                    0.0,
+                )
+            ),
+            0.0,
+            1.0,
+        )
+        gross_capture = max(
+            0.0,
+            (1.15 * trend_strength + 0.55 * direction_strength + 0.30 * coherence)
+            * max(atr_pct, 0.0025),
+        )
+        net_capture = gross_capture - net_cost_pct
+        risk_proxy = max(max(atr_pct, 0.0025) * 1.25, execution_cost_pct * 2.0, 1e-6)
+        return float(_clamp(net_capture / risk_proxy, 0.0, 3.0))
+
     gross_capture = max(0.0, (0.55 * range_score + 0.15 * coherence - 0.20 * trend_strength) * max(atr_pct, 0.0025))
     net_capture = gross_capture - net_cost_pct
     risk_proxy = max(max(atr_pct, 0.0025) * 1.5, execution_cost_pct * 2.0, 1e-6)
@@ -2107,6 +2240,38 @@ def _plan_rr_metrics(
     params = params if isinstance(params, dict) else {}
     economics = params.get("economics") if isinstance(params.get("economics"), dict) else {}
     cost_model = cost_model if isinstance(cost_model, dict) else {}
+
+    if str(params.get("strategy_family") or "") == "directional_trend":
+        reward_bps = _finite_or_none(economics.get("projected_net_reward_bps"))
+        risk_bps = _finite_or_none(economics.get("projected_stop_loss_bps"))
+        target_notional = _finite_or_none((params.get("sizing") or {}).get("target_notional_usdt")) if isinstance(params.get("sizing"), dict) else None
+        if reward_bps is None or risk_bps is None or risk_bps <= 0.0:
+            return {
+                "status": "unavailable",
+                "rr": None,
+                "projected_net_reward_usdt": None,
+                "kill_switch_loss_usdt": None,
+                "basis": "generated_directional_trend_shadow_plan",
+                "reason": "incomplete_directional_trend_economics",
+                "is_empirical": False,
+                "is_heuristic_capture_score": False,
+            }
+        rr = max(0.0, float(reward_bps)) / float(risk_bps)
+        reward_usdt = None
+        risk_usdt = None
+        if target_notional is not None and target_notional > 0.0:
+            reward_usdt = float(target_notional) * float(reward_bps) / 10_000.0
+            risk_usdt = float(target_notional) * float(risk_bps) / 10_000.0
+        return {
+            "status": "available",
+            "rr": float(rr),
+            "projected_net_reward_usdt": reward_usdt,
+            "kill_switch_loss_usdt": risk_usdt,
+            "basis": "projected_net_directional_reward_to_stop_loss",
+            "is_empirical": False,
+            "is_heuristic_capture_score": False,
+            "note": "Shadow plan geometry only; no live execution evidence is implied.",
+        }
 
     def first_finite(*values: Any) -> float | None:
         for value in values:
@@ -2573,6 +2738,128 @@ def _max_liquidation_safe_grid_leverage(
             safe = lev
     return safe
 
+
+def _directional_trend_params(
+    *,
+    venue: str,
+    f: dict[str, Any],
+    direction: str,
+    global_sent: float,
+    direction_bias: str,
+    direction_bias_strength: float,
+    atr_pct: float | None,
+    cost_model: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a single-position shadow contract for directional trend research.
+
+    The contract intentionally contains no grid levels, averaging or pyramiding.
+    It is sufficient for deterministic proxy-outcome labeling, but it is not an
+    executable Bybit order payload and remains shadow-only in this release.
+    """
+    price_raw = _finite_or_none(f.get("price"))
+    price_valid = price_raw is not None and price_raw > 0.0
+    price = float(price_raw) if price_valid else 0.0
+    direction_norm = str(direction or "").strip().lower()
+    direction_valid = direction_norm in {"long", "short"}
+    atr_value = _finite_or_none(atr_pct)
+    if atr_value is None or atr_value <= 0.0:
+        atr_value = _finite_or_none(f.get("_atr_pct_1h"))
+    if atr_value is None or atr_value <= 0.0:
+        atr_value = _finite_or_none(f.get("atr_pct"))
+    atr_value = max(float(atr_value or 0.0), 0.0015)
+
+    execution_cost_bps = max(
+        0.0,
+        _finite_float(
+            cost_model.get("execution_cost_bps")
+            or cost_model.get("total_cost_bps")
+            or cost_model.get("net_cost_bps"),
+            0.0,
+        ),
+    )
+    adverse_funding_bps = max(
+        0.0,
+        _finite_float(
+            cost_model.get("funding_cost_bps_for_approval")
+            or cost_model.get("expected_funding_bps"),
+            0.0,
+        ),
+    )
+    cost_floor_pct = (execution_cost_bps + adverse_funding_bps) / 10_000.0
+    stop_pct = _clamp(max(1.25 * atr_value, 4.0 * cost_floor_pct, 0.0040), 0.0040, 0.0800)
+    reward_pct = _clamp(max(1.80 * stop_pct, 6.0 * cost_floor_pct, 0.0080), 0.0080, 0.1500)
+
+    take_profit = None
+    stop_loss = None
+    if price_valid and direction_valid:
+        if direction_norm == "long":
+            take_profit = price * (1.0 + reward_pct)
+            stop_loss = price * (1.0 - stop_pct)
+        else:
+            take_profit = price * (1.0 - reward_pct)
+            stop_loss = price * (1.0 + stop_pct)
+
+    target_notional = 25.0
+    provisional_qty = (target_notional / price) if price_valid else 0.0
+    gross_reward_bps = reward_pct * 10_000.0
+    gross_risk_bps = stop_pct * 10_000.0
+    projected_net_reward_bps = gross_reward_bps - execution_cost_bps - adverse_funding_bps
+    projected_stop_loss_bps = gross_risk_bps + execution_cost_bps + adverse_funding_bps
+    plan_rr = (
+        max(0.0, projected_net_reward_bps) / projected_stop_loss_bps
+        if projected_stop_loss_bps > 0.0
+        else None
+    )
+
+    return {
+        "bot_type": "directional_trend",
+        "strategy_family": "directional_trend",
+        "strategy_contract_version": TREND_STRATEGY_CONTRACT_VERSION,
+        "outcome_label_version": TREND_OUTCOME_LABEL_VERSION,
+        "venue": venue,
+        "direction": direction_norm if direction_valid else "neutral",
+        "direction_bias": direction_bias,
+        "direction_bias_strength": float(_clamp(abs(_finite_float(direction_bias_strength, 0.0)), 0.0, 1.0)),
+        "effective_sentiment": float(_clamp(_finite_float(global_sent, 0.0), -1.0, 1.0)),
+        "price_input_valid": bool(price_valid),
+        "invalid_price_fail_closed": not bool(price_valid),
+        "direction_input_valid": bool(direction_valid),
+        "price_ref": _round_price(price, decimals=10),
+        "entry_model": "single_position_no_pyramiding",
+        "averaging_allowed": False,
+        "pyramiding_allowed": False,
+        "take_profit_price": _round_price(take_profit, decimals=10),
+        "stop_loss_price": _round_price(stop_loss, decimals=10),
+        "take_profit_pct": float(reward_pct * 100.0),
+        "stop_loss_pct": float(stop_pct * 100.0),
+        "label_horizon_hours": int(BOT_HORIZONS.get("directional_trend", 12 * 3600) // 3600),
+        "leverage": 1,
+        "margin_mode": "cross",
+        "leverage_policy": {
+            "selected_leverage": 1,
+            "operator_minimum_approved": False,
+            "not_actionable_reason": "shadow_only_strategy",
+            "note": "directional_trend remains non-executable until separate outcome evidence is validated",
+        },
+        "sizing": {
+            "mode": "shadow_target_notional",
+            "qty": float(provisional_qty),
+            "target_notional_usdt": float(target_notional),
+            "actual_bybit_filters_required": True,
+        },
+        "economics": {
+            "projected_gross_reward_bps": float(gross_reward_bps),
+            "projected_stop_distance_bps": float(gross_risk_bps),
+            "execution_cost_bps": float(execution_cost_bps),
+            "funding_cost_bps": float(adverse_funding_bps),
+            "projected_net_reward_bps": float(projected_net_reward_bps),
+            "projected_stop_loss_bps": float(projected_stop_loss_bps),
+            "plan_rr": float(plan_rr) if plan_rr is not None and math.isfinite(plan_rr) else None,
+            "risk_profile": "shadow_research",
+        },
+        "cost_model": dict(cost_model),
+    }
+
 def _params(
     bot_type: str,
     venue: str,
@@ -2587,6 +2874,17 @@ def _params(
     risk_limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cost_model = dict(cost_model or {})
+    if bot_type == "directional_trend":
+        return _directional_trend_params(
+            venue=venue,
+            f=f,
+            direction=direction,
+            global_sent=global_sent,
+            direction_bias=direction_bias,
+            direction_bias_strength=direction_bias_strength,
+            atr_pct=atr_pct_for_grid,
+            cost_model=cost_model,
+        )
     price_input = _finite_or_none(f.get("price"))
     price_input_valid = price_input is not None and price_input > 0.0
     price = float(price_input) if price_input_valid else 0.0
@@ -3681,11 +3979,34 @@ def calibration_lineage_diagnostics(
         if not isinstance(snapshot, dict):
             dropped_invalid_feature_evidence += 1
             continue
-        evidence_flag = _safe_int_or_none(snapshot.get("mean_reversion_evidence_valid"))
-        score = _finite_or_none(snapshot.get("mean_reversion_score"))
-        if evidence_flag != 1 or score is None or not (0.0 <= score <= 1.0):
-            dropped_invalid_feature_evidence += 1
-            continue
+        bot_type = str(row.get("bot_type") or "").strip()
+        if bot_type == "directional_trend":
+            trend_flag_raw = snapshot.get("trend_evidence_valid")
+            trend_flag = trend_flag_raw is True or _safe_int_or_none(trend_flag_raw) == 1
+            trend_strength = _finite_or_none(snapshot.get("trend_strength"))
+            trend_coherence = _finite_or_none(snapshot.get("coherence"))
+            trend_regime = str(snapshot.get("regime") or "").strip().lower()
+            trend_contract = str(snapshot.get("strategy_contract_version") or "").strip()
+            trend_label = str(snapshot.get("outcome_label_version") or "").strip()
+            if (
+                not trend_flag
+                or trend_strength is None
+                or not (0.0 <= trend_strength <= 1.0)
+                or trend_coherence is None
+                or not (0.0 <= trend_coherence <= 1.0)
+                or trend_regime != "trend"
+                or trend_contract != TREND_STRATEGY_CONTRACT_VERSION
+                or trend_label != TREND_OUTCOME_LABEL_VERSION
+            ):
+                dropped_invalid_feature_evidence += 1
+                continue
+            score = trend_strength
+        else:
+            evidence_flag = _safe_int_or_none(snapshot.get("mean_reversion_evidence_valid"))
+            score = _finite_or_none(snapshot.get("mean_reversion_score"))
+            if evidence_flag != 1 or score is None or not (0.0 <= score <= 1.0):
+                dropped_invalid_feature_evidence += 1
+                continue
         feature_eligible_total += 1
         if retain_rows:
             feature_eligible_rows.append(row)
@@ -3694,8 +4015,16 @@ def calibration_lineage_diagnostics(
         outcome_policy = reasons.get("outcome_policy") or {}
         if not isinstance(outcome_policy, dict):
             outcome_policy = {}
+        if bot_type == "directional_trend":
+            if (
+                str(outcome_policy.get("strategy_family") or "").strip() != "directional_trend"
+                or str(outcome_policy.get("bot_outcome_label_version") or "").strip() != TREND_OUTCOME_LABEL_VERSION
+                or str(outcome_policy.get("strategy_contract_version") or "").strip() != TREND_STRATEGY_CONTRACT_VERSION
+            ):
+                dropped_invalid_policy_contract += 1
+                continue
         explicit_policy_eligibility = outcome_policy.get("policy_evaluation_eligible")
-        if score < threshold:
+        if bot_type != "directional_trend" and score < threshold:
             dropped_candidate_policy += 1
             continue
         if explicit_policy_eligibility is not None and explicit_policy_eligibility is not True:
@@ -4170,6 +4499,10 @@ def _fit_global_logreg(
         )
     else:
         selected = policy_rows
+    # The legacy "global" calibrator is a cross-direction diagnostic for the
+    # executable futures_grid family, not a pooled model across incompatible
+    # mechanics. directional_trend has its own bot-specific calibrator and label.
+    selected = [row for row in selected if str(row.get("bot_type") or "") == "futures_grid"]
     model = fit_logreg(
         selected,
         min_samples=min_samples,
@@ -4183,7 +4516,7 @@ def _fit_global_logreg(
         conn,
         policy_fingerprint=policy_fingerprint,
         settings_obj=settings_obj,
-        bot_type=None,
+        bot_type="futures_grid",
     )
     return _apply_outcome_observability_gate(model, evidence)
 
@@ -4282,7 +4615,7 @@ def _load_or_fit_global_logreg(
         conn,
         policy_fingerprint=policy_fingerprint,
         settings_obj=settings_obj,
-        bot_type=None,
+        bot_type="futures_grid",
         evidence_context=evidence,
     )
     saved = load_logreg_from_db(conn, storage_key)
@@ -4374,14 +4707,36 @@ def _load_or_fit_bot_logregs(
         needs_refit.append(bt)
 
     if needs_refit:
-        fitted = _fit_bot_logregs(
-            conn,
-            min_samples,
-            policy_fingerprint=policy_fingerprint,
-            settings_obj=settings_obj,
-            observability_by_bot=observability_by_bot,
-            policy_rows=evidence.policy_rows(),
-        )
+        policy_rows = evidence.policy_rows()
+        bots_with_evidence = {
+            str(row.get("bot_type") or "").strip()
+            for row in policy_rows
+            if isinstance(row, dict)
+        }
+        refittable_bots = [
+            bt
+            for bt in needs_refit
+            if (
+                bt != "directional_trend"
+                or saved_by_bot.get(bt) is not None
+                or bt in bots_with_evidence
+            )
+        ]
+        fitted: dict[str, LogRegScaler] = {}
+        if refittable_bots:
+            refittable_set = set(refittable_bots)
+            fitted = _fit_bot_logregs(
+                conn,
+                min_samples,
+                policy_fingerprint=policy_fingerprint,
+                settings_obj=settings_obj,
+                observability_by_bot=observability_by_bot,
+                policy_rows=[
+                    row
+                    for row in policy_rows
+                    if str(row.get("bot_type") or "").strip() in refittable_set
+                ],
+            )
         for bt in needs_refit:
             candidate = fitted.get(bt) or LogRegScaler(
                 fitted=False,
@@ -5285,8 +5640,15 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
         taker_fee_bps = settings.taker_fee_bps_linear if venue == "linear" else settings.taker_fee_bps_linear
 
         for bot_type in BOT_TYPES_BYBIT:
-            if bot_type == "futures_grid" and venue != "linear":
+            if bot_type in {"futures_grid", "directional_trend"} and venue != "linear":
                 continue
+            candidate_model_version = (
+                TREND_RECOMMENDER_MODEL_VERSION
+                if bot_type == "directional_trend"
+                else RECOMMENDER_MODEL_VERSION
+            )
+            if bool(getattr(settings, "llm_reviewer_enabled", False)):
+                candidate_model_version += "+llm-review-v1"
 
             spread_raw = f.get("spread_bps")
             spread = _finite_or_none(spread_raw)
@@ -5433,6 +5795,58 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                         "code": "VOLATILITY_TOO_HIGH_FOR_GRID",
                         "msg": f"ATR≈{atr_pct * 100.0:.2f}% слишком высок для безопасного grid-рекомендования; риск пробоя диапазона и ликвидации повышен",
                     })
+            elif bot_type == "directional_trend":
+                _agg_now = dict(f.get("_direction_agg") or {})
+                _trendiness_now = _clamp(_finite_float(_agg_now.get("trendiness"), 0.0), 0.0, 1.0)
+                _coherence_now = _clamp(_finite_float(_agg_now.get("coherence"), 0.0), 0.0, 1.0)
+                _regime_now = str(_agg_now.get("regime") or "unknown")
+                _tf_used_now = list(_agg_now.get("tf_used") or [])
+                _strengths_now = _agg_now.get("strength") or {}
+                _all_strength_now = _clamp(
+                    abs(_finite_float(_strengths_now.get("all") if isinstance(_strengths_now, dict) else _strengths_now, 0.0)),
+                    0.0,
+                    1.0,
+                )
+                _structural_strength_now = _clamp(
+                    abs(_finite_float(_strengths_now.get("structural") if isinstance(_strengths_now, dict) else 0.0, 0.0)),
+                    0.0,
+                    1.0,
+                )
+                if len(_tf_used_now) < 3:
+                    feasibility_blocks.append({
+                        "code": "INSUFFICIENT_MTF_HISTORY_FOR_TREND",
+                        "msg": f"использовано только {len(_tf_used_now)} timeframes; directional trend требует минимум 3 закрытых TF-истории",
+                    })
+                if direction not in {"long", "short"}:
+                    thesis_no_trade_reasons.append({
+                        "code": "TREND_DIRECTION_UNCONFIRMED",
+                        "msg": "directional trend не формируется без явного long/short направления",
+                    })
+                if _regime_now != "trend":
+                    thesis_no_trade_reasons.append({
+                        "code": "TREND_REGIME_UNCONFIRMED",
+                        "msg": f"regime={_regime_now}; trend strategy исследуется только в подтверждённом trend-режиме",
+                    })
+                if _trendiness_now < 0.48:
+                    thesis_no_trade_reasons.append({
+                        "code": "TREND_STRENGTH_INSUFFICIENT",
+                        "msg": f"trendiness={_trendiness_now:.2f} < 0.48",
+                    })
+                if _all_strength_now < 0.18 or _structural_strength_now < 0.12:
+                    thesis_no_trade_reasons.append({
+                        "code": "DIRECTIONAL_MTF_STRENGTH_INSUFFICIENT",
+                        "msg": f"all_strength={_all_strength_now:.2f}, structural_strength={_structural_strength_now:.2f}",
+                    })
+                if _coherence_now < 0.55:
+                    thesis_no_trade_reasons.append({
+                        "code": "TREND_TIMEFRAME_COHERENCE_INSUFFICIENT",
+                        "msg": f"coherence={_coherence_now:.2f} < 0.55",
+                    })
+                if atr_pct >= 0.15:
+                    feasibility_blocks.append({
+                        "code": "VOLATILITY_TOO_HIGH_FOR_DIRECTIONAL_TREND",
+                        "msg": f"ATR≈{atr_pct * 100.0:.2f}% превышает shadow trend safety bound",
+                    })
 
             # ── Funding rate gate (futures only) ──
             # Gate must be keyed off the *payer* side, not only off semantic longs.
@@ -5455,6 +5869,8 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
 
             if bot_type == "futures_grid" and spread is not None and spread > 14.0:
                 feasibility_blocks.append({"code":"SPREAD_TOO_WIDE", "msg": f"spread_bps={spread:.2f} слишком широкий для grid"})
+            if bot_type == "directional_trend" and spread is not None and spread > 20.0:
+                feasibility_blocks.append({"code":"SPREAD_TOO_WIDE_FOR_TREND", "msg": f"spread_bps={spread:.2f} слишком широкий для directional trend"})
             # If symbol is highly correlated to BTC, direction is less independent
             beta_info = f.get("_btc_beta", {})
             if beta_info.get("is_btc_driven") and sym != "BTCUSDT":
@@ -5463,9 +5879,22 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 _dir_agg_cal["direction_confidence_calibrated"] = _dir_conf_pre
             # Block threshold 0.05 = 5% 1h ATR. Old value 0.018 was calibrated for 1m ATR
             # and blocked ALL symbols since typical 1h ATR for small caps is 3–8%.
-            # ── Risk gate — uses cached risk_status (computed once per cycle) ──
-            risk_blocks = gate_candidate(conn, venue, sym, limits, cached_status=_cached_risk_status)
-            feasibility_blocks.extend(risk_blocks)
+            # Portfolio capacity, drawdown and post-loss cooldown are execution
+            # gates. A shadow-only policy consumes no bot slot and must remain
+            # observable for paired research even while another strategy is live.
+            # Market/symbol safety filters still apply because they are part of
+            # the candidate policy being evaluated.
+            if bot_type in SHADOW_ONLY_BOT_TYPES:
+                risk_blocks = []
+            else:
+                risk_blocks = gate_candidate(
+                    conn,
+                    venue,
+                    sym,
+                    limits,
+                    cached_status=_cached_risk_status,
+                )
+                feasibility_blocks.extend(risk_blocks)
             feasibility_blocks.extend(apply_market_shock_gate(market_shock, venue, bot_type, direction))
             fast_veto = compute_symbol_fast_veto(conn, venue, sym, ts_now, direction, feature_row=f)
             feasibility_blocks.extend(fast_veto.get("blocks") or [])
@@ -5507,6 +5936,25 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 oi_sig=oi_sig,
                 liq_tier=liq_tier,
                 beta_info=beta_info,
+            )
+            _snapshot_agg = dict(_dir_agg_for_cal)
+            feature_snapshot["strategy_family"] = (
+                "directional_trend" if bot_type == "directional_trend" else "futures_grid"
+            )
+            feature_snapshot["regime"] = str(_snapshot_agg.get("regime") or "unknown")
+            feature_snapshot["trend_evidence_valid"] = bool(
+                bot_type == "directional_trend"
+                and direction in {"long", "short"}
+                and str(_snapshot_agg.get("regime") or "") == "trend"
+                and _finite_float(_snapshot_agg.get("trendiness"), 0.0) >= 0.48
+                and _finite_float(_snapshot_agg.get("coherence"), 0.0) >= 0.55
+                and len(_snapshot_agg.get("tf_used") or []) >= 3
+            )
+            feature_snapshot["strategy_contract_version"] = (
+                TREND_STRATEGY_CONTRACT_VERSION if bot_type == "directional_trend" else "futures_grid_v26"
+            )
+            feature_snapshot["outcome_label_version"] = (
+                TREND_OUTCOME_LABEL_VERSION if bot_type == "directional_trend" else POLICY_OUTCOME_LABEL_VERSION
             )
 
             _reasons_for_cal = {
@@ -5647,6 +6095,15 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 risk_limits=limits,
             )
             no_trade_reasons: list[dict[str, str]] = list(thesis_no_trade_reasons)
+            if bot_type in SHADOW_ONLY_BOT_TYPES:
+                no_trade_reasons.append({
+                    "code": "DIRECTIONAL_TREND_SHADOW_ONLY",
+                    "msg": (
+                        "directional_trend в этой версии собирает отдельные proxy outcomes "
+                        "и не может быть исполнен оператором до независимой проверки expectancy, "
+                        "tail risk и calibration"
+                    ),
+                })
             leverage_policy = params.get("leverage_policy") if isinstance(params.get("leverage_policy"), dict) else {}
             if (
                 bot_type == "futures_grid"
@@ -5668,30 +6125,52 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             if params.get("price_input_valid") is False:
                 blocks.append({
                     "code": "INVALID_MARKET_REFERENCE_PRICE",
-                    "msg": "market reference price is missing/non-positive/non-finite; futures-grid recommendation is blocked fail-closed",
+                    "msg": f"market reference price is missing/non-positive/non-finite; {bot_type} recommendation is blocked fail-closed",
                 })
             # Add execution guide for UI "Details" panel.
             params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params, cost_model=cost_model)
-            params["operator_sheet"] = {
-                "mode": direction,
-                "venue": venue,
-                "bot_type": bot_type,
-                "symbol": sym,
-                "price_ref": params.get("price_ref"),
-                "range_lower": params.get("price_range_lower"),
-                "range_upper": params.get("price_range_upper"),
-                "grid_levels": params.get("grid_levels"),
-                "grid_spacing_pct": params.get("grid_spacing_pct"),
-                "leverage": params.get("leverage"),
-                "margin_mode": params.get("margin_mode"),
-                "kill_switch": (params.get("trade_plan") or {}).get("levels", {}).get("kill_switch", {}),
-                "tp_per_leg": (params.get("trade_plan") or {}).get("levels", {}).get("tp_per_leg", {}),
-                "sizing": params.get("sizing"),
-                "economics": params.get("economics"),
-                "market_shock_state": (market_shock or {}).get("state"),
-                "market_shock_title": (market_shock or {}).get("title"),
-                "operator_note": (market_shock or {}).get("operator_note"),
-            }
+            if bot_type == "directional_trend":
+                _trend_levels = (params.get("trade_plan") or {}).get("levels", {})
+                params["operator_sheet"] = {
+                    "mode": direction,
+                    "venue": venue,
+                    "bot_type": bot_type,
+                    "symbol": sym,
+                    "strategy_family": "directional_trend",
+                    "shadow_only": True,
+                    "price_ref": params.get("price_ref"),
+                    "take_profit": _trend_levels.get("take_profit", {}),
+                    "stop_loss": _trend_levels.get("stop_loss", {}),
+                    "entry_model": params.get("entry_model"),
+                    "averaging_allowed": False,
+                    "pyramiding_allowed": False,
+                    "sizing": params.get("sizing"),
+                    "economics": params.get("economics"),
+                    "market_shock_state": (market_shock or {}).get("state"),
+                    "market_shock_title": (market_shock or {}).get("title"),
+                    "operator_note": "Исследовательская shadow-ветка; запуск через execution API запрещён.",
+                }
+            else:
+                params["operator_sheet"] = {
+                    "mode": direction,
+                    "venue": venue,
+                    "bot_type": bot_type,
+                    "symbol": sym,
+                    "price_ref": params.get("price_ref"),
+                    "range_lower": params.get("price_range_lower"),
+                    "range_upper": params.get("price_range_upper"),
+                    "grid_levels": params.get("grid_levels"),
+                    "grid_spacing_pct": params.get("grid_spacing_pct"),
+                    "leverage": params.get("leverage"),
+                    "margin_mode": params.get("margin_mode"),
+                    "kill_switch": (params.get("trade_plan") or {}).get("levels", {}).get("kill_switch", {}),
+                    "tp_per_leg": (params.get("trade_plan") or {}).get("levels", {}).get("tp_per_leg", {}),
+                    "sizing": params.get("sizing"),
+                    "economics": params.get("economics"),
+                    "market_shock_state": (market_shock or {}).get("state"),
+                    "market_shock_title": (market_shock or {}).get("title"),
+                    "operator_note": (market_shock or {}).get("operator_note"),
+                }
             params["decision_context"] = {
                 "thesis_direction": raw_direction,
                 "execution_direction": direction,
@@ -5742,6 +6221,29 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     margin_label = "estimated_margin_required"
                 if max_margin is not None and max_margin > 0 and estimated_margin is not None and estimated_margin > max_margin:
                     blocks.append({"code": "MAX_MARGIN_PER_BOT", "msg": f"{margin_label}={estimated_margin:.2f} USDT > runtime cap={max_margin:.2f} USDT"})
+            elif bot_type == "directional_trend":
+                trend_plan = params.get("trade_plan") if isinstance(params.get("trade_plan"), dict) else {}
+                trend_econ = params.get("economics") if isinstance(params.get("economics"), dict) else {}
+                if trend_plan.get("geometry_valid") is not True:
+                    blocks.append({
+                        "code": "DIRECTIONAL_TREND_GEOMETRY_INVALID",
+                        "msg": "directional trend TP/SL geometry is incomplete or contradicts direction",
+                    })
+                projected_net_reward_bps = _finite_or_none(trend_econ.get("projected_net_reward_bps"))
+                projected_stop_loss_bps = _finite_or_none(trend_econ.get("projected_stop_loss_bps"))
+                if projected_net_reward_bps is None or projected_stop_loss_bps is None:
+                    blocks.append({
+                        "code": "DIRECTIONAL_TREND_ECONOMICS_MISSING",
+                        "msg": "directional trend requires explicit net reward and stop-loss economics",
+                    })
+                elif projected_net_reward_bps <= 0.0 or projected_stop_loss_bps <= 0.0:
+                    blocks.append({
+                        "code": "DIRECTIONAL_TREND_ECONOMICS_NON_POSITIVE",
+                        "msg": (
+                            f"projected_net_reward_bps={projected_net_reward_bps:.2f}, "
+                            f"projected_stop_loss_bps={projected_stop_loss_bps:.2f}"
+                        ),
+                    })
 
             if blocks:
                 status = "blocked"
@@ -5782,12 +6284,37 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "no_trade_reasons": [str(x.get("msg") or x.get("code") or "") for x in no_trade_reasons[:8] if isinstance(x, dict)],
                 "warnings": risk_warnings,
             }
+            if bot_type == "directional_trend":
+                _trend_econ = params.get("economics") if isinstance(params.get("economics"), dict) else {}
+                params["risk_report"] = {
+                    "decision": _risk_report_decision_for_status(status),
+                    "risk_profile": "shadow_research",
+                    "strategy_family": "directional_trend",
+                    "shadow_only": True,
+                    "projected_net_reward_bps": _finite_or_none(_trend_econ.get("projected_net_reward_bps")),
+                    "projected_stop_loss_bps": _finite_or_none(_trend_econ.get("projected_stop_loss_bps")),
+                    "plan_rr": _finite_or_none(_trend_econ.get("plan_rr")),
+                    "estimated_execution_cost_bps": _finite_or_none(cost_model.get("execution_cost_bps")),
+                    "estimated_funding_impact_bps": _finite_or_none(cost_model.get("expected_funding_bps")),
+                    "capital_required_usdt": _finite_or_none((params.get("sizing") or {}).get("target_notional_usdt")) if isinstance(params.get("sizing"), dict) else None,
+                    "max_adverse_scenario": "single directional position reaches stop_loss or gaps beyond it; no averaging is permitted",
+                    "approval_reasons": [str(x.get("msg") or x.get("code") or "") for x in (reasons.get("top_positive_factors") or [])[:5] if isinstance(x, dict)],
+                    "rejection_reasons": [str(x.get("msg") or x.get("code") or "") for x in blocks[:8] if isinstance(x, dict)],
+                    "no_trade_reasons": [str(x.get("msg") or x.get("code") or "") for x in no_trade_reasons[:8] if isinstance(x, dict)],
+                    "warnings": [
+                        "Shadow-only: proxy outcome is not proof of live trend edge.",
+                        "Execution endpoint must reject directional_trend in this release.",
+                    ],
+                }
 
             rec_id = f"R-{ts_now}-{venue}-{sym}-{bot_type}-{secrets.token_hex(4)}"
             reasons2 = dict(reasons)
             reasons2["regime"] = regime
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
-            reasons2["grid_economics"] = params.get("economics")
+            if bot_type == "directional_trend":
+                reasons2["trend_economics"] = params.get("economics")
+            else:
+                reasons2["grid_economics"] = params.get("economics")
             reasons2["sizing"] = params.get("sizing")
             probability_gate_ready = bool(
                 not settings.require_conf_gate
@@ -5810,7 +6337,11 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "confidence_gate_required": bool(settings.require_conf_gate),
                 "confidence_gate_applied": bool(confidence_gate_applied),
             }
-            _trade_plan_complete = isinstance(params.get("trade_plan"), dict) and bool(params.get("trade_plan"))
+            _trade_plan_complete = bool(
+                isinstance(params.get("trade_plan"), dict)
+                and bool(params.get("trade_plan"))
+                and (params.get("trade_plan") or {}).get("geometry_valid") is not False
+            )
             _shadow_no_trade_eligible = bool(
                 status == "no_trade"
                 and not blocks
@@ -5854,6 +6385,15 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "model_thesis_or_launch_gate" if _shadow_no_trade_eligible else (
                         "actionable_publication" if status in {"recommended", "active", "executed"} else "hard_or_incomplete_candidate"
                     )
+                ),
+                "strategy_family": (
+                    "directional_trend" if bot_type == "directional_trend" else "futures_grid"
+                ),
+                "bot_outcome_label_version": (
+                    TREND_OUTCOME_LABEL_VERSION if bot_type == "directional_trend" else POLICY_OUTCOME_LABEL_VERSION
+                ),
+                "strategy_contract_version": (
+                    TREND_STRATEGY_CONTRACT_VERSION if bot_type == "directional_trend" else "futures_grid_v26"
                 ),
             }
             reasons2["sentiment_agg"] = sent_agg
@@ -6043,7 +6583,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "blocks": blocks,
                 "status": status,
                 "ttl_sec": _recommendation_ttl_sec(settings),
-                "model_version": model_version,
+                "model_version": candidate_model_version,
                 "features_ref_ts": int(f["ts_last"]),
             })
 
@@ -6180,6 +6720,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "count_no_trade": status_counts["no_trade"],
                 "count_suppressed": status_counts["suppressed"],
                 "model_version": model_version,
+                "model_versions": sorted({str(r.get("model_version") or "") for r in recs}),
                 "regime": regime,
                 "global_sentiment_6h": global_sent,
                 "sentiment_regime": sent_agg.get("regime"),

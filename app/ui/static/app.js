@@ -610,10 +610,17 @@ function isTechnicalIdentifierField(key) {
 }
 
 const SUPPORTED_GRID_BOT_TYPE = "futures_grid";
+const DIRECTIONAL_TREND_BOT_TYPE = "directional_trend";
 const SUPPORTED_GRID_VENUE = "linear";
 
 function botTypeLabel(botType) {
-  return botType === SUPPORTED_GRID_BOT_TYPE ? "Фьючерсная сетка" : "—";
+  if (botType === SUPPORTED_GRID_BOT_TYPE) return "Фьючерсная сетка";
+  if (botType === DIRECTIONAL_TREND_BOT_TYPE) return "Направленный тренд · shadow";
+  return "—";
+}
+
+function isDirectionalTrendShadow(it) {
+  return String(it?.bot_type || "") === DIRECTIONAL_TREND_BOT_TYPE;
 }
 
 function operatorEffectiveStatus(it) {
@@ -928,6 +935,9 @@ function launchDecisionDiagnosticsHtml(it, scoreMeta) {
 }
 
 function noTradeDecisionMessage(it, scoreMeta) {
+  if (isDirectionalTrendShadow(it)) {
+    return "Это отдельная исследовательская trend-ветка. Она формирует single-position TP/SL outcome без усреднения, но в текущей версии не разрешена к запуску и не создаёт bot_instance.";
+  }
   const rows = launchDecisionDiagnostics(it, scoreMeta);
   const launchRow = rows.find(row => row.code === "launch_score");
   const confidenceRow = rows.find(row => row.code === "confidence_gate");
@@ -1518,6 +1528,25 @@ function buildOperatorFieldSpecs(it, ov) {
   const sizing = params.sizing || {};
   const plan = params.trade_plan || {};
   const levels = plan.levels || {};
+  if (String((it || {}).bot_type || "") === "directional_trend") {
+    const takeProfit = levels.take_profit || {};
+    const stopLoss = levels.stop_loss || {};
+    const targetNotional = toFiniteNumber(sizing.target_notional_usdt);
+    const planRr = toFiniteNumber(economics.plan_rr);
+    const horizon = toFiniteNumber(plan.label_horizon_hours ?? params.label_horizon_hours);
+    return [
+      { label: "Стратегия", value: "Направленный тренд · shadow-only", help: "Отдельная исследовательская стратегия, а не направленная сетка. Execution API заблокирован." },
+      { label: "Направление", value: directionRu((it || {}).direction), help: "LONG следует за подтверждённым ростом, SHORT — за подтверждённым снижением." },
+      { label: "Модель входа", value: "Одна позиция, без усреднения", help: "Позиция не увеличивается против движения и не использует grid-levels." },
+      { label: "Расчётная цена входа", value: formatBybitPrice(plan.reference_price ?? params.price_ref, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
+      { label: "Цель прибыли", value: formatBybitPrice(takeProfit.price, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
+      { label: "Ограничение убытка", value: formatBybitPrice(stopLoss.price, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
+      { label: "Исследовательский номинал", value: targetNotional === null ? "—" : formatUsdValue(targetNotional), help: "Нормирующий proxy-notional для сравнения outcome; это не разрешённый размер реальной позиции." },
+      { label: "Расчётный RR", value: planRr === null ? "—" : formatDotNumber(planRr, 2, false), help: "Проектный reward/risk после оценочных издержек; не доказательство live edge." },
+      { label: "Горизонт метки", value: horizon === null ? "—" : `${formatDotNumber(horizon, 0, false)} ч`, help: "Период независимого proxy-outcome для трендовой ветки." },
+      { label: "Исполнение", value: "Запрещено в этой версии", help: "Рекомендация сохраняется как shadow_no_trade и не может создать bot_instance." },
+    ];
+  }
   const range = levels.range || {};
   const rangeValue = `${ov.rangeLower} — ${ov.rangeUpper}`;
   const operatorSheet = params.operator_sheet || {};
@@ -1708,6 +1737,7 @@ function buildDetailsHtml(it) {
   updateDetailsHeaderLinks(it);
 
   const launchable = isLaunchableGridRecommendation(it);
+  const trendShadow = isDirectionalTrendShadow(it);
   const scoreMeta = ensureUiScoreMeta(it);
   const status = operatorEffectiveStatus(it);
   const explicitHardBlocked = bybitErrors.length > 0 || blocks.length > 0 || riskReportRejected.length > 0 || status === "blocked";
@@ -1717,7 +1747,9 @@ function buildDetailsHtml(it) {
   const noTradeDecision = status === "no_trade";
   const pendingDecision = status === "pending";
   const decisionClass = launchable ? "go" : explicitHardBlocked ? "stop" : "wait";
-  const decisionTitle = launchable
+  const decisionTitle = trendShadow
+    ? "Учебный трендовый сигнал — запуск запрещён"
+    : launchable
     ? "Можно запускать после предпроверки"
     : explicitHardBlocked
       ? "Не запускать"
@@ -1726,7 +1758,9 @@ function buildDetailsHtml(it) {
         : pendingDecision
           ? "Ждать проверку LLM"
           : "Ждать / перепроверить";
-  const decisionText = launchable
+  const decisionText = trendShadow
+    ? "Сигнал участвует только в отдельном trend-outcome и калибровке. Это single-position модель без grid-усреднения; execution endpoint и создание bot_instance заблокированы."
+    : launchable
     ? "Проверьте цену, актуальность, риск и экономику; затем используйте блок параметров запуска для создания бота."
     : explicitHardBlocked
       ? "Есть жёсткая причина, запрещающая ручное создание сеточного бота. Фактическая причина показана сразу под этим решением."
@@ -1791,7 +1825,7 @@ function buildDetailsHtml(it) {
         <div class="decision-title-row">
           <div>
             <h3>${escapeHtml(it.symbol)} · ${escapeHtml(decisionTitle)}</h3>
-            <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${statusBadgeHtml(operatorEffectiveStatus(it))}</div>
+            <div class="operator-subtitle operator-subtitle-inline">${directionBadge(it.direction)}<span class="operator-sub-sep">·</span>${escapeHtml(botTypeLabel(it.bot_type))}<span class="operator-sub-sep">·</span>${statusBadgeHtml(operatorEffectiveStatus(it))}</div>
           </div>
           <button class="ghost-chip" data-act="show-tech">Технические данные</button>
         </div>
@@ -1829,7 +1863,7 @@ function buildDetailsHtml(it) {
       </div>
 
       <div class="operator-card primary-launch-card">
-        <h3>Параметры запуска фьючерсной сетки Bybit</h3>
+        <h3>${trendShadow ? "Параметры исследовательской trend-модели" : "Параметры запуска фьючерсной сетки Bybit"}</h3>
         <div class="operator-grid two minimal-launch-grid">
           ${operatorFields.map(field => fieldBox(field.label, field.value, field.copyValue ?? field.value, field.mono ? "field-input-mono" : "", field.help || "")).join("")}
         </div>
@@ -2025,11 +2059,12 @@ function updateCalibrationUi(items) {
 
   banner.classList.remove("hidden");
   if (primaryBot) {
+    const strategyName = botTypeLabel(primaryBot);
     const title = primaryInfo?.fitted
       ? (primaryInfo?.logreg_active
-        ? `Фьючерсная сетка: калибратор активен`
-        : `Фьючерсная сетка: старая калибровка отклонена`) 
-      : `Фьючерсная сетка: калибратор не обучен`;
+        ? `${strategyName}: калибратор активен`
+        : `${strategyName}: старая калибровка отклонена`)
+      : `${strategyName}: калибратор не обучен`;
     document.querySelector(".calib-title").innerHTML = `${title} — уверенность <b>${primaryInfo?.fitted ? "частично/полностью откалибрована" : "не откалибрована"}</b>`;
   } else {
     document.querySelector(".calib-title").innerHTML = `Калибровка по текущему набору <b>смешанная</b>`;
@@ -2977,6 +3012,7 @@ function renderRecoTable(items) {
       <td>
         <div class="symbol-cell">
           <b>${escapeHtml(it.symbol || "—")}</b>
+          <span class="helper-text">${escapeHtml(botTypeLabel(it.bot_type))}</span>
           ${symbolLinksHtml(it)}
         </div>
       </td>
@@ -3116,6 +3152,7 @@ async function loadHealth() {
   const databaseContinuity = systemStatus.database_continuity || {};
   const runtimeProvenance = systemStatus.runtime_provenance || {};
   const botCalibrator = systemStatus.bot_calibrators?.futures_grid || {};
+  const trendCalibrator = systemStatus.bot_calibrators?.directional_trend || {};
   const backgroundThreads = Object.entries(systemStatus.background_threads || {}).map(([name, info]) => ({
     name,
     ...(info || {}),
@@ -3154,7 +3191,8 @@ async function loadHealth() {
       { label: "Заблокировано", value: Number(recCounts.blocked || 0) },
       { label: "Контур исходов", value: healthStatusRu(outcomeWorker.state || "unknown") },
       { label: "Миграция БД", value: databaseSchema.migration_applied && Number(databaseSchema.materialization_pending || 0) === 0 ? "Применена" : "Требует внимания" },
-      { label: "Калибратор", value: botCalibrator.fitted ? "Обучен" : "Не обучен" },
+      { label: "Калибратор сетки", value: botCalibrator.fitted ? "Обучен" : "Не обучен" },
+      { label: "Trend shadow-калибратор", value: trendCalibrator.fitted ? "Обучен" : `Накопление (${trendCalibrator.policy_eligible_outcomes_total ?? 0})` },
       { label: "Норма", value: Number(sum.ok || 0) },
       { label: "Устаревшие", value: Number(sum.stale || 0) },
       { label: "Нет данных", value: Number(sum.missing || 0) },

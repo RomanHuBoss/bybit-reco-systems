@@ -1,3 +1,13 @@
+## Directional trend shadow policy - v1.1.0
+
+`futures_grid` remains the only executable strategy family and retains range/mean-reversion economics. `long` and `short` inside this family are directional inventory biases, not trend-following bots. A separate `directional_trend` candidate is now evaluated for Bybit Linear USDT Perpetual whenever the multi-timeframe aggregate has an explicit long/short direction, `regime=trend`, sufficient trendiness, structural strength, coherence and timeframe coverage.
+
+Trend score rewards trend strength, unsigned directional strength, cross-timeframe coherence and regime confidence. It does not call the grid mean-reversion gate and it does not inherit grid range economics. Its plan is one 1x shadow position at the next tradeable 1m open, with ATR/cost-aware TP and SL, no averaging and no pyramiding. Portfolio-capacity, daily-DD and cooldown gates are not charged to the shadow candidate because no capital is allocated; market-data, spread, funding, shock and fast-veto checks remain applicable to the policy evidence.
+
+Every trend candidate is forcibly `no_trade` with `DIRECTIONAL_TREND_SHADOW_ONLY`. Execution validation returns the same explicit code and never interprets the plan as grid geometry. Trend outcomes use contract `directional_trend_label_v1`: first unambiguous TP/SL on a continuous exact 1m path, conservative adverse stop gaps, favourable TP capped at the stored target, exact horizon boundary open, actual settled funding before exit and full round-trip execution costs. Same-candle TP+SL or a missing minute before exit is censored rather than ordered by assumption.
+
+Trend evidence has a separate audit suffix and bot calibrator. The pooled/global diagnostic is deliberately restricted to `futures_grid`; runtime inference uses only the matching bot-specific calibrator. No proxy result is evidence of exchange fills or live profitability.
+
 ## Operator freshness и независимая outcome-lineage - v1.0.78
 
 `publication_root_rec_id` и `outcome_root_rec_id` имеют разные обязанности. Первый определяет свежую операторскую идею, её TTL, UI-collapse и idempotent bot lifecycle. Второй определяет единственную размечаемую псевдо-позицию для `(venue, symbol, bot_type, direction)` до конца label horizon.

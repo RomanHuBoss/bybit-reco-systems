@@ -14,7 +14,8 @@ def test_operator_ui_uses_single_product_title_without_long_bot_label() -> None:
     assert "Bybit Linear USDT Futures Grid" not in index
     assert "Bybit Linear USDT Futures Grid" not in app_js
     assert "Linear USDT Grid" not in app_js
-    assert '? "Фьючерсная сетка" : "—"' in app_js
+    assert 'if (botType === SUPPORTED_GRID_BOT_TYPE) return "Фьючерсная сетка";' in app_js
+    assert 'if (botType === DIRECTIONAL_TREND_BOT_TYPE) return "Направленный тренд · shadow";' in app_js
 
 
 def test_main_recommendations_table_has_no_bot_type_column() -> None:

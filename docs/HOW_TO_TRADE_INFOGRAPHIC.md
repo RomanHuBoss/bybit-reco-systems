@@ -1,3 +1,11 @@
+## v1.1.0 - grid execution and directional trend shadow are different products
+
+- `futures_grid` remains the only operator-executable family. Neutral/long/short are grid inventory biases and still require range/mean-reversion evidence.
+- `directional_trend` is a separate single-position long/short research policy. It follows a coherent trend, has its own TP/SL, and never averages or pyramids against the move.
+- Every trend row is marked **НЕ ТОРГОВАТЬ / shadow** with `DIRECTIONAL_TREND_SHADOW_ONLY`. The execution endpoint and `bot_instance` creation are blocked.
+- Trend outcomes are labeled separately from a continuous 1m path. Same-candle TP+SL and missing-minute paths are censored; they are not guessed.
+- Do not compare or pool grid and trend win rates as one model. Each family has its own outcome contract and calibrator.
+
 ## v1.0.78 — свежесть рекомендации и независимое окно исхода
 
 Не смешивайте два времени. `RECO_TTL_SEC` — операторская свежесть: при пустом значении используется `max(900, RECO_INTERVAL_SEC × 15)`, то есть 15 минут при минутном цикле. После TTL устойчивый сигнал может получить новую актуальную публикацию и новый `publication_root_rec_id`, но до завершения 12-часового окна сохраняет прежний `outcome_root_rec_id` и не создаёт ещё одну независимую метку.

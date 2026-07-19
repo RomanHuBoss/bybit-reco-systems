@@ -1,3 +1,14 @@
+## v1.1.0: directional trend shadow responsibilities
+
+- `app/bot_types.py`: registers the separate trend family and its shadow-only boundary.
+- `app/recommender.py`: regime routing, trend score, one-position TP/SL plan, shadow publication, trend contract/version metadata and separate calibration eligibility.
+- `app/outcomes.py`: deterministic `directional_trend_label_v1` path accounting with exact 1m continuity, TP/SL ambiguity censoring, funding and costs.
+- `app/calibration.py`: independent `logreg_directional_trend_v1` storage key; grid and trend labels are not pooled for inference.
+- `app/main.py`: explicit `DIRECTIONAL_TREND_SHADOW_ONLY` execution-preflight rejection.
+- `app/ui/static/app.js`: separate strategy labels and non-executable trend detail presentation.
+
+The new module responsibilities do not add order submission, an OMS/EMS or private Bybit order methods.
+
 ## v1.0.78: operator/outcome lineage separation
 
 - `app/recommender.py`: independently resolves live operator publication TTL and open statistical outcome horizon.

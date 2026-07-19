@@ -3510,13 +3510,18 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
             "msg": "У рекомендации нет полного trade_plan; execution-time preflight не может проверить reference/range/kill-switch/grid-step и должен блокировать запуск fail-closed.",
         })
 
-    # Эта система рекомендует только один продуктовый режим. Если рекомендация
-    # в БД/legacy payload уже противоречит собственной доменной модели, её нельзя
-    # считать исполнимой даже до похода в Bybit API.
-    if bot_type != "futures_grid":
+    # directional_trend is deliberately recommendation/shadow-only in this
+    # release.  It has an independent single-position contract and must never be
+    # interpreted through futures_grid execution geometry.
+    if bot_type == "directional_trend":
+        errors.append({
+            "code": "DIRECTIONAL_TREND_SHADOW_ONLY",
+            "msg": "directional_trend доступен только для shadow/outcome evidence; operator execution и materialization bot_instance заблокированы fail-closed.",
+        })
+    elif bot_type != "futures_grid":
         errors.append({
             "code": "BOT_TYPE_UNSUPPORTED",
-            "msg": f"Поддерживается только bot_type=futures_grid для Bybit Linear USDT Futures, получено bot_type={bot_type or 'unknown'}.",
+            "msg": f"Неизвестный или неподдерживаемый для execution bot_type={bot_type or 'unknown'}; исполнимым остаётся только futures_grid.",
         })
     if venue != "linear":
         errors.append({
@@ -4880,7 +4885,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.0.78", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.1.0", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

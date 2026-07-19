@@ -1,3 +1,14 @@
+## Separate strategy families - v1.1.0
+
+The recommendation loop now emits two mechanics-specific candidates per supported Linear USDT symbol:
+
+1. `futures_grid`: existing arithmetic grid, range/mean-reversion gates, neutral/long/short inventory bias and existing operator lifecycle.
+2. `directional_trend`: research-only single-position long/short policy with independent score, plan, outcome and calibration lineage.
+
+The separation is structural, not cosmetic. `GRID_BOT_TYPES` contains only `futures_grid`; `DIRECTIONAL_BOT_TYPES` and `SHADOW_ONLY_BOT_TYPES` contain `directional_trend`. The trend plan has no grid levels or replacement-order topology. The execution boundary rejects it before Bybit metadata can make it appear launchable. The outcome dispatcher routes it to a separate exact-1m TP/SL label and the calibrator registry uses `logreg_directional_trend_v1`.
+
+No schema migration is required: existing `bot_type`, JSON contract and outcome tables already represent the new family. Publication/outcome lineage remains partitioned by `bot_type`, so grid and trend roots cannot share an independent outcome window. SQLite and PostgreSQL paths remain supported.
+
 ## Dual lineage: operator publication и statistical outcome - v1.0.78
 
 Recommendation persistence materializes two orthogonal roots. `publication_root_rec_id` governs operator freshness, list collapse, execution idempotency and one-running-bot constraints. `outcome_root_rec_id` governs statistical label identity; only `is_outcome_label_root=true` rows are independently labeled.

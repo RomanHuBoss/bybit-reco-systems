@@ -1,3 +1,12 @@
+## Сценарий: сильный тренд и отдельная shadow-рекомендация (v1.1.0)
+
+1. Multi-timeframe aggregation identifies an explicit `long` or `short`, `regime=trend`, sufficient trendiness/coherence and at least three usable timeframes.
+2. The existing `futures_grid` candidate is evaluated by its unchanged range/mean-reversion rules and may become `no_trade` because the market is too trendy for a grid.
+3. Independently, `directional_trend` receives a trend-positive score and a single-position TP/SL research plan.
+4. The row is persisted as `no_trade`, `outcome_sample_role=shadow_no_trade`, with `DIRECTIONAL_TREND_SHADOW_ONLY`; it consumes no running-bot capacity and cannot create a `bot_instance`.
+5. After the 12-hour maturity contract, the outcome worker starts from the next tradeable 1m open and labels the first unambiguous TP/SL or the exact horizon-open result. A missing minute before exit or same-candle TP+SL produces fail-closed censoring.
+6. Only outcomes with the exact trend model/strategy/outcome contract may enter the separate trend calibrator. Until independent monetary, tail-risk and chronological gates pass, this branch remains research-only.
+
 ## Сценарий: operator TTL истёк, outcome horizon ещё открыт (v1.0.78)
 
 1. Первая LONG-рекомендация создаёт `publication_root_rec_id=R1`, `outcome_root_rec_id=R1`, `is_outcome_label_root=true`.
