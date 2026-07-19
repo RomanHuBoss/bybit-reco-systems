@@ -1,3 +1,14 @@
+## v1.3.0: first-touch trend event model
+
+- `app/trend_events.py` — трёхклассовая softmax-модель `TP_FIRST / SL_FIRST / HORIZON_EXIT`, chronological holdout, purging, persistence и plan-specific monetary assessment.
+- `app/outcomes.py` — определяет первый однозначный TP/SL touch, сохраняет `event_type`, цензурирует `AMBIGUOUS` и missing-minute path.
+- `app/db.py` — additive migration и чтение/запись `reco_outcomes.event_type` для SQLite/PostgreSQL-compatible persistence.
+- `app/calibration.py` — отдельная binary trend lineage v2; не объединяет trend и grid.
+- `app/recommender.py` — загружает/обучает event model, добавляет first-touch assessment и reason codes.
+- `app/strategy_router.py` — требует положительную консервативную first-touch EV и доказанный порядок TP-first против SL-first.
+- `app/main.py` — публикует readiness и метрики first-touch модели в system status.
+- `app/ui/static/app.js` — показывает P(TP first), P(SL first), timeout probability и EV/lower bound.
+
 ## v1.2.0: profitability router and trend audit execution
 
 - `app/strategy_router.py`: validates comparable monetary evidence and selects a strategy by conservative risk-adjusted utility.

@@ -39,6 +39,15 @@ from .calibration import (
     extract_features, FEATURE_NAMES, GLOBAL_LOGREG_KEY, CALIB_REFIT_INTERVAL_SEC,
     return_confidence_interval, selected_policy_confidence,
 )
+from .trend_events import (
+    TREND_EVENT_MODEL_VERSION,
+    TrendEventModel,
+    build_trend_event_assessment,
+    fit_trend_event_model,
+    load_trend_event_model,
+    save_trend_event_model,
+    trend_event_storage_key,
+)
 # Note: calibrators use db.get_outcomes_with_recs (single JOIN query) to avoid N+1 pattern
 
 BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
@@ -49,9 +58,9 @@ RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v11-separated-operator-outcome-linea
 DIRECTION_CALIBRATION_KEY = "platt_direction_v14"
 CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v3"
 POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
-TREND_STRATEGY_CONTRACT_VERSION = "directional_trend_shadow_v1"
-TREND_OUTCOME_LABEL_VERSION = "directional_trend_label_v1"
-TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v1"
+TREND_STRATEGY_CONTRACT_VERSION = "directional_trend_v2"
+TREND_OUTCOME_LABEL_VERSION = "directional_trend_label_v2"
+TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v2"
 CALIBRATION_LABEL_GRACE_SEC = 120
 CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
     "PROXY_MONETARY_EXPECTANCY_UNPROVEN",
@@ -59,6 +68,9 @@ CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
     "PROXY_OUTCOME_CENSORING_UNBOUNDED",
     "CALIBRATED_CONFIDENCE_UNAVAILABLE",
     "STRATEGY_ROUTER_NO_CLEAR_WINNER",
+    "TREND_FIRST_TOUCH_MODEL_UNAVAILABLE",
+    "TREND_FIRST_TOUCH_EXPECTANCY_NON_POSITIVE",
+    "TREND_FIRST_TOUCH_ORDER_UNCERTAIN",
 })
 LLM_REVIEW_CACHE_APP_KEY = "llm_review_cache_v1"
 LLM_REVIEW_ASYNC_STATUS_APP_KEY = "llm_review_async_status_v1"
@@ -4875,6 +4887,43 @@ def _load_or_fit_bot_logregs(
     return calibrators
 
 
+def _load_or_fit_trend_event_model(
+    conn,
+    min_samples: int,
+    *,
+    policy_fingerprint: str,
+    evidence_context: _CalibrationEvidenceContext,
+) -> TrendEventModel:
+    """Load or fit the v2 first-touch event model on exact trend lineage only."""
+    key = trend_event_storage_key(policy_fingerprint)
+    now = int(time.time())
+    saved = load_trend_event_model(conn, key)
+    if (
+        saved is not None
+        and str(saved.policy_fingerprint or "") == policy_fingerprint
+        and str(saved.outcome_label_version or "") == TREND_OUTCOME_LABEL_VERSION
+        and int(saved.saved_ts or 0) > 0
+        and now - int(saved.saved_ts) < CALIB_REFIT_INTERVAL_SEC
+    ):
+        return saved
+    rows = [
+        row
+        for row in evidence_context.policy_rows()
+        if str(row.get("bot_type") or "") == "directional_trend"
+        and str(row.get("event_type") or "").strip().upper()
+        in {"TP_FIRST", "SL_FIRST", "HORIZON_EXIT"}
+    ]
+    model = fit_trend_event_model(
+        rows,
+        min_samples=min_samples,
+        policy_fingerprint=policy_fingerprint,
+        outcome_label_version=TREND_OUTCOME_LABEL_VERSION,
+        horizon_sec=12 * 3600,
+    )
+    save_trend_event_model(conn, key, model)
+    return model
+
+
 def _raw_direction_confidence(direction_agg: dict[str, Any]) -> float:
     """Monotonic signal for directional success probability.
 
@@ -5600,6 +5649,12 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             settings_obj=settings,
             evidence_context=calibration_evidence,
         )
+        trend_event_model = _load_or_fit_trend_event_model(
+            conn,
+            min_samples=settings.calib_min_samples,
+            policy_fingerprint=policy_fingerprint,
+            evidence_context=calibration_evidence,
+        )
     finally:
         calibration_evidence.release_rows()
     # Legacy alias — used in PUBLISH log and UI status endpoint
@@ -6230,7 +6285,26 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             params["symbol"] = sym
             params["account_mode"] = account_mode
             params["trade_plan"] = _build_trade_plan(bot_type, venue, f, direction, params, cost_model=cost_model)
+            trend_event_assessment: dict[str, Any] | None = None
             if bot_type == "directional_trend":
+                trend_event_assessment = build_trend_event_assessment(
+                    {"direction": direction, "params": params},
+                    _fv,
+                    trend_event_model,
+                )
+                params["trend_event_assessment"] = dict(trend_event_assessment)
+                if trend_event_assessment.get("ready") is not True:
+                    event_codes = set(trend_event_assessment.get("reason_codes") or [])
+                    if "TREND_FIRST_TOUCH_EXPECTANCY_NON_POSITIVE" in event_codes:
+                        code = "TREND_FIRST_TOUCH_EXPECTANCY_NON_POSITIVE"
+                        msg = "first-touch event EV or its conservative lower bound is non-positive"
+                    elif "TP_FIRST_NOT_MORE_LIKELY_THAN_SL_FIRST" in event_codes:
+                        code = "TREND_FIRST_TOUCH_ORDER_UNCERTAIN"
+                        msg = "conservative P(TP first) does not exceed P(SL first)"
+                    else:
+                        code = "TREND_FIRST_TOUCH_MODEL_UNAVAILABLE"
+                        msg = "v2 TP_FIRST/SL_FIRST/HORIZON_EXIT probability model is not decision-ready"
+                    no_trade_reasons.append({"code": code, "msg": msg})
                 _trend_levels = (params.get("trade_plan") or {}).get("levels", {})
                 params["operator_sheet"] = {
                     "mode": direction,
@@ -6251,6 +6325,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                     "market_shock_state": (market_shock or {}).get("state"),
                     "market_shock_title": (market_shock or {}).get("title"),
                     "external_execution_package": (params.get("trade_plan") or {}).get("external_execution_package"),
+                    "first_touch_assessment": trend_event_assessment,
                     "operator_note": "Single-position recommendation. Сервис создаёт audit instance, но не отправляет биржевой ордер.",
                 }
             else:
@@ -6417,6 +6492,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             reasons2["risk_checks"] = {"passed": len(blocks)==0, "blocks": blocks}
             if bot_type == "directional_trend":
                 reasons2["trend_economics"] = params.get("economics")
+                reasons2["trend_event_model"] = dict(trend_event_assessment or {})
             else:
                 reasons2["grid_economics"] = params.get("economics")
             reasons2["sizing"] = params.get("sizing")

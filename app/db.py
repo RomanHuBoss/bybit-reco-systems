@@ -372,6 +372,17 @@ def _ensure_outcome_label_availability_column(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE reco_outcomes ADD COLUMN label_available_ts BIGINT")
 
 
+def _ensure_outcome_event_type_column(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "reco_outcomes")
+    if "event_type" not in cols:
+        # Legacy binary outcomes remain queryable but are excluded from the
+        # v2 directional first-touch event model. New trend rows persist one of
+        # TP_FIRST / SL_FIRST / HORIZON_EXIT; ambiguous chronology is censored.
+        conn.execute(
+            "ALTER TABLE reco_outcomes ADD COLUMN event_type TEXT NOT NULL DEFAULT 'LEGACY_BINARY'"
+        )
+
+
 def _ensure_bot_publication_root_columns(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "bot_instances")
     if "publication_root_rec_id" not in cols:
@@ -777,6 +788,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     _ensure_trade_cost_columns(conn)
     _ensure_execution_evidence_columns(conn)
     _ensure_outcome_label_availability_column(conn)
+    _ensure_outcome_event_type_column(conn)
     if _recommendation_publication_backfill_needed(conn):
         # Полный historical lineage backfill может занимать заметное время на живой
         # БД. На штатном рестарте запускаем его только если реально нашли legacy-
@@ -3241,7 +3253,7 @@ def get_outcomes_with_recs(
         conn,
         """SELECT o.rec_id, o.ts, o.venue, o.symbol, o.bot_type, o.direction,
                   o.horizon_sec, o.label_available_ts, o.entry_close, o.exit_close,
-                  o.success, o.ret,
+                  o.success, o.ret, o.event_type,
                   r.score, r.status, r.reasons_json, r.model_version,
                   r.publication_root_rec_id, r.outcome_root_rec_id,
                   r.is_outcome_label_root
@@ -3310,6 +3322,7 @@ def get_outcomes_with_recs(
                     ),
                     "success": success,
                     "ret": ret,
+                    "event_type": str(_outcome_row_value(row, "event_type", "LEGACY_BINARY") or "LEGACY_BINARY").strip().upper(),
                     "score": score,
                     "reasons": reasons,
                     "model_version": str(row["model_version"] or ""),
@@ -3775,11 +3788,16 @@ def insert_outcome(conn: sqlite3.Connection, o: dict[str, Any]) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO reco_outcomes(
             rec_id, ts, venue, symbol, bot_type, direction, horizon_sec, label_available_ts,
-            entry_close, exit_close, ret, success
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            entry_close, exit_close, ret, success, event_type
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             o["rec_id"], o["ts"], o["venue"], o["symbol"], o["bot_type"], o["direction"], o["horizon_sec"],
-            o.get("label_available_ts"), o["entry_close"], o["exit_close"], o["ret"], o["success"]
+            o.get("label_available_ts"), o["entry_close"], o["exit_close"], o["ret"], o["success"],
+            str(
+                o.get("event_type")
+                or ((o.get("diagnostics") or {}).get("event_type") if isinstance(o.get("diagnostics"), dict) else "")
+                or ("GRID_OUTCOME" if str(o.get("bot_type") or "") == "futures_grid" else "LEGACY_BINARY")
+            ).strip().upper(),
         ),
     )
     raw_diagnostics = o.get("diagnostics")

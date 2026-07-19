@@ -74,7 +74,7 @@ def test_directional_trend_is_separate_supported_strategy_family() -> None:
 
 def test_directional_trend_has_distinct_audit_model_identity_without_resetting_grid() -> None:
     assert TREND_RECOMMENDER_MODEL_VERSION.startswith(RECOMMENDER_MODEL_VERSION + "+")
-    assert TREND_RECOMMENDER_MODEL_VERSION.endswith("directional-trend-v1")
+    assert TREND_RECOMMENDER_MODEL_VERSION.endswith("directional-trend-v2")
 
 
 def test_global_calibrator_does_not_pool_grid_and_trend_labels(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -345,16 +345,16 @@ def test_calibration_lineage_accepts_trend_evidence_without_mean_reversion() -> 
                 "trend_strength": 0.82,
                 "coherence": 0.86,
                 "regime": "trend",
-                "strategy_contract_version": "directional_trend_shadow_v1",
-                "outcome_label_version": "directional_trend_label_v1",
+                "strategy_contract_version": "directional_trend_v2",
+                "outcome_label_version": "directional_trend_label_v2",
                 "mean_reversion_evidence_valid": False,
                 "mean_reversion_score": 0.0,
             },
             "outcome_policy": {
                 "policy_evaluation_eligible": True,
                 "strategy_family": "directional_trend",
-                "bot_outcome_label_version": "directional_trend_label_v1",
-                "strategy_contract_version": "directional_trend_shadow_v1",
+                "bot_outcome_label_version": "directional_trend_label_v2",
+                "strategy_contract_version": "directional_trend_v2",
             },
         },
     }
@@ -528,12 +528,12 @@ def test_calibration_lineage_rejects_wrong_trend_contract_version() -> None:
                 "coherence": 0.86,
                 "regime": "trend",
                 "strategy_contract_version": "directional_trend_shadow_v0",
-                "outcome_label_version": "directional_trend_label_v1",
+                "outcome_label_version": "directional_trend_label_v2",
             },
             "outcome_policy": {
                 "policy_evaluation_eligible": True,
                 "strategy_family": "directional_trend",
-                "bot_outcome_label_version": "directional_trend_label_v1",
+                "bot_outcome_label_version": "directional_trend_label_v2",
                 "strategy_contract_version": "directional_trend_shadow_v0",
             },
         },
@@ -560,16 +560,16 @@ def test_outcome_cycle_labels_directional_trend_shadow_root(tmp_path: Path, monk
             "trend_strength": 0.82,
             "coherence": 0.86,
             "regime": "trend",
-            "strategy_contract_version": "directional_trend_shadow_v1",
-            "outcome_label_version": "directional_trend_label_v1",
+            "strategy_contract_version": "directional_trend_v2",
+            "outcome_label_version": "directional_trend_label_v2",
         },
         "outcome_policy": {
             "eligible": True,
             "policy_evaluation_eligible": True,
             "sample_role": "shadow_no_trade",
             "strategy_family": "directional_trend",
-            "bot_outcome_label_version": "directional_trend_label_v1",
-            "strategy_contract_version": "directional_trend_shadow_v1",
+            "bot_outcome_label_version": "directional_trend_label_v2",
+            "strategy_contract_version": "directional_trend_v2",
         },
     }
     db.insert_recommendations(conn, [{

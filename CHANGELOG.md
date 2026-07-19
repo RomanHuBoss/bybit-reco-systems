@@ -1,3 +1,27 @@
+## 2026-07-19 - v1.3.0 - directional trend first-touch event model
+
+### Changed
+- Added immutable trend `event_type`: `TP_FIRST`, `SL_FIRST`, `HORIZON_EXIT`; ambiguous same-candle paths are censored.
+- Added additive SQLite/PostgreSQL `reco_outcomes.event_type` migration with legacy-safe defaults.
+- Added exact-policy three-class softmax model with whole-timestamp chronological terminal holdout, purging by exact `label_available_ts`, untouched terminal validation and null-baseline validation.
+- Added plan-specific first-touch probabilities, payoffs, conservative EV and EV lower bound; uncertainty is transferred to the economically worst exit branch and is not cosmetically capped.
+- Upgraded profitability router to require proven TP-before-SL ordering and positive first-touch monetary expectancy.
+- Exposed first-touch model readiness and probabilities through status/UI diagnostics.
+- Updated all active architecture, trading, scenario, risk, operator and iterative-prompt documentation.
+
+### Compatibility
+- API routes remain backward compatible; new fields are additive.
+- Existing databases bootstrap automatically; no manual SQL is required.
+- Legacy trend v1 outcomes remain audit history but do not enter v2 exact-policy training.
+- Project remains recommendation/audit-only and contains no private order submission endpoints.
+
+### Validation
+- Baseline v1.2.0: `1237/1237 passed` monolithically and in 16 exhaustive non-overlapping batches.
+- Post-check v1.3.0: `1252/1252 passed` monolithically and in 16 exhaustive non-overlapping batches.
+- New regression: `tests/test_iteration268_trend_first_touch_event_model.py` — `15/15 passed` twice.
+- Focused first-touch/router/dual-DB suite: `68 passed`.
+- SQLite fresh schema and v1.2.0→v1.3.0 bootstrap upgrade passed; PostgreSQL dialect/locking tests passed offline.
+
 ## 2026-07-19 - v1.2.0 - select strategy by validated risk-adjusted profitability
 
 - Added `strategy-profitability-router-v1`: grid and trend are compared only on a shared 12-hour unlevered net-return basis using bot-specific calibrated selected-policy evidence, terminal holdout, conservative lower bounds and expected shortfall.

@@ -1,3 +1,26 @@
+## First-touch trend outcome и денежный допуск — v1.3.0
+
+### Событийная семантика
+
+Для `directional_trend` outcome-worker проходит непрерывный 1m path от первой доступной закрытой свечи после рекомендации до 12-часовой границы. Первое однозначно наблюдаемое событие определяет `event_type`:
+
+- `TP_FIRST`: TP достигнут раньше SL;
+- `SL_FIRST`: SL достигнут раньше TP;
+- `HORIZON_EXIT`: TP и SL не достигнуты, позиция закрывается по точной границе горизонта;
+- `AMBIGUOUS`: TP и SL затронуты одной свечой либо порядок недоказуем — outcome цензурируется.
+
+Для LONG требуется `SL < entry < TP`; для SHORT — `TP < entry < SL`. Пропущенная минута до выхода, неправильная геометрия или неоднозначное касание не реконструируются оптимистически.
+
+### Вероятности и ожидаемая доходность
+
+`trend-first-touch-softmax-v1` оценивает три взаимоисключающие вероятности. Terminal holdout остаётся вне deployment fit. Текущий план преобразует вероятности в денежную EV:
+
+`EV = P(TP_FIRST) × net_tp_return + P(SL_FIRST) × net_sl_return + P(HORIZON_EXIT) × expected_timeout_return`.
+
+Round-trip fee/spread/slippage учитываются в payoff каждой ветви; положительное получение funding не кредитуется как alpha, adverse funding уменьшает EV. Для допуска используются консервативные вероятности: uncertainty mass переносится из TP в SL. Требуются положительные `event_expected_net_return` и `event_expected_net_return_lower_bound`, а также `P_low(TP_FIRST) > P_high(SL_FIRST)`.
+
+Бинарный `success` остаётся для совместимости и вспомогательной калибровки: прибыльный `HORIZON_EXIT` может иметь `success=1`, но никогда не считается `TP_FIRST`. Meta-router принимает решение по явной first-touch модели, а не по одной бинарной доле успехов.
+
 ## Strategy profitability routing and single-position trend lifecycle - v1.2.0
 
 For every symbol/timestamp the recommender may build both `futures_grid` and `directional_trend`. They are not ranked by raw score because their score functions and payoff distributions are different. `strategy-profitability-router-v1` evaluates only bot-specific, fitted, exact-policy evidence on the common `unlevered_net_return_on_committed_notional_v1` basis and the same 12-hour horizon. Eligibility requires positive selected-policy and terminal-holdout monetary status, positive row/temporal lower bounds, a validated confidence threshold and available expected shortfall. Utility is conservative expected return minus a tail-loss penalty. If no candidate is ready or the utility edge is not material, the result is `no_trade`.

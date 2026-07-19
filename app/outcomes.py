@@ -662,6 +662,7 @@ def _directional_trend_outcome(
     )
 
     exit_reason = "horizon"
+    event_type = "HORIZON_EXIT"
     exit_price = float(exitp)
     exit_ts = int(ts_end)
     max_favourable = 0.0
@@ -686,10 +687,10 @@ def _directional_trend_outcome(
             max_favourable = max(max_favourable, (row_high - entry_f) / entry_f)
             max_adverse = min(max_adverse, (row_low - entry_f) / entry_f)
             if row_open <= float(stop_loss):
-                exit_reason, exit_price, exit_ts = "stop_loss_gap", row_open, row_ts
+                exit_reason, event_type, exit_price, exit_ts = "stop_loss_gap", "SL_FIRST", row_open, row_ts
                 break
             if row_open >= float(take_profit):
-                exit_reason, exit_price, exit_ts = "take_profit", float(take_profit), row_ts
+                exit_reason, event_type, exit_price, exit_ts = "take_profit", "TP_FIRST", float(take_profit), row_ts
                 break
             tp_hit = row_high >= float(take_profit)
             sl_hit = row_low <= float(stop_loss)
@@ -697,10 +698,10 @@ def _directional_trend_outcome(
             max_favourable = max(max_favourable, (entry_f - row_low) / entry_f)
             max_adverse = min(max_adverse, (entry_f - row_high) / entry_f)
             if row_open >= float(stop_loss):
-                exit_reason, exit_price, exit_ts = "stop_loss_gap", row_open, row_ts
+                exit_reason, event_type, exit_price, exit_ts = "stop_loss_gap", "SL_FIRST", row_open, row_ts
                 break
             if row_open <= float(take_profit):
-                exit_reason, exit_price, exit_ts = "take_profit", float(take_profit), row_ts
+                exit_reason, event_type, exit_price, exit_ts = "take_profit", "TP_FIRST", float(take_profit), row_ts
                 break
             tp_hit = row_low <= float(take_profit)
             sl_hit = row_high >= float(stop_loss)
@@ -709,16 +710,17 @@ def _directional_trend_outcome(
             _record_outcome_failure(
                 diagnostics,
                 "directional_tp_sl_intrabar_order_unobservable",
+                event_type="AMBIGUOUS",
                 event_ts=row_ts,
                 take_profit=float(take_profit),
                 stop_loss=float(stop_loss),
             )
             return None
         if tp_hit:
-            exit_reason, exit_price, exit_ts = "take_profit", float(take_profit), row_ts
+            exit_reason, event_type, exit_price, exit_ts = "take_profit", "TP_FIRST", float(take_profit), row_ts
             break
         if sl_hit:
-            exit_reason, exit_price, exit_ts = "stop_loss", float(stop_loss), row_ts
+            exit_reason, event_type, exit_price, exit_ts = "stop_loss", "SL_FIRST", float(stop_loss), row_ts
             break
         expected_row_ts += 60
 
@@ -792,7 +794,8 @@ def _directional_trend_outcome(
     if diagnostics is not None:
         diagnostics.clear()
         diagnostics.update({
-            "outcome_model": "directional_trend_single_position_v1",
+            "outcome_model": "directional_trend_first_touch_v2",
+            "event_type": event_type,
             "strategy_family": "directional_trend",
             "entry_model": "single_position_no_pyramiding",
             "direction": direction_norm,
@@ -2411,6 +2414,7 @@ def compute_outcomes_cycle(
                 "exit_close": float(exitp),
                 "ret": float(ret_proxy),
                 "success": int(success),
+                "event_type": str(diagnostics.get("event_type") or ("GRID_OUTCOME" if bot_type == "futures_grid" else "LEGACY_BINARY")),
                 "diagnostics": dict(diagnostics),
             },
         )

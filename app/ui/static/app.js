@@ -1567,6 +1567,15 @@ function buildOperatorFieldSpecs(it, ov) {
     const targetNotional = toFiniteNumber(sizing.target_notional_usdt);
     const planRr = toFiniteNumber(economics.plan_rr);
     const horizon = toFiniteNumber(plan.label_horizon_hours ?? params.label_horizon_hours);
+    const eventModel = (it?.reasons?.trend_event_model && typeof it.reasons.trend_event_model === "object")
+      ? it.reasons.trend_event_model
+      : ((params.trend_event_assessment && typeof params.trend_event_assessment === "object") ? params.trend_event_assessment : {});
+    const tpFirst = toFiniteNumber(eventModel.tp_first_probability);
+    const slFirst = toFiniteNumber(eventModel.sl_first_probability);
+    const timeout = toFiniteNumber(eventModel.horizon_exit_probability);
+    const eventEv = toFiniteNumber(eventModel.event_expected_net_return);
+    const eventEvLower = toFiniteNumber(eventModel.event_expected_net_return_lower_bound);
+    const eventReady = eventModel.ready === true;
     return [
       { label: "Стратегия", value: "Направленный тренд · одна позиция", help: "Отдельная single-position стратегия, а не направленная сетка. Система формирует проверяемый пакет для ручного или внешнего исполнения." },
       { label: "Направление", value: directionRu((it || {}).direction), help: "LONG следует за подтверждённым ростом, SHORT — за подтверждённым снижением." },
@@ -1576,6 +1585,12 @@ function buildOperatorFieldSpecs(it, ov) {
       { label: "Ограничение убытка", value: formatBybitPrice(stopLoss.price, it?.bybit_instrument_meta || {}, "nearest"), mono: true },
       { label: "Номинал позиции", value: targetNotional === null ? "—" : formatUsdValue(targetNotional), help: "Расчётный номинал одной позиции после Bybit qty-step preflight и runtime risk caps." },
       { label: "Расчётный RR", value: planRr === null ? "—" : formatDotNumber(planRr, 2, false), help: "Проектный reward/risk после оценочных издержек; не доказательство live edge." },
+      { label: "P(TP раньше SL)", value: tpFirst === null ? "—" : formatPercentDot(tpFirst * 100.0, 1, false), help: "Вероятность того, что цель прибыли будет достигнута раньше ограничения убытка по отдельной first-touch модели." },
+      { label: "P(SL раньше TP)", value: slFirst === null ? "—" : formatPercentDot(slFirst * 100.0, 1, false), help: "Вероятность первичного достижения stop-loss до take-profit." },
+      { label: "P(выход по времени)", value: timeout === null ? "—" : formatPercentDot(timeout * 100.0, 1, false), help: "Вероятность, что за горизонт не будет однозначно достигнут ни TP, ни SL." },
+      { label: "First-touch EV", value: eventEv === null ? "—" : formatPercentDot(eventEv * 100.0, 3, true), help: "Ожидаемая чистая доходность: P(TP_FIRST)×TP + P(SL_FIRST)×SL + P(HORIZON_EXIT)×ожидаемый выход по времени." },
+      { label: "Нижняя граница first-touch EV", value: eventEvLower === null ? "—" : formatPercentDot(eventEvLower * 100.0, 3, true), help: "Консервативная граница EV с переносом вероятностной неопределённости от TP к SL. Для допуска должна быть положительной." },
+      { label: "Готовность first-touch модели", value: eventReady ? "Подтверждена" : "Не подтверждена", help: "Требуются точные TP_FIRST/SL_FIRST/HORIZON_EXIT метки, purged chronological holdout и положительная консервативная EV." },
       { label: "Горизонт метки", value: horizon === null ? "—" : `${formatDotNumber(horizon, 0, false)} ч`, help: "Период независимого proxy-outcome для трендовой ветки." },
       { label: "Исполнение", value: "Ручное / внешний execution-layer", help: "Сервис не отправляет биржевой ордер. Кнопка подтверждения создаёт только внутренний audit-instance и фиксирует пакет entry/TP/SL." },
     ];

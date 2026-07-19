@@ -23,7 +23,7 @@ def _candidate(
     threshold: float = 0.60,
     status: str = "recommended",
 ) -> dict:
-    return {
+    candidate = {
         "rec_id": rec_id,
         "venue": "linear",
         "symbol": "BTCUSDT",
@@ -61,6 +61,23 @@ def _candidate(
             },
         },
     }
+    if bot_type == "directional_trend":
+        candidate["reasons"]["trend_event_model"] = {
+            "ready": True,
+            "source": "trend_event_softmax",
+            "model_version": "trend-first-touch-softmax-v1",
+            "outcome_label_version": "directional_trend_label_v2",
+            "policy_fingerprint": "a" * 64,
+            "return_basis": "unlevered_net_return_on_committed_notional_v1",
+            "tp_first_probability": 0.65,
+            "sl_first_probability": 0.20,
+            "horizon_exit_probability": 0.15,
+            "tp_first_probability_lower_bound": 0.60,
+            "sl_first_probability_upper_bound": 0.25,
+            "event_expected_net_return": mean,
+            "event_expected_net_return_lower_bound": min(lower, temporal_lower, terminal_lower),
+        }
+    return candidate
 
 
 def test_meta_router_uses_risk_adjusted_money_not_raw_score() -> None:

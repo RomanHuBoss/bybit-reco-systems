@@ -1,3 +1,17 @@
+# Актуализация контракта — 19 июля 2026 г., v1.3.0
+
+Канонический итерационный промпт поставки находится в `../Bybit_Recommender_Iteration_Prompt.pdf`, а поддерживаемый source — `docs/Bybit_Recommender_Iteration_Prompt.md`. Они заменяют устаревшие ограничения этого исторического файла в части strategy scope.
+
+Обязательные актуальные инварианты:
+- поддерживаются `futures_grid` и `directional_trend`;
+- trend является single-position strategy, не grid alias;
+- trend outcome имеет `TP_FIRST`, `SL_FIRST`, `HORIZON_EXIT`, а `AMBIGUOUS` цензурируется;
+- first-touch softmax обучается только на exact-policy v2 labels с chronological holdout/purging;
+- meta-router требует консервативное преимущество TP-first и положительную first-touch EV/lower bound;
+- проект остаётся recommendation/audit-only и не отправляет private Bybit orders.
+
+---
+
 # Промпт глубокого аудита торговой системы Bybit futures (linear USDT)
 
 ## Роль

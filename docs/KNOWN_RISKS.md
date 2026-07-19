@@ -1,3 +1,14 @@
+## Остаточные риски после v1.3.0 first-touch event model
+
+- Вероятностная uncertainty является консервативным validation bound, а не доказанной индивидуальной confidence interval для каждой сделки.
+- `trend-first-touch-softmax-v1` является proxy-моделью на исторических 1m OHLCV и не доказывает реальный fill, очередь, market impact или live edge.
+- Одна минутная свеча может скрывать порядок TP/SL; такие строки цензурируются. Высокая доля `AMBIGUOUS` уменьшает эффективную выборку и может создавать selection bias, который необходимо контролировать отдельно.
+- Трёхклассовая модель требует достаточного числа каждого события. Class collapse, слабый terminal holdout или отсутствие превосходства над null baseline оставляют модель unfitted.
+- `HORIZON_EXIT` return моделируется отдельно и может зависеть от режима. Среднее timeout-значение не гарантирует устойчивость на новых режимах; router использует lower bound, но хвостовой риск остаётся.
+- 12-часовой horizon остаётся исследовательским контрактом, а не доказанным оптимумом. Смена horizon требует новой label/model lineage и purged walk-forward сравнения.
+- Положительное получение funding не кредитуется, но фактические расходы, slippage и latency внешнего executor могут оказаться хуже proxy.
+- Реальные Bybit ордера сервис не размещает; single-order package остаётся recommendation/audit artifact.
+
 ## Остаточные риски после v1.2.0 strategy profitability router
 
 - Router сравнивает proxy-outcome evidence, а не фактические live fills. Даже положительные lower bounds и terminal holdout не доказывают будущую прибыльность.

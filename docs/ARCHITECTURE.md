@@ -1,3 +1,17 @@
+## Trend first-touch event architecture — v1.3.0
+
+Data flow для `directional_trend`:
+
+1. `app/outcomes.py` создаёт immutable `event_type` и net-return diagnostics из непрерывного 1m path.
+2. `app/db.py` сохраняет `reco_outcomes.event_type`; SQLite bootstrap и PostgreSQL reference schema используют additive default `LEGACY_BINARY` для старых строк.
+3. `app/trend_events.py` формирует exact-policy трёхклассовую выборку, выполняет whole-timestamp chronological terminal holdout, purging по exact label availability и softmax fit только на pre-holdout train.
+4. Модель сохраняется в существующем calibrator store под отдельным bot/policy key и не смешивается с grid LogReg.
+5. `app/recommender.py` строит plan-specific `trend_event_assessment` с вероятностями, payoffs и консервативной EV.
+6. `app/strategy_router.py` сравнивает grid и trend только после strategy-specific evidence gates; непроверенный trend исключается fail-closed.
+7. API status и frontend показывают readiness, class probabilities и first-touch EV отдельно от heuristic confidence.
+
+Версии контракта: `directional_trend_v2`, `directional_trend_label_v2`, `logreg_directional_trend_v2`, `trend-first-touch-softmax-v1`, `strategy-profitability-router-v2`. Изменение label/contract исключает legacy v1 trend outcomes из нового fit без удаления исторического аудита.
+
 ## Strategy profitability router - v1.2.0
 
 `app/strategy_router.py` is the strategy-family selection boundary. The recommender constructs independent grid and trend candidates from one feature snapshot, annotates each with its bot-specific calibration evidence and calls the router before persistence/publication selection. The router never reads raw strategy score. It returns a selected winner, `no_eligible_strategy`, or `no_clear_winner`; non-winners remain paired outcome samples.

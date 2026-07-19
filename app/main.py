@@ -42,6 +42,11 @@ from .recommender import (
     run_llm_review_sweep_once,
     run_recommender_once,
 )
+from .trend_events import (
+    TREND_EVENT_MODEL_VERSION,
+    load_trend_event_model,
+    trend_event_storage_key,
+)
 from .risk import get_risk_limits, compute_risk_status, gate_candidate, normalize_risk_limits
 from .security import is_authorized
 from . import db
@@ -5328,7 +5333,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.3.0", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -8004,6 +8009,35 @@ def api_status() -> dict[str, Any]:
                 "policy_censor_reasons": dict(observability.get("censor_reasons") or {}),
             }
 
+        trend_event_key = trend_event_storage_key(policy_fingerprint)
+        trend_event_model = load_trend_event_model(conn, trend_event_key)
+        trend_event_status = {
+            "model_version": TREND_EVENT_MODEL_VERSION,
+            "outcome_label_version": (
+                str(getattr(trend_event_model, "outcome_label_version", "") or "")
+                if trend_event_model is not None
+                else "directional_trend_label_v2"
+            ),
+            "storage_key": trend_event_key,
+            "fitted": bool(trend_event_model and trend_event_model.fitted),
+            "n_samples": int(getattr(trend_event_model, "n_samples", 0) or 0) if trend_event_model is not None else 0,
+            "class_counts": dict(getattr(trend_event_model, "class_counts", {}) or {}) if trend_event_model is not None else {},
+            "fit_samples": int(getattr(trend_event_model, "fit_samples", 0) or 0) if trend_event_model is not None else 0,
+            "fit_class_counts": dict(getattr(trend_event_model, "fit_class_counts", {}) or {}) if trend_event_model is not None else {},
+            "holdout_status": str(getattr(trend_event_model, "holdout_status", "not_evaluated")) if trend_event_model is not None else "not_evaluated",
+            "holdout_samples": int(getattr(trend_event_model, "holdout_samples", 0) or 0) if trend_event_model is not None else 0,
+            "holdout_class_counts": dict(getattr(trend_event_model, "holdout_class_counts", {}) or {}) if trend_event_model is not None else {},
+            "holdout_log_loss": getattr(trend_event_model, "holdout_log_loss", None) if trend_event_model is not None else None,
+            "holdout_null_log_loss": getattr(trend_event_model, "holdout_null_log_loss", None) if trend_event_model is not None else None,
+            "holdout_calibration_gap": getattr(trend_event_model, "holdout_calibration_gap", None) if trend_event_model is not None else None,
+            "probability_error_bound": getattr(trend_event_model, "probability_error_bound", None) if trend_event_model is not None else None,
+            "horizon_exit_mean_return": getattr(trend_event_model, "horizon_exit_mean_return", None) if trend_event_model is not None else None,
+            "horizon_exit_return_lower_bound": getattr(trend_event_model, "horizon_exit_return_lower_bound", None) if trend_event_model is not None else None,
+            "policy_fingerprint": policy_fingerprint,
+        }
+        if "directional_trend" in bot_status:
+            bot_status["directional_trend"]["first_touch_model"] = trend_event_status
+
         last_reco_ts = db.get_latest_reco_ts(conn)
         cur = conn.execute("SELECT COUNT(*) AS c FROM decision_log WHERE action='COLLECT_ERROR' AND ts >= ?", (db.now_ts() - 600,))
         collect_errors_10m = int(cur.fetchone()["c"])
@@ -8093,6 +8127,7 @@ def api_status() -> dict[str, Any]:
                 "b": float(global_model.platt.b) if global_model and global_model.fitted else None,
             },
             "bot_calibrators": bot_status,
+            "trend_first_touch_model": trend_event_status,
             "outcome_count": outcome_count,
             "outcome_worker": outcome_worker_liveness,
             "calib_min_samples": min_samples,

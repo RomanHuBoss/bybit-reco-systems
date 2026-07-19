@@ -227,7 +227,8 @@ CREATE TABLE IF NOT EXISTS reco_outcomes (
   entry_close DOUBLE PRECISION NOT NULL,
   exit_close DOUBLE PRECISION NOT NULL,
   ret DOUBLE PRECISION NOT NULL,
-  success INTEGER NOT NULL
+  success INTEGER NOT NULL,
+  event_type TEXT NOT NULL DEFAULT 'LEGACY_BINARY'
 );
 
 CREATE INDEX IF NOT EXISTS idx_outcomes_ts ON reco_outcomes(ts DESC);
