@@ -1,3 +1,22 @@
+## 2026-07-20 - v1.4.2 UI patch - wide observability windows and de-duplicated results
+
+### Fixed
+- Removed the two redundant current-policy event summary tables from «Результаты наблюдений»; the single strategy/direction table with badges remains the canonical top-level breakdown.
+- Expanded «Исходы / Результаты наблюдений» and «Здоровье» to a responsive width of up to 1900 px and near-full viewport height on 1920 px operator monitors.
+- Added column-aware modal tables: balanced 34/66 widths for two-column diagnostics, natural horizontal expansion for wide journals, wrapped headers and bounded long-text cells.
+- Increased useful vertical space for symbol health, current outcome journal and archive tables while keeping sticky headers and local table scrolling.
+- Reset the wide-modal class whenever a normal details/technical modal opens, preventing layout leakage between windows.
+
+### Trading assessment
+- No model, threshold, calibration, risk, persistence or execution semantics were weakened to manufacture recommendations.
+- The supplied diagnostics show a healthy runtime but zero actionable recommendations, zero calibration-eligible current-model outcomes and unfitted grid/trend probability models. This patch therefore improves operator ergonomics only; it does not claim that the strategy has a proven edge or is ready for live trading.
+
+### Validation
+- Added `tests/test_iteration272_wide_observability_windows.py` with static and Node-runtime regressions.
+- New regression suite: 3 passed. Focused observability suite: 35 passed.
+- Exhaustive 1294-test collection passed in six disjoint groups; one order-sensitive aggregate group was executed file-by-file after the monolithic run stalled without a failure.
+- `python -m compileall -q app tests` and `node --check app/ui/static/app.js` passed.
+
 ## 2026-07-19 - v1.4.2 - rejected trend evaluation contract
 
 ### Fixed

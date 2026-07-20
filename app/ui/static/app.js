@@ -2746,6 +2746,8 @@ function buildModalTable(columns, rows, { emptyText = "Нет данных", row
     : `<tr><td colspan="${columns.length}" class="modal-table-empty">${escapeHtml(emptyText)}</td></tr>`;
 
   const tableClasses = ["table", "modal-table"];
+  if (columns.length === 2) tableClasses.push("modal-table-two-column");
+  if (columns.length >= 10) tableClasses.push("modal-table-many-columns");
   if (compact || columns.length >= 10) tableClasses.push("modal-table-compact");
   const wrapStyle = Number.isFinite(Number(maxHeight)) && Number(maxHeight) > 0
     ? ` style="max-height:${Number(maxHeight)}px"`
@@ -3149,7 +3151,14 @@ function localizeObjectForDisplay(value, key = "") {
   return value;
 }
 
+function configureModalLayout({ wide = false } = {}) {
+  const card = document.querySelector("#modal .modal-card");
+  if (!card) return;
+  card.classList.toggle("modal-card-wide", Boolean(wide));
+}
+
 function showModal(title, obj) {
+  configureModalLayout();
   const body = $("modalBody");
   $("modalTitle").textContent = title;
   body.classList.remove("modal-html");
@@ -3160,6 +3169,7 @@ function showModal(title, obj) {
 }
 
 function showRawTechnicalModal(title, obj) {
+  configureModalLayout();
   const body = $("modalBody");
   $("modalTitle").textContent = title;
   body.classList.remove("modal-html");
@@ -3168,7 +3178,8 @@ function showRawTechnicalModal(title, obj) {
   $("modal").classList.remove("hidden");
 }
 
-function showModalHtml(title, html) {
+function showModalHtml(title, html, { wide = false } = {}) {
+  configureModalLayout({ wide });
   const body = $("modalBody");
   $("modalTitle").textContent = title;
   body.classList.remove("pre");
@@ -3563,7 +3574,7 @@ async function loadHealth() {
       <div class="modal-section-title">Загрузка диагностики</div>
       <p class="modal-note">Получаем актуальное состояние фоновых контуров и базы данных…</p>
     </div>
-  `);
+  `, { wide: true });
   const [healthRes, statusRes, decisionsRes] = await Promise.all([
     fetch("/api/v1/health/symbols"),
     fetch("/api/v1/status"),
@@ -3828,11 +3839,11 @@ async function loadHealth() {
         { label: "Ошибки/10м", render: row => escapeHtml(String(Number(row.error_count_10m || 0))) },
         { label: "Пропусков устаревших данных за час", render: row => escapeHtml(String(Number(row.stale_skips_1h || 0))) },
         { label: "Отключён", render: row => row.disabled ? '<span class="neutral-note neutral-note-neutralized">Да</span>' : 'Нет' },
-      ], symbols, { emptyText: "Данные по инструментам пока отсутствуют." })}
+      ], symbols, { emptyText: "Данные по инструментам пока отсутствуют.", maxHeight: 680 })}
     </div>
   `;
 
-  showModalHtml("Здоровье системы", html);
+  showModalHtml("Здоровье системы", html, { wide: true });
 }
 
 async function loadOutcomes() {
@@ -3841,7 +3852,7 @@ async function loadOutcomes() {
       <div class="modal-section-title">Загрузка статистики</div>
       <p class="modal-note">Считаем текущую policy-когорту и загружаем краткую сводку исторического архива…</p>
     </div>
-  `);
+  `, { wide: true });
   const [currentRes, archiveRes] = await Promise.all([
     fetch("/api/v1/outcomes/stats?scope=current_policy"),
     fetch("/api/v1/outcomes/stats?scope=archive&detail=summary"),
@@ -3858,7 +3869,7 @@ async function loadOutcomes() {
         <p class="modal-note">Сервис вернул повреждённый или не-JSON ответ. Данные не подменялись пустой статистикой.</p>
         <pre class="json-box">${escapeHtml(String(e?.message || e || "unknown_json_error"))}</pre>
       </div>
-    `);
+    `, { wide: true });
     return;
   }
   if (!currentRes.ok || !archiveRes.ok) {
@@ -3893,12 +3904,6 @@ async function loadOutcomes() {
   const llmByEngine = data.llm_engine_alignment || [];
   const llmMatrix = data.llm_engine_matrix || [];
   const byBot = data.by_bot || [];
-  const eventTypeCounts = data.event_type_counts || {};
-  const eventTypeCountsByBot = data.event_type_counts_by_bot || {};
-  const eventTypeRows = Object.entries(eventTypeCounts).map(([event_type, count]) => ({ event_type, count }));
-  const eventTypeByBotRows = Object.entries(eventTypeCountsByBot).flatMap(([bot_type, counts]) =>
-    Object.entries(counts || {}).map(([event_type, count]) => ({ bot_type, event_type, count }))
-  );
   const archiveEventTypeRows = Object.entries(archiveData?.event_type_counts || {}).map(([event_type, count]) => ({ event_type, count }));
   const archiveEventTypeByBotRows = Object.entries(archiveData?.event_type_counts_by_bot || {}).flatMap(([bot_type, counts]) =>
     Object.entries(counts || {}).map(([event_type, count]) => ({ bot_type, event_type, count }))
@@ -3968,7 +3973,7 @@ async function loadOutcomes() {
       ], decisionReasonCounts, { emptyText: "Коды причин решения не сохранены в этой выборке." })}
     </div>
     <div class="modal-section">
-      <div class="modal-section-title">Стратегии и типы терминальных событий</div>
+      <div class="modal-section-title">Стратегии</div>
       ${buildModalTable([
         { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
         { label: "Исходное направление", render: row => renderDirectionBadge(row.raw_direction, row.bot_type) },
@@ -3977,15 +3982,6 @@ async function loadOutcomes() {
         { label: "Доля успешных", render: row => row.win_rate == null ? "—" : escapeHtml(`${(Number(row.win_rate) * 100).toFixed(1)}%`) },
         { label: "Средний net результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
       ], byBot, { emptyText: "Исходы по стратегиям пока не накоплены." })}
-      ${buildModalTable([
-        { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
-        { label: "Тип события", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
-        { label: "Количество", render: row => escapeHtml(String(row.count || 0)) },
-      ], eventTypeByBotRows, { emptyText: "Терминальные события по стратегиям пока отсутствуют." })}
-      ${buildModalTable([
-        { label: "Тип события · всего", render: row => `<span class="wrap">${escapeHtml(outcomeEventTypeRu(row.event_type))}</span>` },
-        { label: "Количество", render: row => escapeHtml(String(row.count || 0)) },
-      ], eventTypeRows, { emptyText: "Терминальные события пока отсутствуют." })}
       <p class="modal-note">Grid и trend не объединяются в одну экономическую интерпретацию: GRID_OUTCOME отражает сеточный P&amp;L/kill-switch, а TP_FIRST, SL_FIRST и HORIZON_EXIT — порядок границ single-position trend.</p>
     </div>
     <div class="modal-section">
@@ -4108,7 +4104,7 @@ async function loadOutcomes() {
         { label: "Пояснение LLM", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.llm_review?.summary || row.llm_review?.error || "—"))}</span>` },
         { label: "Набор правил", className: "wrap", render: row => `<span class="wrap">${escapeHtml(String(row.policy_fingerprint || "—").slice(0, 12))}</span>` },
         { label: "Идентификатор рекомендации", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
-      ], recent, { emptyText: "В текущем наборе правил завершённых наблюдений пока нет. Данные появятся после окончания установленного горизонта наблюдения.", compact: true, maxHeight: 420 })}
+      ], recent, { emptyText: "В текущем наборе правил завершённых наблюдений пока нет. Данные появятся после окончания установленного горизонта наблюдения.", compact: true, maxHeight: 640 })}
     </div>
     <div class="modal-section">
       <div class="modal-section-title">9. Исторический архив (не входит в основную статистику)</div>
@@ -4140,11 +4136,11 @@ async function loadOutcomes() {
         { label: "Расчётный net proxy P&L", render: row => escapeHtml(renderOutcomeReturn(row.ret)) },
         { label: "Причина исхода", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeReasonText(row))}</span>` },
         { label: "Идентификатор рекомендации", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
-      ], archiveRecent, { emptyText: "Исторический архив пуст.", compact: true, maxHeight: 300 })}
+      ], archiveRecent, { emptyText: "Исторический архив пуст.", compact: true, maxHeight: 480 })}
     </div>
   `;
 
-  showModalHtml("Результаты наблюдений", html);
+  showModalHtml("Результаты наблюдений", html, { wide: true });
 }
 
 async function loadDecisions() {
