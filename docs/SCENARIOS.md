@@ -1,3 +1,21 @@
+## Compact observability scenarios — v1.4.3
+
+### Results при `actionable=0`
+1. Оператор открывает «Результаты наблюдений».
+2. Верхняя карточка показывает `Торговые outcomes = 0`.
+3. Экран явно сообщает, что strategy rows являются `shadow/no_trade` evidence.
+4. Оператор сравнивает «Успех по контракту» и «Средний net» как разные показатели.
+5. Для rec-level расследования раскрывает текущий журнал или архив.
+
+### Grid kill-switch при положительном terminal P&L
+1. Outcome имеет `success=0`, `stopped=true`, `ret>0`.
+2. Таблица показывает `Неуспех сетки · kill-switch` и положительный net отдельно.
+3. Причина поясняет, что защитное срабатывание делает strategy contract неуспешным независимо от знака liquidation P&L.
+
+### Закрытие окна
+- Close button, click по backdrop и клавиша Escape вызывают общий modal lifecycle.
+- Escape закрывает все открытые `.modal` dialogs и не запускает refresh shortcut.
+
 ## Rejected trend evaluation scenarios — v1.4.2
 
 ### Direction is not confirmed

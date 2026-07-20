@@ -1,3 +1,13 @@
+## v1.4.3: compact modal observability helpers
+
+- `app/ui/static/app.js / renderModalDisclosure()` — раскрываемый контейнер для advanced outcome/health tables.
+- `app/ui/static/app.js / closeAllDialogs()` — единая точка закрытия modal-диалогов, включая Escape.
+- `loadOutcomes()` — один primary strategy aggregation; cohort and monetary semantics stay separate.
+- `loadHealth()` — объединённые operator reasons и evidence readiness; deep runtime/DB/LLM diagnostics остаются доступными в disclosure.
+- `app/ui/static/styles.css` — 1600 px wide contract и compact disclosure styling.
+
+Backend modules, schemas and strategy math remain unchanged in this patch.
+
 ## v1.4.2: candidate-kind lifecycle
 
 - `app/recommender.py` classifies preliminary trend analysis before constructing any position geometry. Neutral trend becomes `trend_evaluation_rejected`; valid LONG/SHORT becomes `strategy_recommendation`.

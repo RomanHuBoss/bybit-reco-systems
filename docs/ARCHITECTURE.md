@@ -1,3 +1,14 @@
+## Operator observability composition — v1.4.3
+
+Frontend observability теперь имеет два уровня:
+
+- primary decision layer: summary cards, one operator-status table, one readiness/evidence table, one canonical strategy table;
+- audit layer: `<details class="modal-disclosure">` с причиной допуска, LLM matrix, symbol breakdown, full current rows, archive, runtime/collector/backfill и DB semantic details.
+
+`renderModalDisclosure()` является общим renderer для audit layer. `closeAllDialogs()` централизует Escape/backdrop/close-button lifecycle и закрывает все элементы `.modal`, а не один hard-coded dialog. Wide layout применяется только через `configureModalLayout({wide:true})` и ограничен 1600 px / 88vh / 900 px.
+
+Data API и persistence contract не изменены. Компоновка не удаляет audit fields и не пересчитывает strategy statistics на frontend.
+
 ## Rejected trend evaluation boundary — v1.4.2
 
 `directional_trend` is now a formed strategy only when direction is LONG or SHORT. The durable discriminator is `recommendations.candidate_kind`:

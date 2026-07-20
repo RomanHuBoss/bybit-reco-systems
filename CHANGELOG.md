@@ -1,3 +1,30 @@
+## 2026-07-20 - v1.4.3 - compact observability and strategy sign audit
+
+### Fixed
+- Удалены основные дублирующие outcome-таблицы: by-execution, raw-direction, direction-pair и отдельный neutral breakdown больше не повторяют каноническую таблицу «Стратегии».
+- Исправлена операторская интерпретация: `success` называется «успех по контракту», а `net proxy P&L` показывается отдельно; positive P&L после grid kill-switch не выглядит как противоречивая «победа/поражение».
+- При нулевой actionable-когорте Results явно маркирует статистику как `shadow/no_trade`, а не как результаты разрешённых торговых прогнозов.
+- Health больше не повторяет одинаковые readiness/outcome/runtime/LLM показатели в cards и нескольких соседних таблицах.
+- Клавиша `Escape` закрывает все modal-диалоги.
+
+### Changed
+- Большие окна ограничены `width:min(1600px, calc(100vw - 32px))`, `height:min(88vh, 900px)`.
+- Results и Health используют disclosure-блоки для расследовательских разрезов, подробных журналов, архива и расширенной технической диагностики.
+- Frontend cache token: `build=1.4.3&ui=compact-observability-v2`.
+- Итерационный prompt обновлён обязательными контрактами compact UI, LONG/SHORT mirror audit, funding signs, strategy-contract success и cohort lineage.
+
+### Strategy audit
+- Канонические LONG/SHORT price signs, TP/SL geometry, risk:reward, funding cashflow и MTF direction проверены зеркальными regression fixtures.
+- Подтверждённой знаковой инверсии не обнаружено; candidate thresholds, calibration gates, outcome formulas и router economics не менялись.
+- Диагностический снимок показывает `actionable=0`; текущие отрицательные агрегаты относятся преимущественно к shadow/no-trade evidence и не доказывают убыточность разрешённой live-policy стратегии.
+
+### Verification
+- Новый regression: `tests/test_iteration273_compact_observability_strategy_audit.py`.
+- Актуализирован historical UI regression `tests/test_iteration272_wide_observability_windows.py` под новый 1600 px contract.
+- Focused strategy/UI/document regression: `127 passed`.
+- Exact collection: `1300/1300` nodes passed in twelve deterministic non-overlapping batches; the monolithic harness stalled without a failure summary and is not counted as a pass.
+- `compileall`, `node --check`, DOCX render QA and 20-page iterative PDF render QA passed.
+
 ## 2026-07-20 - v1.4.2 UI patch - wide observability windows and de-duplicated results
 
 ### Fixed

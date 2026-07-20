@@ -1,3 +1,13 @@
+## Компактная наблюдаемость и аудит знаков стратегий (v1.4.3)
+
+Версия 1.4.3 перекомпоновывает окна «Результаты наблюдений» и «Здоровье системы». В Results основными остаются только когорты допуска, одна каноническая таблица `strategy + raw/execution direction + contract success + average net result`, ключевые выводы и один LLM-срез. Повторные таблицы по execution direction, преобразованию направления, нейтральным подтипам и raw direction удалены с основного уровня. Причины допуска, LLM-матрица, разбивка по символам, подробный журнал и архив сохранены в раскрываемых audit-блоках. Health объединяет explanations, `no_trade` и hard blocks в одну операторскую таблицу, а readiness, outcome queues и model evidence — в одну таблицу доказательности; runtime/collector/backfill/LLM details скрыты по умолчанию, но не удалены.
+
+Большие диалоги ограничены `1600 px`, `88vh` и `900 px`; клавиша `Escape` закрывает все открытые modal-диалоги. Обычные окна по-прежнему сбрасывают wide-layout.
+
+Проведён отдельный аудит long/short signs и payoff semantics. Зеркальные тесты подтверждают: рост цены прибыльный для LONG и убыточный для SHORT, падение — наоборот; TP/SL и risk:reward симметричны; positive funding оплачивает long и кредитует short, negative funding — наоборот; устойчиво растущий MTF path даёт LONG, зеркально падающий — SHORT. Подтверждённой инверсии знаков в `direction.py`, `trading_semantics.py` и directional outcome не найдено, поэтому торговые пороги и risk gates не ослаблялись.
+
+Критическая операторская неоднозначность исправлена в UI: `success` больше не подписывается как универсальная прибыльность. Для grid срабатывание kill-switch является неуспехом strategy contract даже при положительном terminal proxy P&L; для trend terminal event и net return также различаются. При `actionable=0` Results прямо сообщает, что строки являются `shadow/no_trade` evidence, а не результатами разрешённых прогнозов или исполненных сделок.
+
 ## Отклонённая предварительная проверка тренда (v1.4.2)
 
 Версия 1.4.2 вводит жёсткий контракт `candidate_kind`. Полноценная стратегия `directional_trend` существует только при подтверждённом `direction=long` или `direction=short`. Комбинация `directional_trend/neutral` больше не является recommendation-позицией: она сохраняется только как диагностическая запись `trend_evaluation_rejected` с первичной причиной `TREND_DIRECTION_UNCONFIRMED`. Для неё не формируются entry/TP/SL, trade plan, outcome-root, строка ожидания исхода, история позиции, обучающий пример или возможность materialize/execute.

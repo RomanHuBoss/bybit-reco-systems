@@ -1,3 +1,20 @@
+## Strategy signs, contract success and evidence cohorts — v1.4.3
+
+Торговая математика не изменена, но её контракт повторно проверен зеркальными fixtures:
+
+- LONG: `ret=(exit-entry)/entry`, TP выше entry, SL ниже entry, positive funding является расходом;
+- SHORT: `ret=(entry-exit)/entry`, TP ниже entry, SL выше entry, positive funding является доходом;
+- negative funding меняет плательщика на short;
+- одинаковые относительные TP/SL дают одинаковые gross profit/loss и RR для LONG/SHORT;
+- устойчиво растущий MTF path обязан агрегироваться в LONG, зеркально падающий — в SHORT.
+
+`success` является strategy-contract label, а не синонимом `ret > 0`:
+
+- `futures_grid`: success требует положительного net proxy P&L **и отсутствия kill-switch**. Сетка, остановленная защитной границей, остаётся contract failure, даже если ликвидация инвентаря оставила положительный terminal P&L;
+- `directional_trend`: событие (`TP_FIRST`, `SL_FIRST`, `HORIZON_EXIT`) и net return хранятся раздельно. Положительный `HORIZON_EXIT` может быть денежно успешным, но не переименовывается в `TP_FIRST`.
+
+Outcome summary также не является единой торговой выборкой. `shadow/no_trade`, exact-policy candidate, calibration-eligible, actionable и executed — разные cohorts. При `actionable=0` отрицательный средний return shadow-строк нельзя описывать как результат разрешённых сделок. Статистику разных `model_version` или `policy_fingerprint` объединять запрещено.
+
 ## Trend direction must exist before a trend strategy — v1.4.2
 
 A trend analyser may return an inconclusive result, but a `directional_trend` position may not be neutral. The state machine is now:

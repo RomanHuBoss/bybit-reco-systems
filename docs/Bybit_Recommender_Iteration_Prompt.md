@@ -4,9 +4,11 @@
 
 Полная проектно-специфичная версия для итеративного аудита, исправления, тестирования и сборки ZIP-релиза
 
-Редакция: 19 июля 2026 г.
+Редакция: 20 июля 2026 г.
 
-Контракт: v1.4.2 — rejected trend evaluation + strategy-native observability + first-touch/router invariants
+Контракт: v1.4.3 — compact observability + strategy sign audit + rejected trend evaluation/first-touch invariants
+
+Router contract: strategy-profitability-router-v3.
 
 Ты — независимая экспертная группа, объединяющая компетенции:
 - senior Python/FastAPI engineer;
@@ -33,7 +35,7 @@
 - `candidate_kind` является отдельным индексируемым полем SQLite/PostgreSQL, а startup repair исправляет legacy neutral trend rows;
 - сохранённый outcome, связанный с rejected evaluation, не удаляется, но обязан нарушать health semantic integrity.
 
-Обязательны RED→GREEN тесты для генератора, DB fresh/upgrade, API Details, frontend, history, outcome queries, router, training и execution endpoint. Нельзя считать каскад `DIRECTION_INVALID / LEVELS_MISSING / GEOMETRY_INVALID` тремя независимыми причинами: без направления позиционная геометрия не должна строиться вообще.
+Обязательны RED->GREEN тесты для генератора, DB fresh/upgrade, API Details, frontend, history, outcome queries, router, training и execution endpoint. Нельзя считать каскад `DIRECTION_INVALID / LEVELS_MISSING / GEOMETRY_INVALID` тремя независимыми причинами: без направления позиционная геометрия не должна строиться вообще.
 
 ## 0.1. ОБЯЗАТЕЛЬНЫЙ АУДИТ STRATEGY-NATIVE DETAILS
 
@@ -49,6 +51,40 @@
 - legacy row без `bot_type` трактуется как historical `futures_grid`, а не угадывается как trend.
 
 Проверка должна включать backend/API tests и реальное выполнение frontend renderer в браузере или эквивалентном JavaScript runtime. Статический поиск строки недостаточен.
+
+## 0.2. ОБЯЗАТЕЛЬНЫЙ АУДИТ ЗНАКОВ, PAYOFF И СЕМАНТИКИ УСПЕХА GRID/TREND
+
+До изменения порогов, candidate generation или risk gates выполни отдельный доказательный аудит торговой математики обеих strategy families. Нельзя объяснять отрицательные агрегаты «плохим рынком» без воспроизводимых проверок, но также нельзя ослаблять fail-closed только потому, что shadow-выборка выглядит убыточной.
+
+Обязательны одновременно:
+
+- зеркальная симметрия LONG/SHORT для signed return, TP/SL geometry, gross/net P&L, risk:reward и Bybit side semantics;
+- положительный ход цены для LONG и отрицательный для SHORT должны давать одинаковый знак прибыли при равном относительном движении; обратный ход — одинаковый знак убытка;
+- positive funding: long платит, short получает; negative funding: short платит, long получает; исторический outcome использует signed settled funding, approval gate — только неблагоприятную часть;
+- multi-timeframe direction vote должен давать LONG на устойчиво растущем пути и SHORT на зеркально падающем; вклад slope/MACD/RSI не может быть инвертирован;
+- trend first-touch: LONG TP выше entry и SL ниже; SHORT TP ниже и SL выше; same-candle TP+SL остаётся AMBIGUOUS/censored; gap through SL использует наблюдаемый неблагоприятный open;
+- grid ledger, fill ordering, replacement activation, fees, slippage, funding, capital reference и kill-switch должны проверяться отдельными path fixtures для neutral/long/short;
+- `success` и `ret` запрещено трактовать как одно поле. Для grid kill-switch означает strategy-contract failure даже при положительном терминальном proxy P&L; для trend TP_FIRST/SL_FIRST/HORIZON_EXIT и net return должны показываться раздельно;
+- агрегаты `shadow/no_trade`, policy-evaluation, calibration-eligible, actionable и executed нельзя смешивать. Нулевая actionable-когорта означает отсутствие результатов разрешённых сделок, а не доказательство убыточности торговой стратегии;
+- статистические выводы делай только в одной model/policy lineage; приложенные старые `stats.json` не объединяй с более новой диагностикой без совпадения model version и policy fingerprint.
+
+Если знаковая или payoff-ошибка подтверждена, классифицируй её не ниже HIGH, добавь минимальный RED fixture и исправь source of truth. Если инверсия не подтверждена, зафиксируй выполненные mirror/path tests и отдели математическую корректность от отсутствия доказанного edge.
+
+## 0.3. КОМПАКТНЫЙ ОПЕРАТОРСКИЙ UI БЕЗ ДУБЛИРУЮЩИХ АГРЕГАЦИЙ
+
+Окна «Результаты наблюдений» и «Здоровье системы» должны показывать один первичный ответ на каждый операторский вопрос. Запрещено подряд выводить несколько таблиц, являющихся разными группировками тех же строк, если они не меняют решение оператора.
+
+Обязательный контракт:
+
+- основная ширина больших диалогов — не более 1600 px и не более `calc(100vw - 32px)`;
+- полезная высота большого диалога — не более 88% viewport и 900 px, с отдельной прокруткой содержимого;
+- Escape закрывает все открытые диалоги; backdrop и кнопка закрытия сохраняются;
+- в Results основной уровень содержит: компактные cards, когорты допуска, одну каноническую таблицу strategy+direction+contract success+net result, ключевые выводы и при наличии один LLM-срез;
+- повторные by-execution, raw-direction, direction-pair и neutral-subtype агрегаты не выводятся отдельными основными таблицами; расследовательские разрезы помещаются в раскрываемый advanced block;
+- журнал по символам, подробные rows и архив скрыты в disclosure-блоках, но не удалены из audit UI;
+- Health объединяет explanation/no_trade/block в одну операторскую таблицу, а readiness/outcome/calibrator — в одну таблицу доказательности; runtime, collector, backfill, semantic-integrity details и LLM config остаются в advanced diagnostics;
+- summary cards не должны повторяться теми же числами в соседних таблицах без дополнительной семантики;
+- frontend tests должны исполнять production helpers для wide-class и закрытия диалогов, а также проверять отсутствие удалённых заголовков-дубликатов.
 
 ## 1. ПРОВЕРКА СОВМЕСТИМОСТИ ПРОЕКТА
 
@@ -620,7 +656,7 @@ Frontend находится в:
 - `app/ui/static/styles.css`.
 
 Не используй путь `web/js/app.js`: такого штатного пути в этом проекте нет. Проверь:
-- backend ↔ frontend parity;
+- backend <-> frontend parity;
 - status и effective_status;
 - direction;
 - TP/SL;
@@ -1254,7 +1290,7 @@ Severity:
 Не превращай предположение в «исправленный дефект». Не выдавай documented limitation внешнего executor за ошибку recommendation service.
 
 
-## 8. ОБЯЗАТЕЛЬНЫЙ RED → GREEN
+## 8. ОБЯЗАТЕЛЬНЫЙ RED -> GREEN
 
 Для bug fix сначала создай regression test. Используй отдельную pristine/red copy:
 
@@ -1317,7 +1353,7 @@ Severity:
 - добавь отдельный regression test;
 - укажи это в отчёте.
 
-Не заявляй red → green, если red фактически не запускался.
+Не заявляй red -> green, если red фактически не запускался.
 
 
 ## 9. РЕАЛИЗАЦИЯ
@@ -1451,7 +1487,7 @@ CHANGELOG должен содержать:
 ## 16. Фактический diff по файлам.
 
 
-## 17. Red → green evidence.
+## 17. Red -> green evidence.
 
 
 ## 18. Database/schema compatibility.
@@ -1646,7 +1682,7 @@ node --check app/ui/static/app.js python -m pytest -q Дополнительно
 ## 10. Новые tests.
 
 
-## 11. Red → green evidence:
+## 11. Red -> green evidence:
 - red command;
 - существенная red строка;
 - green command;
@@ -1708,7 +1744,7 @@ node --check app/ui/static/app.js python -m pytest -q Дополнительно
 - ослаблять fail-closed;
 - превращать hard block в warning ради тестов;
 - скрывать baseline failures;
-- заявлять red → green без red запуска;
+- заявлять red -> green без red запуска;
 - писать тест, использующий production result как oracle;
 - доверять старому audit report вместо повторной проверки;
 - выполнять массовый рефакторинг без необходимости;

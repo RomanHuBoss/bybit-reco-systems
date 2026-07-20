@@ -1,3 +1,9 @@
+# Актуализация контракта — 20 июля 2026 г., v1.4.3
+
+Обязательны два дополнительных сквозных аудита. Первый — compact observability: окна Results/Health не шире 1600 px и 88vh/900 px, Escape закрывает все диалоги, основной уровень содержит по одной канонической таблице на операторский вопрос, а повторные direction/neutral/runtime разрезы уходят в disclosure-блоки. Второй — доказательная проверка знаков и payoff обеих стратегий: зеркальные LONG/SHORT fixtures, TP/SL, signed return, funding, MTF direction, first-touch, grid ledger и раздельная семантика `success`/`ret`. Shadow/no-trade, policy-evaluation, calibration-eligible и actionable когорты нельзя смешивать. Канонический source остаётся `docs/Bybit_Recommender_Iteration_Prompt.md`.
+
+---
+
 # Актуализация контракта — 19 июля 2026 г., v1.4.2
 
 Обязателен аудит границы между preliminary trend evaluation и сформированной стратегией. `directional_trend/neutral` запрещено хранить или показывать как позицию: canonical `candidate_kind=trend_evaluation_rejected`, одна причина `TREND_DIRECTION_UNCONFIRMED`, отсутствие entry/TP/SL, outcome-root, observability schedule, history, training и execution. Проверяй additive migration/index `candidate_kind`, startup repair legacy rows, исключение из router/first-touch fit и health-инвариант `rejected_trend_outcome_total=0`. Полноценный `directional_trend` допустим только с LONG/SHORT и `candidate_kind=strategy_recommendation`.

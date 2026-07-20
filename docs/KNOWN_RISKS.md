@@ -1,3 +1,12 @@
+## Остаточные риски после v1.4.3 compact observability / sign audit
+
+1. **Нет доказанного live edge.** Зеркальные тесты подтверждают математические знаки, но не прибыльность strategy family. Текущий диагностический снимок имеет нулевую actionable-когорту и недостаточный exact-policy evidence.
+2. **Contract success и денежная прибыльность различаются.** Grid kill-switch может дать `success=0` при положительном terminal proxy P&L; оператор должен смотреть одновременно на terminal reason и net result.
+3. **Shadow outcomes не равны торговым результатам.** Большинство текущих observations может быть `no_trade`/research. UI теперь предупреждает об этом, но внешние выгрузки всё ещё требуют явной проверки cohort fields.
+4. **Lineage mismatch.** Старые `stats.json` и новые diagnostics нельзя объединять, если не совпадают `model_version` и `policy_fingerprint`; небольшие группы легко создают ложный вывод об эффективности направления.
+5. **Disclosure-блоки требуют осознанного раскрытия.** Подробные technical fields не удалены, но скрыты по умолчанию. Для incident review оператор обязан раскрыть advanced diagnostics и скачать полный JSON.
+6. **UI compaction не меняет gates.** Отсутствие сделок нельзя исправлять отключением confidence/expectancy/censoring checks без отдельного walk-forward evidence audit.
+
 ## Остаточные риски после v1.4.2 rejected-evaluation boundary
 
 - A high rate of `trend_evaluation_rejected` may be legitimate market ambiguity or may reveal an overly conservative direction classifier. It must be analysed as diagnostic coverage, not as strategy failures or negative first-touch labels.

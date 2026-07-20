@@ -161,5 +161,6 @@ def test_operator_ui_does_not_call_proxy_outcomes_real_execution() -> None:
 
     assert "Уверенность не откалибрована" in js
     assert "а не подтверждение реального исполнения сделок" in js
-    assert "Результаты по торговым кандидатам" in js
+    assert '<div class="modal-section-title">Стратегии</div>' in js
+    assert "shadow/no-trade" in js
     assert "Что реально торговалось" not in js

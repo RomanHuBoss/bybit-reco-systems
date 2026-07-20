@@ -455,13 +455,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 10px;
+  padding: 16px;
   z-index: 100;
 }
 .modal-card {
   box-sizing: border-box;
-  width: min(1000px, calc(100vw - 20px));
-  max-height: calc(100vh - 20px);
+  width: min(1000px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -471,8 +471,9 @@ body {
   padding: 14px;
 }
 .modal-card-wide {
-  width: min(1900px, calc(100vw - 20px));
-  height: calc(100vh - 20px);
+  width: min(1600px, calc(100vw - 32px));
+  height: min(88vh, 900px);
+  max-height: calc(100vh - 32px);
 }
 .modal-header {
   display: flex;
@@ -554,6 +555,36 @@ body {
   color: var(--muted);
   margin: 0 0 10px;
 }
+.modal-disclosure {
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(15,23,42,0.72);
+  overflow: hidden;
+}
+.modal-disclosure > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  user-select: none;
+}
+.modal-disclosure[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+.modal-disclosure-body {
+  padding: 10px;
+}
+.modal-disclosure-note {
+  padding: 10px 10px 0;
+  margin-bottom: 0;
+}
+.modal-subsection-title {
+  margin-top: 12px;
+}
 .outcome-insight-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -600,7 +631,7 @@ body {
   table-layout: auto;
 }
 .modal-card-wide .modal-table-wrap {
-  max-height: min(64vh, 680px);
+  max-height: min(54vh, 560px);
 }
 .modal-table-many-columns {
   width: max-content;
