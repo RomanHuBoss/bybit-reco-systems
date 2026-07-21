@@ -1,3 +1,14 @@
+## Direction-aware calibration semantics - v1.4.5
+
+Pooled bot-family models may contain both LONG and SHORT rows. Raw signed market features do not have one success meaning across those sides. The canonical feature snapshot therefore contains:
+
+- `direction_sign`: LONG `+1`, SHORT `-1`, neutral/unknown `0`;
+- `sentiment_alignment`: `direction_sign × effective_sentiment` for directional candidates; for a neutral grid, directional sentiment contributes `-abs(effective_sentiment)`.
+
+Positive `sentiment_alignment` always means that sentiment supports the selected side; negative means opposition. The raw `effective_sentiment` is retained as context, but it is no longer the only representation of sentiment. Persisted direction-aware fields must match the recommendation direction or the row is excluded from calibration. Binary LogReg/Platt and trend first-touch softmax share this schema.
+
+This change does not alter LONG/SHORT payoff, funding, TP/SL, score or router thresholds. It changes only whether a pooled learner can represent mirrored directional evidence.
+
 ## Label maturity and actual learning path — v1.4.4
 
 Outcome может войти в calibration только после единого момента `recommendation_ts + effective_horizon_sec + 120`. Publication сохраняет этот due time, worker ждёт максимум из него и готовности полного market-data window, lineage повторно вычисляет due и требует `label_available_ts >= due`. Boolean, fractional и non-positive timestamps/horizons отклоняются fail-closed.

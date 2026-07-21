@@ -1,3 +1,9 @@
+## Direction-aware learning boundary - v1.4.5
+
+The calibration boundary now treats recommendation direction as part of the immutable feature contract. `app/recommender.py` persists `direction_sign` and `sentiment_alignment`; `app/calibration.py` validates and extracts them; `app/trend_events.py` reuses the same 15-feature schema. Model storage keys and recommender identities were bumped so 13-feature coefficients cannot load under the new contract.
+
+The broader architecture remains hybrid rather than end-to-end learned: deterministic market features and scoring create candidates; learned components calibrate confidence and first-touch probabilities; monetary/temporal gates and the profitability router decide admissibility. No DB schema, private execution path or risk boundary changed.
+
 ## Shared label-maturity source of truth — v1.4.4
 
 `app/policy.py` владеет `CALIBRATION_LABEL_GRACE_SEC` и `policy_label_due_ts`. `app/recommender.py` использует helper при materialization policy contract и при fit-lineage validation; `app/outcomes.py` использует его перед сохранением outcome; `app/db.py` применяет bounded startup repair и передаёт maturity fields в compact status iterator. Это устраняет прежний split-brain между JSON policy, worker schedule и model-readiness observability.
@@ -50,7 +56,7 @@ Data flow для `directional_trend`:
 6. `app/strategy_router.py` сравнивает grid и trend только после strategy-specific evidence gates; непроверенный trend исключается fail-closed.
 7. API status и frontend показывают readiness, class probabilities и first-touch EV отдельно от heuristic confidence.
 
-Версии контракта: `directional_trend_v2`, `directional_trend_label_v2`, `logreg_directional_trend_v2`, `trend-first-touch-softmax-v1`, `strategy-profitability-router-v3`. Изменение label/contract исключает legacy v1 trend outcomes из нового fit без удаления исторического аудита.
+Версии контракта: `directional_trend_v2`, `directional_trend_label_v2`, `logreg_directional_trend_v3`, `trend-first-touch-softmax-v2`, `strategy-profitability-router-v3`. Изменение label/contract исключает legacy v1 trend outcomes из нового fit без удаления исторического аудита.
 
 ## Strategy profitability router - v1.2.0
 

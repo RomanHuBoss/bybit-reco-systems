@@ -187,6 +187,9 @@ FEATURE_NAMES = [
     "liq_tier_num",       # liquidity tier: micro=0, low=0.33, medium=0.67, high=1.0
     "btc_corr",           # btc_beta.correlation [−1, 1], 0 if unavailable
     "regime_conf",        # regime_confidence [0, 1] — how decisive the current regime is
+    # direction-aware additions — pooled LONG/SHORT semantics
+    "direction_sign",     # LONG=+1, SHORT=-1, NEUTRAL/unknown=0
+    "sentiment_alignment",  # sentiment aligned to selected direction; neutral penalises magnitude
 ]
 N_FEATURES = len(FEATURE_NAMES)
 
@@ -195,6 +198,22 @@ MAX_CHRONOLOGICAL_OOF_SPLITS = 5
 MIN_TERMINAL_DECISION_COHORTS = 5
 
 _LIQ_TIER_MAP = {"micro": 0.0, "low": 0.33, "medium": 0.67, "high": 1.0}
+
+
+def _direction_sign(direction: Any) -> float:
+    value = str(direction or "").strip().lower()
+    if value == "long":
+        return 1.0
+    if value == "short":
+        return -1.0
+    return 0.0
+
+
+def _sentiment_alignment(direction_sign: float, sentiment: float) -> float:
+    # For directional candidates, positive means the sentiment supports the
+    # selected side.  For a neutral grid, directional sentiment is adverse.
+    return direction_sign * sentiment if direction_sign else -abs(sentiment)
+
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
     if isinstance(value, bool):
@@ -236,11 +255,30 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
 
     snap = reasons.get("feature_snapshot") or {}
     if isinstance(snap, dict) and snap:
+        sentiment = _clamp(float(_safe_float(snap.get("effective_sentiment"), 0.0)), -1.0, 1.0)
+        direction_sign = _direction_sign(row.get("direction"))
+        expected_alignment = _sentiment_alignment(direction_sign, sentiment)
+
+        # Direction-aware fields are persisted at recommendation time.  Reject a
+        # contradictory snapshot rather than training on a silently reconstructed
+        # side: one corrupted sign would invert both LONG/SHORT semantics.
+        if "direction_sign" in snap:
+            persisted_sign = _safe_float(snap.get("direction_sign"))
+            if persisted_sign is None or abs(float(persisted_sign) - direction_sign) > 1e-12:
+                return None
+        if "sentiment_alignment" in snap:
+            persisted_alignment = _safe_float(snap.get("sentiment_alignment"))
+            if (
+                persisted_alignment is None
+                or abs(float(persisted_alignment) - expected_alignment) > 1e-12
+            ):
+                return None
+
         return [
             _clamp(float(_safe_float(snap.get("range_score"), 0.5)), 0.0, 1.0),
             _clamp(float(_safe_float(snap.get("trend_strength"), 0.0)), 0.0, 1.0),
             _clamp(float(_safe_float(snap.get("atr_pct_norm"), 0.0)), 0.0, 2.0),
-            _clamp(float(_safe_float(snap.get("effective_sentiment"), 0.0)), -1.0, 1.0),
+            sentiment,
             _clamp(float(_safe_float(snap.get("dir_conf"), 0.5)), 0.0, 1.0),
             _clamp(float(_safe_float(snap.get("coherence"), 0.5)), 0.0, 1.0),
             _clamp(float(_safe_float(snap.get("spread_bps_norm"), 0.8)), 0.0, 5.0),
@@ -250,6 +288,8 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
             _clamp(float(_safe_float(snap.get("liq_tier_num"), 0.67)), 0.0, 1.0),
             _clamp(float(_safe_float(snap.get("btc_corr"), 0.0)), -1.0, 1.0),
             _clamp(float(_safe_float(snap.get("regime_conf"), 0.5)), 0.0, 1.0),
+            direction_sign,
+            _clamp(expected_alignment, -1.0, 1.0),
         ]
 
     dir_agg = reasons.get("direction_agg") or {}
@@ -317,6 +357,12 @@ def extract_features(row: dict[str, Any]) -> list[float] | None:
         liq_tier_num,
         btc_corr,
         regime_conf,
+        _direction_sign(row.get("direction")),
+        _clamp(
+            _sentiment_alignment(_direction_sign(row.get("direction")), sent),
+            -1.0,
+            1.0,
+        ),
     ]
 
 def _extract_factor_value(reasons: dict, feature: str) -> float | None:
@@ -2903,10 +2949,10 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 #      Existing outcomes remain valid, but cached v16 diagnostics must refit.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v21",
-    "directional_trend": "logreg_directional_trend_v2",
+    "futures_grid": "logreg_futures_grid_v22",
+    "directional_trend": "logreg_directional_trend_v3",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v21"
+GLOBAL_LOGREG_KEY = "logreg_global_v22"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

@@ -5548,7 +5548,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.4", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.5", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

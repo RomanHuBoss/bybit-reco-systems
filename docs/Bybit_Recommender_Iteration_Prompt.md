@@ -4,9 +4,9 @@
 
 Полная проектно-специфичная версия для итеративного аудита, исправления, тестирования и сборки ZIP-релиза
 
-Редакция: 20 июля 2026 г.
+Редакция: 21 июля 2026 г.
 
-Контракт: v1.4.3 — compact observability + strategy sign audit + rejected trend evaluation/first-touch invariants
+Контракт: v1.4.4 — direction-aware pooled learning + compact observability + strategy sign/first-touch invariants
 
 Router contract: strategy-profitability-router-v3.
 
@@ -85,6 +85,22 @@ Router contract: strategy-profitability-router-v3.
 - Health объединяет explanation/no_trade/block в одну операторскую таблицу, а readiness/outcome/calibrator — в одну таблицу доказательности; runtime, collector, backfill, semantic-integrity details и LLM config остаются в advanced diagnostics;
 - summary cards не должны повторяться теми же числами в соседних таблицах без дополнительной семантики;
 - frontend tests должны исполнять production helpers для wide-class и закрытия диалогов, а также проверять отсутствие удалённых заголовков-дубликатов.
+
+## 0.4. ОБЯЗАТЕЛЬНЫЙ АУДИТ DIRECTION-AWARE ОБУЧЕНИЯ
+
+Если один calibrator или event model объединяет LONG и SHORT, каждый direction-sensitive feature обязан иметь единую семантику относительно выбранной стороны. Нельзя обучать pooled model только на сырой знаковой величине, когда одинаково поддерживающий сигнал имеет противоположный знак для LONG и SHORT.
+
+Обязательный контракт:
+- direction входит в immutable recommendation/training identity либо модель разделяется по сторонам;
+- для sentiment и иных side-dependent факторов существует явно протестированное direction-aligned представление;
+- supportive LONG и зеркальный supportive SHORT дают одинаковый знак aligned feature; opposing signals — одинаковый отрицательный знак;
+- persisted direction-aware fields сверяются с каноническим `recommendations.direction`; противоречие исключает строку fail-closed;
+- binary bot-family calibration и trend first-touch model используют одну согласованную feature semantics;
+- изменение числа или смысла features обязательно начинает новый model/calibrator lineage; старые коэффициенты не переиспользуются;
+- RED fixture должен быть симметричным по LONG/SHORT, сбалансированным по labels и построенным так, чтобы raw signed feature был статистически независим от target, а direction-aligned feature был предиктивен;
+- исправление обязано улучшить future/OOF или terminal-holdout metric относительно null baseline без снижения sample, purging, holdout, monetary или router gates.
+
+Отдельно зафиксируй архитектурную границу: calibration поверх фиксированного score не является end-to-end learned trading policy. Если после корректного representation, frozen lineage и достаточных независимых temporal cohorts модель не превосходит null и score-only baselines, рассматривай отсутствие edge как допустимый вывод, а не как основание бесконечно менять labels/thresholds.
 
 ## 1. ПРОВЕРКА СОВМЕСТИМОСТИ ПРОЕКТА
 

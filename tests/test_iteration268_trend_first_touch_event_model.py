@@ -9,6 +9,7 @@ import pytest
 
 from app import db, outcomes
 from app import recommender as recommender_module
+from app.calibration import FEATURE_NAMES
 from app.strategy_router import evaluate_candidate
 from app.trend_events import (
     TREND_EVENT_TYPES,
@@ -126,7 +127,7 @@ def test_trend_event_model_emits_normalized_three_way_probabilities() -> None:
     model = TrendEventModel(
         fitted=True,
         classes=TREND_EVENT_TYPES,
-        coef=[[0.0] * 13 for _ in TREND_EVENT_TYPES],
+        coef=[[0.0] * len(FEATURE_NAMES) for _ in TREND_EVENT_TYPES],
         intercept=[math.log(0.60), math.log(0.20), math.log(0.20)],
         n_samples=300,
         holdout_status="accepted",
@@ -137,7 +138,7 @@ def test_trend_event_model_emits_normalized_three_way_probabilities() -> None:
         horizon_exit_return_lower_bound=0.0,
         policy_fingerprint="a" * 64,
     )
-    probs = model.predict_proba([0.0] * 13)
+    probs = model.predict_proba([0.0] * len(FEATURE_NAMES))
     assert set(probs) == set(TREND_EVENT_TYPES)
     assert sum(probs.values()) == pytest.approx(1.0)
     assert probs["TP_FIRST"] == pytest.approx(0.60)
@@ -185,7 +186,7 @@ def test_trend_event_assessment_prices_tp_sl_and_timeout_separately() -> None:
     model = TrendEventModel(
         fitted=True,
         classes=TREND_EVENT_TYPES,
-        coef=[[0.0] * 13 for _ in TREND_EVENT_TYPES],
+        coef=[[0.0] * len(FEATURE_NAMES) for _ in TREND_EVENT_TYPES],
         intercept=[math.log(0.60), math.log(0.20), math.log(0.20)],
         n_samples=300,
         holdout_status="accepted",
@@ -196,7 +197,7 @@ def test_trend_event_assessment_prices_tp_sl_and_timeout_separately() -> None:
         horizon_exit_return_lower_bound=0.0,
         policy_fingerprint="a" * 64,
     )
-    assessment = build_trend_event_assessment(rec, [0.0] * 13, model)
+    assessment = build_trend_event_assessment(rec, [0.0] * len(FEATURE_NAMES), model)
     assert assessment["ready"] is True
     assert assessment["tp_first_probability"] == pytest.approx(0.60)
     assert assessment["sl_first_probability"] == pytest.approx(0.20)
@@ -216,7 +217,7 @@ def test_router_uses_first_touch_ev_not_binary_hit_rate() -> None:
     rec["reasons"]["trend_event_model"] = {
         "ready": True,
         "source": "trend_event_softmax",
-        "model_version": "trend-first-touch-softmax-v1",
+        "model_version": "trend-first-touch-softmax-v2",
         "outcome_label_version": "directional_trend_label_v2",
         "policy_fingerprint": "a" * 64,
         "tp_first_probability": 0.30,
@@ -313,7 +314,8 @@ def test_release_documents_and_iterative_pdf_match_current_contract() -> None:
 
     prompt_text = "\n".join(page.extract_text() or "" for page in PdfReader(prompt_pdf).pages)
     for expected in (
-        "v1.4.3",
+        "v1.4.4",
+        "direction-awarepooledlearning",
         "directional_trend",
         "TP_FIRST",
         "SL_FIRST",
@@ -433,7 +435,7 @@ def test_first_touch_lower_ev_allocates_uncertainty_to_the_worst_exit() -> None:
     model = TrendEventModel(
         fitted=True,
         classes=TREND_EVENT_TYPES,
-        coef=[[0.0] * 13 for _ in TREND_EVENT_TYPES],
+        coef=[[0.0] * len(FEATURE_NAMES) for _ in TREND_EVENT_TYPES],
         intercept=[math.log(0.60), math.log(0.20), math.log(0.20)],
         n_samples=300,
         holdout_status="accepted",
@@ -445,7 +447,7 @@ def test_first_touch_lower_ev_allocates_uncertainty_to_the_worst_exit() -> None:
         policy_fingerprint="a" * 64,
         outcome_label_version="directional_trend_label_v2",
     )
-    assessment = build_trend_event_assessment(rec, [0.0] * 13, model)
+    assessment = build_trend_event_assessment(rec, [0.0] * len(FEATURE_NAMES), model)
     assert assessment["event_expected_net_return"] > 0.0
     assert assessment["event_expected_net_return_lower_bound"] < 0.0
     assert assessment["ready"] is False

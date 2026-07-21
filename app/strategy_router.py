@@ -4,6 +4,7 @@ import math
 from typing import Any
 
 from .policy import is_sha256_fingerprint
+from .trend_events import TREND_EVENT_MODEL_VERSION
 
 ROUTER_VERSION = "strategy-profitability-router-v3"
 COMPARISON_RETURN_BASIS = "unlevered_net_return_on_committed_notional_v1"
@@ -111,7 +112,7 @@ def evaluate_candidate(rec: dict[str, Any]) -> dict[str, Any]:
         if (
             trend_event.get("ready") is not True
             or str(trend_event.get("source") or "") != "trend_event_softmax"
-            or str(trend_event.get("model_version") or "") != "trend-first-touch-softmax-v1"
+            or str(trend_event.get("model_version") or "") != TREND_EVENT_MODEL_VERSION
             or str(trend_event.get("outcome_label_version") or "") != "directional_trend_label_v2"
             or str(trend_event.get("return_basis") or COMPARISON_RETURN_BASIS) != COMPARISON_RETURN_BASIS
             or not is_sha256_fingerprint(str(trend_event.get("policy_fingerprint") or "").strip().lower())

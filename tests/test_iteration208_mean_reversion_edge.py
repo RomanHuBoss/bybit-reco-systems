@@ -111,9 +111,9 @@ def test_new_model_identity_and_calibrators_do_not_reuse_legacy_range_semantics(
     import app.calibration as calibration
     import app.recommender as recommender
 
-    assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v11-separated-operator-outcome-lineage"
-    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v21")
-    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v21")
+    assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v12-direction-aware-calibration"
+    assert calibration.GLOBAL_LOGREG_KEY.endswith("_v22")
+    assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v22")
     assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v14"
 
 

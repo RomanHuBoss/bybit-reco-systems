@@ -213,4 +213,4 @@ def test_missing_kill_switch_is_not_a_labelable_executable_grid(tmp_path: Path) 
 def test_outcome_contract_is_bumped_for_topology_and_stop_semantics() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.4.4"' in source
+    assert 'version="1.4.5"' in source

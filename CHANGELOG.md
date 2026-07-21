@@ -1,3 +1,14 @@
+## 2026-07-21 - v1.4.5 - direction-aware LONG/SHORT learning
+
+- Исправлен HIGH-дефект: pooled bot-family calibration больше не обучается на сыром sentiment без direction; добавлены `direction_sign` и `sentiment_alignment`.
+- Recommendation snapshot сохраняет direction-aware features; противоречащие persisted значения исключаются fail-closed.
+- Та же feature semantics применяется к directional first-touch softmax.
+- Начаты новые lineage: `bybit-taxonomy-v12-direction-aware-calibration`, `logreg_futures_grid_v22`, `logreg_directional_trend_v3`, `logreg_global_v22`, `trend-first-touch-softmax-v2`.
+- Router использует каноническую константу версии first-touch модели вместо дублированного литерала.
+- Добавлено 6 RED->GREEN tests в `test_iteration275_direction_aware_learning.py`.
+- Торговые пороги, risk gates, sample floors, outcome math, API и DB schema не изменены.
+- Post-check: 1310 tests collected and passed; focused direction/payoff/funding/first-touch suite 122 passed. `ruff` unavailable; shared host `pip check` retains unrelated moviepy/Pillow conflict.
+
 ## 2026-07-21 - v1.4.4 - label maturity and calibration learning repair
 
 ### Fixed

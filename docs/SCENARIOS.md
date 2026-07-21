@@ -1,3 +1,14 @@
+## Scenario: mirrored LONG/SHORT learning - v1.4.5
+
+1. A candidate is assigned canonical `direction=long`, `short` or neutral grid.
+2. Publication stores raw sentiment, `direction_sign` and `sentiment_alignment` in the feature snapshot.
+3. Outcome maturity and exact-policy lineage are evaluated as before.
+4. Calibration recomputes expected direction semantics from the recommendation row.
+5. A missing legacy direction-aware field may be reconstructed from the immutable row; a present contradictory value excludes the row fail-closed.
+6. Supportive LONG and supportive SHORT sentiment now share positive alignment semantics in binary and first-touch models.
+7. Old 13-feature calibrator artifacts are ignored because v1.4.5 uses new model keys.
+8. A fitted model still requires all existing OOF, holdout and monetary gates; no recommendation becomes actionable merely because this representation defect was repaired.
+
 ## Label maturity and calibration scenarios — v1.4.4
 
 ### Market window готов, policy due ещё не наступил

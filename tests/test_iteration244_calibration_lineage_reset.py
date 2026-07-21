@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app import calibration, db, recommender
 
-CURRENT_MODEL = "bybit-taxonomy-v11-separated-operator-outcome-lineage"
+CURRENT_MODEL = "bybit-taxonomy-v12-direction-aware-calibration"
 
 
 def _recommendation(
@@ -81,8 +81,8 @@ def _outcome(rec_id: str, ts: int, success: int) -> dict:
 
 def test_model_and_calibrator_lineage_are_advanced() -> None:
     assert recommender.RECOMMENDER_MODEL_VERSION == CURRENT_MODEL
-    assert calibration.BOT_CALIB_KEYS["futures_grid"] == "logreg_futures_grid_v21"
-    assert calibration.GLOBAL_LOGREG_KEY == "logreg_global_v21"
+    assert calibration.BOT_CALIB_KEYS["futures_grid"] == "logreg_futures_grid_v22"
+    assert calibration.GLOBAL_LOGREG_KEY == "logreg_global_v22"
     assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v14"
 
 
@@ -149,15 +149,15 @@ def test_status_separates_historical_current_and_feature_eligible_outcomes(tmp_p
         assert status["feature_eligible_outcome_count"] == 1
         assert status["calibration_eligible_outcome_count"] == 1
         assert status["calibration_model_version"] == CURRENT_MODEL
-        assert status["global_calibrator_base_key"] == "logreg_global_v21"
-        assert status["global_calibrator_key"].startswith("logreg_global_v21:")
+        assert status["global_calibrator_base_key"] == "logreg_global_v22"
+        assert status["global_calibrator_key"].startswith("logreg_global_v22:")
         assert bot["historical_outcomes_total"] == 2
         assert bot["current_model_outcomes_total"] == 1
         assert bot["feature_eligible_outcomes_total"] == 1
         assert bot["policy_eligible_outcomes_total"] == 1
         assert bot["outcomes_total"] == 1
-        assert bot["calibrator_base_key"] == "logreg_futures_grid_v21"
-        assert bot["calibrator_key"].startswith("logreg_futures_grid_v21:")
+        assert bot["calibrator_base_key"] == "logreg_futures_grid_v22"
+        assert bot["calibrator_key"].startswith("logreg_futures_grid_v22:")
         assert bot["calibration_model_version"] == CURRENT_MODEL
     finally:
         sys.modules.pop("app.main", None)

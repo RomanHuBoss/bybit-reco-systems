@@ -59,13 +59,13 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v11-separated-operator-outcome-lineage"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v12-direction-aware-calibration"
 DIRECTION_CALIBRATION_KEY = "platt_direction_v14"
 CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v3"
 POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
 TREND_STRATEGY_CONTRACT_VERSION = "directional_trend_v2"
 TREND_OUTCOME_LABEL_VERSION = "directional_trend_label_v2"
-TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v4"
+TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v5"
 TREND_EVALUATION_REJECTED_KIND = "trend_evaluation_rejected"
 TREND_STRATEGY_RECOMMENDATION_KIND = "strategy_recommendation"
 CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
@@ -1616,6 +1616,7 @@ def _build_feature_snapshot(
     oi_sig: dict[str, Any],
     liq_tier: str,
     beta_info: dict[str, Any],
+    direction: str = "",
 ) -> dict[str, float]:
     def _value_or_default(value: Any, default: float) -> float:
         return float(default if value is None else value)
@@ -1628,6 +1629,13 @@ def _build_feature_snapshot(
     spread_bps = cost_model.get("spread_bps")
     if spread_bps is None:
         spread_bps = cost_model.get("execution_cost_bps") or cost_model.get("total_cost_bps")
+    direction_norm = str(direction or direction_agg.get("direction") or "").strip().lower()
+    direction_sign = 1.0 if direction_norm == "long" else (-1.0 if direction_norm == "short" else 0.0)
+    sentiment_alignment = (
+        direction_sign * float(effective_sent)
+        if direction_sign
+        else -abs(float(effective_sent))
+    )
     return {
         "range_score": _clamp(
             0.35 * (1.0 - trendiness)
@@ -1657,6 +1665,8 @@ def _build_feature_snapshot(
         "liq_tier_num": float(liq_map.get(str(liq_tier).lower(), 0.67)),
         "btc_corr": _clamp(_value_or_default(beta_info.get("correlation"), 0.0), -1.0, 1.0),
         "regime_conf": _clamp(_value_or_default(direction_agg.get("regime_confidence"), 0.5), 0.0, 1.0),
+        "direction_sign": float(direction_sign),
+        "sentiment_alignment": _clamp(float(sentiment_alignment), -1.0, 1.0),
     }
 
 
@@ -1707,7 +1717,7 @@ def _build_trade_plan(
             return {}
         take_profit = _finite_or_none(params.get("take_profit_price"))
         stop_loss = _finite_or_none(params.get("stop_loss_price"))
-        direction_norm = str(direction or "").strip().lower()
+        direction_norm = str(direction or direction_agg.get("direction") or "").strip().lower()
         geometry_valid = bool(
             price is not None
             and take_profit is not None
@@ -2841,7 +2851,7 @@ def _directional_trend_params(
     price_raw = _finite_or_none(f.get("price"))
     price_valid = price_raw is not None and price_raw > 0.0
     price = float(price_raw) if price_valid else 0.0
-    direction_norm = str(direction or "").strip().lower()
+    direction_norm = str(direction or direction_agg.get("direction") or "").strip().lower()
     direction_valid = direction_norm in {"long", "short"}
     if not direction_valid:
         return {
@@ -6177,6 +6187,7 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 oi_sig=oi_sig,
                 liq_tier=liq_tier,
                 beta_info=beta_info,
+                direction=direction,
             )
             _snapshot_agg = dict(_dir_agg_for_cal)
             feature_snapshot["strategy_family"] = (
@@ -6206,7 +6217,12 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 "top_positive_factors": (reasons.get("top_positive_factors") or []),
                 "top_negative_factors": (reasons.get("top_negative_factors") or []),
             }
-            _row_for_cal = {"score": score, "reasons": _reasons_for_cal, "success": 0}
+            _row_for_cal = {
+                "score": score,
+                "reasons": _reasons_for_cal,
+                "success": 0,
+                "direction": direction,
+            }
             _fv = extract_features(_row_for_cal)
 
             bot_cal = bot_calibrators.get(bot_type)

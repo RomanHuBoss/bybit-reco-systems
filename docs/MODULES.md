@@ -1,3 +1,11 @@
+## Module changes - v1.4.5
+
+- `app/recommender.py`: owns creation and persistence of canonical direction-aware feature snapshots.
+- `app/calibration.py`: owns direction normalization, sentiment alignment, contradiction rejection and the 15-field binary calibration schema.
+- `app/trend_events.py`: uses the shared schema under first-touch softmax v2 lineage.
+- `app/strategy_router.py`: consumes the canonical `TREND_EVENT_MODEL_VERSION` constant rather than a duplicated string.
+- `tests/test_iteration275_direction_aware_learning.py`: proves binary and multiclass learnability on mirrored LONG/SHORT samples and fail-closed snapshot integrity.
+
 ## v1.4.4: label maturity and calibration lineage
 
 - `app/policy.py`: canonical exact-positive integer parsing and shared label due calculation.

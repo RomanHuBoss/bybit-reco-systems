@@ -1,3 +1,11 @@
+## Направленное обучение LONG/SHORT (v1.4.5)
+
+Версия 1.4.5 исправляет подтверждённую ошибку представления обучающих данных. Bot-specific калибраторы объединяли LONG и SHORT, но feature vector не содержал направления, а `effective_sentiment` сохранялся в сырой полярности рынка. Поэтому одинаково поддерживающий сигнал кодировался как положительный для LONG и отрицательный для SHORT; на сбалансированной выборке модель видела его как шум и могла давать ровно null/coin-flip log-loss.
+
+В feature schema добавлены `direction_sign` и `sentiment_alignment`. Они сохраняются в recommendation snapshot, повторно сверяются с каноническим direction при fit и используются как бинарным LogReg/Platt, так и трёхклассовой first-touch моделью. Противоречащий направлению snapshot отклоняется fail-closed. Все затронутые model/calibrator keys изменены, поэтому старые коэффициенты не переинтерпретируются в новой 15-мерной схеме.
+
+Независимый симметричный LONG/SHORT reproducer на исходном коде давал feature/null log-loss `0.693147/0.693147` и `fitted=false`; после исправления feature log-loss стал около `0.0165` при неизменном null baseline. First-touch reproducer улучшился с null `1.0986` до `0.3170` на untouched terminal holdout. Это доказывает исправление representation defect, но не доказывает реальный market edge. Генератор направления, score, entry и exits по-прежнему rule-based; модель остаётся validation/calibration layer, а не end-to-end learned trading policy.
+
 ## Исправление фактического обучения и зрелости меток (v1.4.4)
 
 Версия 1.4.4 устраняет разрыв временного контракта между публикацией рекомендации, outcome worker и calibration lineage. Ранее policy требовал `recommendation_ts + effective_horizon + 120s`, а worker мог объявить метку доступной примерно на минуту раньше; такие строки затем исключались как `LABEL_AVAILABILITY_PREMATURE`. В приложенном текущем срезе этот код присутствует у всех 155 outcome roots, поэтому bot-specific calibrators оставались `raw_only` и не корректировали confidence.

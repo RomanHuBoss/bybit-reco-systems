@@ -12,8 +12,8 @@ from .trading_semantics import normalize_execution_direction
 
 TREND_EVENT_TYPES: tuple[str, ...] = ("TP_FIRST", "SL_FIRST", "HORIZON_EXIT")
 TREND_CENSORED_EVENT_TYPES: frozenset[str] = frozenset({"AMBIGUOUS"})
-TREND_EVENT_MODEL_VERSION = "trend-first-touch-softmax-v1"
-TREND_EVENT_MODEL_KEY = "trend_event_softmax_v1"
+TREND_EVENT_MODEL_VERSION = "trend-first-touch-softmax-v2"
+TREND_EVENT_MODEL_KEY = "trend_event_softmax_v2"
 TREND_EVENT_RETURN_BASIS = "unlevered_net_return_on_committed_notional_v1"
 
 

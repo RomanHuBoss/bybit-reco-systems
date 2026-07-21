@@ -1,3 +1,12 @@
+## Остаточные риски после v1.4.5
+
+- Direction-blind LONG/SHORT representation исправлен, но реальный edge не доказан: приложенный ZIP не содержит заполненной runtime DB или live-fill reconciliation.
+- Генератор кандидатов остаётся rule-based. Обучаются calibration/validation layers, а не direction, feature representation, entry или exit policy.
+- Даже fitted calibration имеет вес не более 50% в итоговом confidence; исходный heuristic confidence остаётся структурно доминирующим.
+- Changelog содержит 74 versioned releases за июль 2026 и 24 distinct `grid_label_vN`: дальнейшая смена lineage без доказанного safety-дефекта снова фрагментирует evidence.
+- 300 строк не равны 300 независимым наблюдениям: строки разных символов одного timestamp коррелированы, а 12-часовой horizon ограничивает скорость накопления temporal cohorts.
+- Если frozen exact-policy lineage после достаточного числа whole-timestamp cohorts не превосходит null и score-only baselines и не проходит monetary holdout, текущая strategy thesis должна считаться не подтверждённой, а не бесконечно «ремонтироваться».
+
 ## Остаточные риски после v1.4.4 label-maturity repair
 
 - Исправление восстанавливает корректный допуск evidence, но не создаёт статистический edge. При текущих exact-policy counts bot calibrators и trend first-touch model остаются unfitted.

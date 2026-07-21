@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.calibration import extract_features
+from app.calibration import FEATURE_NAMES, extract_features
 
 
 def test_feature_snapshot_preserves_valid_zero_values_instead_of_neutral_defaults() -> None:
@@ -30,7 +30,7 @@ def test_feature_snapshot_preserves_valid_zero_values_instead_of_neutral_default
     features = extract_features(row)
 
     assert features is not None
-    assert features == pytest.approx([0.0] * 13)
+    assert features == pytest.approx([0.0] * len(FEATURE_NAMES))
 
 
 def test_legacy_feature_reconstruction_preserves_observed_zero_confidence_and_spread() -> None:

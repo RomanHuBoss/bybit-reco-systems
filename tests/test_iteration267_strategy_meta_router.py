@@ -65,7 +65,7 @@ def _candidate(
         candidate["reasons"]["trend_event_model"] = {
             "ready": True,
             "source": "trend_event_softmax",
-            "model_version": "trend-first-touch-softmax-v1",
+            "model_version": "trend-first-touch-softmax-v2",
             "outcome_label_version": "directional_trend_label_v2",
             "policy_fingerprint": "a" * 64,
             "return_basis": "unlevered_net_return_on_committed_notional_v1",
