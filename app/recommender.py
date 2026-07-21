@@ -13,7 +13,7 @@ from .risk import gate_candidate, compute_risk_status as _compute_risk_status, n
 from .direction import vote_for_tf, aggregate_direction
 from .sentiment_features import compute_sentiment_agg, compute_symbol_sentiment_map
 from .shock_guard import compute_market_shock, apply_market_shock_gate, compute_symbol_fast_veto, APP_CONFIG_KEY as MARKET_SHOCK_APP_KEY
-from .outcomes import BOT_HORIZONS, _resolve_effective_horizon
+from .outcomes import BOT_HORIZONS, HORIZON_SEC_DEFAULT, _resolve_effective_horizon
 from .bot_types import SUPPORTED_BOT_TYPES
 from .strategy_router import (
     COMPARISON_RETURN_BASIS,
@@ -32,7 +32,12 @@ from .grid_math import (
 )
 from .collector import RuntimeLockLostError
 from .settings import load_settings
-from .policy import canonical_policy_fingerprint, is_sha256_fingerprint
+from .policy import (
+    CALIBRATION_LABEL_GRACE_SEC,
+    canonical_policy_fingerprint,
+    is_sha256_fingerprint,
+    policy_label_due_ts,
+)
 from .calibration import (
     fit_platt, PlattScaler, save_platt_to_db, load_platt_from_db, BOT_CALIB_KEYS,
     LogRegScaler, fit_logreg, save_logreg_to_db, load_logreg_from_db,
@@ -63,7 +68,6 @@ TREND_OUTCOME_LABEL_VERSION = "directional_trend_label_v2"
 TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v4"
 TREND_EVALUATION_REJECTED_KIND = "trend_evaluation_rejected"
 TREND_STRATEGY_RECOMMENDATION_KIND = "strategy_recommendation"
-CALIBRATION_LABEL_GRACE_SEC = 120
 CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
     "PROXY_MONETARY_EXPECTANCY_UNPROVEN",
     "PROXY_MONETARY_EXPECTANCY_NON_POSITIVE",
@@ -3941,12 +3945,20 @@ def calibration_policy_contract_fingerprint(contract: Any) -> str:
 def calibration_policy_label_due_ts(
     recommendation_ts: Any,
     bot_type: Any,
+    *,
+    horizon_sec: Any | None = None,
 ) -> int | None:
     ts = _safe_int_or_none(recommendation_ts)
-    horizon = BOT_HORIZONS.get(str(bot_type or "").strip())
+    horizon = _safe_int_or_none(horizon_sec)
+    if horizon is None:
+        horizon = BOT_HORIZONS.get(str(bot_type or "").strip())
     if ts is None or ts <= 0 or horizon is None or int(horizon) <= 0:
         return None
-    return int(ts + int(horizon) + CALIBRATION_LABEL_GRACE_SEC)
+    return policy_label_due_ts(
+        ts,
+        int(horizon),
+        grace_sec=CALIBRATION_LABEL_GRACE_SEC,
+    )
 
 
 def policy_calibration_storage_key(base_key: str, policy_fingerprint: str) -> str:
@@ -4165,17 +4177,21 @@ def calibration_lineage_diagnostics(
                 dropped_candidate_policy += 1
                 continue
             expected_label_due_ts = calibration_policy_label_due_ts(
-                row.get("ts"),
+                row.get("recommendation_ts", row.get("ts")),
                 row.get("bot_type"),
+                horizon_sec=row.get("horizon_sec"),
             )
             stored_label_due_ts = _safe_int_or_none(outcome_policy.get("label_due_ts"))
+            label_available_ts = _safe_int_or_none(row.get("label_available_ts"))
             if (
                 expected_label_due_ts is None
                 or stored_label_due_ts != expected_label_due_ts
+                or label_available_ts is None
+                or label_available_ts < expected_label_due_ts
             ):
                 dropped_invalid_policy_maturity += 1
                 continue
-            if expected_label_due_ts > int(time.time()):
+            if max(expected_label_due_ts, label_available_ts) > int(time.time()):
                 dropped_not_matured += 1
                 continue
 
@@ -6660,7 +6676,20 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 and _trade_plan_complete
                 and params.get("price_input_valid") is not False
             )
-            label_due_ts = None if trend_direction_rejected else calibration_policy_label_due_ts(ts_now, bot_type)
+            effective_label_horizon, _ = _resolve_effective_horizon(
+                bot_type,
+                params,
+                BOT_HORIZONS.get(bot_type, HORIZON_SEC_DEFAULT),
+            )
+            label_due_ts = (
+                None
+                if trend_direction_rejected
+                else calibration_policy_label_due_ts(
+                    ts_now,
+                    bot_type,
+                    horizon_sec=effective_label_horizon,
+                )
+            )
             reasons2["outcome_policy"] = {
                 "eligible": bool(status in {"recommended", "active", "executed"} or _shadow_no_trade_eligible),
                 "policy_evaluation_eligible": policy_evaluation_eligible,

@@ -1,3 +1,10 @@
+## Остаточные риски после v1.4.4 label-maturity repair
+
+- Исправление восстанавливает корректный допуск evidence, но не создаёт статистический edge. При текущих exact-policy counts bot calibrators и trend first-touch model остаются unfitted.
+- `shadow_no_trade` outcomes нельзя интерпретировать как performance разрешённых сделок; actionable/executed cohort в приложенном snapshot равен нулю.
+- Base score остаётся детерминированной эвристикой. Обучаемый слой корректирует confidence/strategy evidence только после прохождения minimum samples, class balance, purged OOF, terminal holdout и positive monetary lower-bound gates.
+- Startup repair меняет только преждевременный `label_available_ts` при доказанном stored due contract. Повреждённый fingerprint, malformed horizon или несовпадающий due остаются fail-closed и не ремонтируются догадкой.
+
 ## Остаточные риски после v1.4.3 compact observability / sign audit
 
 1. **Нет доказанного live edge.** Зеркальные тесты подтверждают математические знаки, но не прибыльность strategy family. Текущий диагностический снимок имеет нулевую actionable-когорту и недостаточный exact-policy evidence.

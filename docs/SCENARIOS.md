@@ -1,3 +1,17 @@
+## Label maturity and calibration scenarios — v1.4.4
+
+### Market window готов, policy due ещё не наступил
+Outcome worker оставляет root в waiting state. `reco_outcomes` не получает строку и training count не увеличивается. После точного due time worker сохраняет outcome с `label_available_ts >= due`.
+
+### Legacy outcome объявлен доступным на минуту раньше
+При старте `init_db()` повторно вычисляет due из recommendation timestamp, outcome horizon и persisted calibration grace. Если stored due совпадает и уже созрел, availability metadata сдвигается до due без изменения `success`, `ret`, event type или market prices.
+
+### Status и fit используют одну когорту
+Compact iterator передаёт horizon и availability. Health не может показать строку policy-eligible, если calibration fit отвергнет её как premature.
+
+### Недостаточно exact-policy evidence
+Система остаётся `raw_only/no_trade`; она не понижает sample floors и не заменяет отсутствие модели случайным выбором стратегии.
+
 ## Compact observability scenarios — v1.4.3
 
 ### Results при `actionable=0`

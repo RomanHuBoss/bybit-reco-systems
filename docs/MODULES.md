@@ -1,3 +1,11 @@
+## v1.4.4: label maturity and calibration lineage
+
+- `app/policy.py`: canonical exact-positive integer parsing and shared label due calculation.
+- `app/recommender.py`: effective-horizon due persistence; strict availability validation before policy calibration; unchanged heuristic score and model lineage.
+- `app/outcomes.py`: market-data availability and policy maturity are combined conservatively before labeling.
+- `app/db.py`: bounded legacy timestamp repair and complete compact lineage projection (`recommendation_ts`, `horizon_sec`, `label_available_ts`).
+- `tests/test_iteration274_label_maturity_learning.py`: RED/GREEN coverage for worker timing, lineage rejection, startup repair and numeric fail-closed semantics.
+
 ## v1.4.3: compact modal observability helpers
 
 - `app/ui/static/app.js / renderModalDisclosure()` — раскрываемый контейнер для advanced outcome/health tables.

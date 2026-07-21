@@ -103,7 +103,9 @@ def test_outcome_entry_is_first_exact_candle_open_after_publication(
             ("R-post-publication",),
         ).fetchone()
         assert row["entry_close"] == pytest.approx(101.0)
-        assert row["label_available_ts"] == base_ts + 300
+        # The market window is available at +300, but the calibration contract
+        # uses the conservative recommendation-time horizon +120s grace.
+        assert row["label_available_ts"] == base_ts + 330
     finally:
         conn.close()
 
@@ -294,4 +296,4 @@ def test_malformed_explicit_range_alias_does_not_fall_through_to_another_geometr
 def test_outcome_contract_is_bumped_for_post_publication_entry_integrity() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.4.3"' in source
+    assert 'version="1.4.4"' in source

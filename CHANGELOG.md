@@ -1,3 +1,24 @@
+## 2026-07-21 - v1.4.4 - label maturity and calibration learning repair
+
+### Fixed
+- Устранён split-brain временного контракта: publication, outcome worker, calibration lineage и startup repair используют единый `policy_label_due_ts(recommendation_ts, effective_horizon, 120s)`.
+- Outcome worker больше не сохраняет `label_available_ts` раньше policy due time; фактическая доступность равна максимуму из готовности market-data window и policy maturity.
+- Publication сохраняет due time по фактически выбранному horizon, а не только по статическому bot default.
+- Compact status lineage теперь передаёт и проверяет `horizon_sec`, `label_available_ts` и recommendation timestamp. Он больше не сообщает policy-eligible rows, которые реальный fit обязан отвергнуть.
+- `init_db()` консервативно исправляет legacy availability timestamps только при совпадении сохранённого contract hash/due time и уже созревшем horizon; outcome value, event type и P&L не меняются.
+
+### Model behavior
+- Подтверждено, что текущая система — rule-based candidate generator с bot-specific LogReg/Platt и trend first-touch calibration layer. При `calibrator_fitted=false` она работает в `raw_only` и не корректирует heuristic confidence по outcome history.
+- Приложенный current-policy snapshot содержит 155 `shadow_no_trade` roots, 0 actionable rows и 0 фактически calibration-eligible rows; все 155 отмечены `LABEL_AVAILABILITY_PREMATURE`. После repair накопление evidence возобновляется, но sample/OOF/holdout/expectancy gates не ослаблены.
+- LONG/SHORT signed return, TP/SL, funding и MTF direction mirror tests не выявили знаковой инверсии.
+
+### Verification
+- Новый regression: `tests/test_iteration274_label_maturity_learning.py`.
+- Focused calibration/router/sign suite: `100 passed`; explicit mirror suite: `6 passed`.
+- Exact collection: `1304 tests`; exhaustive deterministic batches: `450 + 455 + 399 = 1304 passed`.
+- Monolithic run exceeded the harness timeout and is not reported as a pass.
+- `compileall` and `node --check` passed. Global `pip check` reports an environment-level moviepy/Pillow conflict unrelated to project dependencies.
+
 ## 2026-07-20 - v1.4.3 - compact observability and strategy sign audit
 
 ### Fixed

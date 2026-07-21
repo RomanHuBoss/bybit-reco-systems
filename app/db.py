@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any, Iterable
 from .bot_types import is_supported_bot_type, sql_in_clause
 from .grid_math import strict_integer
-from .policy import canonical_policy_fingerprint, is_sha256_fingerprint
+from .policy import (
+    CALIBRATION_LABEL_GRACE_SEC,
+    canonical_policy_fingerprint,
+    is_sha256_fingerprint,
+    policy_label_due_ts,
+)
 from .db_backend import (
     connect as backend_connect,
     describe_target,
@@ -345,6 +350,77 @@ def _repair_rejected_trend_evaluations(conn: sqlite3.Connection) -> dict[str, in
         "excluded": int(excluded),
         "observability_removed": int(removed),
     }
+
+
+def repair_outcome_label_availability_contract(conn: sqlite3.Connection) -> int:
+    """Conservatively repair legacy labels persisted before their policy due time.
+
+    Releases before 1.4.4 used ``horizon + 60s`` in the outcome worker while the
+    persisted policy contract required ``horizon + 120s``.  The label value was
+    computed only after the complete horizon, so moving the declared availability
+    timestamp forward to the verified policy due time is conservative and does not
+    relabel market outcomes.
+    """
+    if not _table_columns(conn, "reco_outcomes") or not _table_columns(conn, "recommendations"):
+        return 0
+    rows = conn.execute(
+        """SELECT o.rec_id, o.horizon_sec, o.label_available_ts,
+                  r.ts AS recommendation_ts, r.reasons_json
+             FROM reco_outcomes o
+             JOIN recommendations r ON r.rec_id=o.rec_id
+            WHERE o.label_available_ts IS NOT NULL
+              AND o.label_available_ts < (r.ts + o.horizon_sec + ?)
+            ORDER BY o.rec_id ASC""",
+        (CALIBRATION_LABEL_GRACE_SEC,),
+    ).fetchall()
+    now_value = now_ts()
+    updates: list[tuple[int, str]] = []
+    for row in rows:
+        recommendation_ts = strict_integer(row["recommendation_ts"])
+        horizon_sec = strict_integer(row["horizon_sec"])
+        available_ts = strict_integer(row["label_available_ts"])
+        if (
+            recommendation_ts is None
+            or recommendation_ts <= 0
+            or horizon_sec is None
+            or horizon_sec <= 0
+            or available_ts is None
+            or available_ts <= 0
+        ):
+            continue
+        reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
+        outcome_policy = reasons.get("outcome_policy") if isinstance(reasons, dict) else None
+        if not isinstance(outcome_policy, dict):
+            continue
+        contract = outcome_policy.get("policy_contract")
+        calibration = contract.get("calibration") if isinstance(contract, dict) else None
+        if isinstance(calibration, dict) and "label_due_grace_sec" in calibration:
+            grace_sec = strict_integer(calibration.get("label_due_grace_sec"))
+            if grace_sec is None or grace_sec <= 0:
+                continue
+        else:
+            grace_sec = CALIBRATION_LABEL_GRACE_SEC
+        stored_due_ts = strict_integer(outcome_policy.get("label_due_ts"))
+        expected_due_ts = policy_label_due_ts(
+            recommendation_ts,
+            horizon_sec,
+            grace_sec=grace_sec,
+        )
+        if (
+            expected_due_ts is None
+            or stored_due_ts != expected_due_ts
+            or stored_due_ts > now_value
+            or available_ts >= stored_due_ts
+        ):
+            continue
+        updates.append((int(stored_due_ts), str(row["rec_id"])))
+    if not updates:
+        return 0
+    conn.executemany(
+        "UPDATE reco_outcomes SET label_available_ts=? WHERE rec_id=?",
+        updates,
+    )
+    return len(updates)
 
 
 def get_outcome_policy_schema_status(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -940,6 +1016,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         backfill_recommendation_publication_lineage(conn)
     _ensure_bot_publication_root_columns(conn)
     _repair_rejected_trend_evaluations(conn)
+    repair_outcome_label_availability_contract(conn)
     _materialize_outcome_observability_for_recommendations(conn)
     ensure_database_instance_id(conn, commit=False)
     conn.commit()
@@ -3931,7 +4008,8 @@ def iter_calibration_lineage_rows(
         params.extend([model_norm, model_norm + "+%"])
     cur = backend_execute_stream(
         conn,
-        f"""SELECT o.bot_type, o.success, o.ts,
+        f"""SELECT o.bot_type, o.success, o.ts, o.horizon_sec,
+                    o.label_available_ts, r.ts AS recommendation_ts,
                     r.status, r.reasons_json, r.model_version,
                     r.is_outcome_label_root
                FROM reco_outcomes o
@@ -3958,7 +4036,15 @@ def iter_calibration_lineage_rows(
                     continue
                 success = strict_integer(row["success"])
                 ts = strict_integer(row["ts"])
-                if success not in (0, 1) or ts is None or ts <= 0:
+                recommendation_ts = strict_integer(row["recommendation_ts"])
+                horizon_sec = strict_integer(row["horizon_sec"])
+                label_available_ts = strict_integer(row["label_available_ts"])
+                if (
+                    success not in (0, 1)
+                    or ts is None or ts <= 0
+                    or recommendation_ts is None or recommendation_ts <= 0
+                    or horizon_sec is None or horizon_sec <= 0
+                ):
                     continue
                 reasons = _json_loads_mapping_or_default(row["reasons_json"], {})
                 compact_reasons = {
@@ -3970,6 +4056,13 @@ def iter_calibration_lineage_rows(
                     "bot_type": str(row["bot_type"] or ""),
                     "success": int(success),
                     "ts": int(ts),
+                    "recommendation_ts": int(recommendation_ts),
+                    "horizon_sec": int(horizon_sec),
+                    "label_available_ts": (
+                        int(label_available_ts)
+                        if label_available_ts is not None and label_available_ts > 0
+                        else None
+                    ),
                     "model_version": str(row["model_version"] or ""),
                     "reasons": compact_reasons,
                 }

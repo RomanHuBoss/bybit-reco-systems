@@ -1,3 +1,9 @@
+## Label maturity and actual learning path — v1.4.4
+
+Outcome может войти в calibration только после единого момента `recommendation_ts + effective_horizon_sec + 120`. Publication сохраняет этот due time, worker ждёт максимум из него и готовности полного market-data window, lineage повторно вычисляет due и требует `label_available_ts >= due`. Boolean, fractional и non-positive timestamps/horizons отклоняются fail-closed.
+
+Rule-based score и direction vote формируют candidate thesis. Обучение не переписывает эти формулы онлайн: bot-specific LogReg/Platt корректирует confidence, а directional trend дополнительно использует first-touch event model. Пока соответствующий exact-policy model не fitted и не прошёл purged OOF/null baseline, terminal holdout и monetary expectancy, inference остаётся `raw_only`, а recommendation gate возвращает `no_trade`.
+
 ## Strategy signs, contract success and evidence cohorts — v1.4.3
 
 Торговая математика не изменена, но её контракт повторно проверен зеркальными fixtures:

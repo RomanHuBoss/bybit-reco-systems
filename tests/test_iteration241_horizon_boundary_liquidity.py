@@ -218,12 +218,17 @@ def test_outcome_waits_for_complete_boundary_candle_volume(
         monkeypatch.setattr(db, "now_ts", lambda: base + 299)
         assert compute_outcomes_once(conn, max_to_process=10) == 0
 
+        # The boundary candle is complete at +300, but the exact calibration
+        # contract matures at recommendation_ts + horizon + 120 = base + 330.
         monkeypatch.setattr(db, "now_ts", lambda: base + 300)
+        assert compute_outcomes_once(conn, max_to_process=10) == 0
+
+        monkeypatch.setattr(db, "now_ts", lambda: base + 330)
         assert compute_outcomes_once(conn, max_to_process=10) == 1
         row = conn.execute(
             "SELECT label_available_ts FROM reco_outcomes WHERE rec_id=?",
             ("R-boundary-availability",),
         ).fetchone()
-        assert row["label_available_ts"] == base + 300
+        assert row["label_available_ts"] == base + 330
     finally:
         conn.close()

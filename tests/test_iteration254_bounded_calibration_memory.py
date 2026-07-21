@@ -309,6 +309,8 @@ def test_lineage_status_mode_aggregates_without_retaining_rows(monkeypatch) -> N
         "bot_type": "futures_grid",
         "success": success,
         "ts": ts + offset,
+        "horizon_sec": 12 * 3600,
+        "label_available_ts": ts + offset + 12 * 3600 + 120,
         "model_version": recommender.RECOMMENDER_MODEL_VERSION,
         "reasons": {
             "feature_snapshot": {

@@ -1,3 +1,9 @@
+## Shared label-maturity source of truth — v1.4.4
+
+`app/policy.py` владеет `CALIBRATION_LABEL_GRACE_SEC` и `policy_label_due_ts`. `app/recommender.py` использует helper при materialization policy contract и при fit-lineage validation; `app/outcomes.py` использует его перед сохранением outcome; `app/db.py` применяет bounded startup repair и передаёт maturity fields в compact status iterator. Это устраняет прежний split-brain между JSON policy, worker schedule и model-readiness observability.
+
+Startup repair не меняет immutable outcome target. Он выбирает только строки, чья availability раньше default due, затем проверяет точный persisted policy contract и зрелость, после чего сдвигает metadata timestamp вперёд. Malformed или неоднозначные строки остаются исключёнными.
+
 ## Operator observability composition — v1.4.3
 
 Frontend observability теперь имеет два уровня:

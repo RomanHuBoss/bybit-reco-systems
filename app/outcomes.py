@@ -3,6 +3,7 @@ from __future__ import annotations
 from . import db
 from .bot_types import GRID_BOT_TYPES, SUPPORTED_BOT_TYPES
 from .grid_math import arithmetic_grid_commitment, resolve_integer_aliases, strict_integer
+from .policy import CALIBRATION_LABEL_GRACE_SEC, policy_label_due_ts
 from .settings import load_settings
 from .trading_semantics import normalize_execution_direction
 import logging
@@ -2175,7 +2176,24 @@ def compute_outcomes_cycle(
                 "fallback_horizon_sec": effective_horizon,
             })
         ts_exit = entry_ts + effective_horizon
-        label_available_ts = ts_exit + 60
+        market_data_available_ts = ts_exit + 60
+        policy_due_ts = policy_label_due_ts(
+            ts0,
+            effective_horizon,
+            grace_sec=CALIBRATION_LABEL_GRACE_SEC,
+        )
+        if policy_due_ts is None:
+            record_observability(
+                conn,
+                rec_id=rec_id,
+                recommendation_ts=ts0,
+                label_due_ts=None,
+                state="censored",
+                reason="invalid_label_maturity_contract",
+                details={"horizon_sec": effective_horizon},
+            )
+            continue
+        label_available_ts = max(int(market_data_available_ts), int(policy_due_ts))
         if db.now_ts() < label_available_ts:
             record_observability(
                 conn,

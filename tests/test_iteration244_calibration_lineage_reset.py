@@ -71,7 +71,7 @@ def _outcome(rec_id: str, ts: int, success: int) -> dict:
         "bot_type": "futures_grid",
         "direction": "neutral",
         "horizon_sec": 12 * 3600,
-        "label_available_ts": ts + 12 * 3600,
+        "label_available_ts": ts + 12 * 3600 + 120,
         "entry_close": 100.0,
         "exit_close": 100.4 if success else 99.6,
         "ret": 0.004 if success else -0.004,

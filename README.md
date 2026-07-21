@@ -1,3 +1,11 @@
+## Исправление фактического обучения и зрелости меток (v1.4.4)
+
+Версия 1.4.4 устраняет разрыв временного контракта между публикацией рекомендации, outcome worker и calibration lineage. Ранее policy требовал `recommendation_ts + effective_horizon + 120s`, а worker мог объявить метку доступной примерно на минуту раньше; такие строки затем исключались как `LABEL_AVAILABILITY_PREMATURE`. В приложенном текущем срезе этот код присутствует у всех 155 outcome roots, поэтому bot-specific calibrators оставались `raw_only` и не корректировали confidence.
+
+Теперь `app/policy.py` содержит единый fail-closed helper зрелости метки. Его используют publication, outcome labeling, compact status scan и calibration fit. `init_db()` консервативно сдвигает только timestamp доступности legacy-меток до уже сохранённого и повторно проверенного policy due time; рынок, `success`, `ret` и event type не пересчитываются. Текущий `RECOMMENDER_MODEL_VERSION` и policy fingerprint сохранены, поскольку target/outcome math не изменялись.
+
+Важно: генератор остаётся rule-based системой с обучаемым calibration layer, а не самопереписывающейся моделью признаков. После исправления evidence начинает накапливаться корректно, но fitted probability model появится только после выполнения exact-policy sample, class-balance, purged OOF, terminal holdout и monetary expectancy gates.
+
 ## Компактная наблюдаемость и аудит знаков стратегий (v1.4.3)
 
 Версия 1.4.3 перекомпоновывает окна «Результаты наблюдений» и «Здоровье системы». В Results основными остаются только когорты допуска, одна каноническая таблица `strategy + raw/execution direction + contract success + average net result`, ключевые выводы и один LLM-срез. Повторные таблицы по execution direction, преобразованию направления, нейтральным подтипам и raw direction удалены с основного уровня. Причины допуска, LLM-матрица, разбивка по символам, подробный журнал и архив сохранены в раскрываемых audit-блоках. Health объединяет explanations, `no_trade` и hard blocks в одну операторскую таблицу, а readiness, outcome queues и model evidence — в одну таблицу доказательности; runtime/collector/backfill/LLM details скрыты по умолчанию, но не удалены.
