@@ -132,14 +132,18 @@ def test_provisional_sizing_keeps_the_target_notional_without_fake_qty_step_upsi
     assert "fallback_qty_step" not in assumption
 
 
-def test_exchange_alignment_never_increases_generated_qty_to_satisfy_minimums(app_main) -> None:
+def test_exchange_alignment_uses_minimum_executable_qty_only_for_generated_default(app_main) -> None:
     rec = _generated_small_qty_rec()
     original_qty = rec["params"]["sizing"]["qty_per_order"]
 
     snapped = app_main._snap_reco_payload_to_bybit_meta(rec, _meta())
-    snapped_qty = snapped["params"]["sizing"]["qty_per_order"]
+    sizing = snapped["params"]["sizing"]
+    snapped_qty = sizing["qty_per_order"]
 
-    assert snapped_qty <= original_qty
+    assert snapped_qty == pytest.approx(0.001)
+    assert snapped_qty > original_qty
+    assert sizing["requested_qty_per_order"] == pytest.approx(original_qty)
+    assert sizing["qty_adjustment_reason"] == "exchange_minimum_for_generated_default"
     validation = app_main._validate_trade_plan_against_bybit_meta(
         snapped,
         _meta(),
@@ -147,8 +151,9 @@ def test_exchange_alignment_never_increases_generated_qty_to_satisfy_minimums(ap
         require_execution_plan=True,
     )
     error_codes = {item["code"] for item in validation["errors"]}
-    assert validation["ok"] is False
-    assert error_codes & {"ORDER_QTY_BELOW_MIN", "ORDER_QTY_OFF_STEP", "ORDER_NOTIONAL_BELOW_MIN"}
+    assert "ORDER_QTY_BELOW_MIN" not in error_codes
+    assert "ORDER_QTY_OFF_STEP" not in error_codes
+    assert "ORDER_NOTIONAL_BELOW_MIN" not in error_codes
 
 
 def test_runtime_risk_fallback_uses_the_same_shipped_profile() -> None:

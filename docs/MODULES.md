@@ -1,3 +1,11 @@
+## Module changes - v1.4.6
+
+- `app/main.py`: generated/manual sizing classification; minimum exchange-executable qty; conservative leverage-step rounding; full commitment revalidation; primary qty diagnostic suppression.
+- `app/outcomes.py`: first-touch/gap exit-candle MFE/MAE observability boundary.
+- `app/recommender.py`: empty directional input fails closed without referencing unavailable aggregation state.
+- `app/ui/static/app.js`: concrete blocker codes take precedence over duplicate generic risk prose.
+- `tests/test_iteration276_exchange_sizing_math.py`: independent exchange-sizing, leverage, UI, exit-path and fail-closed regressions.
+
 ## Module changes - v1.4.5
 
 - `app/recommender.py`: owns creation and persistence of canonical direction-aware feature snapshots.

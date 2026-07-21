@@ -6,7 +6,7 @@
 
 Редакция: 21 июля 2026 г.
 
-Контракт: v1.4.4 — direction-aware pooled learning + compact observability + strategy sign/first-touch invariants
+Контракт: v1.4.5 — exchange-executable generated sizing + exit-candle observability + direction-aware learning
 
 Router contract: strategy-profitability-router-v3.
 
@@ -62,7 +62,7 @@ Router contract: strategy-profitability-router-v3.
 - положительный ход цены для LONG и отрицательный для SHORT должны давать одинаковый знак прибыли при равном относительном движении; обратный ход — одинаковый знак убытка;
 - positive funding: long платит, short получает; negative funding: short платит, long получает; исторический outcome использует signed settled funding, approval gate — только неблагоприятную часть;
 - multi-timeframe direction vote должен давать LONG на устойчиво растущем пути и SHORT на зеркально падающем; вклад slope/MACD/RSI не может быть инвертирован;
-- trend first-touch: LONG TP выше entry и SL ниже; SHORT TP ниже и SL выше; same-candle TP+SL остаётся AMBIGUOUS/censored; gap through SL использует наблюдаемый неблагоприятный open;
+- trend first-touch: LONG TP выше entry и SL ниже; SHORT TP ниже и SL выше; same-candle TP+SL остаётся AMBIGUOUS/censored; gap through SL использует наблюдаемый неблагоприятный open; MFE/MAE exit-candle не включают post-exit high/low;
 - grid ledger, fill ordering, replacement activation, fees, slippage, funding, capital reference и kill-switch должны проверяться отдельными path fixtures для neutral/long/short;
 - `success` и `ret` запрещено трактовать как одно поле. Для grid kill-switch означает strategy-contract failure даже при положительном терминальном proxy P&L; для trend TP_FIRST/SL_FIRST/HORIZON_EXIT и net return должны показываться раздельно;
 - агрегаты `shadow/no_trade`, policy-evaluation, calibration-eligible, actionable и executed нельзя смешивать. Нулевая actionable-когорта означает отсутствие результатов разрешённых сделок, а не доказательство убыточности торговой стратегии;
@@ -85,6 +85,25 @@ Router contract: strategy-profitability-router-v3.
 - Health объединяет explanation/no_trade/block в одну операторскую таблицу, а readiness/outcome/calibrator — в одну таблицу доказательности; runtime, collector, backfill, semantic-integrity details и LLM config остаются в advanced diagnostics;
 - summary cards не должны повторяться теми же числами в соседних таблицах без дополнительной семантики;
 - frontend tests должны исполнять production helpers для wide-class и закрытия диалогов, а также проверять отсутствие удалённых заголовков-дубликатов.
+
+## 0.4. ОБЯЗАТЕЛЬНАЯ ГРАНИЦА EXCHANGE-EXECUTABLE SIZING И EXIT-CANDLE OBSERVABILITY
+
+Проверяй provenance количества до любой нормализации по Bybit filters:
+- explicit/manual/operator qty запрещено повышать автоматически; допустимы только округление вниз или fail-closed block;
+- generated provisional qty (`minimum_viable_operator_default`, `external_single_position_target_notional` или эквивалентный явно маркированный system default) может быть поднят только до минимального значения, одновременно удовлетворяющего live `qtyStep`, `minOrderQty` и `minNotionalValue`;
+- минимальное повышение generated qty обязано сохранять requested qty, machine reason и `risk_revalidation_required=true`;
+- после повышения заново вычисляются active/committed grid slots, full-grid commitment, maximum position slots, worst-boundary notional, margin и daily-loss exposure; runtime risk limits имеют приоритет и могут оставить plan blocked;
+- generated leverage округляется по `leverageStep` только вниз; validator для off-step leverage показывает безопасное down-aligned значение, а не ближайшее более высокое;
+- если qty уже ниже `minOrderQty`, первичной причиной является `ORDER_QTY_BELOW_MIN`; производный `ORDER_QTY_OFF_STEP` к нулю и одинаковый generic `RISK` не должны дублировать её.
+
+Для directional first-touch outcome exit-candle является частично наблюдаемой:
+- gap exit использует наблюдаемый open;
+- TP/SL first-touch использует trigger level;
+- полный high/low учитывается только для свечи, которая не завершила позицию;
+- post-exit extrema той же свечи запрещено включать в MFE/MAE;
+- same-candle TP+SL остаётся `AMBIGUOUS/censored`.
+
+Обязательны RED->GREEN tests отдельно для generated grid, generated trend, manual qty, leverage alignment, full commitment risk revalidation, UI dedup и exit-candle excursions.
 
 ## 0.4. ОБЯЗАТЕЛЬНЫЙ АУДИТ DIRECTION-AWARE ОБУЧЕНИЯ
 
@@ -470,10 +489,10 @@ Router contract: strategy-profitability-router-v3.
 - geometric grid блокируется до реализации отдельной математики.
 
 Проверь sizing:
-- qty округляется вниз по qty step;
-- рискованный размер никогда не округляется вверх;
-- после округления повторно проверяются minQty, minNotional, margin и risk caps;
-- safe qty меньше minQty/minNotional приводит к blocked/no-trade, а не к повышению qty;
+- explicit/manual qty округляется только вниз по qty step и никогда не повышается;
+- generated provisional qty может быть поднят только до точного минимального exchange-executable значения;
+- после любого generated minimum lift повторно вычисляются full-grid commitment, worst-case notional/margin и все runtime risk caps;
+- safe executable plan, превышающий risk limits, приводит к blocked/no-trade; exchange minimum не отменяет операторские лимиты;
 - worst-case notional считается по неблагоприятной границе диапазона, если это требуется;
 - estimated total notional и margin учитывают число grid intervals/orders;
 - operator_sheet, trade_plan, params.sizing и UI используют согласованный fallback-порядок;
@@ -1754,7 +1773,8 @@ node --check app/ui/static/app.js python -m pytest -q Дополнительно
 - создавать документы другого репозитория по инерции;
 - игнорировать комиссии, funding, spread и slippage;
 - игнорировать tick size, qty step, minQty и minNotional;
-- округлять рискованный qty вверх;
+- округлять explicit/manual рискованный qty вверх;
+- повышать generated provisional qty выше точного exchange minimum либо без полного пересчёта commitment/notional/margin/risk;
 - принимать boolean за число;
 - принимать NaN/Infinity;
 - ослаблять fail-closed;

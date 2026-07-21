@@ -685,23 +685,26 @@ def _directional_trend_outcome(
         row_low = float(row["low"])
 
         if direction_norm == "long":
-            max_favourable = max(max_favourable, (row_high - entry_f) / entry_f)
-            max_adverse = min(max_adverse, (row_low - entry_f) / entry_f)
+            # A gap exit occurs at the observed open. Candle high/low happened
+            # after that instant (or their chronology is unknowable), so using
+            # the full bar would contaminate MFE/MAE with post-exit prices.
             if row_open <= float(stop_loss):
+                max_adverse = min(max_adverse, (row_open - entry_f) / entry_f)
                 exit_reason, event_type, exit_price, exit_ts = "stop_loss_gap", "SL_FIRST", row_open, row_ts
                 break
             if row_open >= float(take_profit):
+                max_favourable = max(max_favourable, (float(take_profit) - entry_f) / entry_f)
                 exit_reason, event_type, exit_price, exit_ts = "take_profit", "TP_FIRST", float(take_profit), row_ts
                 break
             tp_hit = row_high >= float(take_profit)
             sl_hit = row_low <= float(stop_loss)
         else:
-            max_favourable = max(max_favourable, (entry_f - row_low) / entry_f)
-            max_adverse = min(max_adverse, (entry_f - row_high) / entry_f)
             if row_open >= float(stop_loss):
+                max_adverse = min(max_adverse, (entry_f - row_open) / entry_f)
                 exit_reason, event_type, exit_price, exit_ts = "stop_loss_gap", "SL_FIRST", row_open, row_ts
                 break
             if row_open <= float(take_profit):
+                max_favourable = max(max_favourable, (entry_f - float(take_profit)) / entry_f)
                 exit_reason, event_type, exit_price, exit_ts = "take_profit", "TP_FIRST", float(take_profit), row_ts
                 break
             tp_hit = row_low <= float(take_profit)
@@ -718,11 +721,29 @@ def _directional_trend_outcome(
             )
             return None
         if tp_hit:
+            if direction_norm == "long":
+                max_favourable = max(max_favourable, (float(take_profit) - entry_f) / entry_f)
+            else:
+                max_favourable = max(max_favourable, (entry_f - float(take_profit)) / entry_f)
             exit_reason, event_type, exit_price, exit_ts = "take_profit", "TP_FIRST", float(take_profit), row_ts
             break
         if sl_hit:
+            if direction_norm == "long":
+                max_adverse = min(max_adverse, (float(stop_loss) - entry_f) / entry_f)
+            else:
+                max_adverse = min(max_adverse, (entry_f - float(stop_loss)) / entry_f)
             exit_reason, event_type, exit_price, exit_ts = "stop_loss", "SL_FIRST", float(stop_loss), row_ts
             break
+
+        # Only a candle that did not terminate the position contributes its full
+        # observable high/low range. This is conservative for first-touch bars: we
+        # never pretend to know whether the opposite extreme happened before exit.
+        if direction_norm == "long":
+            max_favourable = max(max_favourable, (row_high - entry_f) / entry_f)
+            max_adverse = min(max_adverse, (row_low - entry_f) / entry_f)
+        else:
+            max_favourable = max(max_favourable, (entry_f - row_low) / entry_f)
+            max_adverse = min(max_adverse, (entry_f - row_high) / entry_f)
         expected_row_ts += 60
 
     if exit_reason == "horizon" and expected_row_ts != int(end_ts):
@@ -812,6 +833,7 @@ def _directional_trend_outcome(
             "net_return": float(net_return),
             "mfe": float(max_favourable),
             "mae": float(max_adverse),
+            "excursion_observability": "closed_candles_full_range; exit_candle_trigger_or_gap_only",
             "averaging_allowed": False,
             "pyramiding_allowed": False,
             "proxy_only": True,

@@ -1,3 +1,7 @@
+## Exchange sizing boundary - v1.4.6
+
+`app/main.py` now separates immutable operator intent from provisional generator output. Exchange normalization may never enlarge explicit/manual sizing. For generated provisional plans it may materialize the minimum executable quantity, marks the transformation as risk-increasing and immediately routes the normalized payload through the existing full-grid runtime risk boundary. `app/outcomes.py` treats an exit candle as partially observable: only the gap open or terminal trigger is available after exit; full OHLC extrema are accepted only for non-terminal candles.
+
 ## Direction-aware learning boundary - v1.4.5
 
 The calibration boundary now treats recommendation direction as part of the immutable feature contract. `app/recommender.py` persists `direction_sign` and `sentiment_alignment`; `app/calibration.py` validates and extracts them; `app/trend_events.py` reuses the same 15-feature schema. Model storage keys and recommender identities were bumped so 13-feature coefficients cannot load under the new contract.

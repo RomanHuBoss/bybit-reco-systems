@@ -1,3 +1,9 @@
+## Остаточные риски после v1.4.6
+
+Закрыты три подтверждённых дефекта: structural under-min generated sizing, risk-increasing nearest-step leverage alignment и post-exit contamination directional MFE/MAE. Минимальное повышение generated qty не является разрешением увеличивать пользовательский размер: оно допустимо только для provisional system default и всегда повторно проверяется по full-grid notional, margin и loss budget. Реальный внешний executor всё равно обязан сверять private account balance, фактические лимиты order endpoint и preview создаваемого Bybit grid bot.
+
+OHLCV proxy по-прежнему не доказывает queue priority, частичные исполнения, точный intrabar порядок, liquidation waterfall или фактические комиссии. Исправленная MFE/MAE семантика консервативна: на exit candle она намеренно не кредитует неизвестное движение после триггера.
+
 ## Остаточные риски после v1.4.5
 
 - Direction-blind LONG/SHORT representation исправлен, но реальный edge не доказан: приложенный ZIP не содержит заполненной runtime DB или live-fill reconciliation.
@@ -635,7 +641,7 @@ Legacy outcomes намеренно исключены из v4 training. Confiden
 Следствие: нельзя считать его завершённой автоторговой системой без внешнего execution layer.
 
 ## 2. Qty/min-notional validation зависит от фактического размера позиции
-Сервис формирует provisional `params.sizing` от целевого order notional без выдуманного `qtyStep`. После получения live Bybit metadata quantity может только округляться вниз по фактическому `qty_step`; если safe qty ниже `min_order_qty`/`min_notional`, preflight блокирует recommendation и не повышает размер автоматически. Это всё равно не заменяет sizing от баланса аккаунта и live preview фактических ордеров в Bybit: внешний исполнитель обязан повторно сверять `qty_step`, `min_order_qty`, `max_order_qty`, `min_notional`, available balance и фактическую маржу перед созданием Bybit grid bot.
+Сервис формирует provisional `params.sizing` от целевого order notional без выдуманного `qtyStep`. После получения live Bybit metadata explicit/manual quantity может только округляться вниз. Generated provisional quantity может быть поднят только до минимального исполнимого значения, после чего система обязана повторно проверить полный commitment, worst-case notional/margin и loss budget; при превышении лимита preflight блокирует recommendation. Это всё равно не заменяет sizing от баланса аккаунта и live preview фактических ордеров в Bybit: внешний исполнитель обязан повторно сверять `qty_step`, `min_order_qty`, `max_order_qty`, `min_notional`, available balance и фактическую маржу перед созданием Bybit grid bot.
 
 ## 3. Outcome labeling остаётся proxy-моделью
 Даже усиленная grid-разметка не заменяет реальные fill/funding/liquidation данные.

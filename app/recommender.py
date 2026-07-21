@@ -2851,7 +2851,7 @@ def _directional_trend_params(
     price_raw = _finite_or_none(f.get("price"))
     price_valid = price_raw is not None and price_raw > 0.0
     price = float(price_raw) if price_valid else 0.0
-    direction_norm = str(direction or direction_agg.get("direction") or "").strip().lower()
+    direction_norm = str(direction or "").strip().lower()
     direction_valid = direction_norm in {"long", "short"}
     if not direction_valid:
         return {
@@ -5677,6 +5677,7 @@ def _apply_recent_publication_dedupe(conn, recs: list[dict[str, Any]], settings,
                 or previous_root_rec_id
             ).strip() or previous_root_rec_id
             rec["is_outcome_label_root"] = False
+
 
 
 def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:

@@ -1904,6 +1904,10 @@ function operatorBlockMessageRu(item) {
     TARGET_NOTIONAL_MISSING: "Не указан положительный целевой номинал позиции.",
     BYBIT_META_UNAVAILABLE: "Метаданные инструмента Bybit недоступны; tick, lot, minNotional и тип контракта нельзя подтвердить.",
     DIRECTIONAL_TREND_LIVE_GEOMETRY_UNVERIFIABLE: "По свежей цене нельзя доказать, что entry, TP и SL остаются исполнимыми.",
+    ORDER_QTY_BELOW_MIN: "Размер одной заявки меньше минимально допустимого на Bybit. Для автоматически рассчитанного плана система должна использовать минимальный исполнимый шаг и заново проверить полный риск сетки.",
+    ORDER_QTY_OFF_STEP: "Размер заявки не кратен биржевому шагу количества. Ручной размер нужно уменьшить до допустимого шага; автоматически рассчитанный план нормализуется перед запуском.",
+    MAX_POSITION_NOTIONAL_PER_BOT_AT_EXECUTION: "Минимально исполнимый размер этой сетки превышает текущий лимит позиции. Уменьшите число сеток/диапазон либо увеличьте лимит осознанно.",
+    MAX_MARGIN_PER_BOT_AT_EXECUTION: "Минимально исполнимый размер этой сетки требует больше маржи, чем разрешено текущим профилем риска.",
     FUNDING_EXTREME_AT_EXECUTION: "Текущий funding ухудшает экономику сделки сверх разрешённого предела.",
     SYMBOL_STRATEGY_ALREADY_RUNNING: "По символу уже работает несовместимая стратегия; одновременный grid и trend запрещены.",
   };
@@ -1911,15 +1915,28 @@ function operatorBlockMessageRu(item) {
 }
 
 function uniqueBlockerItems(items) {
+  const source = Array.isArray(items) ? items : [];
   const seen = new Set();
   const genericCodes = new Set(["", "warn", "risk", "no_trade", "block", "bybit", "bybit_warn"]);
-  return (Array.isArray(items) ? items : []).filter((item) => {
-    const msgKey = String(item?.msg || "").trim().toLowerCase();
+  const messageKey = (item) => String(item?.msg || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[.;,:]+$/g, "");
+  // Persisted blocks and live validation carry concrete machine codes, while
+  // risk_report often repeats the same prose under the generic RISK bucket.
+  // Prefer the concrete invariant regardless of input order; otherwise the
+  // operator sees one failure two or three times as in ORDER_QTY_* screenshots.
+  const concreteMessages = new Set(source
+    .filter((item) => !genericCodes.has(String(item?.code || "").trim().toLowerCase()))
+    .map(messageKey)
+    .filter(Boolean));
+  return source.filter((item) => {
+    const msgKey = messageKey(item);
     const codeKey = String(item?.code || "").trim().toLowerCase();
-    // A concrete machine code describes one invariant even when the same guard
-    // arrives through both stored blocks and live Bybit validation with slightly
-    // different prose.  Generic buckets still deduplicate by message.
-    const key = !genericCodes.has(codeKey)
+    const isGeneric = genericCodes.has(codeKey);
+    if (isGeneric && msgKey && concreteMessages.has(msgKey)) return false;
+    const key = !isGeneric
       ? `code:${codeKey}`
       : msgKey || `${codeKey}|${String(item?.critical ?? "")}`;
     if (!key || seen.has(key)) return false;

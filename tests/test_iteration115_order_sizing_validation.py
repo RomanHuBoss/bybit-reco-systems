@@ -78,7 +78,7 @@ def test_bybit_plan_validation_blocks_explicit_order_qty_below_filters(app_main)
 
     assert validation["ok"] is False
     assert "ORDER_QTY_BELOW_MIN" in error_codes
-    assert "ORDER_QTY_OFF_STEP" in error_codes
+    assert "ORDER_QTY_OFF_STEP" not in error_codes
     assert "ORDER_NOTIONAL_BELOW_MIN" in error_codes
     assert "SIZE_INPUT_REQUIRED" not in warning_codes
     assert validation["snapped_levels"]["order_qty"] == "0.005"

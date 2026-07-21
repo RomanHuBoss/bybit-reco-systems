@@ -1,3 +1,17 @@
+## Exchange-executable sizing and exit-candle observability - v1.4.6
+
+### Generated versus explicit quantity
+
+- Explicit/manual quantity is never increased. It is aligned down or rejected by strict Bybit validation.
+- Generated provisional sizing (`minimum_viable_operator_default` or `external_single_position_target_notional` with live filters still required) may be lifted only to the smallest quantity satisfying `minOrderQty`, `qtyStep` and `minNotionalValue` at the conservative order price.
+- Any risk-increasing minimum lift sets `risk_revalidation_required=true`. Full grid commitment, maximum position slots, worst-boundary notional and margin are recomputed before runtime notional, margin and daily-loss gates. Passing exchange filters never overrides the operator risk profile.
+- Generated grid and trend leverage are aligned down to `leverageStep`; alignment cannot silently increase leverage.
+- When qty is below `minOrderQty`, `ORDER_QTY_BELOW_MIN` is the primary invariant. `ORDER_QTY_OFF_STEP` is suppressed as a derivative cascade when down-alignment is necessarily zero.
+
+### Directional exit-candle excursions
+
+For a first-touch or gap exit, OHLC does not reveal the order of later prices in the same candle. MFE/MAE therefore use full high/low only for candles that do not terminate the position. The exit candle contributes the observed adverse gap open or the exact TP/SL trigger, never post-exit extrema. Same-candle TP+SL remains censored as `AMBIGUOUS`.
+
 ## Direction-aware calibration semantics - v1.4.5
 
 Pooled bot-family models may contain both LONG and SHORT rows. Raw signed market features do not have one success meaning across those sides. The canonical feature snapshot therefore contains:
@@ -507,7 +521,7 @@ execution-time validation должна блокировать исполнени
 - recommendation-layer выбирает operator minimum leverage не по фиксированному ceiling издержек, а по projected net grid edge после fees/slippage/adverse funding. Это предотвращает starvation-сценарий, когда default taker fee floor уже выше старого threshold, из-за чего все идеи падали в `MIN_LEVERAGE_PER_BOT`;
 - metadata Bybit относится к тому же `symbol`, а не к соседнему инструменту/битому кэшу;
 - instrument `status` должен быть `Trading`; `PreLaunch`, `Delivering`, delisted/other statuses блокируются fail-closed для новых operator confirmations.
-- если payload содержит явный sizing (`order_qty`, `qty_per_leg`, `base_qty`, `order_notional` и совместимые алиасы), preflight блокирует значения ниже `min_order_qty`/`min_notional`, выше `max_order_qty` или не кратные `qty_step` (`ORDER_QTY_OFF_STEP`, `ORDER_QTY_BELOW_MIN`, `ORDER_NOTIONAL_BELOW_MIN`). Для base-qty проверка `minNotionalValue` использует минимальную положительную цену из reference/lower/upper основного grid range, потому что Bybit валидирует notional на фактической цене каждого ордера. Если одновременно переданы qty и quote-notional, preflight блокирует внутренне несогласованный sizing как `ORDER_QTY_NOTIONAL_MISMATCH`. Recommendation-time generator хранит provisional target-notional без фиктивного step; после получения live metadata qty округляется только вниз по фактическому `qty_step`. Невозможность выполнить minQty/minNotional приводит к blocked/no-trade, а не к увеличению позиции.
+- если payload содержит явный sizing (`order_qty`, `qty_per_leg`, `base_qty`, `order_notional` и совместимые алиасы), preflight блокирует значения ниже `min_order_qty`/`min_notional`, выше `max_order_qty` или не кратные `qty_step` (`ORDER_QTY_OFF_STEP`, `ORDER_QTY_BELOW_MIN`, `ORDER_NOTIONAL_BELOW_MIN`). Для base-qty проверка `minNotionalValue` использует минимальную положительную цену из reference/lower/upper основного grid range, потому что Bybit валидирует notional на фактической цене каждого ордера. Если одновременно переданы qty и quote-notional, preflight блокирует внутренне несогласованный sizing как `ORDER_QTY_NOTIONAL_MISMATCH`. Recommendation-time generator хранит provisional target-notional без фиктивного step. После получения live metadata explicit/manual qty округляется только вниз. Generated provisional qty может быть поднят исключительно до минимального исполнимого значения по `qty_step`, `min_order_qty` и `min_notional`, после чего обязательны повторный расчёт полного grid commitment, worst-case notional/margin и runtime risk validation. Невозможность вместить минимально исполнимый plan в risk profile приводит к blocked/no-trade.
 - operator-facing `params.operator_sheet.sizing` / `params.operator_sheet.economics` / `params.operator_sheet.leverage` считаются тем же источником исполнимых override-полей, что и `params.sizing`, `params.economics` и `trade_plan`: strict execution-preflight обязан проверять эти значения по Bybit filters, а UI обязан считать размер позиции/маржу из того же fallback-порядка, чтобы оператор не видел непроверенный sizing.
 
 ## Linear-USDT PnL, funding и liquidation

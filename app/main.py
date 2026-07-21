@@ -2313,12 +2313,13 @@ def _update_float_key(mapping: Any, key: str, value: float | None) -> None:
 
 
 def _snap_directional_trend_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    """Snap a single-position trend package without increasing exchange risk.
+    """Snap a single-position trend package to live Bybit filters conservatively.
 
     Prices are rounded conservatively for the selected direction: target reward is
-    rounded closer and stop risk farther. Quantity and leverage are always rounded
-    down. The helper never raises qty to minQty/minNotional; strict validation must
-    block a plan that becomes too small after snapping.
+    rounded closer and stop risk farther. Leverage and explicit/manual quantity are
+    never rounded up. A generated provisional target-notional quantity may be lifted
+    only to the smallest live minQty/minNotional-compatible step; downstream runtime
+    notional, margin and loss-budget guards must then revalidate the enlarged plan.
     """
     out = copy.deepcopy(rec) if isinstance(rec, dict) else {}
     if not out or not isinstance(meta, dict) or not meta:
@@ -2326,6 +2327,8 @@ def _snap_directional_trend_payload_to_bybit_meta(rec: dict[str, Any], meta: dic
 
     tick_size = _finite_float_or_none(meta.get("tick_size"))
     qty_step = _finite_float_or_none(meta.get("qty_step"))
+    min_order_qty = _finite_float_or_none(meta.get("min_order_qty"))
+    min_notional = _finite_float_or_none(meta.get("min_notional"))
     leverage_step = _finite_float_or_none(meta.get("leverage_step"))
     direction = str(out.get("direction") or "").strip().lower()
     params = out.get("params") if isinstance(out.get("params"), dict) else {}
@@ -2387,8 +2390,42 @@ def _snap_directional_trend_payload_to_bybit_meta(rec: dict[str, Any], meta: dic
             operator_sheet["stop_loss_price"] = stop_loss
 
     raw_qty = entry.get("qty", sizing.get("qty", plan_sizing.get("qty")))
-    qty = snap(raw_qty, qty_step, mode="down")
+    raw_qty_num = max(0.0, float(_finite_float_or_none(raw_qty) or 0.0))
+    down_qty = snap(raw_qty_num, qty_step, mode="down")
+    generated_default = bool(
+        str(sizing.get("mode") or plan_sizing.get("mode") or "").strip()
+        == "external_single_position_target_notional"
+        and (sizing.get("actual_bybit_filters_required") is True or plan_sizing.get("actual_bybit_filters_required") is True)
+    )
+    minimum_required_qty = max(0.0, float(min_order_qty or 0.0))
+    if min_notional is not None and min_notional > 0 and reference is not None and reference > 0:
+        minimum_required_qty = max(minimum_required_qty, float(min_notional) / float(reference))
+    minimum_executable_qty = (
+        snap(minimum_required_qty, qty_step, mode="up")
+        if minimum_required_qty > 0
+        else None
+    )
+    down_is_executable = bool(
+        down_qty is not None
+        and down_qty > 0
+        and (min_order_qty is None or down_qty + 1e-15 >= min_order_qty)
+        and (min_notional is None or reference is None or down_qty * reference + 1e-12 >= min_notional)
+    )
+    lifted_to_exchange_minimum = bool(
+        generated_default
+        and not down_is_executable
+        and minimum_executable_qty is not None
+        and minimum_executable_qty > 0
+    )
+    qty = minimum_executable_qty if lifted_to_exchange_minimum else down_qty
     if qty is not None:
+        if lifted_to_exchange_minimum:
+            sizing.setdefault("requested_qty", float(raw_qty_num))
+            sizing["minimum_executable_qty"] = float(minimum_executable_qty or qty)
+            sizing["qty_adjustment_reason"] = "exchange_minimum_for_generated_default"
+            plan_sizing.setdefault("requested_qty", float(raw_qty_num))
+            plan_sizing["minimum_executable_qty"] = float(minimum_executable_qty or qty)
+            plan_sizing["qty_adjustment_reason"] = "exchange_minimum_for_generated_default"
         sizing["qty"] = qty
         plan_sizing["qty"] = qty
         entry["qty"] = qty
@@ -2422,8 +2459,11 @@ def _snap_directional_trend_payload_to_bybit_meta(rec: dict[str, Any], meta: dic
         "source": "bybit_instrument_metadata",
         "tick_size": tick_size,
         "qty_step": qty_step,
+        "min_order_qty": min_order_qty,
+        "min_notional": min_notional,
         "leverage_step": leverage_step,
-        "risk_increasing_rounding": False,
+        "risk_increasing_rounding": bool(lifted_to_exchange_minimum),
+        "risk_revalidation_required": bool(lifted_to_exchange_minimum),
     }
     params["trade_plan"] = plan
     out["params"] = params
@@ -2629,9 +2669,13 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
 
     leverage = _finite_float_or_none(params.get("leverage"))
     if leverage is not None and leverage_step is not None and leverage_step > 0:
-        snapped_lev = snap(leverage, leverage_step, mode="nearest")
+        # Increasing leverage solely to reach the nearest exchange step worsens
+        # liquidation/margin safety. Generated grid leverage therefore snaps down,
+        # exactly like directional-trend leverage.
+        snapped_lev = snap(leverage, leverage_step, mode="down")
         if snapped_lev is not None and snapped_lev > 0:
             params["leverage"] = float(snapped_lev)
+            plan["leverage"] = float(snapped_lev)
             if operator_sheet:
                 operator_sheet["leverage"] = float(snapped_lev)
 
@@ -2669,15 +2713,49 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
     lower_price = _finite_float_or_none((levels.get("range") or {}).get("lower")) if isinstance(levels.get("range"), dict) else None
     notional_price = _grid_min_notional_price(reference_price, lower_price, _finite_float_or_none((levels.get("range") or {}).get("upper")) if isinstance(levels.get("range"), dict) else None)
 
+    lifted_to_exchange_minimum = False
     if qty_step is not None and qty_step > 0:
-        # Quantity alignment is a risk boundary: never increase a generated or
-        # operator-supplied size merely to satisfy minQty/minNotional. Round the
-        # requested quantity down to the live exchange step; downstream strict
-        # validation then blocks values that remain below exchange minimums.
+        # Manual/operator sizes remain strictly down-rounded: the service must not
+        # silently enlarge an explicit position. Generated target-notional defaults
+        # are different: before live filters they are only provisional. If down
+        # rounding makes such a default non-executable, lift it to the *smallest*
+        # qty satisfying minQty and minNotional, then let the full-grid runtime
+        # notional/margin/daily-loss guards decide whether that executable bot fits
+        # the operator profile. This avoids permanently blocking expensive symbols
+        # on the arbitrary 25-USDT provisional leg while retaining fail-closed risk.
         raw_qty = max(0.0, float(order_qty or 0.0))
-        snapped_qty = snap(raw_qty, qty_step, mode="down")
+        down_qty = snap(raw_qty, qty_step, mode="down")
+        minimum_required_qty = max(0.0, float(min_order_qty or 0.0))
+        if min_notional is not None and min_notional > 0 and notional_price is not None and notional_price > 0:
+            minimum_required_qty = max(minimum_required_qty, float(min_notional) / float(notional_price))
+        minimum_executable_qty = (
+            snap(minimum_required_qty, qty_step, mode="up")
+            if minimum_required_qty > 0
+            else None
+        )
+        down_is_executable = bool(
+            down_qty is not None
+            and down_qty > 0
+            and (min_order_qty is None or down_qty + 1e-15 >= min_order_qty)
+            and (
+                min_notional is None
+                or notional_price is None
+                or down_qty * notional_price + 1e-12 >= min_notional
+            )
+        )
+        lifted_to_exchange_minimum = bool(
+            auto_snap_allowed
+            and not down_is_executable
+            and minimum_executable_qty is not None
+            and minimum_executable_qty > 0
+        )
+        snapped_qty = minimum_executable_qty if lifted_to_exchange_minimum else down_qty
         if snapped_qty is not None and snapped_qty > 0:
             for mapping in sizing_maps:
+                if lifted_to_exchange_minimum:
+                    mapping.setdefault("requested_qty_per_order", float(raw_qty))
+                    mapping["minimum_executable_qty"] = float(minimum_executable_qty or snapped_qty)
+                    mapping["qty_adjustment_reason"] = "exchange_minimum_for_generated_default"
                 for key in ("qty_per_order", "order_qty"):
                     if key in mapping or key == "qty_per_order":
                         mapping[key] = float(snapped_qty)
@@ -2747,6 +2825,16 @@ def _snap_reco_payload_to_bybit_meta(rec: dict[str, Any], meta: dict[str, Any]) 
                     operator_sheet["economics"]["capital_required_usdt"] = float(max(float(operator_sheet["economics"].get("capital_required_usdt") or 0.0), worst_margin_required))
                     operator_sheet["economics"]["estimated_worst_case_margin_required_usdt"] = float(worst_margin_required)
 
+    plan["snapped_execution"] = {
+        "source": "bybit_instrument_metadata",
+        "tick_size": tick_size,
+        "qty_step": qty_step,
+        "min_order_qty": min_order_qty,
+        "min_notional": min_notional,
+        "leverage_step": leverage_step,
+        "risk_increasing_rounding": bool(lifted_to_exchange_minimum),
+        "risk_revalidation_required": bool(lifted_to_exchange_minimum),
+    }
     out["params"] = params
     return out
 
@@ -4052,14 +4140,16 @@ def _validate_directional_trend_plan_against_bybit_meta(
                     snapped[name] = _format_step_aligned(snapped_value, tick_size) or str(snapped_value)
                     if abs(snapped_value - value) > max(1e-12, tick_size * 1e-6):
                         err("DIRECTIONAL_PRICE_OFF_TICK", f"{name}={value} is not aligned to tick_size={tick_size}")
+        qty_below_min = bool(qty is not None and min_qty is not None and qty < min_qty)
         if qty is not None and qty_step is not None and qty_step > 0:
             snapped_qty = _quantize_to_step(qty, qty_step, mode="down")
             if snapped_qty is not None:
                 snapped["qty"] = _format_step_aligned(snapped_qty, qty_step) or str(snapped_qty)
-                if abs(snapped_qty - qty) > max(1e-12, qty_step * 1e-6):
+                if not qty_below_min and abs(snapped_qty - qty) > max(1e-12, qty_step * 1e-6):
                     err("ORDER_QTY_OFF_STEP", f"qty={qty} is not aligned down to qty_step={qty_step}")
-        if qty is not None and min_qty is not None and qty < min_qty:
-            err("ORDER_QTY_BELOW_MIN", f"qty={qty} below min_order_qty={min_qty}")
+        if qty_below_min:
+            minimum_executable = _quantize_to_step(min_qty, qty_step, mode="up") if qty_step is not None and qty_step > 0 else min_qty
+            err("ORDER_QTY_BELOW_MIN", f"qty={qty} below min_order_qty={min_qty}; minimum executable qty={minimum_executable}")
         if qty is not None and max_qty is not None and qty > max_qty:
             err("ORDER_QTY_ABOVE_MAX", f"qty={qty} above max_order_qty={max_qty}")
         computed_notional = qty * reference if qty is not None and reference is not None else target_notional
@@ -4070,9 +4160,9 @@ def _validate_directional_trend_plan_against_bybit_meta(
         if leverage is not None and max_leverage is not None and leverage > max_leverage:
             err("LEVERAGE_ABOVE_MAX", f"leverage={leverage} above max_leverage={max_leverage}")
         if leverage is not None and leverage_step is not None and leverage_step > 0:
-            snapped_leverage = _quantize_to_step(leverage, leverage_step, mode="nearest")
+            snapped_leverage = _quantize_to_step(leverage, leverage_step, mode="down")
             if snapped_leverage is not None and abs(snapped_leverage - leverage) > max(1e-12, leverage_step * 1e-6):
-                err("LEVERAGE_OFF_STEP", f"leverage={leverage} not aligned to leverage_step={leverage_step}")
+                err("LEVERAGE_OFF_STEP", f"leverage={leverage} not aligned to leverage_step={leverage_step}; safe down-aligned value={snapped_leverage}")
 
     return {
         "ok": not errors,
@@ -4533,13 +4623,13 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     if max_leverage is not None and leverage is not None and leverage > max_leverage:
         errors.append({"code": "LEVERAGE_ABOVE_MAX", "msg": f"Рекомендованное leverage={leverage} выше Bybit max_leverage={max_leverage}."})
     if leverage is not None and leverage_step is not None and leverage_step > 0:
-        snapped_leverage = _quantize_to_step(leverage, leverage_step, mode="nearest")
+        snapped_leverage = _quantize_to_step(leverage, leverage_step, mode="down")
         if snapped_leverage is not None:
             snapped["leverage"] = _format_step_aligned(snapped_leverage, leverage_step) or str(snapped_leverage)
             if abs(float(snapped_leverage) - float(leverage)) > max(1e-12, abs(leverage_step) * 1e-6):
                 errors.append({
                     "code": "LEVERAGE_OFF_STEP",
-                    "msg": f"Leverage {leverage} не выровнен по leverage_step={leverage_step}; ближайшее допустимое значение={snapped['leverage']}",
+                    "msg": f"Leverage {leverage} не выровнен по leverage_step={leverage_step}; безопасное значение с округлением вниз={snapped['leverage']}",
                 })
 
     # Bybit Futures Grid uses cross margin.  Recompute a deterministic
@@ -4634,15 +4724,21 @@ def _validate_trade_plan_against_bybit_meta(rec: dict[str, Any], meta: dict[str,
     if order_qty is not None:
         if order_qty <= 0:
             errors.append({"code": "ORDER_QTY_NON_POSITIVE", "msg": f"{qty_source or 'order_qty'} должен быть > 0, получено {order_qty}."})
-        if min_order_qty is not None and order_qty < min_order_qty:
-            errors.append({"code": "ORDER_QTY_BELOW_MIN", "msg": f"{qty_source or 'order_qty'}={order_qty} ниже Bybit min_order_qty={min_order_qty}."})
+        qty_below_min = bool(min_order_qty is not None and order_qty < min_order_qty)
+        if qty_below_min:
+            minimum_executable = _quantize_to_step(min_order_qty, qty_step, mode="up") if qty_step is not None and qty_step > 0 else min_order_qty
+            rendered_minimum = _format_step_aligned(minimum_executable, qty_step) or str(minimum_executable)
+            errors.append({
+                "code": "ORDER_QTY_BELOW_MIN",
+                "msg": f"{qty_source or 'order_qty'}={order_qty} ниже Bybit min_order_qty={min_order_qty}; минимальный исполнимый qty={rendered_minimum}.",
+            })
         if max_order_qty is not None and order_qty > max_order_qty:
             errors.append({"code": "ORDER_QTY_ABOVE_MAX", "msg": f"{qty_source or 'order_qty'}={order_qty} выше Bybit max_order_qty={max_order_qty}."})
         if qty_step is not None and qty_step > 0:
             snapped_qty = _quantize_to_step(order_qty, qty_step, mode="nearest")
             if snapped_qty is not None:
                 snapped["order_qty"] = _format_step_aligned(snapped_qty, qty_step) or str(snapped_qty)
-            if not _step_aligned(order_qty, qty_step):
+            if not qty_below_min and not _step_aligned(order_qty, qty_step):
                 errors.append({
                     "code": "ORDER_QTY_OFF_STEP",
                     "msg": f"{qty_source or 'order_qty'}={order_qty} не выровнен по Bybit qty_step={qty_step}; ближайшее значение={snapped.get('order_qty') or snapped_qty}.",
@@ -5548,7 +5644,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.5", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.6", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

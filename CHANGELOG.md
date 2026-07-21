@@ -1,3 +1,16 @@
+## 2026-07-21 - v1.4.6 - exchange-executable sizing and exit-path math
+
+- Исправлен HIGH-дефект generated sizing: provisional 25-USDT quantity для дорогих инструментов больше не остаётся структурно ниже `minOrderQty`. Только автоматически сформированный provisional plan может быть поднят до минимального исполнимого `qty_step`; explicit/manual qty по-прежнему никогда не увеличивается.
+- После такого минимального повышения полностью пересчитываются grid commitment, worst-case position notional и margin; runtime caps и daily-loss gate остаются fail-closed и могут запретить запуск.
+- Generated grid leverage теперь округляется только вниз по `leverageStep`, а не к ближайшему значению, чтобы alignment не повышал плечо.
+- Устранён каскад `ORDER_QTY_BELOW_MIN` + производный `ORDER_QTY_OFF_STEP` с бессмысленным ближайшим значением `0.000`; UI предпочитает конкретный machine code и скрывает дублирующий generic `RISK`.
+- Исправлен HIGH-дефект trend outcome: MFE/MAE больше не включают high/low части exit-candle, наступившей после gap/first-touch выхода; для exit candle учитывается только наблюдаемый gap open либо trigger level.
+- Исправлен fail-closed `NameError` при пустом directional direction.
+- Добавлены 9 RED->GREEN regression tests в `tests/test_iteration276_exchange_sizing_math.py`.
+- Итерационный audit prompt обновлён контрактом exchange-executable generated sizing и exit-candle observability; корневой PDF пересобран и визуально проверен.
+- DB schema, outcome class/success/net-return formula, model lineage и risk thresholds не изменены; очистка БД не требуется.
+- Verification: `1319 tests collected; exhaustive non-overlapping run passed as 161 + 88 + 174 + 80 + 208 + 129 + 155 + 151 + 173. The monolithic run timed out in the harness without a failure summary and is not counted as a pass. Focused trading-math/path suite: 508 passed; new regression: 9 passed. compileall and node --check passed; ruff unavailable; pip check reports only the shared-host moviepy/Pillow conflict.`.
+
 ## 2026-07-21 - v1.4.5 - direction-aware LONG/SHORT learning
 
 - Исправлен HIGH-дефект: pooled bot-family calibration больше не обучается на сыром sentiment без direction; добавлены `direction_sign` и `sentiment_alignment`.

@@ -85,7 +85,7 @@ def test_bybit_preflight_validates_operator_sheet_sizing_not_only_params(app_mai
 
     assert validation["ok"] is False
     assert "ORDER_QTY_BELOW_MIN" in error_codes
-    assert "ORDER_QTY_OFF_STEP" in error_codes
+    assert "ORDER_QTY_OFF_STEP" not in error_codes
     assert "ORDER_NOTIONAL_BELOW_MIN" in error_codes
     assert "SIZE_INPUT_REQUIRED" not in warning_codes
     assert validation["snapped_levels"]["order_qty"] == "0.005"

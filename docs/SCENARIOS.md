@@ -1,3 +1,20 @@
+## Exchange sizing and exit-path scenarios - v1.4.6
+
+### Generated BTC grid is below one live quantity step
+1. Generator stores a provisional target-notional quantity below `minOrderQty`.
+2. Live metadata resolves the smallest quantity satisfying minQty, qtyStep and minNotional.
+3. The normalized full-grid commitment is recomputed.
+4. If notional/margin/loss limits pass, qty validation is clean; otherwise the plan remains blocked by the actual risk-cap code.
+
+### Manual quantity is below minimum
+The service does not raise it. It reports one primary `ORDER_QTY_BELOW_MIN` failure and does not add the derivative off-step-to-zero message.
+
+### Gap through directional stop
+The outcome exits at the observed adverse open. Later high/low of the same minute cannot affect MFE/MAE because the position no longer exists.
+
+### Generated leverage lies between Bybit steps
+The value is aligned down, never to the nearest higher step.
+
 ## Scenario: mirrored LONG/SHORT learning - v1.4.5
 
 1. A candidate is assigned canonical `direction=long`, `short` or neutral grid.

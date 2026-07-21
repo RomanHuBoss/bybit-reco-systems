@@ -329,7 +329,7 @@ def test_validate_trade_plan_detects_mode_and_leverage_constraint_errors(isolate
     assert "MARGIN_MODE_UNSUPPORTED" in error_codes
     assert "LEVERAGE_BELOW_MIN" in error_codes
     assert "LEVERAGE_OFF_STEP" in error_codes
-    assert validation["snapped_levels"]["leverage"] == "2.2"
+    assert validation["snapped_levels"]["leverage"] == "2.1"
 
 
 # Execute-path не должен держать SQLite write-lock во время сетевого запроса за Bybit metadata.
