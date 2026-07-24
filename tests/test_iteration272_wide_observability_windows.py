@@ -44,7 +44,7 @@ def test_health_and_outcomes_use_compact_1600px_modal_contract() -> None:
     assert ".modal-table-many-columns" in styles
     assert "maxHeight: 520" in source
     assert "maxHeight: 560" in source
-    assert "ui=compact-observability-v2" in index
+    assert "ui=direction-observability-journal-v3" in index
 
 
 def test_modal_layout_toggles_wide_class_in_javascript_runtime() -> None:

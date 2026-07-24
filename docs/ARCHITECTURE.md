@@ -1,3 +1,13 @@
+## Direction representation and operator observability - v1.4.7
+
+`app/direction.py` является source of truth для raw multi-timeframe vote и теперь работает в `log_price_v1`. Log levels обеспечивают математическую антисимметрию зеркальных return paths; score thresholds, risk gates и canonical payoff остаются вне этого изменения. Поскольку feature meaning изменился, recommender, binary calibrators и trend first-touch model используют новые immutable lineages.
+
+`app/db.py` расширяет outcome projection двумя аддитивными контрактами. `sample_observability` вычисляется на корневых observation windows и передаётся на summary/cohort/group levels. `by_bot_cohort` разделяет main aggregation по mutually exclusive eligibility cohort; legacy `by_bot` сохранён как audit/backward-compatible projection.
+
+Frontend остаётся server-rendered static JS без framework. `app/ui/static/app.js` использует одну каноническую cohort-aware Results table и отдельный master-detail renderer для decision journal. `styles.css` задаёт responsive card grid; full details остаются в native `<details>`, а modal wide/height/keyboard lifecycle не меняется. Backend payload не humanize-ится повторно и HTML escaping применяется к каждому operator-controlled leaf.
+
+Схема SQLite/PostgreSQL не изменена. Изменения не добавляют private Bybit endpoints, OMS/EMS или order submission.
+
 ## Exchange sizing boundary - v1.4.6
 
 `app/main.py` now separates immutable operator intent from provisional generator output. Exchange normalization may never enlarge explicit/manual sizing. For generated provisional plans it may materialize the minimum executable quantity, marks the transformation as risk-increasing and immediately routes the normalized payload through the existing full-grid runtime risk boundary. `app/outcomes.py` treats an exit candle as partially observable: only the gap open or terminal trigger is available after exit; full OHLC extrema are accepted only for non-terminal candles.

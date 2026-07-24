@@ -1626,3 +1626,155 @@ body {
 }
 .badge-executed { color: var(--accent); border-color: rgba(90, 150, 255, 0.40); }
 .strategy-price-path{fill:none;stroke-width:2.2;vector-effect:non-scaling-stroke}.strategy-line-entry{stroke:var(--accent,#7c8cff);fill:var(--accent,#7c8cff)}.strategy-line-tp{stroke:#3aa76d;fill:#3aa76d}.strategy-line-sl,.strategy-line-kill{stroke:#d65f5f;fill:#d65f5f}.strategy-line-range{stroke:#b88a3b;fill:#b88a3b;stroke-dasharray:6 4}.timeline-legend-line{display:inline-block;width:18px;height:3px;margin-right:6px;vertical-align:middle;background:currentColor}.timeline-legend-line.strategy-line-tp{color:#3aa76d}.timeline-legend-line.strategy-line-sl,.timeline-legend-line.strategy-line-kill{color:#d65f5f}.timeline-legend-line.strategy-line-range{color:#b88a3b}.timeline-legend-line.strategy-line-entry{color:var(--accent,#7c8cff)}
+
+/* v1.4.7: readable master-detail decision journal */
+.sample-structure-badge {
+  display: inline-flex;
+  max-width: 360px;
+  white-space: normal;
+  line-height: 1.35;
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  padding: 4px 7px;
+}
+.decision-journal-list {
+  display: grid;
+  gap: 10px;
+}
+.decision-journal-card {
+  min-width: 0;
+  background: #0f172a;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.decision-journal-bad { border-left-color: var(--bad); }
+.decision-journal-warn { border-left-color: var(--warn); }
+.decision-journal-good { border-left-color: var(--good); }
+.decision-journal-neutral { border-left-color: var(--muted); }
+.decision-journal-head {
+  display: grid;
+  grid-template-columns: minmax(145px, auto) minmax(160px, 0.8fr) minmax(260px, 1.7fr) minmax(150px, auto);
+  gap: 10px 14px;
+  align-items: center;
+}
+.decision-journal-time {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.decision-journal-action {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.decision-journal-action-bad { color: var(--bad); background: rgba(255, 94, 94, 0.10); }
+.decision-journal-action-warn { color: var(--warn); background: rgba(255, 176, 32, 0.10); }
+.decision-journal-action-good { color: var(--good); background: rgba(51, 209, 122, 0.10); }
+.decision-journal-action-neutral { color: var(--muted); background: rgba(148, 163, 184, 0.10); }
+.decision-journal-context {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.decision-journal-context strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.decision-journal-status {
+  justify-self: end;
+  white-space: nowrap;
+}
+.decision-journal-preview {
+  margin-top: 10px;
+  color: var(--text);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.decision-journal-meta {
+  display: flex;
+  gap: 8px 18px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.decision-journal-meta code {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.decision-journal-details {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.decision-journal-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  user-select: none;
+}
+.decision-journal-detail-grid {
+  display: grid;
+  gap: 0;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.decision-journal-detail-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.42fr) minmax(0, 1fr);
+  border-bottom: 1px solid var(--border);
+}
+.decision-journal-detail-row:last-child { border-bottom: 0; }
+.decision-journal-detail-label,
+.decision-journal-detail-value {
+  padding: 7px 9px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.decision-journal-detail-label {
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.05);
+  font-size: 11px;
+  font-weight: 700;
+}
+.decision-journal-detail-value {
+  min-width: 0;
+  font-size: 12px;
+}
+.decision-journal-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+@media (max-width: 980px) {
+  .decision-journal-head {
+    grid-template-columns: minmax(130px, auto) minmax(160px, 1fr);
+  }
+  .decision-journal-status { justify-self: start; }
+}
+@media (max-width: 620px) {
+  .decision-journal-head,
+  .decision-journal-detail-row {
+    grid-template-columns: 1fr;
+  }
+  .decision-journal-detail-label { padding-bottom: 2px; }
+  .decision-journal-detail-value { padding-top: 2px; }
+}

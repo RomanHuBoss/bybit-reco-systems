@@ -1,3 +1,31 @@
+## 2026-07-24 - v1.4.7 - log-symmetric direction, temporal observability and decision journal
+
+### Исправлено
+
+- Directional vote переведён на `log_price_v1`: Wilder RSI использует log-return deltas, MACD и MA slope — log-levels, Bollinger %B — log-levels, ATR — log true range; MACD нормализуется ATR в тех же единицах.
+- Устранён подтверждённый boundary short-bias без изменения directional threshold и без искусственной компенсации LONG. Аудит 5 000 зеркальных OHLC-путей: 0 classification mismatches, максимальная ошибка антисимметрии score `3.05e-13`.
+- После изменения feature semantics начаты новые model/calibrator lineage: `bybit-taxonomy-v13-log-symmetric-direction`, `platt_direction_v15`, `logreg_futures_grid_v23`, `logreg_directional_trend_v4`, `logreg_global_v23`, `directional-trend-v6`, `trend-first-touch-softmax-v3` / `trend_event_softmax_v3`.
+- Outcome statistics получили `sample_observability`: строки, уникальные timestamps, уникальные symbols, temporal overlap clusters, maximum non-overlapping windows и start span.
+- Добавлена каноническая агрегация `by_bot_cohort`; основная UI-таблица больше не смешивает policy/calibration/shadow eligibility cohorts.
+- Удалена вводящая в заблуждение градация «мало / умеренно / устойчиво» по числу строк. UI явно сообщает, что коррелированные символы и перекрывающиеся horizons не являются независимыми испытаниями.
+- Окно «Журнал решений» заменено на wide master-detail карточки с локализованными действиями/статусами, кратким контекстом, сокращёнными audit identifiers и раскрываемым structured payload. Сырой JSON больше не помещается в одну узкую ячейку.
+- Обновлены README, trading/architecture/modules/scenarios/known-risks/how-to документы и DOCX/PDF инструкции оператора. DOCX/PDF визуально проверены на 19 страницах.
+
+### Совместимость
+
+- Публичные endpoint/field names и схема БД не изменены; `by_bot` сохранён для backward compatibility, `by_bot_cohort` и `sample_observability` добавлены аддитивно.
+- Outcome label versions и trading payoff semantics не изменены.
+- Старые rows не удаляются и остаются историческим аудитом; новая feature semantics не переиспользует старые calibrator coefficients.
+
+### Проверки
+
+- RED на pristine: 3/3 новых regression tests падали по отсутствующим log-space marker, temporal observability и card renderer; GREEN после исправления: 3/3, повторный deterministic run 3/3.
+- Collection: 1322 tests. Exhaustive deterministic post-check: 1322 passed в 8 непересекающихся batches (166/166/165/165/165/165/165/165); union batches равен collected set.
+- Relevant direction/outcome/UI/docs suite: 103 passed. SQLite/PostgreSQL dialect and persistence suite: 31 passed.
+- `compileall` и `node --check`: passed. Browser-equivalent production renderer выполнен в Node; Chromium screenshot master-detail journal проверен визуально.
+- Монолитный `pytest -q` не считается успешным: harness timed out после 76%; exhaustive batches являются итоговым полным покрытием.
+- `pip check`: pre-existing shared-environment conflict `moviepy 2.2.1` vs `Pillow 12.2.0`. `ruff`: unavailable (`No module named ruff`). Live PostgreSQL integration: skipped, disposable DSN не предоставлен.
+
 ## 2026-07-21 - v1.4.6 - exchange-executable sizing and exit-path math
 
 - Исправлен HIGH-дефект generated sizing: provisional 25-USDT quantity для дорогих инструментов больше не остаётся структурно ниже `minOrderQty`. Только автоматически сформированный provisional plan может быть поднят до минимального исполнимого `qty_step`; explicit/manual qty по-прежнему никогда не увеличивается.

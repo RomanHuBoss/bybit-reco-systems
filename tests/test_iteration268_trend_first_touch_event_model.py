@@ -217,7 +217,7 @@ def test_router_uses_first_touch_ev_not_binary_hit_rate() -> None:
     rec["reasons"]["trend_event_model"] = {
         "ready": True,
         "source": "trend_event_softmax",
-        "model_version": "trend-first-touch-softmax-v2",
+        "model_version": "trend-first-touch-softmax-v3",
         "outcome_label_version": "directional_trend_label_v2",
         "policy_fingerprint": "a" * 64,
         "tp_first_probability": 0.30,
@@ -333,7 +333,7 @@ def test_release_documents_and_iterative_pdf_match_current_contract() -> None:
     with ZipFile(operator_docx) as archive:
         xml = archive.read("word/document.xml").decode("utf-8")
     operator_text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", xml)))
-    assert "Версия документа: 1.4.6" in operator_text
+    assert "Версия документа: 1.4.7" in operator_text
     assert "P(TP раньше SL)" in operator_text
     assert "AMBIGUOUS" in operator_text
 

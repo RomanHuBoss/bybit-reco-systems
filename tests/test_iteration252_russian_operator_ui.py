@@ -154,7 +154,7 @@ def test_complex_fields_have_discoverable_plain_russian_help() -> None:
     for explanation in [
         "не является вероятностью прибыли", "не является вероятностью прибыли и не заменяет RR",
         "периодический платёж между участниками", "1 б.п. = 0,01%",
-        "Количество независимых завершённых наблюдений",
+        "Строки БД:",
     ]:
         assert explanation in JS or explanation in HTML
 

@@ -203,5 +203,5 @@ def test_live_grid_edge_uses_recurring_fee_while_spread_remains_liquidity_gate()
 
 def test_outcome_contract_bumped_for_cost_layer_separation() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
-    assert 'version="1.4.6"' in source
+    assert 'version="1.4.7"' in source
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source

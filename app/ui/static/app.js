@@ -2659,18 +2659,17 @@ function renderModalDisclosure(title, html, { open = false, note = "" } = {}) {
   `;
 }
 
-function renderSampleSizeBadge(total) {
-  const n = Math.max(0, Number(total || 0));
-  let cls = "sample-badge sample-badge-low";
-  let label = "мало";
-  if (n >= 30) {
-    cls = "sample-badge sample-badge-high";
-    label = "устойчиво";
-  } else if (n >= 10) {
-    cls = "sample-badge sample-badge-mid";
-    label = "умеренно";
-  }
-  return `<span class="${cls}" title="Количество независимых завершённых наблюдений в этой группе">наблюдений: ${escapeHtml(String(n))} · ${escapeHtml(label)}</span>`;
+function renderSampleSizeBadge(sample) {
+  const source = sample && typeof sample === "object"
+    ? (sample.sample_observability || sample)
+    : { rows: Number(sample || 0) };
+  const rows = Math.max(0, Number(source.rows ?? sample?.total ?? sample ?? 0) || 0);
+  const timestamps = Math.max(0, Number(source.unique_timestamps || 0) || 0);
+  const clusters = Math.max(0, Number(source.temporal_clusters || 0) || 0);
+  const nonOverlapping = Math.max(0, Number(source.max_non_overlapping_windows || 0) || 0);
+  const symbols = Math.max(0, Number(source.unique_symbols || 0) || 0);
+  const title = `Строки БД: ${rows}; уникальные времена старта: ${timestamps}; связанные временные группы: ${clusters}; максимум неперекрывающихся окон: ${nonOverlapping}; символы: ${symbols}. Строки по коррелированным инструментам и перекрывающимся горизонтам не считаются независимыми испытаниями.`;
+  return `<span class="sample-structure-badge" title="${escapeHtml(title)}">строк: ${escapeHtml(String(rows))} · временных групп: ${escapeHtml(String(clusters))} · неперекрывающихся окон: ${escapeHtml(String(nonOverlapping))}</span>`;
 }
 
 function formatShare(part, total, digits = 1) {
@@ -2788,6 +2787,159 @@ function buildModalTable(columns, rows, { emptyText = "Нет данных", row
       </table>
     </div>
   `;
+}
+
+function journalActionTone(action) {
+  const normalized = String(action || "").trim().toUpperCase();
+  if (/(ERROR|FAILED|FAILURE|BLOCK|DENIED|REJECT|CORRUPT)/.test(normalized)) return "bad";
+  if (/(SKIP|STALE|PENDING|EXPIRED|NO_TRADE|WAIT|DISABLED)/.test(normalized)) return "warn";
+  if (/(EXECUTED|APPROVED|STARTED|CREATED|RECOVERED|PUBLISHED|PUBLISH|STOPPED)/.test(normalized)) return "good";
+  return "neutral";
+}
+
+function journalActionLabel(action) {
+  const code = String(action || "").trim().toUpperCase();
+  const labels = {
+    PUBLISH: "Публикация",
+    SENTIMENT_COLLECT: "Сбор сентимента",
+    COLLECT_ERROR: "Ошибка сбора данных",
+    OUTCOME_LABELLED: "Исход рассчитан",
+    OUTCOME_LABELED: "Исход рассчитан",
+    OUTCOME_SKIP_INVALID_GRID_CONTRACT: "Исход пропущен: контракт сетки",
+    EXECUTION_PREFLIGHT_BLOCKED: "Preflight заблокирован",
+    SYMBOL_DISABLED: "Символ отключён",
+    DB_PRUNE: "Очистка технических данных",
+    STALE_DATA_SKIP: "Пропуск устаревших данных",
+  };
+  return labels[code] || humanizeOperatorText(code || "—");
+}
+
+function journalStatusLabel(status) {
+  const code = String(status || "").trim().toLowerCase();
+  const labels = {
+    recommended: "Можно торговать",
+    active: "Можно торговать",
+    pending: "Ожидает проверки",
+    blocked: "Заблокировано",
+    no_trade: "Не торговать",
+    suppressed: "Скрыто системой",
+    expired: "Устарело",
+    executed: "Запущено",
+    ignored: "Отклонено оператором",
+  };
+  return labels[code] || humanizeOperatorText(code || "—");
+}
+
+function journalFieldLabel(path) {
+  const labels = {
+    error: "Ошибка",
+    message: "Сообщение",
+    reason: "Причина",
+    code: "Код",
+    count: "Количество",
+    status: "Статус",
+    symbol: "Символ",
+    venue: "Контур",
+    bot_type: "Стратегия",
+    direction: "Направление",
+    model_version: "Версия модели",
+    policy_fingerprint: "Идентификатор правил",
+    retry_at: "Повтор после",
+    retry_after_sec: "Повтор через, сек.",
+    duration_ms: "Длительность, мс",
+  };
+  const segments = String(path || "").split(".").filter(Boolean);
+  return segments.map(segment => labels[segment] || humanizeOperatorText(segment)).join(" › ") || "Деталь";
+}
+
+function journalPrimitiveText(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "boolean") return value ? "да" : "нет";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "некорректное число";
+  return humanizeOperatorText(String(value));
+}
+
+function flattenJournalDetails(value, prefix = "", output = [], depth = 0) {
+  if (output.length >= 160) return output;
+  if (value === null || value === undefined || typeof value !== "object") {
+    output.push({ label: journalFieldLabel(prefix), value: journalPrimitiveText(value) });
+    return output;
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      output.push({ label: journalFieldLabel(prefix), value: "пустой список" });
+      return output;
+    }
+    value.forEach((item, index) => flattenJournalDetails(item, `${prefix}${prefix ? "." : ""}${index + 1}`, output, depth + 1));
+    return output;
+  }
+  const entries = Object.entries(value);
+  if (!entries.length) {
+    output.push({ label: journalFieldLabel(prefix), value: "детали отсутствуют" });
+    return output;
+  }
+  for (const [key, item] of entries) {
+    const nextPrefix = `${prefix}${prefix ? "." : ""}${key}`;
+    if (item && typeof item === "object" && depth < 5) {
+      flattenJournalDetails(item, nextPrefix, output, depth + 1);
+    } else {
+      output.push({ label: journalFieldLabel(nextPrefix), value: journalPrimitiveText(item) });
+    }
+    if (output.length >= 160) break;
+  }
+  return output;
+}
+
+function journalPreview(entries) {
+  if (!entries.length) return "Дополнительные сведения не сохранены.";
+  const priority = entries.filter(item => /(Ошибка|Причина|Сообщение|Код|Статус)/i.test(item.label));
+  const selected = (priority.length ? priority : entries).slice(0, 2);
+  return selected.map(item => `${item.label}: ${item.value}`).join(" · ");
+}
+
+function shortAuditId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "—";
+  return text.length <= 34 ? text : `${text.slice(0, 18)}…${text.slice(-10)}`;
+}
+
+function renderDecisionJournal(rows) {
+  const items = Array.isArray(rows) ? rows : [];
+  if (!items.length) return `<div class="decision-journal-empty">Журнал решений пуст.</div>`;
+  return `<div class="decision-journal-list">${items.map(row => {
+    const details = flattenJournalDetails(row?.details || {});
+    const tone = journalActionTone(row?.action);
+    const linked = Boolean(row?.rec_id);
+    const strategy = row?.bot_type ? botTypeLabel(row.bot_type) : "Общесистемное событие";
+    const context = [row?.symbol || "Все символы", strategy].filter(Boolean).join(" · ");
+    const detailRows = details.map(item => `
+      <div class="decision-journal-detail-row">
+        <div class="decision-journal-detail-label">${escapeHtml(item.label)}</div>
+        <div class="decision-journal-detail-value">${escapeHtml(item.value)}</div>
+      </div>`).join("");
+    return `
+      <article class="decision-journal-card decision-journal-${tone}">
+        <div class="decision-journal-head">
+          <div class="decision-journal-time">${escapeHtml(formatTs(row?.ts))}</div>
+          <div><span class="decision-journal-action decision-journal-action-${tone}">${escapeHtml(journalActionLabel(row?.action))}</span></div>
+          <div class="decision-journal-context">
+            <strong>${escapeHtml(context)}</strong>
+            <span>${row?.direction ? renderDirectionBadge(row.direction, row.bot_type) : "Направление не задано"}</span>
+          </div>
+          <div class="decision-journal-status">${row?.recommendation_status ? pillStatus(journalStatusLabel(row.recommendation_status)) : (linked ? "Статус не сохранён" : "Системное")}</div>
+        </div>
+        <div class="decision-journal-preview">${escapeHtml(journalPreview(details))}</div>
+        <div class="decision-journal-meta">
+          <span>Оператор: <b>${escapeHtml(row?.operator || "система")}</b></span>
+          <span>Rec ID: <code title="${escapeHtml(row?.rec_id || "")}">${escapeHtml(shortAuditId(row?.rec_id))}</code></span>
+          ${row?.model_version ? `<span>Модель: <code title="${escapeHtml(row.model_version)}">${escapeHtml(shortAuditId(row.model_version))}</code></span>` : ""}
+        </div>
+        <details class="decision-journal-details">
+          <summary>Все детали (${details.length})</summary>
+          <div class="decision-journal-detail-grid">${detailRows}</div>
+        </details>
+      </article>`;
+  }).join("")}</div>`;
 }
 
 function timelineDirectionValue(direction) {
@@ -3849,7 +4001,8 @@ async function loadOutcomes() {
   const neutralBreakdown = (data.neutral_breakdown || []).filter(row => String(row?.neutral_source || "") !== "directional");
   const llmByEngine = data.llm_engine_alignment || [];
   const llmMatrix = data.llm_engine_matrix || [];
-  const byBot = data.by_bot || [];
+  const byBotCohort = data.by_bot_cohort || [];
+  const sampleObservability = data.sample_observability || {};
   const archiveEventTypeByBotRows = Object.entries(archiveData?.event_type_counts_by_bot || {}).flatMap(([bot_type, counts]) =>
     Object.entries(counts || {}).map(([event_type, count]) => ({ bot_type, event_type, count }))
   );
@@ -3889,7 +4042,10 @@ async function loadOutcomes() {
     ${renderModalSummaryCards([
       { label: "Торговые outcomes", value: actionableTotal },
       { label: "Средний net торговых", value: actionableAvg },
-      { label: "Все корневые наблюдения", value: total },
+      { label: "Все корневые строки", value: total },
+      { label: "Уникальные времена старта", value: Number(sampleObservability.unique_timestamps || 0) },
+      { label: "Связанные временные группы", value: Number(sampleObservability.temporal_clusters || 0) },
+      { label: "Неперекрывающиеся окна", value: Number(sampleObservability.max_non_overlapping_windows || 0) },
       { label: "Текущие правила · доля успешных", value: actionableWinRate },
       { label: "Средний net · все", value: `${Number(allRootsSummary.avg_ret || 0).toFixed(2)}%` },
       { label: "Допущено к калибровке", value: calibrationEligibleTotal },
@@ -3912,14 +4068,15 @@ async function loadOutcomes() {
       <div class="modal-section-title">Стратегии</div>
       ${buildModalTable([
         { label: "Стратегия", render: row => `<span class="wrap">${escapeHtml(botTypeLabel(row.bot_type))}</span>` },
+        { label: "Когорта допуска", className: "wrap", render: row => `<span class="wrap">${escapeHtml(outcomeEligibilityCohortRu(row.eligibility_cohort))}</span>` },
         { label: "Исходное направление алгоритма", render: row => renderDirectionBadge(row.raw_direction, row.bot_type) },
         { label: "Исполнимое направление", render: row => renderDirectionBadge(row.execution_direction, row.bot_type) },
-        { label: "Всего", render: row => escapeHtml(String(row.total || 0)) },
+        { label: "Строк", render: row => escapeHtml(String(row.total || 0)) },
         { label: "Доля успешных по контракту", render: row => row.win_rate == null ? "—" : escapeHtml(`${(Number(row.win_rate) * 100).toFixed(1)}%`) },
         { label: "Средний net результат", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
-        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
-      ], byBot, { emptyText: "Исходы по стратегиям пока не накоплены." })}
-      <p class="modal-note">Это единственная основная strategy-агрегация. Тип нейтрального сигнала доступен в расширенной диагностике, но не дублируется отдельной основной таблицей: прежние таблицы по исполнимому направлению, преобразованию направления, нейтральным подтипам и сырому тезису удалены как повторные срезы тех же строк. «Успех по контракту» и знак net P&amp;L — разные метрики. Для grid срабатывание kill-switch означает неуспех даже при положительном терминальном proxy P&amp;L; для trend TP/SL/HORIZON_EXIT и денежный результат также показываются раздельно.</p>
+        { label: "Временная структура", className: "wrap", render: row => renderSampleSizeBadge(row) },
+      ], byBotCohort, { emptyText: "Исходы по стратегиям пока не накоплены." })}
+      <p class="modal-note">Это единственная основная strategy-агрегация, и каждая строка относится только к одной mutually exclusive когорте допуска. Количество строк не называется количеством независимых испытаний: коррелированные символы и перекрывающиеся горизонты отдельно отражены в колонке временной структуры. Тип нейтрального сигнала доступен в расширенной диагностике, но не дублируется отдельной основной таблицей: прежние таблицы по исполнимому направлению, преобразованию направления, нейтральным подтипам и сырому тезису удалены как повторные срезы тех же строк. «Успех по контракту» и знак net P&amp;L — разные метрики. Для grid срабатывание kill-switch означает неуспех даже при положительном терминальном proxy P&amp;L; для trend TP/SL/HORIZON_EXIT и денежный результат также показываются раздельно.</p>
     </div>
     <div class="modal-section">
       <div class="modal-section-title">На что смотреть в первую очередь</div>
@@ -3962,7 +4119,7 @@ async function loadOutcomes() {
         { label: "Всего", render: row => escapeHtml(String(row.total)) },
         { label: "Доля успешных по контракту", render: row => escapeHtml(`${(Number(row.win_rate || 0) * 100).toFixed(1)}%`) },
         { label: "Средний net", render: row => escapeHtml(fmtPct(row.avg_ret, 2)) },
-        { label: "Надёжность", render: row => renderSampleSizeBadge(row.total) },
+        { label: "Временная структура", className: "wrap", render: row => renderSampleSizeBadge(row) },
       ], bySymbol, { emptyText: "Данные по инструментам пока отсутствуют." })}
     `)}
     ${renderModalDisclosure("Журнал текущего набора правил (последние 80)", `
@@ -4012,21 +4169,20 @@ async function loadDecisions() {
   try { data = await res.json(); } catch (e) { return; }
   if (!res.ok) { showModal("Ошибка загрузки журнала", data); return; }
   const rows = Array.isArray(data) ? data : [];
+  const linked = rows.filter(row => Boolean(row?.rec_id)).length;
+  const system = rows.length - linked;
+  const alerts = rows.filter(row => journalActionTone(row?.action) === "bad").length;
   const html = `
-    <p class="modal-note">Журнал связывает операторское или системное действие с рекомендацией, символом и семейством стратегии. Записи без rec_id относятся к общесистемным операциям.</p>
-    ${buildModalTable([
-      { label: "Время", render: row => escapeHtml(formatTs(row.ts)) },
-      { label: "Действие", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(row.action || "—"))}</span>` },
-      { label: "Символ", render: row => escapeHtml(row.symbol || "—") },
-      { label: "Стратегия", render: row => escapeHtml(row.bot_type ? botTypeLabel(row.bot_type) : "Общесистемное") },
-      { label: "Направление", render: row => row.direction ? renderDirectionBadge(row.direction, row.bot_type) : "—" },
-      { label: "Статус рекомендации", render: row => row.recommendation_status ? pillStatus(row.recommendation_status) : "—" },
-      { label: "Оператор", render: row => escapeHtml(row.operator || "система") },
-      { label: "Идентификатор", className: "wrap", render: row => `<span class="wrap">${escapeHtml(row.rec_id || "—")}</span>` },
-      { label: "Детали", className: "wrap", render: row => `<span class="wrap">${escapeHtml(humanizeOperatorText(JSON.stringify(row.details || {})))}</span>` },
-    ], rows, { emptyText: "Журнал решений пуст.", compact: true, maxHeight: 520 })}
+    ${renderModalSummaryCards([
+      { label: "Записей", value: rows.length },
+      { label: "Связано с рекомендациями", value: linked },
+      { label: "Общесистемных", value: system },
+      { label: "Ошибок и блокировок", value: alerts },
+    ])}
+    <p class="modal-note">Каждая запись показана отдельной карточкой. Основной контекст виден сразу, а полный структурированный payload раскрывается по запросу и не сжимает остальные поля в одну узкую строку.</p>
+    ${renderDecisionJournal(rows)}
   `;
-  showModalHtml("Журнал решений", html);
+  showModalHtml("Журнал решений", html, { wide: true });
 }
 
 async function loadRisk() {

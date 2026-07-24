@@ -38,17 +38,21 @@ def _sma(xs: list[float], period: int) -> float:
     period = max(1, min(period, len(xs)))
     return sum(xs[-period:]) / period
 
-def rsi14(closes: list[float], period: int = 14) -> float:
-    """Wilder RSI(14).
+def _log_levels(prices: list[float]) -> list[float]:
+    return [math.log(float(value)) for value in prices]
 
-    Using the classic Wilder smoothing keeps the signal closer to what traders
-    see in TradingView / exchange terminals and avoids the sharper Cutler-style
-    swings produced by a plain rolling mean.
+
+def rsi14(closes: list[float], period: int = 14) -> float:
+    """Wilder RSI(14) on log-price changes.
+
+    Log-price deltas are exactly antisymmetric under a mirrored return path, so
+    equally strong LONG and SHORT moves receive equal-magnitude contributions.
     """
     if len(closes) < period + 2:
         return 50.0
 
-    deltas = [float(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    levels = _log_levels(closes)
+    deltas = [float(levels[i] - levels[i - 1]) for i in range(1, len(levels))]
     gains = [max(d, 0.0) for d in deltas]
     losses = [max(-d, 0.0) for d in deltas]
 
@@ -66,11 +70,12 @@ def rsi14(closes: list[float], period: int = 14) -> float:
 
 def macd_hist(closes: list[float]) -> float:
     # 26 EMA + 9 EMA(signal) needs ~35 observations for a non-degenerate value.
-    # Requiring 60 bars only zeroed-out otherwise valid early-history MACD states.
+    # Use log prices so a mirrored return path produces the exact opposite signal.
     if len(closes) < 35:
         return 0.0
-    ema12 = _ema(closes, 12)
-    ema26 = _ema(closes, 26)
+    levels = _log_levels(closes)
+    ema12 = _ema(levels, 12)
+    ema26 = _ema(levels, 26)
     macd = [a - b for a, b in zip(ema12, ema26)]
     signal = _ema(macd, 9)
     return float(macd[-1] - signal[-1])
@@ -78,21 +83,25 @@ def macd_hist(closes: list[float]) -> float:
 def ma_slope(closes: list[float], fast: int = 20, slow: int = 60) -> float:
     if len(closes) < slow + 2:
         return 0.0
-    f = _sma(closes, fast)
-    s = _sma(closes, slow)
-    p = closes[-1] if closes[-1] else 1.0
-    return float((f - s) / p)
+    levels = _log_levels(closes)
+    return float(_sma(levels, fast) - _sma(levels, slow))
 
 def atr_pct(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> float:
+    """Log true range, approximately equal to relative ATR for small moves."""
     if len(closes) < period + 2:
         return 0.0
+    log_highs = _log_levels(highs)
+    log_lows = _log_levels(lows)
+    log_closes = _log_levels(closes)
     trs = []
-    for i in range(1, len(closes)):
-        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+    for i in range(1, len(log_closes)):
+        tr = max(
+            log_highs[i] - log_lows[i],
+            abs(log_highs[i] - log_closes[i - 1]),
+            abs(log_lows[i] - log_closes[i - 1]),
+        )
         trs.append(tr)
-    atr = _sma(trs, period)
-    p = closes[-1] if closes[-1] else 1.0
-    return float(atr / p)
+    return float(_sma(trs, period))
 
 
 def mean_reversion_diagnostics(closes: list[float], *, max_returns: int = 160) -> dict[str, Any]:
@@ -234,7 +243,8 @@ def _neutral_tf_vote(reason: str = "insufficient_or_invalid_ohlc") -> dict[str, 
         "slope_norm": 0.0,
         "macd_hist": 0.0,
         "rsi14": 50.0,
-        "contrib": {"ma_slope": 0.0, "macd": 0.0, "rsi": 0.0},
+        "contrib": {"ma_slope": 0.0, "macd": 0.0, "rsi": 0.0, "bollinger": 0.0},
+        "indicator_space": "log_price_v1",
         "score": 0.0,
         "trend_strength": 0.0,
         "neutral_veto": 0.8,
@@ -265,21 +275,21 @@ def vote_for_tf(closes: list[float], highs: list[float], lows: list[float]) -> d
     # Increased sensitivity: 0.22 vs old 0.15 — slope is the most reliable trend signal
     slope_c = _clamp(slope_norm * 0.22, -1.0, 1.0)
 
-    # MACD hist normalized by ATR (price-relative, scale-invariant across assets)
-    # Old: normalized by raw price → BTC($60K) MACD≈0, PEPE($0.00001) MACD saturates ±1
-    # Fix: divide by ATR which is already price-relative
-    hist_norm = hist / max(1e-9, ap * closes[-1] if closes else 1.0)
-    hist_c = _clamp(hist_norm * 4.0, -1.0, 1.0)  # ATR-normalized: ~4x ATR = max signal
+    # MACD histogram and ATR are both in log-price units. Their ratio is
+    # scale-free and mirror-symmetric across LONG/SHORT paths.
+    hist_norm = hist / max(1e-9, ap)
+    hist_c = _clamp(hist_norm * 4.0, -1.0, 1.0)
 
     # RSI centered at 50, tightened normalization for more signal pull
     rsi_c = _clamp((rsi - 50.0) / 30.0, -1.0, 1.0)
 
     # Bollinger Band %B: price position relative to 20-period BB
     # Acts as mean-reversion vs momentum confirmator
-    closes_20 = closes[-20:] if len(closes) >= 20 else closes
+    log_closes = _log_levels(closes)
+    closes_20 = log_closes[-20:] if len(log_closes) >= 20 else log_closes
     sma20 = sum(closes_20) / len(closes_20)
     std20 = math.sqrt(sum((x - sma20) ** 2 for x in closes_20) / len(closes_20)) if len(closes_20) > 1 else 1e-9
-    bb_b = _clamp((closes[-1] - (sma20 - 2 * std20)) / max(1e-9, 4 * std20), 0.0, 1.0)  # 0=lower band, 1=upper band
+    bb_b = _clamp((log_closes[-1] - (sma20 - 2 * std20)) / max(1e-9, 4 * std20), 0.0, 1.0)  # 0=lower band, 1=upper band
     bb_c = _clamp((bb_b - 0.5) * 2.0, -1.0, 1.0)  # centered: -1=oversold, +1=overbought
 
     # Soft directional score — slope dominates; MACD/RSI/BB supplement
@@ -302,7 +312,13 @@ def vote_for_tf(closes: list[float], highs: list[float], lows: list[float]) -> d
         "slope_norm": float(slope_norm),
         "macd_hist": float(hist),
         "rsi14": float(rsi),
-        "contrib": {"ma_slope": float(slope_c), "macd": float(hist_c), "rsi": float(rsi_c)},
+        "contrib": {
+            "ma_slope": float(slope_c),
+            "macd": float(hist_c),
+            "rsi": float(rsi_c),
+            "bollinger": float(bb_c),
+        },
+        "indicator_space": "log_price_v1",
         "score": float(score),
         "trend_strength": float(trend_strength),
         "neutral_veto": float(neutral_veto),

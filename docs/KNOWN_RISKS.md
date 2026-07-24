@@ -1,3 +1,13 @@
+## Остаточные риски после v1.4.7
+
+- Log-space mirror symmetry устраняет программную асимметрию направления, но не доказывает predictive edge, прибыльность LONG/SHORT или пригодность текущих thresholds.
+- Новая feature semantics начинает пустую exact-policy/model lineage. Старые v12/v22/v5/v2 coefficients и outcomes не переиспользуются для inference новой линии; доказательность должна накопиться заново.
+- `temporal_clusters` и `max_non_overlapping_windows` исправляют ложную интерпретацию количества строк, но не являются полноценным correlation-adjusted `n_eff`. Cross-symbol beta, sector clusters, regime persistence и common market shocks остаются зависимостями.
+- `by_bot_cohort` предотвращает смешение eligibility cohorts в основной таблице, однако внешние потребители legacy `by_bot` всё ещё обязаны явно выбирать cohort fields.
+- Journal показывает до 200 последних записей API; structured details ограничены защитным пределом 160 leaf fields на карточку. Полный durable payload остаётся в backend/DB и API, но очень глубокий объект может быть сокращён в UI.
+- UI/observability changes не ослабляют no-trade, calibration, monetary, censoring, funding или execution preflight gates. Нулевая actionable-когорта остаётся отсутствием evidence по разрешённым сделкам.
+- Проверка не включала live PostgreSQL disposable integration, реальные Bybit credentials, private account truth или внешний executor. Сервис по-прежнему не отправляет orders.
+
 ## Остаточные риски после v1.4.6
 
 Закрыты три подтверждённых дефекта: structural under-min generated sizing, risk-increasing nearest-step leverage alignment и post-exit contamination directional MFE/MAE. Минимальное повышение generated qty не является разрешением увеличивать пользовательский размер: оно допустимо только для provisional system default и всегда повторно проверяется по full-grid notional, margin и loss budget. Реальный внешний executor всё равно обязан сверять private account balance, фактические лимиты order endpoint и preview создаваемого Bybit grid bot.

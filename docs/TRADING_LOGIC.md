@@ -1,3 +1,18 @@
+## Log-symmetric direction and sample observability - v1.4.7
+
+Directional score определяется в едином логарифмическом пространстве. Для исходного пути `p_t` зеркальный путь задаётся как `p'_t = p_0^2 / p_t`, то есть его log-return в каждый момент имеет противоположный знак. Канонический контракт требует:
+
+- `score(p') = -score(p)` с численной погрешностью;
+- slope/MACD/RSI/Bollinger contributions меняют знак;
+- устойчивый рост даёт LONG, зеркальное падение — SHORT;
+- нейтральная граница остаётся симметричной; отдельный LONG bonus запрещён.
+
+Реализация: RSI использует изменения `log(close)`; MACD и fast/slow SMA — уровни `log(close)`; Bollinger %B строится на `log(close)`; ATR является log true range; MACD histogram делится на ATR в тех же единицах. Это изменение representation, а не изменение TP/SL, signed P&L, funding, thresholds или risk gates.
+
+Outcome-агрегация различает количество database rows и временную структуру evidence. Для каждого root используется интервал `[ts, ts + horizon_sec]`; точные дубликаты окна дедуплицируются только в temporal diagnostics. Показываются connected overlap clusters и максимальное число неперекрывающихся окон по earliest-finish scheduling. Эти показатели являются observability diagnostics, а не полной оценкой статистического effective sample size.
+
+Основная strategy-таблица группирует строки по `(bot_type, raw_direction, execution_direction, eligibility_cohort)`. Поэтому calibration-eligible, policy-evaluation и shadow-exploration результаты не объединяются. `success` остаётся contract outcome, а `ret` — net proxy return; они не становятся одним полем.
+
 ## Exchange-executable sizing and exit-candle observability - v1.4.6
 
 ### Generated versus explicit quantity

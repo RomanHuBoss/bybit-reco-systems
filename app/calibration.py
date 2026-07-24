@@ -2949,10 +2949,10 @@ def load_platt_from_db(conn, key: str) -> PlattScaler | None:
 #      Existing outcomes remain valid, but cached v16 diagnostics must refit.
 
 BOT_CALIB_KEYS: dict[str, str] = {
-    "futures_grid": "logreg_futures_grid_v22",
-    "directional_trend": "logreg_directional_trend_v3",
+    "futures_grid": "logreg_futures_grid_v23",
+    "directional_trend": "logreg_directional_trend_v4",
 }
-GLOBAL_LOGREG_KEY = "logreg_global_v22"
+GLOBAL_LOGREG_KEY = "logreg_global_v23"
 
 # Refit interval — don't refit more than once per hour
 CALIB_REFIT_INTERVAL_SEC = 3600

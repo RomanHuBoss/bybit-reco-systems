@@ -1,3 +1,15 @@
+## Module changes - v1.4.7
+
+- `app/direction.py`: log-price helpers; mirror-symmetric RSI/MACD/MA/Bollinger/ATR; `indicator_space=log_price_v1`; complete component diagnostics.
+- `app/recommender.py`: new recommender/direction/trend lineage identifiers after feature-semantics change.
+- `app/calibration.py`: new grid/trend/global calibrator storage keys; old coefficients cannot load under the new representation.
+- `app/trend_events.py`: new first-touch model/key lineage using the same updated recommendation feature identity.
+- `app/db.py`: exact observation-window normalization, temporal sample diagnostics, `sample_observability`, cohort-aware `by_bot_cohort` aggregation.
+- `app/ui/static/app.js`: truthful sample-structure renderer; cohort-aware Results table; localized, escaped master-detail decision journal.
+- `app/ui/static/styles.css`: responsive journal cards and structured detail grid.
+- `app/ui/static/index.html`: v1.4.7 asset cache token.
+- `tests/test_iteration277_direction_observability_journal_ui.py`: independent mirror truth, temporal-dependence/cohort fixture and production JS renderer regression tests.
+
 ## Module changes - v1.4.6
 
 - `app/main.py`: generated/manual sizing classification; minimum exchange-executable qty; conservative leverage-step rounding; full commitment revalidation; primary qty diagnostic suppression.

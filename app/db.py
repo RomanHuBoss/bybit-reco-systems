@@ -5597,6 +5597,69 @@ def _accumulate_stat(bucket: dict[str, Any], success: Any, ret: Any) -> None:
     bucket["abs_ret_sum"] += abs(float(ret or 0.0))
 
 
+def _outcome_window(ts: Any, horizon_sec: Any, label_available_ts: Any) -> tuple[int, int] | None:
+    """Return an exact economic observation window for dependence diagnostics."""
+    start = _exact_outcome_integer(ts)
+    horizon = _exact_outcome_integer(horizon_sec)
+    if start is None or start <= 0:
+        return None
+    if horizon is None or horizon <= 0:
+        label_ts = _exact_outcome_integer(label_available_ts)
+        if label_ts is None:
+            return None
+        horizon = label_ts - start
+    if horizon <= 0:
+        return None
+    return start, start + horizon
+
+
+def _accumulate_sample_observability(
+    bucket: dict[str, Any],
+    *,
+    ts: Any,
+    symbol: Any,
+    horizon_sec: Any,
+    label_available_ts: Any,
+) -> None:
+    window = _outcome_window(ts, horizon_sec, label_available_ts)
+    if window is not None:
+        bucket.setdefault("_intervals", set()).add(window)
+        bucket.setdefault("_timestamps", set()).add(window[0])
+    normalized_symbol = str(symbol or "").strip().upper()
+    if normalized_symbol:
+        bucket.setdefault("_symbols", set()).add(normalized_symbol)
+
+
+def _sample_observability(bucket: dict[str, Any]) -> dict[str, int]:
+    intervals = sorted(set(bucket.get("_intervals") or set()))
+    timestamps = sorted(set(bucket.get("_timestamps") or set()))
+    symbols = set(bucket.get("_symbols") or set())
+
+    temporal_clusters = 0
+    cluster_end: int | None = None
+    for start, end in intervals:
+        if cluster_end is None or start >= cluster_end:
+            temporal_clusters += 1
+            cluster_end = end
+        else:
+            cluster_end = max(cluster_end, end)
+
+    max_non_overlapping = 0
+    last_end: int | None = None
+    for start, end in sorted(intervals, key=lambda item: (item[1], item[0])):
+        if last_end is None or start >= last_end:
+            max_non_overlapping += 1
+            last_end = end
+
+    return {
+        "rows": int(bucket.get("total") or 0),
+        "unique_timestamps": len(timestamps),
+        "unique_symbols": len(symbols),
+        "temporal_clusters": temporal_clusters,
+        "max_non_overlapping_windows": max_non_overlapping,
+        "start_span_sec": (timestamps[-1] - timestamps[0]) if len(timestamps) >= 2 else 0,
+    }
+
 
 def _materialize_stat_rows(grouped: dict[tuple[Any, ...], dict[str, Any]], key_names: list[str], *, sort_key) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -5611,6 +5674,7 @@ def _materialize_stat_rows(grouped: dict[tuple[Any, ...], dict[str, Any]], key_n
             "win_rate": round(wins / total, 3) if total else 0.0,
             "avg_ret": round((float(stat["ret_sum"]) / total) * 100.0, 3) if total else 0.0,
             "avg_abs_ret": round((float(stat["abs_ret_sum"]) / total) * 100.0, 3) if total else 0.0,
+            "sample_observability": _sample_observability(stat),
         })
         rows.append(row)
     return sorted(rows, key=sort_key)
@@ -6425,6 +6489,7 @@ def get_outcomes_stats(
     eligibility_reason_counts: dict[str, int] = {}
     decision_reason_counts: dict[str, int] = {}
     by_bot_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
+    by_bot_cohort_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_symbol_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_raw_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
     by_execution_bucket: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -6490,6 +6555,13 @@ def get_outcomes_stats(
             success,
             ret,
         )
+        _accumulate_sample_observability(
+            eligibility_cohort_buckets[eligibility_cohort],
+            ts=row["ts"],
+            symbol=row["symbol"],
+            horizon_sec=row["horizon_sec"],
+            label_available_ts=row["label_available_ts"],
+        )
         if eligibility["outcome_eligible"]:
             eligibility_gate_counts["outcome_eligible_total"] += 1
         if eligibility["policy_evaluation_eligible"]:
@@ -6519,6 +6591,13 @@ def get_outcomes_stats(
             cohort_name = "actionable"
             actionable_total += 1
         _accumulate_stat(cohort_buckets[cohort_name], success, ret)
+        _accumulate_sample_observability(
+            cohort_buckets[cohort_name],
+            ts=row["ts"],
+            symbol=row["symbol"],
+            horizon_sec=row["horizon_sec"],
+            label_available_ts=row["label_available_ts"],
+        )
         if reco_status == "executed":
             executed_audit_total += 1
         llm_review = _extract_llm_review_snapshot(row["reasons_json"])
@@ -6580,9 +6659,20 @@ def get_outcomes_stats(
             _accumulate_stat(stat, success, ret)
 
         _accumulate_stat(summary_bucket, success, ret)
+        _accumulate_sample_observability(
+            summary_bucket,
+            ts=row["ts"],
+            symbol=row["symbol"],
+            horizon_sec=row["horizon_sec"],
+            label_available_ts=row["label_available_ts"],
+        )
 
         for bucket, key in (
             (by_bot_bucket, (row["bot_type"], raw_direction, execution_direction)),
+            (
+                by_bot_cohort_bucket,
+                (row["bot_type"], raw_direction, execution_direction, eligibility_cohort),
+            ),
             (by_symbol_bucket, (row["symbol"], row["bot_type"], raw_direction, execution_direction)),
             (by_raw_bucket, (raw_direction,)),
             (by_execution_bucket, (execution_direction,)),
@@ -6590,10 +6680,24 @@ def get_outcomes_stats(
         ):
             stat = bucket.setdefault(key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
             _accumulate_stat(stat, success, ret)
+            _accumulate_sample_observability(
+                stat,
+                ts=row["ts"],
+                symbol=row["symbol"],
+                horizon_sec=row["horizon_sec"],
+                label_available_ts=row["label_available_ts"],
+            )
 
         neutral_key = (neutral_source or "directional", raw_direction, execution_direction)
         stat = by_neutral_bucket.setdefault(neutral_key, {"total": 0, "wins": 0, "ret_sum": 0.0, "abs_ret_sum": 0.0})
         _accumulate_stat(stat, success, ret)
+        _accumulate_sample_observability(
+            stat,
+            ts=row["ts"],
+            symbol=row["symbol"],
+            horizon_sec=row["horizon_sec"],
+            label_available_ts=row["label_available_ts"],
+        )
 
     def _cohort_summary(bucket: dict[str, Any]) -> dict[str, Any]:
         cohort_total = int(bucket["total"])
@@ -6605,6 +6709,7 @@ def get_outcomes_stats(
             "win_rate": round(cohort_wins / cohort_total, 3) if cohort_total else None,
             "avg_ret": round((float(bucket["ret_sum"]) / cohort_total) * 100.0, 3) if cohort_total else 0.0,
             "avg_abs_ret": round((float(bucket["abs_ret_sum"]) / cohort_total) * 100.0, 3) if cohort_total else 0.0,
+            "sample_observability": _sample_observability(bucket),
         }
 
     total = int(summary_bucket["total"])
@@ -6629,6 +6734,18 @@ def get_outcomes_stats(
         by_bot_bucket,
         ["bot_type", "raw_direction", "execution_direction"],
         sort_key=lambda row: (-row["total"], row["bot_type"], row["raw_direction"], row["execution_direction"]),
+    )
+    by_bot_cohort = _materialize_stat_rows(
+        by_bot_cohort_bucket,
+        ["bot_type", "raw_direction", "execution_direction", "eligibility_cohort"],
+        sort_key=lambda row: (
+            row["eligibility_cohort"] != "calibration_eligible",
+            row["eligibility_cohort"] != "policy_evaluation_candidate",
+            -row["total"],
+            row["bot_type"],
+            row["raw_direction"],
+            row["execution_direction"],
+        ),
     )
     by_symbol = _materialize_stat_rows(
         by_symbol_bucket,
@@ -6694,6 +6811,7 @@ def get_outcomes_stats(
             policy_fingerprint=policy_fingerprint,
         ),
         "summary": summary,
+        "sample_observability": _sample_observability(summary_bucket),
         "cohorts": {
             "all_roots": _cohort_summary(summary_bucket),
             "actionable": _cohort_summary(cohort_buckets["actionable"]),
@@ -6740,6 +6858,7 @@ def get_outcomes_stats(
             for bot_type, counts in sorted(event_type_counts_by_bot.items())
         },
         "by_bot": by_bot,
+        "by_bot_cohort": by_bot_cohort,
         "by_symbol": by_symbol,
         "by_raw_direction": by_raw_direction,
         "by_execution_direction": by_execution_direction,

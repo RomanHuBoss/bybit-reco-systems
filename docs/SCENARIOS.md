@@ -1,3 +1,27 @@
+## Direction symmetry and journal scenarios - v1.4.7
+
+### Зеркальный directional path
+
+1. Построить положительную OHLC-траекторию и зеркальный путь `p'_t=p_0^2/p_t` с перестановкой mirrored high/low.
+2. Проверить `indicator_space=log_price_v1`.
+3. Проверить равные по модулю противоположные slope/MACD/RSI/Bollinger contributions и итоговый score.
+4. Проверить `LONG ↔ SHORT`, `NEUTRAL ↔ NEUTRAL` без изменения threshold.
+
+### Коррелированная outcome-выборка
+
+1. Создать несколько symbols с одинаковым `ts` и пересекающимся horizon.
+2. Убедиться, что `rows` сохраняет все audit roots, но `unique_timestamps`, `temporal_clusters` и `max_non_overlapping_windows` отражают зависимость.
+3. Поместить часть строк в `calibration_eligible`, часть в `shadow_exploration`.
+4. Убедиться, что main `by_bot_cohort` создаёт отдельные строки и UI не называет database rows независимыми наблюдениями.
+
+### Журнал решений
+
+1. Передать system event, recommendation-linked event, blocker/error и nested details с длинными identifiers и HTML-like text.
+2. Проверить wide modal и отдельные карточки.
+3. Проверить видимый первичный контекст и localized action/status.
+4. Раскрыть `<details>` и проверить structured key/value rows, HTML escaping и отсутствие raw JSON cell.
+5. На узком viewport проверить переход header/details grid в одну колонку.
+
 ## Exchange sizing and exit-path scenarios - v1.4.6
 
 ### Generated BTC grid is below one live quantity step
