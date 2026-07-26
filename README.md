@@ -1,3 +1,11 @@
+## WebSocket coverage boundary fix (v1.4.10)
+
+Версия 1.4.10 исправляет падение `market_trade_stream` с `ValueError: invalid market trade coverage window`. В первом сообщении `publicTrade.{symbol}` время сделки `data[].T` законно может совпадать с envelope timestamp `ts`. Предыдущая формула начинала coverage с `oldest_trade_ts + 1`, поэтому при равенстве получался невозможный интервал `start=ts+1`, `end=ts`.
+
+Консервативная начальная граница остаётся `oldest_trade_ts + 1`, то есть первый наблюдаемый millisecond не объявляется полностью покрытым. Если `oldest_trade_ts == message_ts`, `coverage_end_ms` поднимается до этой exclusive-границы и создаётся безопасный нулевой span `[ts+1, ts+1]`. Он сохраняет сессию без расширения evidence и не доказывает покрытие минутной свечи; только последующие сообщения могут монотонно расширить end. Fail-closed проверки malformed payload, future trade timestamp, разрывов сессии и OHLC-consistency сохранены.
+
+Торговая модель, признаки, score, risk policy, target labels и observation provenance не изменены. Existing recommendations, outcomes и calibrator artifacts не очищаются. Схема БД и `.env` не меняются; достаточно остановить v1.4.9, заменить файлы и запустить v1.4.10.
+
 ## PublicTrade delivery ordering fix (v1.4.9)
 
 Версия 1.4.9 исправляет ложное падение фонового `market_trade_stream` с ошибкой `non-monotonic public trade WebSocket row order`. Bybit гарантирует сортировку массива `publicTrade.{symbol}` по времени исполнения `T`, но `seq` может повторяться, а opaque `trade_id` не является сортировочным ключом. Версия 1.4.8 ошибочно проверяла составной ключ `(T, seq, trade_id)` и поэтому разрывала корректную WebSocket-сессию, когда несколько сделок имели одинаковые `T`/`seq`, но произвольный порядок идентификаторов.

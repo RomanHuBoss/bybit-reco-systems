@@ -1,3 +1,23 @@
+## 2026-07-26 - v1.4.10 - publicTrade coverage boundary
+
+### Исправлено
+
+- Устранён `ValueError: invalid market trade coverage window` на первом WebSocket-пакете, когда `data[].T == envelope ts`.
+- Консервативная exclusive-граница `oldest_trade_ts + 1` сохранена; при равенстве `T == ts` до неё поднимается только `coverage_end_ms`, поэтому окно больше не становится invalid.
+- Равный timestamp создаёт безопасный нулевой initial span `[ts+1, ts+1]`; он не считается полным candle coverage до фактического расширения последующими сообщениями.
+- Сохранены session isolation, delivery order, OHLC-consistency и fail-closed gap semantics.
+
+### Совместимость
+
+- Patch-релиз без изменения API, `.env`, схемы БД, торговой модели, outcome label или observation provenance.
+- Recommendations, outcomes и calibrator artifacts не очищаются; ручной SQL не требуется.
+
+### Проверки
+
+- RED: `tests/test_iteration280_market_trade_coverage_window.py` — 2 failed на v1.4.9 с `invalid market trade coverage window`.
+- GREEN: targeted package — 2 passed; related funding/trade suites — 25 passed.
+- Полные post-check counts приведены в audit report текущей итерации.
+
 ## 2026-07-26 - v1.4.9 - publicTrade delivery ordering
 
 ### Исправлено

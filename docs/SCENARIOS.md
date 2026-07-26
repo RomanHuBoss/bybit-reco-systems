@@ -1,3 +1,12 @@
+## PublicTrade coverage-boundary scenarios - v1.4.10
+
+1. **Первый trade имеет `T < ts`.** Coverage начинается с `oldest T + 1`, как и ранее.
+2. **Первый trade имеет `T == ts`.** Exclusive start остаётся `ts+1`, end поднимается до него, и coverage создаётся как `[ts+1, ts+1]`; stream не падает, trade сохраняется без объявления первого millisecond полностью покрытым.
+3. **После zero-width span приходит следующий пакет.** `coverage_end_ms` монотонно расширяется; start не регрессирует.
+4. **Zero-width span запрошен как полная минута.** Path не возвращается, пока end не покрывает конец свечи.
+5. **Trade имеет `T > ts`.** Batch остаётся malformed/fail-closed и session закрывается.
+6. **Disconnect/reconnect.** Новый session создаёт отдельный coverage span; неизвестный интервал не мостится.
+
 ## PublicTrade ordering scenarios - v1.4.9
 
 1. **Две сделки имеют одинаковые `T` и `seq`, trade IDs идут как `z` затем `a`.** Parser принимает пакет и сохраняет delivery rows `0,1`; stream не перезапускается.

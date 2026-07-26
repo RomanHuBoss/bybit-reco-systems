@@ -1,3 +1,9 @@
+## WebSocket coverage boundary persistence - v1.4.10
+
+`record_market_trade_stream_batch()` сохраняет trades и per-symbol session coverage в одной транзакции. Для первого сообщения start остаётся exclusive-границей `oldest_trade_ts_ms + 1`. Если она на 1 ms позже envelope timestamp, end поднимается до start и образует zero-width open span без ложного покрытия первого millisecond. Последующие сообщения расширяют только `coverage_end_ms` через monotonic max, а disconnect закрывает span без bridging следующей session.
+
+Изменение локально для persistence boundary. Таблицы, индексы, API, background topology и dual SQLite/PostgreSQL contract не изменены.
+
 ## WebSocket delivery-order persistence - v1.4.9
 
 `app/trade_stream.py` назначает monotonically increasing message index внутри connection session и сохраняет исходный row index каждого `publicTrade` payload. `app/db.py` materializes эти значения в `market_trade`; existing SQLite/PostgreSQL schemas получают nullable columns через idempotent runtime upgrade до выполнения индекса нового порядка.

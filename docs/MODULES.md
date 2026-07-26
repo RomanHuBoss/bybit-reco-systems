@@ -1,3 +1,10 @@
+## Module changes - v1.4.10
+
+- `app/db.py`: preserve the exclusive first-trade boundary and raise only the initial coverage end to that boundary when `T == ts`, producing a valid zero-width span.
+- `app/main.py`, `app/ui/static/index.html`: patch version/cache bump to 1.4.10.
+- `tests/test_iteration280_market_trade_coverage_window.py`: RED→GREEN direct persistence and supervised-session regressions.
+- No schema, config, outcome-label, model or observation-provenance changes.
+
 ## Module changes - v1.4.9
 
 - `app/trade_stream.py`: documented `T`-only monotonic validation; materialized session/message/row delivery order.

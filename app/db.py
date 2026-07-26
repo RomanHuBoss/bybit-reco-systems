@@ -5734,12 +5734,18 @@ def record_market_trade_stream_batch(
     inserted = upsert_market_trades(conn, normalized, commit=False)
     if existing_coverage is None:
         oldest_ms = min(int(row["trade_ts_ms"]) for row in normalized)
+        # The first observed millisecond remains excluded because a batch does
+        # not prove that every trade with the same timestamp was received.  If
+        # ``oldest_ms == message_ts``, the exclusive boundary is one millisecond
+        # after the envelope timestamp.  Preserve that conservative boundary and
+        # create a zero-width span there instead of moving the start backwards.
         coverage_start_ms = oldest_ms + 1
         key = f"ws:{venue_norm}:{symbol_norm}:{session_norm}:{coverage_start_ms}"
     else:
         coverage_start_ms = int(existing_coverage["coverage_start_ms"])
     effective_coverage_end_ms = max(
         int(message_ts),
+        int(coverage_start_ms),
         int(existing_coverage["coverage_end_ms"]) if existing_coverage is not None else int(message_ts),
     )
     insert_market_trade_coverage(

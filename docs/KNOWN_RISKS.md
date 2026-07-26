@@ -1,3 +1,10 @@
+## Остаточные риски после v1.4.10 coverage-boundary fix
+
+- Первый WebSocket пакет может создать нулевой coverage span `[ts+1, ts+1]`, если `data[].T == envelope ts`. Это намеренно безопасное состояние: первый millisecond остаётся исключённым, а span не пригоден для минутного replay, пока последующие сообщения не расширят его до полного окна.
+- Публичная trade chronology по-прежнему не доказывает queue priority, фактические fills, partial fills, latency или момент активации replacement order.
+- Live long-duration WebSocket reconnect/throughput зависит от сети и инфраструктуры deployment; offline regression tests проверяют контракт, но не заменяют production monitoring.
+- Historical crash records v1.4.9 остаются audit history и могут быть оставлены в decision log.
+
 ## Остаточные риски после v1.4.9 publicTrade ordering fix
 
 - Исправление сохраняет порядок строк, доставленный Bybit WebSocket, но public trade journal по-прежнему не доказывает queue priority, частичное исполнение конкретного grid order, latency или момент активации replacement order.

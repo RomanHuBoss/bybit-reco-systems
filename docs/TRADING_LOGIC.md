@@ -1,3 +1,9 @@
+## Initial WebSocket coverage boundary - v1.4.10
+
+Для первого пакета сессии coverage начинается с консервативной exclusive-границы `oldest_trade_ts_ms + 1`. Если старейшая сделка имеет тот же timestamp, что и envelope, start не сдвигается назад: вместо этого `coverage_end_ms` поднимается до start, формируя нулевой span `[ts+1, ts+1]`. Первый наблюдаемый millisecond тем самым не объявляется полностью покрытым.
+
+Нулевой span не делает outcome наблюдаемым: `get_market_trade_path()` по-прежнему требует `coverage_start_ms <= candle_start_ms` и `coverage_end_ms >= candle_end_ms`. Следовательно, исправление предотвращает ложный crash, но не расширяет evidence и не ослабляет fail-closed. `grid_intrabar_observation_v3`, `grid_label_v26` и model/calibrator lineage не меняются.
+
 ## PublicTrade delivery-order semantics - v1.4.9
 
 Для `publicTrade.{symbol}` каноническая проверка envelope использует documented ascending `data[].T`. `seq` допускает повторения, а `trade_id` считается opaque identity и не используется для проверки порядка. Равные `T` сохраняются по локальному `(stream_message_index, stream_row_index)` внутри одной WebSocket session.
