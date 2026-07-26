@@ -1,3 +1,11 @@
+## PublicTrade delivery-order semantics - v1.4.9
+
+Для `publicTrade.{symbol}` каноническая проверка envelope использует documented ascending `data[].T`. `seq` допускает повторения, а `trade_id` считается opaque identity и не используется для проверки порядка. Равные `T` сохраняются по локальному `(stream_message_index, stream_row_index)` внутри одной WebSocket session.
+
+Grid intrabar replay принимает WebSocket path только из session, указанной coverage span. REST и WebSocket rows не смешиваются. Дополнительно проверяется, что trade timestamps не уменьшаются в delivery order и что reconstructed first/high/low/last согласованы с persisted OHLC. При отсутствии новых order metadata либо при любом противоречии действует прежний censored/fail-closed результат.
+
+`grid_intrabar_observation_v3` является observation provenance, а не новой торговой моделью или target label. `grid_label_v26` и recommender/calibrator lineage не меняются.
+
 ## Settled funding recovery и intrabar chronology - v1.4.8
 
 ### Funding outcome contract

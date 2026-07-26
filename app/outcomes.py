@@ -21,7 +21,7 @@ BOT_HORIZONS: dict[str, int] = {
 }
 HORIZON_SEC_DEFAULT = 30 * 60
 OUTCOME_MAX_ROWS_EXAMINED_PER_CYCLE = 2000
-GRID_INTRABAR_OBSERVATION_VERSION = "grid_intrabar_observation_v2"
+GRID_INTRABAR_OBSERVATION_VERSION = "grid_intrabar_observation_v3"
 PUBLIC_TRADE_JOURNAL_METHOD = "public_trade_journal_v1"
 OHLCV_PATH_EQUIVALENCE_METHOD = "ohlcv_path_equivalence_v1"
 
@@ -1666,7 +1666,9 @@ def _grid_outcome(
         if not isinstance(items, list) or not items:
             return None, "trade_journal_empty_covered_window", coverage_id
         prices: list[float] = []
-        prior_key: tuple[int, int, str] | None = None
+        ordering_basis = str(payload.get("ordering_basis") or "").strip()
+        prior_key: tuple[int, int, str] | tuple[int, int] | None = None
+        prior_trade_ts_ms: int | None = None
         for item in items:
             if not isinstance(item, dict):
                 return None, "trade_journal_malformed_row", coverage_id
@@ -1676,9 +1678,21 @@ def _grid_outcome(
             price = _finite_positive_or_none(item.get("price"))
             if trade_ts_ms is None or price is None:
                 return None, "trade_journal_malformed_row", coverage_id
-            key = (int(trade_ts_ms), int(seq if seq is not None else -1), trade_id)
-            if prior_key is not None and key < prior_key:
-                return None, "trade_journal_non_monotonic_order", coverage_id
+            if ordering_basis == "websocket_delivery_order_v1":
+                message_index = strict_integer(item.get("stream_message_index"))
+                row_index = strict_integer(item.get("stream_row_index"))
+                if message_index is None or row_index is None:
+                    return None, "trade_journal_missing_delivery_order", coverage_id
+                key = (int(message_index), int(row_index))
+                if prior_key is not None and key <= prior_key:
+                    return None, "trade_journal_non_monotonic_order", coverage_id
+                if prior_trade_ts_ms is not None and int(trade_ts_ms) < prior_trade_ts_ms:
+                    return None, "trade_journal_non_monotonic_trade_time", coverage_id
+                prior_trade_ts_ms = int(trade_ts_ms)
+            else:
+                key = (int(trade_ts_ms), int(seq if seq is not None else -1), trade_id)
+                if prior_key is not None and key < prior_key:
+                    return None, "trade_journal_non_monotonic_order", coverage_id
             prior_key = key
             prices.append(float(price))
         price_tolerance = max(

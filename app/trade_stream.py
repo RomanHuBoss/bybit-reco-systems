@@ -98,8 +98,8 @@ def parse_public_trade_message(
 
     rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    previous_key: tuple[int, int, str] | None = None
-    for item in data:
+    previous_trade_ts_ms: int | None = None
+    for row_index, item in enumerate(data):
         if not isinstance(item, dict):
             raise ValueError("malformed public trade WebSocket row")
         symbol = str(item.get("s") or "").strip().upper()
@@ -125,10 +125,14 @@ def parse_public_trade_message(
             or (item.get("RPI") is not None and not isinstance(item.get("RPI"), bool))
         ):
             raise ValueError("malformed public trade WebSocket row")
-        key = (int(trade_ts_ms), int(seq), trade_id)
-        if previous_key is not None and key < previous_key:
-            raise ValueError("non-monotonic public trade WebSocket row order")
-        previous_key = key
+        # Bybit documents only that ``data`` is sorted by match time ``T``.
+        # ``seq`` may be shared by multiple trades/messages and trade IDs are
+        # opaque identifiers, so neither field is a valid tie-breaker. Preserve
+        # the delivered row order for equal-millisecond trades and fail only when
+        # the documented match timestamp itself goes backwards.
+        if previous_trade_ts_ms is not None and int(trade_ts_ms) < previous_trade_ts_ms:
+            raise ValueError("non-monotonic public trade WebSocket match timestamp")
+        previous_trade_ts_ms = int(trade_ts_ms)
         seen_ids.add(trade_id)
         rows.append({
             "venue": "linear",
@@ -143,6 +147,7 @@ def parse_public_trade_message(
             "source": PUBLIC_TRADE_STREAM_SOURCE,
             "is_block_trade": item.get("BT") is True,
             "is_rpi_trade": item.get("RPI") is True,
+            "stream_row_index": int(row_index),
         })
     return {
         "symbol": symbol_from_topic,
@@ -189,6 +194,7 @@ def run_public_trade_stream_session(
         "last_message_ts_ms": None,
     }
     close_reason = "websocket_disconnect"
+    message_index = 0
     try:
         with connect_fn(
             url,
@@ -216,11 +222,19 @@ def run_public_trade_stream_session(
                 if parsed is None:
                     continue
                 symbol = str(parsed["symbol"])
+                message_index += 1
+                stream_rows = []
+                for row in parsed["rows"]:
+                    enriched = dict(row)
+                    enriched["stream_session_id"] = session_id
+                    enriched["stream_message_index"] = int(message_index)
+                    enriched["stream_message_ts_ms"] = int(parsed["message_ts_ms"])
+                    stream_rows.append(enriched)
                 result = db.record_market_trade_stream_batch(
                     conn,
                     venue="linear",
                     symbol=symbol,
-                    rows=list(parsed["rows"]),
+                    rows=stream_rows,
                     message_ts_ms=int(parsed["message_ts_ms"]),
                     session_id=session_id,
                     coverage_id=coverage_ids.get(symbol),
@@ -232,7 +246,11 @@ def run_public_trade_stream_session(
                 stats["messages"] = int(stats["messages"]) + 1
                 stats["trades"] = int(stats["trades"]) + len(parsed["rows"])
                 stats["inserted"] = int(stats["inserted"]) + int(result.get("inserted") or 0)
-                stats["last_message_ts_ms"] = int(parsed["message_ts_ms"])
+                prior_message_ts = stats.get("last_message_ts_ms")
+                stats["last_message_ts_ms"] = max(
+                    int(prior_message_ts) if prior_message_ts is not None else 0,
+                    int(parsed["message_ts_ms"]),
+                )
             close_reason = "stream_shutdown" if stop_requested() else "websocket_disconnect"
     finally:
         for coverage_id in coverage_ids.values():

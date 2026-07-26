@@ -1,3 +1,12 @@
+## Module changes - v1.4.9
+
+- `app/trade_stream.py`: documented `T`-only monotonic validation; materialized session/message/row delivery order.
+- `app/db.py`: additive stream-order columns, existing-DB upgrader, session-scoped path query and local message-index guard.
+- `app/outcomes.py`: WebSocket delivery-order validation and `grid_intrabar_observation_v3` provenance.
+- `migrations/init.sql`, `migrations/init_postgres.sql`: dual-backend nullable delivery-order fields/index.
+- `app/main.py`, `app/ui/static/index.html`: version/cache bump to 1.4.9.
+- `tests/test_iteration279_public_trade_ordering.py`: RED→GREEN parser, persistence and SQLite upgrade regressions.
+
 ## Module changes - v1.4.8
 
 - `app/collector.py`: short funding retry, recent overlap refresh, durable targeted repair worker, REST trade fallback/bootstrap, overlap/gap coverage и retention pruning.

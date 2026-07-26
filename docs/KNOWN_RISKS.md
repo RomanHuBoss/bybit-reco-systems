@@ -1,3 +1,10 @@
+## Остаточные риски после v1.4.9 publicTrade ordering fix
+
+- Исправление сохраняет порядок строк, доставленный Bybit WebSocket, но public trade journal по-прежнему не доказывает queue priority, частичное исполнение конкретного grid order, latency или момент активации replacement order.
+- Несколько сделок могут иметь одинаковые `T` и `seq`. Их delivery order сохраняется, однако это остаётся публичной последовательностью сообщений, а не доказательством внутреннего matching-engine fill order для счёта оператора.
+- Coverage до обновления v1.4.9 не содержит materialized session/message/row order и не преобразуется задним числом в доказанный WebSocket replay. Такие интервалы остаются на прежнем fail-closed fallback.
+- Live reconnect/throughput зависит от сети и инфраструктуры Bybit; disconnect по-прежнему закрывает span и создаёт явный gap.
+
 ## Остаточные риски после v1.4.8 funding recovery и trade journal
 
 - Основной publicTrade WebSocket может отключиться, потерять runtime lease или быть недоступен во время restart; каждый такой интервал образует явную границу coverage и не мостится. REST recent-trade fallback возвращает ограниченное число последних сделок: на высокоактивном инструменте между опросами может не сохраниться overlap trade ID, поэтому span закрывается с gap и не используется как полное intrabar evidence.

@@ -305,12 +305,18 @@ CREATE TABLE IF NOT EXISTS market_trade (
   source TEXT NOT NULL,
   is_block_trade INTEGER NOT NULL DEFAULT 0,
   is_rpi_trade INTEGER NOT NULL DEFAULT 0,
+  stream_session_id TEXT,
+  stream_message_index BIGINT,
+  stream_row_index INTEGER,
+  stream_message_ts_ms BIGINT,
   PRIMARY KEY (venue, symbol, trade_id)
 );
 CREATE INDEX IF NOT EXISTS idx_market_trade_path
   ON market_trade(venue, symbol, trade_ts_ms, seq, trade_id);
 CREATE INDEX IF NOT EXISTS idx_market_trade_received
   ON market_trade(received_ts_ms);
+CREATE INDEX IF NOT EXISTS idx_market_trade_stream_order
+  ON market_trade(venue, symbol, stream_session_id, stream_message_index, stream_row_index);
 
 CREATE TABLE IF NOT EXISTS market_trade_coverage (
   coverage_id TEXT PRIMARY KEY,

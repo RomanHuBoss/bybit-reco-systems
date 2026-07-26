@@ -1,3 +1,9 @@
+## WebSocket delivery-order persistence - v1.4.9
+
+`app/trade_stream.py` назначает monotonically increasing message index внутри connection session и сохраняет исходный row index каждого `publicTrade` payload. `app/db.py` materializes эти значения в `market_trade`; existing SQLite/PostgreSQL schemas получают nullable columns через idempotent runtime upgrade до выполнения индекса нового порядка.
+
+Coverage details содержат `session_id`, `last_message_index` и `ordering_basis=websocket_delivery_order_v1`. При path lookup WebSocket span имеет приоритет перед REST span, а trades фильтруются по exact session. Delivery index является локальным source of truth для порядка сообщений; exchange timestamps остаются event-time evidence и не используются как недокументированная межсообщенческая sequence guarantee.
+
 ## Outcome data recovery architecture - v1.4.8
 
 - `collector.py` ведёт process-local funding refresh state с отдельными `last_success`, failure count и `next_retry`; durable repair state хранится в БД.

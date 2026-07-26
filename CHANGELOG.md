@@ -1,3 +1,26 @@
+## 2026-07-26 - v1.4.9 - publicTrade delivery ordering
+
+### Исправлено
+
+- Устранён ложный `ValueError: non-monotonic public trade WebSocket row order`, который перезапускал `market_trade_stream` на корректных пакетах с одинаковыми `T`/`seq` и непронумерованными opaque trade IDs.
+- WebSocket parser проверяет документированную монотонность только по match timestamp `T`; одинаковые timestamp разрешены и сохраняются в фактическом порядке доставки.
+- Добавлены аддитивные поля `stream_session_id`, `stream_message_index`, `stream_row_index`, `stream_message_ts_ms` и индекс delivery order для SQLite/PostgreSQL.
+- `get_market_trade_path()` предпочитает WebSocket coverage, выбирает только строки его session и воспроизводит их по message/row index; REST fallback больше не участвует в WebSocket path случайным смешением.
+- Межсообщенческая целостность проверяется локальным monotonic delivery index. Биржевой `ts`, `seq` и `trade_id` больше не используются как недокументированный строгий порядок.
+- Observation provenance повышен до `grid_intrabar_observation_v3`; model/outcome-label lineage не изменены.
+
+### Совместимость
+
+- Patch-релиз, публичный API и `.env` совместимы с v1.4.8.
+- Existing recommendations, outcomes и calibrator artifacts не очищаются. Runtime bootstrap добавляет nullable columns idempotently.
+- Старые окончательные outcomes не переписываются массово; новые trade-replay observations получают v3 provenance.
+
+### Проверки
+
+- RED: новый regression package — 3 failed на v1.4.8.
+- GREEN: 3 passed; relevant public-trade/outcome/PostgreSQL suite — 110 passed.
+- Полные post-check counts приведены в отдельном audit report текущей итерации.
+
 ## 2026-07-24 - v1.4.8 - funding settlement recovery and public trade chronology
 
 ### Исправлено

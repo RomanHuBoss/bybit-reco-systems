@@ -549,6 +549,25 @@ def _ensure_funding_rate_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE funding_rate ADD COLUMN funding_interval_min REAL")
 
 
+def _ensure_market_trade_stream_order_columns(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "market_trade")
+    if not cols:
+        return
+    additions = {
+        "stream_session_id": "TEXT",
+        "stream_message_index": "BIGINT",
+        "stream_row_index": "INTEGER",
+        "stream_message_ts_ms": "BIGINT",
+    }
+    for name, sql_type in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE market_trade ADD COLUMN {name} {sql_type}")
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_market_trade_stream_order
+             ON market_trade(venue, symbol, stream_session_id, stream_message_index, stream_row_index)"""
+    )
+
+
 def _ensure_trade_cost_columns(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "trades")
     if "funding" not in cols:
@@ -990,6 +1009,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     if _table_columns(conn, "recommendations"):
         _ensure_recommendation_publication_columns(conn)
         _ensure_recommendation_candidate_kind_column(conn)
+    if _table_columns(conn, "market_trade"):
+        _ensure_market_trade_stream_order_columns(conn)
     sql = migration_path.read_text(encoding="utf-8")
     conn.executescript(sql)
     conn.execute("""CREATE TABLE IF NOT EXISTS runtime_locks (
@@ -1003,6 +1024,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     if _recommendation_outcome_policy_backfill_needed(conn):
         backfill_recommendation_outcome_policy_fields(conn)
     _ensure_funding_rate_columns(conn)
+    _ensure_market_trade_stream_order_columns(conn)
     _ensure_trade_cost_columns(conn)
     _ensure_execution_evidence_columns(conn)
     _ensure_outcome_label_availability_column(conn)
@@ -5358,12 +5380,40 @@ def _normalize_market_trade_row(row: dict[str, Any] | sqlite3.Row | None) -> dic
     received_ts_ms = strict_integer(payload.get("received_ts_ms"))
     side = str(payload.get("side") or "").strip().capitalize()
     source = str(payload.get("source") or "").strip()
+    stream_session_id = str(payload.get("stream_session_id") or "").strip() or None
+    stream_message_index = (
+        strict_integer(payload.get("stream_message_index"))
+        if payload.get("stream_message_index") is not None else None
+    )
+    stream_row_index = (
+        strict_integer(payload.get("stream_row_index"))
+        if payload.get("stream_row_index") is not None else None
+    )
+    stream_message_ts_ms = (
+        strict_integer(payload.get("stream_message_ts_ms"))
+        if payload.get("stream_message_ts_ms") is not None else None
+    )
     if not venue or not symbol or not trade_id or trade_ts_ms is None or received_ts_ms is None:
         return None
     if venue != "linear" or not symbol.endswith("USDT") or side not in {"Buy", "Sell"} or not source:
         return None
     if trade_ts_ms <= 0 or received_ts_ms <= 0 or seq is not None and seq < 0:
         return None
+    stream_values = (
+        stream_session_id, stream_message_index, stream_row_index, stream_message_ts_ms
+    )
+    if any(value is not None for value in stream_values):
+        if (
+            stream_session_id is None
+            or stream_message_index is None
+            or stream_message_index <= 0
+            or stream_row_index is None
+            or stream_row_index < 0
+            or stream_message_ts_ms is None
+            or stream_message_ts_ms <= 0
+            or trade_ts_ms > stream_message_ts_ms
+        ):
+            return None
     for key in ("price", "qty"):
         if isinstance(payload.get(key), bool):
             return None
@@ -5387,6 +5437,10 @@ def _normalize_market_trade_row(row: dict[str, Any] | sqlite3.Row | None) -> dic
         "source": source,
         "is_block_trade": 1 if payload.get("is_block_trade") is True else 0,
         "is_rpi_trade": 1 if payload.get("is_rpi_trade") is True else 0,
+        "stream_session_id": stream_session_id,
+        "stream_message_index": int(stream_message_index) if stream_message_index is not None else None,
+        "stream_row_index": int(stream_row_index) if stream_row_index is not None else None,
+        "stream_message_ts_ms": int(stream_message_ts_ms) if stream_message_ts_ms is not None else None,
     }
 
 
@@ -5399,13 +5453,21 @@ def upsert_market_trades(conn: sqlite3.Connection, rows: list[dict[str, Any]], *
     cursor = conn.executemany(
         """INSERT INTO market_trade(
              venue, symbol, trade_id, trade_ts_ms, seq, side, price, qty,
-             received_ts_ms, source, is_block_trade, is_rpi_trade
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(venue, symbol, trade_id) DO NOTHING""",
+             received_ts_ms, source, is_block_trade, is_rpi_trade,
+             stream_session_id, stream_message_index, stream_row_index, stream_message_ts_ms
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(venue, symbol, trade_id) DO UPDATE SET
+             stream_session_id=excluded.stream_session_id,
+             stream_message_index=excluded.stream_message_index,
+             stream_row_index=excluded.stream_row_index,
+             stream_message_ts_ms=excluded.stream_message_ts_ms
+           WHERE market_trade.stream_session_id IS NULL
+             AND excluded.stream_session_id IS NOT NULL""",
         [(
             row["venue"], row["symbol"], row["trade_id"], row["trade_ts_ms"], row["seq"],
             row["side"], row["price"], row["qty"], row["received_ts_ms"], row["source"],
-            row["is_block_trade"], row["is_rpi_trade"],
+            row["is_block_trade"], row["is_rpi_trade"], row["stream_session_id"],
+            row["stream_message_index"], row["stream_row_index"], row["stream_message_ts_ms"],
         ) for row in normalized],
     )
     if commit:
@@ -5599,9 +5661,41 @@ def record_market_trade_stream_batch(
     source_norm = str(source or "").strip()
     session_norm = str(session_id or "").strip()
     message_ts = strict_integer(message_ts_ms)
+    key = str(coverage_id or "").strip()
+    existing_coverage = None
+    prior_message_index = None
+    if key:
+        existing_coverage = conn.execute(
+            """SELECT coverage_id, venue, symbol, coverage_start_ms, coverage_end_ms,
+                      state, source, last_poll_ts_ms, details_json
+                 FROM market_trade_coverage WHERE coverage_id=?""",
+            (key,),
+        ).fetchone()
+        if (
+            existing_coverage is None
+            or str(existing_coverage["venue"]) != venue_norm
+            or str(existing_coverage["symbol"]) != symbol_norm
+            or str(existing_coverage["state"]) != "open"
+            or str(existing_coverage["source"]) != source_norm
+        ):
+            raise ValueError("market trade stream coverage identity mismatch")
+        prior_details = _json_loads_mapping_or_default(existing_coverage["details_json"], {})
+        prior_message_index = strict_integer(prior_details.get("last_message_index"))
+
+    default_message_index = int(prior_message_index or 0) + 1
+    prepared_rows: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        prepared = dict(row)
+        prepared.setdefault("stream_session_id", session_norm)
+        prepared.setdefault("stream_message_index", default_message_index)
+        prepared.setdefault("stream_row_index", int(row_index))
+        prepared.setdefault("stream_message_ts_ms", message_ts)
+        prepared_rows.append(prepared)
     normalized = [
         item
-        for item in (_normalize_market_trade_row(row) for row in rows)
+        for item in (_normalize_market_trade_row(row) for row in prepared_rows)
         if item is not None
         and item["venue"] == venue_norm
         and item["symbol"] == symbol_norm
@@ -5619,26 +5713,24 @@ def record_market_trade_stream_batch(
         raise ValueError("invalid market trade stream batch")
     if max(int(row["trade_ts_ms"]) for row in normalized) > int(message_ts):
         raise ValueError("market trade stream batch contains a trade newer than the message")
+    session_values = {row.get("stream_session_id") for row in normalized}
+    message_indices = {row.get("stream_message_index") for row in normalized}
+    message_timestamps = {row.get("stream_message_ts_ms") for row in normalized}
+    row_indices = [row.get("stream_row_index") for row in normalized]
+    if (
+        session_values != {session_norm}
+        or len(message_indices) != 1
+        or None in message_indices
+        or message_timestamps != {int(message_ts)}
+        or sorted(int(value) for value in row_indices if value is not None)
+        != list(range(len(normalized)))
+        or any(value is None for value in row_indices)
+    ):
+        raise ValueError("invalid market trade stream delivery order metadata")
+    message_index = int(next(iter(message_indices)))
+    if prior_message_index is not None and message_index <= int(prior_message_index):
+        raise ValueError("non-monotonic market trade stream delivery index")
 
-    existing_coverage = None
-    key = str(coverage_id or "").strip()
-    if key:
-        existing_coverage = conn.execute(
-            """SELECT coverage_id, venue, symbol, coverage_start_ms, coverage_end_ms,
-                      state, source, last_poll_ts_ms
-                 FROM market_trade_coverage WHERE coverage_id=?""",
-            (key,),
-        ).fetchone()
-        if (
-            existing_coverage is None
-            or str(existing_coverage["venue"]) != venue_norm
-            or str(existing_coverage["symbol"]) != symbol_norm
-            or str(existing_coverage["state"]) != "open"
-            or str(existing_coverage["source"]) != source_norm
-        ):
-            raise ValueError("market trade stream coverage identity mismatch")
-        if int(message_ts) < int(existing_coverage["coverage_end_ms"]):
-            raise ValueError("non-monotonic market trade stream message timestamp")
     inserted = upsert_market_trades(conn, normalized, commit=False)
     if existing_coverage is None:
         oldest_ms = min(int(row["trade_ts_ms"]) for row in normalized)
@@ -5646,20 +5738,26 @@ def record_market_trade_stream_batch(
         key = f"ws:{venue_norm}:{symbol_norm}:{session_norm}:{coverage_start_ms}"
     else:
         coverage_start_ms = int(existing_coverage["coverage_start_ms"])
+    effective_coverage_end_ms = max(
+        int(message_ts),
+        int(existing_coverage["coverage_end_ms"]) if existing_coverage is not None else int(message_ts),
+    )
     insert_market_trade_coverage(
         conn,
         coverage_id=key,
         venue=venue_norm,
         symbol=symbol_norm,
         coverage_start_ms=int(coverage_start_ms),
-        coverage_end_ms=int(message_ts),
+        coverage_end_ms=int(effective_coverage_end_ms),
         state="open",
         source=source_norm,
-        last_poll_ts_ms=int(message_ts),
+        last_poll_ts_ms=int(effective_coverage_end_ms),
         details={
             "session_id": session_norm,
+            "last_message_index": int(message_index),
             "message_trade_count": len(normalized),
             "transport": "websocket",
+            "ordering_basis": "websocket_delivery_order_v1",
         },
         commit=False,
     )
@@ -5669,9 +5767,8 @@ def record_market_trade_stream_batch(
         "inserted": int(inserted),
         "coverage_id": key,
         "coverage_start_ms": int(coverage_start_ms),
-        "coverage_end_ms": int(message_ts),
+        "coverage_end_ms": int(effective_coverage_end_ms),
     }
-
 
 def close_market_trade_coverage(
     conn: sqlite3.Connection,
@@ -5731,27 +5828,52 @@ def get_market_trade_path(
     start_ms = int(start) * 1000
     end_ms = int(end) * 1000
     coverage = conn.execute(
-        """SELECT coverage_id, source, coverage_start_ms, coverage_end_ms, state
+        """SELECT coverage_id, source, coverage_start_ms, coverage_end_ms, state, details_json
              FROM market_trade_coverage
             WHERE venue=? AND symbol=?
               AND coverage_start_ms<=? AND coverage_end_ms>=?
-            ORDER BY coverage_start_ms DESC LIMIT 1""",
+            ORDER BY CASE WHEN source='websocket_public_trade_v1' THEN 0 ELSE 1 END,
+                     coverage_start_ms DESC
+            LIMIT 1""",
         (venue_norm, symbol_norm, start_ms, end_ms),
     ).fetchone()
     if coverage is None:
         return None
-    rows = conn.execute(
-        """SELECT venue, symbol, trade_id, trade_ts_ms, seq, side, price, qty,
-                  received_ts_ms, source, is_block_trade, is_rpi_trade
-             FROM market_trade
-            WHERE venue=? AND symbol=? AND trade_ts_ms>=? AND trade_ts_ms<?
-            ORDER BY trade_ts_ms ASC, COALESCE(seq, -1) ASC, trade_id ASC""",
-        (venue_norm, symbol_norm, start_ms, end_ms),
-    ).fetchall()
+    source = str(coverage["source"])
+    ordering_basis = "timestamp_seq_trade_id_v1"
+    if source == "websocket_public_trade_v1":
+        details = _json_loads_mapping_or_default(coverage["details_json"], {})
+        stream_session_id = str(details.get("session_id") or "").strip()
+        if not stream_session_id:
+            return None
+        rows = conn.execute(
+            """SELECT venue, symbol, trade_id, trade_ts_ms, seq, side, price, qty,
+                      received_ts_ms, source, is_block_trade, is_rpi_trade,
+                      stream_session_id, stream_message_index, stream_row_index,
+                      stream_message_ts_ms
+                 FROM market_trade
+                WHERE venue=? AND symbol=? AND stream_session_id=?
+                  AND trade_ts_ms>=? AND trade_ts_ms<?
+                ORDER BY stream_message_index ASC, stream_row_index ASC""",
+            (venue_norm, symbol_norm, stream_session_id, start_ms, end_ms),
+        ).fetchall()
+        ordering_basis = "websocket_delivery_order_v1"
+    else:
+        rows = conn.execute(
+            """SELECT venue, symbol, trade_id, trade_ts_ms, seq, side, price, qty,
+                      received_ts_ms, source, is_block_trade, is_rpi_trade,
+                      stream_session_id, stream_message_index, stream_row_index,
+                      stream_message_ts_ms
+                 FROM market_trade
+                WHERE venue=? AND symbol=? AND trade_ts_ms>=? AND trade_ts_ms<?
+                ORDER BY trade_ts_ms ASC, COALESCE(seq, -1) ASC, trade_id ASC""",
+            (venue_norm, symbol_norm, start_ms, end_ms),
+        ).fetchall()
     normalized = [item for item in (_normalize_market_trade_row(row) for row in rows) if item is not None]
     return {
         "coverage_id": str(coverage["coverage_id"]),
-        "source": str(coverage["source"]),
+        "source": source,
+        "ordering_basis": ordering_basis,
         "coverage_start_ms": int(coverage["coverage_start_ms"]),
         "coverage_end_ms": int(coverage["coverage_end_ms"]),
         "items": normalized,

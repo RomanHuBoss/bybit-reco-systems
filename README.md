@@ -1,3 +1,11 @@
+## PublicTrade delivery ordering fix (v1.4.9)
+
+Версия 1.4.9 исправляет ложное падение фонового `market_trade_stream` с ошибкой `non-monotonic public trade WebSocket row order`. Bybit гарантирует сортировку массива `publicTrade.{symbol}` по времени исполнения `T`, но `seq` может повторяться, а opaque `trade_id` не является сортировочным ключом. Версия 1.4.8 ошибочно проверяла составной ключ `(T, seq, trade_id)` и поэтому разрывала корректную WebSocket-сессию, когда несколько сделок имели одинаковые `T`/`seq`, но произвольный порядок идентификаторов.
+
+Parser теперь отклоняет только фактическое уменьшение документированного match timestamp `T`. Для одинакового времени сохраняется порядок доставки строк: каждая WebSocket-сессия, сообщение и позиция строки materialized в аддитивных полях `stream_session_id`, `stream_message_index`, `stream_row_index`, `stream_message_ts_ms`. Outcome replay выбирает строки конкретного coverage/session и не смешивает их с REST fallback. Внутренний delivery index, а не биржевой timestamp или trade ID, контролирует монотонность между сообщениями.
+
+Торговая модель, score, risk policy и target labels не изменены. `RECOMMENDER_MODEL_VERSION` и `OUTCOME_LABEL_VERSION` сохранены; существующие recommendations/outcomes не удаляются. Observation provenance повышен до `grid_intrabar_observation_v3`, чтобы новые replay-исходы были отличимы от v1.4.8. Существующая БД обновляется автоматически и аддитивно; ручной SQL не требуется.
+
 ## Funding recovery и intrabar trade observability (v1.4.8)
 
 Версия 1.4.8 исправляет два подтверждённых разрыва outcome-наблюдаемости без изменения торговой модели, score, признаков, risk policy или target semantics. `OUTCOME_LABEL_VERSION` остаётся `grid_label_v26`, а `RECOMMENDER_MODEL_VERSION` — `bybit-taxonomy-v13-log-symmetric-direction`; существующие recommendations, outcomes и calibrator lineage не удаляются.

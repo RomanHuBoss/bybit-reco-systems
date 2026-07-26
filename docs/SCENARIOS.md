@@ -1,3 +1,12 @@
+## PublicTrade ordering scenarios - v1.4.9
+
+1. **Две сделки имеют одинаковые `T` и `seq`, trade IDs идут как `z` затем `a`.** Parser принимает пакет и сохраняет delivery rows `0,1`; stream не перезапускается.
+2. **`data[].T` действительно уменьшается.** Parser закрывает session fail-closed с `non-monotonic ... match timestamp`.
+3. **Bybit message `ts` повторяется или слегка уменьшается, но локальный message index растёт.** Coverage end не регрессирует; session продолжает работу.
+4. **REST успел сохранить тот же trade ID.** WebSocket metadata дополняет запись, а WebSocket path выбирается по exact session/order fields.
+5. **Legacy v1.4.8 DB.** `init_db()` добавляет nullable delivery-order columns и индекс без удаления market trades, recommendations или outcomes.
+6. **Legacy coverage без session order.** Replay не объявляется доказанным и остаётся fail-closed.
+
 ## Funding recovery и intrabar observability scenarios - v1.4.8
 
 1. **Funding endpoint временно падает.** Collector фиксирует ошибку и повторяет запрос через короткий backoff; часовой successful-refresh throttle не применяется к failed attempt.
