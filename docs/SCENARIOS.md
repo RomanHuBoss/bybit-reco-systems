@@ -1,3 +1,15 @@
+## Funding recovery и intrabar observability scenarios - v1.4.8
+
+1. **Funding endpoint временно падает.** Collector фиксирует ошибку и повторяет запрос через короткий backoff; часовой successful-refresh throttle не применяется к failed attempt.
+2. **Outcome созрел, settlement отсутствует.** Outcome остаётся waiting, создаётся один идемпотентный repair job. Collector адресно получает timestamp; job становится resolved; следующая outcome iteration пересчитывает исход.
+3. **В истории есть недавняя дыра перед latest settlement.** Regular overlap refresh повторно запрашивает последние двое суток и upsert закрывает пропуск.
+4. **PublicTrade WebSocket подключён.** Каждая session создаёт собственный coverage span; сообщения сохраняются по exchange timestamp/sequence, а полностью покрытая OHLC-согласованная минута может быть replayed в chronological order.
+5. **WebSocket disconnect/restart.** Текущий span закрывается с явной причиной; новая connection начинает новый span и не мостит неизвестный интервал.
+6. **REST fallback snapshots перекрываются по trade ID.** Только REST span того же source расширяется; отсутствие overlap закрывает его с `poll_window_no_trade_id_overlap`.
+7. **Trade path противоречит OHLC или повреждён.** Outcome censored fail-closed; данные не подменяются OHLC догадкой.
+8. **Публичная chronology известна, но replacement timing/queue priority неизвестны.** Соответствующий outcome остаётся censored; сервис не выдаёт proxy за доказанный exchange fill.
+9. **Upgrade существующей SQLite/PostgreSQL DB.** Новые таблицы создаются без удаления recommendations/outcomes/calibrators.
+
 ## Direction symmetry and journal scenarios - v1.4.7
 
 ### Зеркальный directional path

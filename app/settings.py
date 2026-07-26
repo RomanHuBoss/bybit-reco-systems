@@ -203,6 +203,11 @@ class Settings:
     reco_warmup_min_ready_ratio: float = 0.85
     reco_warmup_min_ready_symbols: int = 1
     reco_warmup_log_cooldown_sec: int = 120
+    market_trade_journal_enabled: bool = True
+    market_trade_stream_enabled: bool = True
+    market_trade_poll_limit: int = 1000
+    market_trade_retention_hours: int = 72
+    funding_repair_max_per_cycle: int = 16
 
 
 def load_settings() -> Settings:
@@ -270,6 +275,11 @@ def load_settings() -> Settings:
     reco_warmup_min_ready_ratio = _env_float("RECO_WARMUP_MIN_READY_RATIO", 0.85, minimum=0.1, maximum=1.0)
     reco_warmup_min_ready_symbols = _env_int("RECO_WARMUP_MIN_READY_SYMBOLS", 1, minimum=1, maximum=10_000)
     reco_warmup_log_cooldown_sec = _env_int("RECO_WARMUP_LOG_COOLDOWN_SEC", 120, minimum=10, maximum=3600)
+    market_trade_journal_enabled = _env("MARKET_TRADE_JOURNAL_ENABLED", "1").strip().lower() in ("1", "true", "yes", "y")
+    market_trade_stream_enabled = _env("MARKET_TRADE_STREAM_ENABLED", "1").strip().lower() in ("1", "true", "yes", "y")
+    market_trade_poll_limit = _env_int("MARKET_TRADE_POLL_LIMIT", 1000, minimum=1, maximum=1000)
+    market_trade_retention_hours = _env_int("MARKET_TRADE_RETENTION_HOURS", 72, minimum=24, maximum=24 * 30)
+    funding_repair_max_per_cycle = _env_int("FUNDING_REPAIR_MAX_PER_CYCLE", 16, minimum=1, maximum=200)
 
     db_engine_raw = _env("DB_ENGINE", SQLITE).strip().lower()
     db_engine = POSTGRES if db_engine_raw in {"postgres", "postgresql"} else SQLITE
@@ -337,4 +347,9 @@ def load_settings() -> Settings:
         reco_warmup_min_ready_ratio=reco_warmup_min_ready_ratio,
         reco_warmup_min_ready_symbols=reco_warmup_min_ready_symbols,
         reco_warmup_log_cooldown_sec=reco_warmup_log_cooldown_sec,
+        market_trade_journal_enabled=market_trade_journal_enabled,
+        market_trade_stream_enabled=market_trade_stream_enabled,
+        market_trade_poll_limit=market_trade_poll_limit,
+        market_trade_retention_hours=market_trade_retention_hours,
+        funding_repair_max_per_cycle=funding_repair_max_per_cycle,
     )

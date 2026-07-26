@@ -27,9 +27,10 @@ from .shock_guard import (
 )
 from .bybit_client import BybitPublicClient
 from .collector import collect_once, collect_backfill_once, collect_futures_once, RuntimeLockLostError
+from .trade_stream import PUBLIC_TRADE_STREAM_SOURCE, run_public_trade_stream_session
 from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
-from .outcomes import BOT_HORIZONS, compute_outcomes_cycle
+from .outcomes import BOT_HORIZONS, GRID_INTRABAR_OBSERVATION_VERSION, compute_outcomes_cycle
 from .recommender import (
     CALIBRATION_EVIDENCE_REASON_CODES,
     DIRECTION_CALIBRATION_KEY,
@@ -98,6 +99,7 @@ BACKGROUND_THREAD_ERROR_ACTIONS = {
     "sentiment": "SENTIMENT_ERROR",
     "llm_reviewer": "LLM_REVIEW_SWEEP_ERROR",
     "backfill": "COLLECT_ERROR",
+    "market_trade_stream": "COLLECT_ERROR",
 }
 _instrument_meta_cache: dict[tuple[str, str], tuple[float, dict[str, Any], bool]] = {}
 _instrument_meta_lock = threading.Lock()
@@ -5338,6 +5340,7 @@ BACKGROUND_RUNTIME_LOCK_KEYS = {
     "reco": "runtime:reco",
     "outcomes": "runtime:outcomes",
     "llm_reviewer": "runtime:llm_reviewer",
+    "market_trade_stream": "runtime:market_trade_stream",
 }
 
 
@@ -5447,10 +5450,22 @@ def _collect_hot_once(conn, client: BybitPublicClient, venue: str, symbols: list
             max_workers=max_workers,
             api_fetch_tfs=(60,),
             allow_derived_bootstrap=False,
+            market_trade_journal_enabled=bool(getattr(settings, "market_trade_journal_enabled", True)),
+            market_trade_poll_limit=int(getattr(settings, "market_trade_poll_limit", 1000) or 1000),
+            market_trade_retention_hours=int(getattr(settings, "market_trade_retention_hours", 72) or 72),
+            funding_repair_max_per_cycle=int(getattr(settings, "funding_repair_max_per_cycle", 16) or 16),
         )
     except TypeError as exc:
         msg = str(exc)
-        if "api_fetch_tfs" not in msg and "allow_derived_bootstrap" not in msg:
+        compatibility_kwargs = (
+            "api_fetch_tfs",
+            "allow_derived_bootstrap",
+            "market_trade_journal_enabled",
+            "market_trade_poll_limit",
+            "market_trade_retention_hours",
+            "funding_repair_max_per_cycle",
+        )
+        if not any(name in msg for name in compatibility_kwargs):
             raise
         return collect_once(
             conn,
@@ -5621,6 +5636,24 @@ async def lifespan(app: FastAPI):
     _start_background_thread("sentiment", partial(_run_supervised_background_target, "sentiment", _sentiment_thread))
     _start_background_thread("reco", partial(_run_supervised_background_target, "reco", _reco_thread))
     _start_background_thread("outcomes", partial(_run_supervised_background_target, "outcomes", _outcome_thread))
+    if (
+        bool(getattr(settings, "market_trade_journal_enabled", True))
+        and bool(getattr(settings, "market_trade_stream_enabled", True))
+    ):
+        _start_background_thread(
+            "market_trade_stream",
+            partial(
+                _run_supervised_background_target,
+                "market_trade_stream",
+                _market_trade_stream_thread,
+            ),
+        )
+    else:
+        _set_background_thread_state(
+            "market_trade_stream",
+            "disabled",
+            owner=RUNTIME_OWNER,
+        )
     if bool(getattr(settings, "llm_reviewer_enabled", False)):
         _start_background_thread("llm_reviewer", partial(_run_supervised_background_target, "llm_reviewer", _llm_reviewer_thread))
     else:
@@ -5644,7 +5677,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.7", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.8", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -7300,6 +7333,38 @@ def api_sentiment_get(scope: str = "global", key: str = "crypto", limit: int = 1
         return {"scope": scope, "key": key, "items": series}
 
 
+
+def _market_trade_stream_thread():
+    """Keep an immutable publicTrade stream for intrabar price chronology.
+
+    The stream is public/read-only. A runtime lease prevents two application
+    processes from claiming overlapping coverage for the same configured
+    universe. Any disconnect ends the current coverage spans; the supervisor
+    reconnects into a new session without bridging the gap.
+    """
+    lock_key = "runtime:market_trade_stream"
+    lock_ttl = max(120, int(getattr(settings, "collect_interval_sec", 20) or 20) * 20)
+    while not _BACKGROUND_STOP_EVENT.is_set():
+        with closing(_get_lock_conn()) as lock_conn:
+            has_lock = db.acquire_runtime_lock(
+                lock_conn, lock_key, RUNTIME_OWNER, ttl_sec=lock_ttl
+            )
+        if not has_lock:
+            _BACKGROUND_STOP_EVENT.wait(5.0)
+            continue
+        heartbeat = _make_runtime_lock_heartbeat(lock_key)
+        with closing(_get_conn()) as conn:
+            stats = run_public_trade_stream_session(
+                conn,
+                bybit_http_base_url=settings.bybit_base_url,
+                symbols=list(settings.symbols_linear),
+                stop_requested=_BACKGROUND_STOP_EVENT.is_set,
+                heartbeat=heartbeat,
+            )
+            db.set_app_config_json(conn, "market_trade_stream_last_session", stats)
+        return
+
+
 def _collector_thread():
     client = BybitPublicClient(settings.bybit_base_url)
     lock_key = "runtime:collector"
@@ -8154,7 +8219,7 @@ def api_status() -> dict[str, Any]:
         collector_warmup = _load_collector_warmup_status(conn, recompute_if_missing=True)
         background_threads = {
             name: _get_background_thread_state(conn, name)
-            for name in ("collector", "backfill", "futures_meta", "sentiment", "reco", "outcomes", "llm_reviewer")
+            for name in ("collector", "backfill", "futures_meta", "sentiment", "reco", "outcomes", "market_trade_stream", "llm_reviewer")
         }
         now_ts_int = db.now_ts()
         collector_cycle_started_ts = int(collector_last_cycle.get("started_ts") or 0)
@@ -8390,6 +8455,18 @@ def api_status() -> dict[str, Any]:
         collect_errors_10m = int(cur.fetchone()["c"])
         sent = compute_sentiment_agg(conn, scope="global", key="crypto")
         market_shock = _get_app_config_mapping(conn, MARKET_SHOCK_APP_KEY, default={"state": "normal", "title": "Нормальный режим", "severity": "normal", "entry_mode": "normal", "operator_note": "Новые входы разрешены в обычном режиме.", "reasons": [], "metrics": {}})
+        funding_settlement_repair = db.get_funding_settlement_repair_status(conn)
+        market_trade_journal = db.get_market_trade_journal_status(conn, now_ms=now_ts_int * 1000)
+        market_trade_journal.update({
+            "enabled": bool(getattr(settings, "market_trade_journal_enabled", True)),
+            "stream_enabled": bool(getattr(settings, "market_trade_stream_enabled", True)),
+            "primary_source": PUBLIC_TRADE_STREAM_SOURCE,
+            "transport": "Bybit public WebSocket with overlap-verified REST fallback",
+            "poll_limit": int(getattr(settings, "market_trade_poll_limit", 1000) or 1000),
+            "retention_hours": int(getattr(settings, "market_trade_retention_hours", 72) or 72),
+            "observation_version": GRID_INTRABAR_OBSERVATION_VERSION,
+            "evidence_boundary": "public price chronology only; no queue priority or exchange fill proof",
+        })
 
         outcome_worker_liveness = db.get_outcome_worker_liveness(
             conn,
@@ -8450,6 +8527,9 @@ def api_status() -> dict[str, Any]:
             "inference_calibration_mode": confidence_mode_in_use,
             "confidence_mode_in_use": confidence_mode_in_use,
             "outcome_label_version": OUTCOME_LABEL_VERSION,
+            "outcome_observation_version": GRID_INTRABAR_OBSERVATION_VERSION,
+            "funding_settlement_repair": funding_settlement_repair,
+            "market_trade_journal": market_trade_journal,
             "calibration_model_version": RECOMMENDER_MODEL_VERSION,
             "calibration_policy_fingerprint": policy_fingerprint,
             "calibration_policy_contract": policy_contract,

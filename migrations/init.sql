@@ -274,6 +274,66 @@ CREATE TABLE IF NOT EXISTS funding_settlement (
 );
 CREATE INDEX IF NOT EXISTS idx_funding_settlement_ts ON funding_settlement(symbol, ts);
 
+-- Durable targeted recovery queue for missing historical funding settlements.
+CREATE TABLE IF NOT EXISTS funding_settlement_repair (
+  repair_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  expected_ts INTEGER,
+  range_start_ts INTEGER NOT NULL,
+  range_end_ts INTEGER NOT NULL,
+  first_requested_ts INTEGER NOT NULL,
+  last_attempt_ts INTEGER,
+  next_attempt_ts INTEGER NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  last_error TEXT,
+  updated_ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_funding_repair_due
+  ON funding_settlement_repair(state, next_attempt_ts, updated_ts);
+CREATE INDEX IF NOT EXISTS idx_funding_repair_symbol
+  ON funding_settlement_repair(symbol, expected_ts);
+
+-- Public trade journal used only to resolve intrabar price chronology. It does
+-- not claim queue priority or exact live fills.
+CREATE TABLE IF NOT EXISTS market_trade (
+  venue TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  trade_id TEXT NOT NULL,
+  trade_ts_ms INTEGER NOT NULL,
+  seq INTEGER,
+  side TEXT NOT NULL,
+  price REAL NOT NULL,
+  qty REAL NOT NULL,
+  received_ts_ms INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  is_block_trade INTEGER NOT NULL DEFAULT 0,
+  is_rpi_trade INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (venue, symbol, trade_id)
+);
+CREATE INDEX IF NOT EXISTS idx_market_trade_path
+  ON market_trade(venue, symbol, trade_ts_ms, seq, trade_id);
+CREATE INDEX IF NOT EXISTS idx_market_trade_received
+  ON market_trade(received_ts_ms);
+
+CREATE TABLE IF NOT EXISTS market_trade_coverage (
+  coverage_id TEXT PRIMARY KEY,
+  venue TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  coverage_start_ms INTEGER NOT NULL,
+  coverage_end_ms INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  source TEXT NOT NULL,
+  last_poll_ts_ms INTEGER,
+  gap_reason TEXT,
+  details_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_trade_coverage_window
+  ON market_trade_coverage(venue, symbol, coverage_start_ms, coverage_end_ms);
+CREATE INDEX IF NOT EXISTS idx_market_trade_coverage_state
+  ON market_trade_coverage(state, venue, symbol, coverage_end_ms);
+
 -- Open interest snapshots (linear only)
 CREATE TABLE IF NOT EXISTS open_interest (
   symbol TEXT NOT NULL,

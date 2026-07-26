@@ -1,3 +1,13 @@
+## Funding recovery и intrabar trade observability (v1.4.8)
+
+Версия 1.4.8 исправляет два подтверждённых разрыва outcome-наблюдаемости без изменения торговой модели, score, признаков, risk policy или target semantics. `OUTCOME_LABEL_VERSION` остаётся `grid_label_v26`, а `RECOMMENDER_MODEL_VERSION` — `bybit-taxonomy-v13-log-symmetric-direction`; существующие recommendations, outcomes и calibrator lineage не удаляются.
+
+Funding collector теперь разделяет успешный refresh и неудачную попытку. Успешный сбор сохраняет часовую частоту, а transport/API failure получает короткий backoff 60/120/300/600/1800 секунд вместо часовой блокировки. Регулярный history refresh повторно захватывает последние двое суток, чтобы закрывать недавние дырки. `missing_funding_settlement` создаёт идемпотентное durable repair-задание; hot collector адресно запрашивает нужный timestamp/range и после получения settlement позволяет outcome worker повторить расчёт.
+
+Для grid outcome добавлен публичный trade chronology journal. Основной источник — read-only Bybit `publicTrade.{symbol}` WebSocket: каждая stream-session образует отдельный coverage span, а disconnect/restart закрывает его с явным gap. REST `recent-trade` остаётся bounded fallback/bootstrap и расширяет только собственный span при доказанном overlap trade ID соседних snapshot. Полный, OHLC-согласованный участок может использоваться для хронологического replay цены внутри минуты. При разрыве, повреждённой строке или противоречии OHLC система остаётся fail-closed и сохраняет прежнее цензурирование. Журнал доказывает только публичную последовательность цен; он не доказывает queue priority, фактическое исполнение, partial fill или время активации replacement order.
+
+Новые параметры `.env`: `FUNDING_REPAIR_MAX_PER_CYCLE`, `MARKET_TRADE_JOURNAL_ENABLED`, `MARKET_TRADE_STREAM_ENABLED`, `MARKET_TRADE_POLL_LIMIT`, `MARKET_TRADE_RETENTION_HOURS`. Схема SQLite/PostgreSQL обновляется аддитивно и идемпотентно. Очистка БД и обнуление outcomes не требуются; перед обновлением штатно сделайте резервную копию и остановите старый процесс.
+
 ## Симметрия направления, временная структура и новый журнал (v1.4.7)
 
 Версия 1.4.7 устраняет подтверждённую пограничную асимметрию LONG/SHORT в `app/direction.py`. Slope, MACD, RSI, Bollinger %B и ATR теперь вычисляются в едином пространстве `log(close)`. Для зеркальной траектории лог-доходностей score и все направленные вклады меняют знак с машинной точностью; отдельный bonus для LONG, ослабление SHORT или подгонка порогов не применялись.

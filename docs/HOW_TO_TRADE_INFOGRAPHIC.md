@@ -1,3 +1,12 @@
+## v1.4.8 - как читать funding recovery и intrabar journal
+
+В окне «Здоровье системы» появились два диагностических контура:
+
+- **Funding settlement recovery**: `pending` означает, что обязательный фактический settlement ещё дозагружается; это не отрицательный торговый исход и не доказанная ошибка Bybit. `resolved` означает, что адресная дыра была закрыта.
+- **Intrabar trade journal**: основной read-only WebSocket и REST fallback сохраняют публичную chronology; количество строк, spans и разрывов показывает её наблюдаемость. Нулевые gaps не доказывают actual fills; journal используется только как дополнительное evidence для outcome replay.
+
+Оператор не должен удалять БД или outcomes после обновления. Остановите сервис, сделайте backup, замените release и перезапустите. Новые таблицы создаются автоматически. При отключении `MARKET_TRADE_JOURNAL_ENABLED=0` система сохраняет прежнее fail-closed OHLC поведение. `how_to_trade.png` не менялся: порядок ручного запуска, sizing и execution preflight не изменены.
+
 ## v1.4.7 - как читать направление, статистику и журнал
 
 - Не сравнивайте LONG/SHORT по старой и новой lineage: после log-space fix новая статистика начинается заново.

@@ -17,7 +17,10 @@ MISSING_TICKER_LOG_TTL_SEC = 60 * 60
 _MISSING_TICKER_LOG_TS: dict[tuple[str, str], int] = {}
 _FUNDING_SETTLEMENT_LOOKBACK_SEC = 35 * 24 * 60 * 60
 _FUNDING_SETTLEMENT_REFRESH_SEC = 60 * 60
-_LAST_FUNDING_SETTLEMENT_FETCH_TS: dict[tuple[str, str], int] = {}
+_FUNDING_SETTLEMENT_OVERLAP_SEC = 2 * 24 * 60 * 60
+_FUNDING_SETTLEMENT_RETRY_BACKOFF_SEC = (60, 120, 300, 600, 1800)
+_FUNDING_SETTLEMENT_FETCH_STATE: dict[tuple[str, str], dict[str, Any]] = {}
+_MARKET_TRADE_PRUNE_LAST_TS = 0
 
 VENUE_TO_CATEGORY = {
     "linear": "linear",
@@ -489,6 +492,11 @@ def _ensure_funding_interval_from_instrument_info(
     return funding_row
 
 
+def _funding_retry_delay(failure_count: int) -> int:
+    index = max(0, min(int(failure_count) - 1, len(_FUNDING_SETTLEMENT_RETRY_BACKOFF_SEC) - 1))
+    return int(_FUNDING_SETTLEMENT_RETRY_BACKOFF_SEC[index])
+
+
 def _fetch_funding_settlements_for_symbol(
     conn,
     client: BybitPublicClient,
@@ -496,50 +504,207 @@ def _fetch_funding_settlements_for_symbol(
     symbol: str,
     now_ts: int,
 ) -> list[dict[str, Any]]:
-    """Backfill immutable settled funding rates used by historical outcomes.
+    """Refresh immutable settled funding rates without locking failures for an hour.
 
-    Ticker ``fundingRate`` is only the current forecast for the next settlement.
-    This path queries the official historical endpoint and paginates backwards so
-    up to 35 days of hourly settlements are covered without exceeding Bybit's
-    200-row page limit.
+    Successful refreshes keep the normal hourly cadence. A failed request uses a
+    short bounded retry schedule, while a two-day overlap repairs recent holes
+    even when a newer settlement is already present locally.
     """
     if venue != "linear" or not hasattr(client, "get_funding_rate_history"):
         return []
     key = (venue, symbol)
-    last_attempt = int(_LAST_FUNDING_SETTLEMENT_FETCH_TS.get(key, 0) or 0)
-    if last_attempt > 0 and int(now_ts) - last_attempt < _FUNDING_SETTLEMENT_REFRESH_SEC:
+    state = _FUNDING_SETTLEMENT_FETCH_STATE.setdefault(
+        key,
+        {
+            "last_attempt_ts": 0,
+            "last_success_ts": 0,
+            "next_retry_ts": 0,
+            "failure_count": 0,
+            "last_error": None,
+        },
+    )
+    now_value = int(now_ts)
+    last_success = int(state.get("last_success_ts") or 0)
+    next_retry = int(state.get("next_retry_ts") or 0)
+    failure_count = int(state.get("failure_count") or 0)
+    if failure_count > 0:
+        if next_retry > now_value:
+            return []
+    elif last_success > 0 and now_value - last_success < _FUNDING_SETTLEMENT_REFRESH_SEC:
         return []
-    _LAST_FUNDING_SETTLEMENT_FETCH_TS[key] = int(now_ts)
 
+    state["last_attempt_ts"] = now_value
     latest = db.get_latest_funding_settlement_ts(conn, symbol)
-    start_sec = max(1, int(now_ts) - _FUNDING_SETTLEMENT_LOOKBACK_SEC)
+    start_sec = max(1, now_value - _FUNDING_SETTLEMENT_LOOKBACK_SEC)
     if latest is not None:
-        start_sec = max(start_sec, int(latest) + 1)
-    end_ms = int(now_ts) * 1000
+        start_sec = max(start_sec, int(latest) - _FUNDING_SETTLEMENT_OVERLAP_SEC)
+    end_ms = now_value * 1000
     start_ms = int(start_sec) * 1000
     out_by_ts: dict[int, dict[str, Any]] = {}
     pages = 0
-    while end_ms >= start_ms and pages < 16:
-        pages += 1
-        rows = client.get_funding_rate_history(
-            symbol, start_ms=start_ms, end_ms=end_ms, limit=200
-        )
-        if not rows:
-            break
-        min_ts: int | None = None
-        for row in rows:
-            ts = strict_integer(row.get("ts")) if isinstance(row, dict) else None
-            if ts is None or ts <= 0:
-                continue
-            out_by_ts[int(ts)] = dict(row)
-            min_ts = int(ts) if min_ts is None else min(min_ts, int(ts))
-        if min_ts is None or len(rows) < 200:
-            break
-        next_end_ms = int(min_ts) * 1000 - 1
-        if next_end_ms >= end_ms:
-            break
-        end_ms = next_end_ms
+    try:
+        while end_ms >= start_ms and pages < 16:
+            pages += 1
+            rows = client.get_funding_rate_history(
+                symbol, start_ms=start_ms, end_ms=end_ms, limit=200
+            )
+            if not rows:
+                break
+            min_ts: int | None = None
+            for row in rows:
+                ts = strict_integer(row.get("ts")) if isinstance(row, dict) else None
+                if ts is None or ts <= 0:
+                    continue
+                out_by_ts[int(ts)] = dict(row)
+                min_ts = int(ts) if min_ts is None else min(min_ts, int(ts))
+            if min_ts is None or len(rows) < 200:
+                break
+            next_end_ms = int(min_ts) * 1000 - 1
+            if next_end_ms >= end_ms:
+                break
+            end_ms = next_end_ms
+    except Exception as exc:
+        failures = failure_count + 1
+        state.update({
+            "failure_count": failures,
+            "next_retry_ts": now_value + _funding_retry_delay(failures),
+            "last_error": str(exc)[:2000],
+        })
+        raise
+
+    state.update({
+        "last_success_ts": now_value,
+        "next_retry_ts": 0,
+        "failure_count": 0,
+        "last_error": None,
+    })
     return [out_by_ts[ts] for ts in sorted(out_by_ts)]
+
+
+def _funding_repair_retry_delay(attempt_count: int) -> int:
+    return _funding_retry_delay(max(1, int(attempt_count) + 1))
+
+
+def _process_funding_repair_queue(
+    conn,
+    client: BybitPublicClient,
+    venue: str,
+    now_ts: int,
+    *,
+    max_jobs: int,
+) -> dict[str, int]:
+    stats = {"enqueued": 0, "attempted": 0, "resolved": 0, "pending": 0, "errors": 0}
+    if venue != "linear" or max_jobs <= 0 or not hasattr(client, "get_funding_rate_history"):
+        return stats
+    stats["enqueued"] = int(db.enqueue_funding_repairs_from_observability(conn, limit=max_jobs * 4, commit=False))
+    jobs = db.list_due_funding_settlement_repairs(conn, now_ts_value=int(now_ts), limit=max_jobs)
+    for job in jobs:
+        stats["attempted"] += 1
+        expected = strict_integer(job.get("expected_ts"))
+        start = strict_integer(job.get("range_start_ts"))
+        end = strict_integer(job.get("range_end_ts"))
+        attempt_count = strict_integer(job.get("attempt_count")) or 0
+        if start is None or end is None or start <= 0 or end < start:
+            db.mark_funding_settlement_repair_attempt(
+                conn, str(job.get("repair_id") or ""), resolved=False,
+                next_attempt_ts=int(now_ts) + 1800, error="invalid repair range", commit=False,
+            )
+            stats["errors"] += 1
+            continue
+        try:
+            rows = client.get_funding_rate_history(
+                str(job.get("symbol") or ""),
+                start_ms=max(1, int(start) - 1) * 1000,
+                end_ms=(int(end) + 1) * 1000,
+                limit=200,
+            )
+            if rows:
+                db.upsert_funding_settlements(conn, rows, commit=False)
+            resolved = (
+                any(strict_integer(row.get("ts")) == expected for row in rows if isinstance(row, dict))
+                if expected is not None
+                else bool(rows)
+            )
+            if resolved:
+                db.mark_funding_settlement_repair_attempt(
+                    conn, str(job["repair_id"]), resolved=True, commit=False
+                )
+                stats["resolved"] += 1
+                db.log_decision(
+                    conn, "FUNDING_SETTLEMENT_REPAIR_RESOLVED", None, None,
+                    {"venue": venue, "symbol": job["symbol"], "repair_id": job["repair_id"], "expected_ts": expected},
+                    commit=False,
+                )
+            else:
+                db.mark_funding_settlement_repair_attempt(
+                    conn, str(job["repair_id"]), resolved=False,
+                    next_attempt_ts=int(now_ts) + _funding_repair_retry_delay(int(attempt_count)),
+                    error="settlement not yet returned by funding history", commit=False,
+                )
+                stats["pending"] += 1
+        except Exception as exc:
+            db.mark_funding_settlement_repair_attempt(
+                conn, str(job["repair_id"]), resolved=False,
+                next_attempt_ts=int(now_ts) + _funding_repair_retry_delay(int(attempt_count)),
+                error=str(exc), commit=False,
+            )
+            db.log_decision(
+                conn, "COLLECT_ERROR", None, None,
+                {"venue": venue, "symbol": job.get("symbol"), "field": "funding_history_repair", "repair_id": job.get("repair_id"), "err": str(exc)},
+                commit=False,
+            )
+            stats["errors"] += 1
+    if jobs or stats["enqueued"]:
+        conn.commit()
+    return stats
+
+
+def _collect_market_trade_journal(
+    conn,
+    client: BybitPublicClient,
+    venue: str,
+    symbols: list[str],
+    *,
+    poll_limit: int,
+    retention_hours: int,
+    now_ts: int,
+) -> dict[str, int]:
+    global _MARKET_TRADE_PRUNE_LAST_TS
+    stats = {"symbols_polled": 0, "rows_received": 0, "rows_inserted": 0, "coverage_extended": 0, "gaps_detected": 0, "errors": 0, "trades_pruned": 0, "coverage_pruned": 0}
+    getter = getattr(client, "get_recent_public_trades", None)
+    if venue != "linear" or not callable(getter):
+        return stats
+    for symbol in symbols:
+        try:
+            payload = getter(symbol, limit=max(1, min(int(poll_limit), 1000)))
+            rows = payload.get("items") if isinstance(payload, dict) else None
+            snapshot_ms = strict_integer(payload.get("snapshot_ts_ms")) if isinstance(payload, dict) else None
+            if not isinstance(rows, list) or snapshot_ms is None or snapshot_ms <= 0:
+                raise ValueError("malformed recent public trade snapshot")
+            result = db.record_market_trade_poll(
+                conn, venue=venue, symbol=symbol, rows=rows,
+                snapshot_ts_ms=int(snapshot_ms), source="rest_recent_trade_v1", commit=False,
+            )
+            stats["symbols_polled"] += 1
+            stats["rows_received"] += len(rows)
+            stats["rows_inserted"] += int(result.get("inserted") or 0)
+            stats["coverage_extended"] += 1 if result.get("coverage_extended") else 0
+            stats["gaps_detected"] += 1 if result.get("gap_detected") else 0
+        except Exception as exc:
+            stats["errors"] += 1
+            db.log_decision(
+                conn, "COLLECT_ERROR", None, None,
+                {"venue": venue, "symbol": symbol, "field": "market_trade_journal", "err": str(exc)},
+                commit=False,
+            )
+    if int(now_ts) - int(_MARKET_TRADE_PRUNE_LAST_TS or 0) >= 3600:
+        cutoff_ms = (int(now_ts) - max(24, int(retention_hours)) * 3600) * 1000
+        pruned = db.prune_market_trade_journal(conn, cutoff_ms, commit=False)
+        stats["trades_pruned"] = int(pruned.get("trades_deleted") or 0)
+        stats["coverage_pruned"] = int(pruned.get("coverage_deleted") or 0)
+        _MARKET_TRADE_PRUNE_LAST_TS = int(now_ts)
+    conn.commit()
+    return stats
 
 
 def _client_get_tickers_batch(client: BybitPublicClient, category: str) -> tuple[list[dict[str, Any]] | None, Exception | None]:
@@ -1010,7 +1175,21 @@ def _heartbeat(heartbeat: Callable[[], Any] | None) -> None:
         raise RuntimeLockLostError("collector runtime lock lost")
 
 
-def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat: Callable[[], Any] | None = None, *, max_workers: int = 1, api_fetch_tfs: tuple[int, ...] | None = None, allow_derived_bootstrap: bool = True) -> dict[str, Any]:
+def collect_once(
+    conn,
+    client: BybitPublicClient,
+    venue: str,
+    symbols: list[str],
+    heartbeat: Callable[[], Any] | None = None,
+    *,
+    max_workers: int = 1,
+    api_fetch_tfs: tuple[int, ...] | None = None,
+    allow_derived_bootstrap: bool = True,
+    market_trade_journal_enabled: bool = False,
+    market_trade_poll_limit: int = 1000,
+    market_trade_retention_hours: int = 72,
+    funding_repair_max_per_cycle: int = 0,
+) -> dict[str, Any]:
     category = VENUE_TO_CATEGORY[venue]
     now_ts = db.now_ts()
 
@@ -1022,6 +1201,8 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
         "tickers_written": 0,
         "funding_written": 0,
         "funding_settlements_written": 0,
+        "funding_repair": {},
+        "market_trade_journal": {},
         "ohlcv_written": 0,
         "api_tf_fetches": {},
         "derived_tf_bootstrap_fetches": {},
@@ -1082,6 +1263,17 @@ def collect_once(conn, client: BybitPublicClient, venue: str, symbols: list[str]
             )
     if ticker_rows or funding_rows or settlement_rows or missing_symbols:
         conn.commit()
+    if funding_repair_max_per_cycle > 0:
+        stats["funding_repair"] = _process_funding_repair_queue(
+            conn, client, venue, now_ts, max_jobs=int(funding_repair_max_per_cycle)
+        )
+    if market_trade_journal_enabled:
+        stats["market_trade_journal"] = _collect_market_trade_journal(
+            conn, client, venue, active_symbols,
+            poll_limit=int(market_trade_poll_limit),
+            retention_hours=int(market_trade_retention_hours),
+            now_ts=now_ts,
+        )
     _heartbeat(heartbeat)
 
     active_api_fetch_tfs = tuple(api_fetch_tfs or _API_FETCH_TFS)

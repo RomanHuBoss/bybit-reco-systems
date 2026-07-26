@@ -4,9 +4,9 @@
 
 Полная проектно-специфичная версия для итеративного аудита, исправления, тестирования и сборки ZIP-релиза
 
-Редакция: 21 июля 2026 г.
+Редакция: 24 июля 2026 г.
 
-Контракт: v1.4.5 — exchange-executable generated sizing + exit-candle observability + direction-aware learning
+Контракт: v1.4.8 — funding settlement recovery + public trade chronology + exchange-executable generated sizing + exit-candle observability + direction-aware learning
 
 Router contract: strategy-profitability-router-v3.
 
@@ -120,6 +120,31 @@ Router contract: strategy-profitability-router-v3.
 - исправление обязано улучшить future/OOF или terminal-holdout metric относительно null baseline без снижения sample, purging, holdout, monetary или router gates.
 
 Отдельно зафиксируй архитектурную границу: calibration поверх фиксированного score не является end-to-end learned trading policy. Если после корректного representation, frozen lineage и достаточных независимых temporal cohorts модель не превосходит null и score-only baselines, рассматривай отсутствие edge как допустимый вывод, а не как основание бесконечно менять labels/thresholds.
+
+
+## 0.5. ОБЯЗАТЕЛЬНАЯ ГРАНИЦА FUNDING RECOVERY И PUBLIC TRADE CHRONOLOGY
+
+Если outcome зависит от фактического funding settlement, отсутствие строки в локальной БД не является доказательством ошибки Bybit и не может трактоваться как нулевой funding. Обязательный контракт:
+- успешный funding-history refresh и неудачная попытка имеют раздельное состояние;
+- transport/API failure получает короткий ограниченный retry/backoff, а не полный штатный refresh interval;
+- `missing_funding_settlement` создаёт идемпотентное durable repair-задание для точного symbol/timestamp или диапазона;
+- регулярный сбор повторно захватывает ограниченное overlap-окно, чтобы восстанавливать недавние дырки за более новым settlement;
+- repair state, last error, attempt count и next attempt доступны в Health/API;
+- outcome остаётся waiting до появления доказуемого settled rate; forecast funding запрещено подставлять в историческую метку;
+- существующие recommendations/outcomes не удаляются и не переписываются вне штатного immutable/idempotent outcome lifecycle.
+
+Для intrabar grid chronology допускается отдельный журнал публичных сделок, но его доказательная граница должна быть явной:
+- journal хранит exact symbol, immutable trade ID, exchange timestamp, sequence при наличии, side, price, qty, receive timestamp и source;
+- основной источник chronology — read-only Bybit `publicTrade.{symbol}` WebSocket; каждая connection/session имеет отдельный coverage span, disconnect/restart закрывает его и запрещает мостить неизвестный интервал;
+- соседние REST snapshots используются только как fallback/bootstrap и считаются непрерывными только при доказанном overlap trade ID; отсутствие overlap закрывает REST span с явным gap и начинает новый;
+- malformed server timestamp, future trade, cross-symbol row, duplicate/conflicting identity и неполный coverage не создают доказательство непрерывности;
+- chronological replay разрешён только при полном coverage всей свечи и согласованности first/max/min/last public trade prices с persisted OHLC;
+- trade chronology доказывает порядок публичных цен, но не queue priority, фактический fill, partial fill, latency или момент активации replacement order;
+- если после replay остаётся execution ambiguity, outcome остаётся censored/fail-closed;
+- observation method/version и coverage provenance сохраняются в diagnostics отдельно от model version, policy fingerprint и target label version;
+- улучшение наблюдаемости само по себе не начинает новую trading-model lineage и не требует очистки outcomes; изменение feature semantics, target semantics или calibrator inputs по-прежнему требует новой lineage.
+
+Обязательны RED->GREEN tests для retry после failed funding request, targeted repair, recent-trade sanitation, WebSocket sanitation/session isolation, overlap/gap coverage, SQLite fresh/upgrade, PostgreSQL schema parity, exact replay, fail-closed fallback, Health renderer и неизменности model/outcome-label lineage.
 
 ## 1. ПРОВЕРКА СОВМЕСТИМОСТИ ПРОЕКТА
 

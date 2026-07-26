@@ -1,3 +1,12 @@
+## Outcome data recovery architecture - v1.4.8
+
+- `collector.py` ведёт process-local funding refresh state с отдельными `last_success`, failure count и `next_retry`; durable repair state хранится в БД.
+- `funding_settlement_repair` является идемпотентной адресной очередью missing settlement ranges. Outcome worker создаёт request, collector исполняет, а последующий outcome cycle завершает label.
+- `market_trade` хранит дедуплицированные public trades; `market_trade_coverage` хранит доказанные непрерывные spans и явные gaps. `app/trade_stream.py` ведёт основной read-only `publicTrade.{symbol}` WebSocket: каждая connection/session создаёт отдельный span и никогда не мостит disconnect. REST recent-trade создаёт отдельные fallback spans и расширяет их только при trade-ID overlap.
+- `outcomes.py` использует trade path как дополнительный observation source, не как новую strategy/model lineage. OHLC mismatch или неполное coverage блокируют replay.
+- `/api/v1/status` публикует repair queue, WebSocket/fallback transport и journal health. UI показывает их в единой readiness table и advanced diagnostics.
+- Таблицы добавлены одинаково в runtime bootstrap, SQLite init SQL и PostgreSQL init SQL; migration additive/idempotent.
+
 ## Direction representation and operator observability - v1.4.7
 
 `app/direction.py` является source of truth для raw multi-timeframe vote и теперь работает в `log_price_v1`. Log levels обеспечивают математическую антисимметрию зеркальных return paths; score thresholds, risk gates и canonical payoff остаются вне этого изменения. Поскольку feature meaning изменился, recommender, binary calibrators и trend first-touch model используют новые immutable lineages.

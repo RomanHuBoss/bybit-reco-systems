@@ -1,3 +1,32 @@
+## 2026-07-24 - v1.4.8 - funding settlement recovery and public trade chronology
+
+### Исправлено
+
+- Funding-history failure больше не запускает часовую блокировку повторного запроса: успешный refresh сохраняет 1-часовую cadence, ошибки используют backoff 60/120/300/600/1800 секунд.
+- Добавлен ограниченный двухдневный overlap регулярного funding backfill, поэтому недавняя дыра может быть восстановлена даже при наличии более нового settlement.
+- `missing_funding_settlement` и `funding_settlement_history_unavailable` создают идемпотентное durable repair-задание с attempt count, last error и next attempt.
+- Добавлен строгий read-only Bybit `publicTrade.{symbol}` WebSocket parser/session и supervised runtime loop. Каждая connection/session имеет отдельный coverage span; disconnect/restart закрывает его и не мостит неизвестный интервал.
+- Strict recent-public-trades REST client сохранён как fallback/bootstrap. Cross-symbol rows, malformed server time, future trades, boolean/non-finite price/qty не создают coverage; REST continuity подтверждается только source-isolated overlap trade ID.
+- Grid outcome использует public trade chronology только при полном coverage минуты и совпадении first/max/min/last trades с persisted OHLC; иначе остаётся fail-closed.
+- Health/API показывают funding repair queue, next retry, trade rows, coverage gaps, retention и доказательную границу.
+- Обновлены SQLite/PostgreSQL schemas, `.env.example`, README, trading/architecture/modules/scenarios/known-risks, iterative protocol и operator DOCX/PDF.
+
+### Lineage и совместимость
+
+- Это patch observability/recovery iteration, не новая торговая модель. `RECOMMENDER_MODEL_VERSION=bybit-taxonomy-v13-log-symmetric-direction` и `OUTCOME_LABEL_VERSION=grid_label_v26` не изменены.
+- Existing recommendations, outcomes и calibrator artifacts не удаляются и не обнуляются. Новые таблицы добавляются аддитивно/idempotently; manual SQL не требуется.
+- Public endpoints сохранены; `/api/v1/status` расширен additive fields. Private order endpoints не добавлены.
+- Public trades доказывают только хронологию публичных цен, не queue priority, actual fills, partial fills, latency или replacement activation.
+
+### Проверки
+
+- RED: 17 failed, 2 passed на pristine/red copy. GREEN: 19 passed, повторно 19 passed.
+- Baseline: 1322 collected; exhaustive 24-batch union: 1322 passed.
+- Post-check: 1341 collected; exhaustive 24-batch union: 1341 passed, 0 failed, 0 skipped.
+- Relevant funding/grid/outcome/UI/docs suite: 146 passed. SQLite/PostgreSQL schema/dialect suite: 69 passed.
+- `compileall` и `node --check` passed. DOCX/PDF operator artifacts и 23-page iterative prompt PDF визуально проверены.
+- `ruff` unavailable. `pip check` сохраняет unrelated shared-host conflict moviepy/Pillow. Live PostgreSQL/network smoke skipped.
+
 ## 2026-07-24 - v1.4.7 - log-symmetric direction, temporal observability and decision journal
 
 ### Исправлено

@@ -436,6 +436,86 @@ class BybitPublicClient:
         out.sort(key=lambda row: int(row["ts"]))
         return out
 
+    def get_recent_public_trades(
+        self,
+        symbol: str,
+        *,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Return a strictly sanitized public Linear-USDT trade snapshot.
+
+        This endpoint is polled by the audit collector to maintain a durable
+        per-trade chronology journal.  A snapshot becomes continuous evidence
+        only when its trade IDs overlap the previous successful snapshot; the
+        client itself does not claim coverage or queue-priority truth.
+        """
+        target = _normalize_linear_usdt_symbol(symbol)
+        if not target:
+            raise ValueError("symbol is required for Bybit linear USDT recent-trade requests")
+        limit_value = _request_integer(limit, field_name="limit")
+        data = self._get(
+            "/v5/market/recent-trade",
+            {
+                "category": "linear",
+                "symbol": target,
+                "limit": str(max(1, min(limit_value, 1000))),
+            },
+        )
+        snapshot_raw = strict_integer(data.get("time"))
+        if snapshot_raw is None or snapshot_raw <= 0:
+            raise ValueError("Bybit recent-trade response has invalid server timestamp")
+        snapshot_ts_ms = int(snapshot_raw)
+        out: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item in _result_list(data):
+            item_symbol = str(item.get("symbol") or "").strip().upper()
+            trade_id = str(item.get("execId") or "").strip()
+            trade_ts_ms = strict_integer(item.get("time"))
+            seq = strict_integer(item.get("seq")) if item.get("seq") is not None else None
+            price = _safe_float(item.get("price"))
+            qty = _safe_float(item.get("size"))
+            side = str(item.get("side") or "").strip().capitalize()
+            if (
+                item_symbol != target
+                or not trade_id
+                or trade_id in seen_ids
+                or trade_ts_ms is None
+                or trade_ts_ms <= 0
+                or trade_ts_ms > snapshot_ts_ms
+                or (seq is not None and seq < 0)
+                or price is None
+                or price <= 0.0
+                or qty is None
+                or qty <= 0.0
+                or side not in {"Buy", "Sell"}
+            ):
+                continue
+            seen_ids.add(trade_id)
+            out.append({
+                "venue": "linear",
+                "symbol": target,
+                "trade_id": trade_id,
+                "trade_ts_ms": int(trade_ts_ms),
+                "seq": int(seq) if seq is not None else None,
+                "side": side,
+                "price": float(price),
+                "qty": float(qty),
+                "received_ts_ms": int(snapshot_ts_ms),
+                "source": "rest_recent_trade_v1",
+                "is_block_trade": item.get("isBlockTrade") is True,
+                "is_rpi_trade": item.get("isRPITrade") is True,
+            })
+        out.sort(key=lambda row: (
+            int(row["trade_ts_ms"]),
+            -1 if row["seq"] is None else int(row["seq"]),
+            str(row["trade_id"]),
+        ))
+        return {
+            "snapshot_ts_ms": int(snapshot_ts_ms),
+            "items": out,
+            "limit": max(1, min(limit_value, 1000)),
+        }
+
     def get_open_interest_page(
         self,
         symbol: str,

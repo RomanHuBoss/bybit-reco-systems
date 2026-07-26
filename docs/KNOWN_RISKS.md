@@ -1,3 +1,12 @@
+## Остаточные риски после v1.4.8 funding recovery и trade journal
+
+- Основной publicTrade WebSocket может отключиться, потерять runtime lease или быть недоступен во время restart; каждый такой интервал образует явную границу coverage и не мостится. REST recent-trade fallback возвращает ограниченное число последних сделок: на высокоактивном инструменте между опросами может не сохраниться overlap trade ID, поэтому span закрывается с gap и не используется как полное intrabar evidence.
+- Public trade chronology доказывает порядок публичных сделок, но не queue priority, actual fill, partial fill, network latency или момент размещения replacement order. Если эти факторы способны изменить ledger, outcome остаётся censored.
+- Retention по умолчанию составляет 72 часа. Старые неоднозначные свечи за пределами retained journal автоматически не восстанавливаются.
+- Funding history может быть опубликована с задержкой или временно недоступна. Durable repair queue предотвращает потерю задачи, но outcome остаётся waiting до получения фактического settlement.
+- Новые observability tables увеличивают объём БД. Retention ограничивает trade rows, однако оператор должен контролировать storage growth на своём universe и cadence.
+- Изменение наблюдаемости не является новой торговой моделью и не доказывает edge или live fills.
+
 ## Остаточные риски после v1.4.7
 
 - Log-space mirror symmetry устраняет программную асимметрию направления, но не доказывает predictive edge, прибыльность LONG/SHORT или пригодность текущих thresholds.

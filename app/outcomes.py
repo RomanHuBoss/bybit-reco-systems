@@ -21,6 +21,9 @@ BOT_HORIZONS: dict[str, int] = {
 }
 HORIZON_SEC_DEFAULT = 30 * 60
 OUTCOME_MAX_ROWS_EXAMINED_PER_CYCLE = 2000
+GRID_INTRABAR_OBSERVATION_VERSION = "grid_intrabar_observation_v2"
+PUBLIC_TRADE_JOURNAL_METHOD = "public_trade_journal_v1"
+OHLCV_PATH_EQUIVALENCE_METHOD = "ohlcv_path_equivalence_v1"
 
 GRID_BOTS = set(GRID_BOT_TYPES)
 
@@ -995,6 +998,43 @@ def _log_outcome_decision_once(
     if row is None:
         db.log_decision(conn, action, rec_id, None, details)
 
+
+def _attach_funding_repair_request(
+    conn,
+    *,
+    symbol: str,
+    reason: str,
+    entry_ts: int,
+    horizon_end_ts: int,
+    diagnostics: dict[str, object],
+    details: dict[str, object],
+) -> None:
+    if reason not in {"missing_funding_settlement", "funding_settlement_history_unavailable"}:
+        return
+    expected = strict_integer(diagnostics.get("missing_funding_ts"))
+    if expected is None:
+        expected = strict_integer(diagnostics.get("missing_event_ts"))
+    start = int(expected) if expected is not None else int(entry_ts)
+    end = int(expected) if expected is not None else int(horizon_end_ts)
+    try:
+        repair_id = db.request_funding_settlement_repair(
+            conn,
+            symbol=symbol,
+            expected_ts=int(expected) if expected is not None else None,
+            range_start_ts=start,
+            range_end_ts=end,
+            reason=reason,
+            commit=False,
+        )
+    except Exception as exc:
+        details["funding_repair_scheduled"] = False
+        details["funding_repair_error"] = str(exc)[:1000]
+        return
+    details["funding_repair_scheduled"] = True
+    details["funding_repair_id"] = repair_id
+    details["funding_repair_expected_ts"] = int(expected) if expected is not None else None
+
+
 def _grid_outcome(
     conn,
     venue: str,
@@ -1242,6 +1282,9 @@ def _grid_outcome(
     ledger_invalid = False
     candle_volume_capacity_qty: float | None = None
     candle_volume_used_qty = 0.0
+    trade_journal_replayed_candles = 0
+    trade_journal_replayed_trades = 0
+    trade_journal_coverage_ids: set[str] = set()
 
     def current_position_slots() -> int:
         return int(position_slots)
@@ -1606,6 +1649,52 @@ def _grid_outcome(
                 break
         return snapshot_ledger()
 
+    def observed_trade_path(
+        *,
+        row_ts: int,
+        row_open: float,
+        row_high: float,
+        row_low: float,
+        row_close: float,
+    ) -> tuple[list[float] | None, str | None, str | None]:
+        """Return an exact trade chronology only for a fully covered OHLC-consistent minute."""
+        payload = db.get_market_trade_path(conn, venue, symbol, row_ts, row_ts + 60)
+        if payload is None:
+            return None, None, None
+        coverage_id = str(payload.get("coverage_id") or "").strip() or None
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return None, "trade_journal_empty_covered_window", coverage_id
+        prices: list[float] = []
+        prior_key: tuple[int, int, str] | None = None
+        for item in items:
+            if not isinstance(item, dict):
+                return None, "trade_journal_malformed_row", coverage_id
+            trade_ts_ms = strict_integer(item.get("trade_ts_ms"))
+            seq = strict_integer(item.get("seq")) if item.get("seq") is not None else -1
+            trade_id = str(item.get("trade_id") or "")
+            price = _finite_positive_or_none(item.get("price"))
+            if trade_ts_ms is None or price is None:
+                return None, "trade_journal_malformed_row", coverage_id
+            key = (int(trade_ts_ms), int(seq if seq is not None else -1), trade_id)
+            if prior_key is not None and key < prior_key:
+                return None, "trade_journal_non_monotonic_order", coverage_id
+            prior_key = key
+            prices.append(float(price))
+        price_tolerance = max(
+            tolerance,
+            abs(float(row_open)) * 1e-10,
+            abs(float(row_close)) * 1e-10,
+        )
+        observed = (prices[0], max(prices), min(prices), prices[-1])
+        expected = (float(row_open), float(row_high), float(row_low), float(row_close))
+        if any(
+            not math.isclose(left, right, rel_tol=1e-10, abs_tol=price_tolerance)
+            for left, right in zip(observed, expected)
+        ):
+            return None, "trade_journal_ohlcv_mismatch", coverage_id
+        return prices, None, coverage_id
+
     for row_index, row in enumerate(rows):
         row_ts = strict_integer(row["ts"])
         row_open = _finite_positive_or_none(row["open"])
@@ -1681,6 +1770,45 @@ def _grid_outcome(
             return None
         if stopped:
             break
+
+        trade_prices, trade_path_error, coverage_id = observed_trade_path(
+            row_ts=int(row_ts),
+            row_open=float(row_open),
+            row_high=float(row_high),
+            row_low=float(row_low),
+            row_close=float(row_close),
+        )
+        if trade_path_error is not None:
+            _record_outcome_failure(
+                diagnostics,
+                trade_path_error,
+                event_ts=int(row_ts),
+                coverage_id=coverage_id,
+                candle_open=float(row_open),
+                candle_high=float(row_high),
+                candle_low=float(row_low),
+                candle_close=float(row_close),
+            )
+            return None
+        if trade_prices is not None:
+            trade_journal_replayed_candles += 1
+            trade_journal_replayed_trades += len(trade_prices)
+            if coverage_id:
+                trade_journal_coverage_ids.add(coverage_id)
+            for trade_price in trade_prices:
+                process_segment(float(trade_price), event_ts=int(row_ts))
+                if ledger_invalid or stopped:
+                    break
+            if ledger_invalid:
+                _ensure_outcome_failure(
+                    diagnostics,
+                    "invalid_grid_ledger_after_trade_journal_replay",
+                    event_ts=int(row_ts),
+                )
+                return None
+            if stopped:
+                break
+            continue
 
         upper_breach = float(row_high) >= ks_upper_f - tolerance
         lower_breach = float(row_low) <= ks_lower_f + tolerance
@@ -1876,6 +2004,15 @@ def _grid_outcome(
         return None
     if isinstance(diagnostics, dict):
         diagnostics.update({
+            "outcome_observation_version": GRID_INTRABAR_OBSERVATION_VERSION,
+            "intrabar_observation_method": (
+                PUBLIC_TRADE_JOURNAL_METHOD
+                if trade_journal_replayed_candles > 0
+                else OHLCV_PATH_EQUIVALENCE_METHOD
+            ),
+            "trade_journal_replayed_candles": int(trade_journal_replayed_candles),
+            "trade_journal_replayed_trades": int(trade_journal_replayed_trades),
+            "trade_journal_coverage_ids": sorted(trade_journal_coverage_ids),
             "signed_settled_funding_pnl": float(signed_funding_pnl),
             "conservative_funding_pnl": float(conservative_funding_pnl),
             "funding_benefit_excluded": float(max(0.0, signed_funding_pnl - conservative_funding_pnl)),
@@ -2329,6 +2466,16 @@ def compute_outcomes_cycle(
                     key: value for key, value in diagnostics.items()
                     if key not in {"reason", "transient"}
                 })
+                if transient:
+                    _attach_funding_repair_request(
+                        conn,
+                        symbol=symbol,
+                        reason=reason,
+                        entry_ts=int(entry_ts),
+                        horizon_end_ts=int(ts_exit),
+                        diagnostics=diagnostics,
+                        details=details,
+                    )
                 action = (
                     "OUTCOME_WAIT_FUNDING_SETTLEMENT"
                     if transient and reason in {
@@ -2401,6 +2548,16 @@ def compute_outcomes_cycle(
                     key: value for key, value in diagnostics.items()
                     if key not in {"reason", "transient"}
                 })
+                if transient:
+                    _attach_funding_repair_request(
+                        conn,
+                        symbol=symbol,
+                        reason=reason,
+                        entry_ts=int(entry_ts),
+                        horizon_end_ts=int(ts_exit),
+                        diagnostics=diagnostics,
+                        details=details,
+                    )
                 record_observability(
                     conn,
                     rec_id=rec_id,

@@ -5168,6 +5168,643 @@ def get_latest_funding_settlement_ts(conn: sqlite3.Connection, symbol: str) -> i
     ts = strict_integer(row["ts"])
     return int(ts) if ts is not None and ts > 0 else None
 
+
+FUNDING_REPAIR_STATES: frozenset[str] = frozenset({"pending", "resolved", "failed"})
+MARKET_TRADE_COVERAGE_STATES: frozenset[str] = frozenset({"open", "closed"})
+
+
+def _funding_repair_id(symbol: str, expected_ts: int | None, range_start_ts: int, range_end_ts: int) -> str:
+    target = str(symbol or "").strip().upper()
+    exact = "range" if expected_ts is None else str(int(expected_ts))
+    return f"funding:{target}:{exact}:{int(range_start_ts)}:{int(range_end_ts)}"
+
+
+def request_funding_settlement_repair(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str,
+    expected_ts: int | None,
+    range_start_ts: int,
+    range_end_ts: int,
+    reason: str,
+    commit: bool = True,
+) -> str:
+    target = str(symbol or "").strip().upper()
+    expected = strict_integer(expected_ts) if expected_ts is not None else None
+    start = strict_integer(range_start_ts)
+    end = strict_integer(range_end_ts)
+    reason_norm = str(reason or "").strip()
+    if not target or start is None or end is None or start <= 0 or end < start or not reason_norm:
+        raise ValueError("invalid funding settlement repair request")
+    if expected_ts is not None and (expected is None or expected < start or expected > end):
+        raise ValueError("expected funding timestamp is outside repair range")
+    now = now_ts()
+    repair_id = _funding_repair_id(target, expected, int(start), int(end))
+    conn.execute(
+        """INSERT INTO funding_settlement_repair(
+             repair_id, symbol, expected_ts, range_start_ts, range_end_ts,
+             first_requested_ts, last_attempt_ts, next_attempt_ts, attempt_count,
+             state, reason, last_error, updated_ts
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(repair_id) DO UPDATE SET
+             next_attempt_ts=CASE
+               WHEN funding_settlement_repair.state='resolved' THEN funding_settlement_repair.next_attempt_ts
+               ELSE CASE WHEN funding_settlement_repair.next_attempt_ts <= excluded.next_attempt_ts THEN funding_settlement_repair.next_attempt_ts ELSE excluded.next_attempt_ts END
+             END,
+             state=CASE
+               WHEN funding_settlement_repair.state='resolved' THEN funding_settlement_repair.state
+               ELSE 'pending'
+             END,
+             reason=excluded.reason,
+             updated_ts=excluded.updated_ts""",
+        (
+            repair_id, target, expected, int(start), int(end), now, None, now, 0,
+            "pending", reason_norm, None, now,
+        ),
+    )
+    if commit:
+        conn.commit()
+    return repair_id
+
+
+def list_due_funding_settlement_repairs(
+    conn: sqlite3.Connection,
+    *,
+    now_ts_value: int | None = None,
+    limit: int = 32,
+) -> list[dict[str, Any]]:
+    now_value = strict_integer(now_ts_value) if now_ts_value is not None else now_ts()
+    if now_value is None or now_value <= 0:
+        return []
+    limit_value = max(1, min(int(limit), 500))
+    rows = conn.execute(
+        """SELECT repair_id, symbol, expected_ts, range_start_ts, range_end_ts,
+                  first_requested_ts, last_attempt_ts, next_attempt_ts, attempt_count,
+                  state, reason, last_error, updated_ts
+             FROM funding_settlement_repair
+            WHERE state='pending' AND next_attempt_ts<=?
+            ORDER BY next_attempt_ts ASC, first_requested_ts ASC, repair_id ASC
+            LIMIT ?""",
+        (int(now_value), limit_value),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def mark_funding_settlement_repair_attempt(
+    conn: sqlite3.Connection,
+    repair_id: str,
+    *,
+    resolved: bool,
+    next_attempt_ts: int | None = None,
+    error: str | None = None,
+    commit: bool = True,
+) -> None:
+    key = str(repair_id or "").strip()
+    if not key:
+        raise ValueError("repair_id is required")
+    now = now_ts()
+    next_value = strict_integer(next_attempt_ts) if next_attempt_ts is not None else now
+    if next_value is None or next_value <= 0:
+        next_value = now
+    conn.execute(
+        """UPDATE funding_settlement_repair
+              SET last_attempt_ts=?, next_attempt_ts=?, attempt_count=attempt_count+1,
+                  state=?, last_error=?, updated_ts=?
+            WHERE repair_id=?""",
+        (
+            now,
+            int(next_value),
+            "resolved" if resolved else "pending",
+            None if resolved else str(error or "settlement not yet available")[:2000],
+            now,
+            key,
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def get_funding_settlement_repair_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    rows = conn.execute(
+        """SELECT state, COUNT(*) AS c, MIN(next_attempt_ts) AS next_due_ts,
+                  MAX(updated_ts) AS last_updated_ts
+             FROM funding_settlement_repair GROUP BY state"""
+    ).fetchall()
+    counts = {str(row["state"]): int(row["c"] or 0) for row in rows}
+    pending_rows = [row for row in rows if str(row["state"]) == "pending"]
+    return {
+        "pending": counts.get("pending", 0),
+        "resolved": counts.get("resolved", 0),
+        "failed": counts.get("failed", 0),
+        "next_due_ts": int(pending_rows[0]["next_due_ts"]) if pending_rows and pending_rows[0]["next_due_ts"] is not None else None,
+        "last_updated_ts": max((int(row["last_updated_ts"]) for row in rows if row["last_updated_ts"] is not None), default=None),
+    }
+
+
+def enqueue_funding_repairs_from_observability(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 100,
+    commit: bool = True,
+) -> int:
+    rows = conn.execute(
+        """SELECT obs.reason, obs.details_json, r.symbol
+             FROM reco_outcome_observability obs
+             JOIN recommendations r ON r.rec_id=obs.rec_id
+            WHERE obs.state='waiting'
+              AND obs.reason IN ('missing_funding_settlement','funding_settlement_history_unavailable')
+            ORDER BY obs.last_attempt_ts ASC
+            LIMIT ?""",
+        (max(1, min(int(limit), 1000)),),
+    ).fetchall()
+    created = 0
+    for row in rows:
+        details = _json_loads_mapping_or_default(row["details_json"], {})
+        entry_ts = strict_integer(details.get("entry_ts"))
+        end_ts = strict_integer(details.get("label_available_ts"))
+        expected = strict_integer(details.get("missing_event_ts"))
+        if expected is None:
+            expected = strict_integer(details.get("missing_funding_ts"))
+        if expected is not None:
+            start = end = int(expected)
+        elif entry_ts is not None and end_ts is not None and entry_ts > 0 and end_ts >= entry_ts:
+            start, end = int(entry_ts), int(end_ts)
+        else:
+            continue
+        request_funding_settlement_repair(
+            conn,
+            symbol=str(row["symbol"]),
+            expected_ts=expected,
+            range_start_ts=start,
+            range_end_ts=end,
+            reason=str(row["reason"]),
+            commit=False,
+        )
+        created += 1
+    if commit and created:
+        conn.commit()
+    return created
+
+
+def _normalize_market_trade_row(row: dict[str, Any] | sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    payload = dict(row)
+    venue = str(payload.get("venue") or "").strip().lower()
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    trade_id = str(payload.get("trade_id") or "").strip()
+    trade_ts_ms = strict_integer(payload.get("trade_ts_ms"))
+    seq = strict_integer(payload.get("seq")) if payload.get("seq") is not None else None
+    received_ts_ms = strict_integer(payload.get("received_ts_ms"))
+    side = str(payload.get("side") or "").strip().capitalize()
+    source = str(payload.get("source") or "").strip()
+    if not venue or not symbol or not trade_id or trade_ts_ms is None or received_ts_ms is None:
+        return None
+    if venue != "linear" or not symbol.endswith("USDT") or side not in {"Buy", "Sell"} or not source:
+        return None
+    if trade_ts_ms <= 0 or received_ts_ms <= 0 or seq is not None and seq < 0:
+        return None
+    for key in ("price", "qty"):
+        if isinstance(payload.get(key), bool):
+            return None
+    try:
+        price = float(payload.get("price"))
+        qty = float(payload.get("qty"))
+    except Exception:
+        return None
+    if not math.isfinite(price) or price <= 0 or not math.isfinite(qty) or qty <= 0:
+        return None
+    return {
+        "venue": venue,
+        "symbol": symbol,
+        "trade_id": trade_id,
+        "trade_ts_ms": int(trade_ts_ms),
+        "seq": int(seq) if seq is not None else None,
+        "side": side,
+        "price": price,
+        "qty": qty,
+        "received_ts_ms": int(received_ts_ms),
+        "source": source,
+        "is_block_trade": 1 if payload.get("is_block_trade") is True else 0,
+        "is_rpi_trade": 1 if payload.get("is_rpi_trade") is True else 0,
+    }
+
+
+def upsert_market_trades(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> int:
+    normalized = [item for item in (_normalize_market_trade_row(row) for row in rows) if item is not None]
+    if not normalized:
+        return 0
+    before_raw = getattr(conn, "total_changes", None)
+    before = int(before_raw or 0) if before_raw is not None else None
+    cursor = conn.executemany(
+        """INSERT INTO market_trade(
+             venue, symbol, trade_id, trade_ts_ms, seq, side, price, qty,
+             received_ts_ms, source, is_block_trade, is_rpi_trade
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(venue, symbol, trade_id) DO NOTHING""",
+        [(
+            row["venue"], row["symbol"], row["trade_id"], row["trade_ts_ms"], row["seq"],
+            row["side"], row["price"], row["qty"], row["received_ts_ms"], row["source"],
+            row["is_block_trade"], row["is_rpi_trade"],
+        ) for row in normalized],
+    )
+    if commit:
+        conn.commit()
+    if before is not None:
+        after = int(getattr(conn, "total_changes", before) or before)
+        return max(0, after - before)
+    rowcount = int(getattr(cursor, "rowcount", -1) or -1)
+    return max(0, rowcount) if rowcount >= 0 else 0
+
+
+def insert_market_trade_coverage(
+    conn: sqlite3.Connection,
+    *,
+    coverage_id: str,
+    venue: str,
+    symbol: str,
+    coverage_start_ms: int,
+    coverage_end_ms: int,
+    state: str,
+    source: str,
+    last_poll_ts_ms: int | None = None,
+    gap_reason: str | None = None,
+    details: dict[str, Any] | None = None,
+    commit: bool = True,
+) -> None:
+    key = str(coverage_id or "").strip()
+    venue_norm = str(venue or "").strip().lower()
+    symbol_norm = str(symbol or "").strip().upper()
+    start = strict_integer(coverage_start_ms)
+    end = strict_integer(coverage_end_ms)
+    state_norm = str(state or "").strip().lower()
+    source_norm = str(source or "").strip()
+    poll = strict_integer(last_poll_ts_ms) if last_poll_ts_ms is not None else end
+    if not key or venue_norm != "linear" or not symbol_norm.endswith("USDT"):
+        raise ValueError("invalid market trade coverage identity")
+    if start is None or end is None or start <= 0 or end < start or poll is None or poll <= 0:
+        raise ValueError("invalid market trade coverage window")
+    if state_norm not in MARKET_TRADE_COVERAGE_STATES or not source_norm:
+        raise ValueError("invalid market trade coverage state")
+    conn.execute(
+        """INSERT INTO market_trade_coverage(
+             coverage_id, venue, symbol, coverage_start_ms, coverage_end_ms,
+             state, source, last_poll_ts_ms, gap_reason, details_json
+           ) VALUES(?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(coverage_id) DO UPDATE SET
+             coverage_start_ms=CASE WHEN market_trade_coverage.coverage_start_ms <= excluded.coverage_start_ms THEN market_trade_coverage.coverage_start_ms ELSE excluded.coverage_start_ms END,
+             coverage_end_ms=CASE WHEN market_trade_coverage.coverage_end_ms >= excluded.coverage_end_ms THEN market_trade_coverage.coverage_end_ms ELSE excluded.coverage_end_ms END,
+             state=excluded.state, source=excluded.source,
+             last_poll_ts_ms=excluded.last_poll_ts_ms,
+             gap_reason=excluded.gap_reason, details_json=excluded.details_json""",
+        (
+            key, venue_norm, symbol_norm, int(start), int(end), state_norm, source_norm,
+            int(poll), None if gap_reason is None else str(gap_reason)[:1000],
+            _json_dumps_safe(details or {}),
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def _existing_market_trade_ids(conn: sqlite3.Connection, venue: str, symbol: str, trade_ids: list[str]) -> set[str]:
+    ids = [str(value).strip() for value in trade_ids if str(value).strip()]
+    found: set[str] = set()
+    for offset in range(0, len(ids), 400):
+        chunk = ids[offset:offset + 400]
+        if not chunk:
+            continue
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT trade_id FROM market_trade WHERE venue=? AND symbol=? AND trade_id IN ({placeholders})",
+            (venue, symbol, *chunk),
+        ).fetchall()
+        found.update(str(row["trade_id"]) for row in rows)
+    return found
+
+
+def record_market_trade_poll(
+    conn: sqlite3.Connection,
+    *,
+    venue: str,
+    symbol: str,
+    rows: list[dict[str, Any]],
+    snapshot_ts_ms: int,
+    source: str = "rest_recent_trade_v1",
+    commit: bool = True,
+) -> dict[str, Any]:
+    venue_norm = str(venue or "").strip().lower()
+    symbol_norm = str(symbol or "").strip().upper()
+    snapshot = strict_integer(snapshot_ts_ms)
+    normalized = [
+        item
+        for item in (_normalize_market_trade_row(row) for row in rows)
+        if item is not None
+        and item["venue"] == venue_norm
+        and item["symbol"] == symbol_norm
+        and item["source"] == str(source or "").strip()
+    ]
+    if venue_norm != "linear" or not symbol_norm.endswith("USDT") or snapshot is None or snapshot <= 0:
+        raise ValueError("invalid market trade poll")
+    if normalized and max(int(row["trade_ts_ms"]) for row in normalized) > int(snapshot):
+        raise ValueError("market trade poll contains a trade newer than the snapshot")
+    existing = _existing_market_trade_ids(
+        conn, venue_norm, symbol_norm, [str(row["trade_id"]) for row in normalized]
+    )
+    open_row = conn.execute(
+        """SELECT * FROM market_trade_coverage
+            WHERE venue=? AND symbol=? AND state='open' AND source=?
+            ORDER BY coverage_end_ms DESC LIMIT 1""",
+        (venue_norm, symbol_norm, str(source or "").strip()),
+    ).fetchone()
+    inserted = upsert_market_trades(conn, normalized, commit=False)
+    if not normalized:
+        if commit:
+            conn.commit()
+        return {"inserted": inserted, "coverage_extended": False, "gap_detected": False, "coverage_id": None}
+    oldest_ms = min(int(row["trade_ts_ms"]) for row in normalized)
+    start_ms = oldest_ms + 1
+    gap_detected = False
+    if open_row is not None and existing:
+        coverage_id = str(open_row["coverage_id"])
+        insert_market_trade_coverage(
+            conn,
+            coverage_id=coverage_id,
+            venue=venue_norm,
+            symbol=symbol_norm,
+            coverage_start_ms=int(open_row["coverage_start_ms"]),
+            coverage_end_ms=int(snapshot),
+            state="open",
+            source=source,
+            last_poll_ts_ms=int(snapshot),
+            details={"overlap_trade_count": len(existing), "batch_size": len(normalized)},
+            commit=False,
+        )
+    else:
+        if open_row is not None:
+            gap_detected = True
+            insert_market_trade_coverage(
+                conn,
+                coverage_id=str(open_row["coverage_id"]),
+                venue=venue_norm,
+                symbol=symbol_norm,
+                coverage_start_ms=int(open_row["coverage_start_ms"]),
+                coverage_end_ms=int(open_row["coverage_end_ms"]),
+                state="closed",
+                source=str(open_row["source"]),
+                last_poll_ts_ms=int(open_row["last_poll_ts_ms"] or open_row["coverage_end_ms"]),
+                gap_reason="poll_window_no_trade_id_overlap",
+                details={"next_window_oldest_trade_ts_ms": oldest_ms},
+                commit=False,
+            )
+        coverage_id = f"trade:{venue_norm}:{symbol_norm}:{start_ms}"
+        insert_market_trade_coverage(
+            conn,
+            coverage_id=coverage_id,
+            venue=venue_norm,
+            symbol=symbol_norm,
+            coverage_start_ms=start_ms,
+            coverage_end_ms=int(snapshot),
+            state="open",
+            source=source,
+            last_poll_ts_ms=int(snapshot),
+            details={"warmup": open_row is None, "batch_size": len(normalized)},
+            commit=False,
+        )
+    if commit:
+        conn.commit()
+    return {
+        "inserted": inserted,
+        "coverage_extended": bool(open_row is not None and existing),
+        "gap_detected": gap_detected,
+        "coverage_id": coverage_id,
+    }
+
+
+
+def record_market_trade_stream_batch(
+    conn: sqlite3.Connection,
+    *,
+    venue: str,
+    symbol: str,
+    rows: list[dict[str, Any]],
+    message_ts_ms: int,
+    session_id: str,
+    coverage_id: str | None = None,
+    source: str = "websocket_public_trade_v1",
+    commit: bool = True,
+) -> dict[str, Any]:
+    venue_norm = str(venue or "").strip().lower()
+    symbol_norm = str(symbol or "").strip().upper()
+    source_norm = str(source or "").strip()
+    session_norm = str(session_id or "").strip()
+    message_ts = strict_integer(message_ts_ms)
+    normalized = [
+        item
+        for item in (_normalize_market_trade_row(row) for row in rows)
+        if item is not None
+        and item["venue"] == venue_norm
+        and item["symbol"] == symbol_norm
+        and item["source"] == source_norm
+    ]
+    if (
+        venue_norm != "linear"
+        or not symbol_norm.endswith("USDT")
+        or not source_norm
+        or not session_norm
+        or message_ts is None
+        or message_ts <= 0
+        or not normalized
+    ):
+        raise ValueError("invalid market trade stream batch")
+    if max(int(row["trade_ts_ms"]) for row in normalized) > int(message_ts):
+        raise ValueError("market trade stream batch contains a trade newer than the message")
+
+    existing_coverage = None
+    key = str(coverage_id or "").strip()
+    if key:
+        existing_coverage = conn.execute(
+            """SELECT coverage_id, venue, symbol, coverage_start_ms, coverage_end_ms,
+                      state, source, last_poll_ts_ms
+                 FROM market_trade_coverage WHERE coverage_id=?""",
+            (key,),
+        ).fetchone()
+        if (
+            existing_coverage is None
+            or str(existing_coverage["venue"]) != venue_norm
+            or str(existing_coverage["symbol"]) != symbol_norm
+            or str(existing_coverage["state"]) != "open"
+            or str(existing_coverage["source"]) != source_norm
+        ):
+            raise ValueError("market trade stream coverage identity mismatch")
+        if int(message_ts) < int(existing_coverage["coverage_end_ms"]):
+            raise ValueError("non-monotonic market trade stream message timestamp")
+    inserted = upsert_market_trades(conn, normalized, commit=False)
+    if existing_coverage is None:
+        oldest_ms = min(int(row["trade_ts_ms"]) for row in normalized)
+        coverage_start_ms = oldest_ms + 1
+        key = f"ws:{venue_norm}:{symbol_norm}:{session_norm}:{coverage_start_ms}"
+    else:
+        coverage_start_ms = int(existing_coverage["coverage_start_ms"])
+    insert_market_trade_coverage(
+        conn,
+        coverage_id=key,
+        venue=venue_norm,
+        symbol=symbol_norm,
+        coverage_start_ms=int(coverage_start_ms),
+        coverage_end_ms=int(message_ts),
+        state="open",
+        source=source_norm,
+        last_poll_ts_ms=int(message_ts),
+        details={
+            "session_id": session_norm,
+            "message_trade_count": len(normalized),
+            "transport": "websocket",
+        },
+        commit=False,
+    )
+    if commit:
+        conn.commit()
+    return {
+        "inserted": int(inserted),
+        "coverage_id": key,
+        "coverage_start_ms": int(coverage_start_ms),
+        "coverage_end_ms": int(message_ts),
+    }
+
+
+def close_market_trade_coverage(
+    conn: sqlite3.Connection,
+    coverage_id: str,
+    *,
+    gap_reason: str,
+    commit: bool = True,
+) -> bool:
+    key = str(coverage_id or "").strip()
+    reason = str(gap_reason or "").strip()
+    if not key or not reason:
+        raise ValueError("coverage_id and gap_reason are required")
+    row = conn.execute(
+        """SELECT coverage_id, venue, symbol, coverage_start_ms, coverage_end_ms,
+                  state, source, last_poll_ts_ms, details_json
+             FROM market_trade_coverage WHERE coverage_id=?""",
+        (key,),
+    ).fetchone()
+    if row is None:
+        return False
+    if str(row["state"]) == "closed":
+        return True
+    details = _json_loads_mapping_or_default(row["details_json"], {})
+    details["closed_ts"] = now_ts()
+    insert_market_trade_coverage(
+        conn,
+        coverage_id=key,
+        venue=str(row["venue"]),
+        symbol=str(row["symbol"]),
+        coverage_start_ms=int(row["coverage_start_ms"]),
+        coverage_end_ms=int(row["coverage_end_ms"]),
+        state="closed",
+        source=str(row["source"]),
+        last_poll_ts_ms=int(row["last_poll_ts_ms"] or row["coverage_end_ms"]),
+        gap_reason=reason,
+        details=details,
+        commit=False,
+    )
+    if commit:
+        conn.commit()
+    return True
+
+
+def get_market_trade_path(
+    conn: sqlite3.Connection,
+    venue: str,
+    symbol: str,
+    start_ts: int,
+    end_ts: int,
+) -> dict[str, Any] | None:
+    start = strict_integer(start_ts)
+    end = strict_integer(end_ts)
+    venue_norm = str(venue or "").strip().lower()
+    symbol_norm = str(symbol or "").strip().upper()
+    if start is None or end is None or start <= 0 or end <= start:
+        return None
+    start_ms = int(start) * 1000
+    end_ms = int(end) * 1000
+    coverage = conn.execute(
+        """SELECT coverage_id, source, coverage_start_ms, coverage_end_ms, state
+             FROM market_trade_coverage
+            WHERE venue=? AND symbol=?
+              AND coverage_start_ms<=? AND coverage_end_ms>=?
+            ORDER BY coverage_start_ms DESC LIMIT 1""",
+        (venue_norm, symbol_norm, start_ms, end_ms),
+    ).fetchone()
+    if coverage is None:
+        return None
+    rows = conn.execute(
+        """SELECT venue, symbol, trade_id, trade_ts_ms, seq, side, price, qty,
+                  received_ts_ms, source, is_block_trade, is_rpi_trade
+             FROM market_trade
+            WHERE venue=? AND symbol=? AND trade_ts_ms>=? AND trade_ts_ms<?
+            ORDER BY trade_ts_ms ASC, COALESCE(seq, -1) ASC, trade_id ASC""",
+        (venue_norm, symbol_norm, start_ms, end_ms),
+    ).fetchall()
+    normalized = [item for item in (_normalize_market_trade_row(row) for row in rows) if item is not None]
+    return {
+        "coverage_id": str(coverage["coverage_id"]),
+        "source": str(coverage["source"]),
+        "coverage_start_ms": int(coverage["coverage_start_ms"]),
+        "coverage_end_ms": int(coverage["coverage_end_ms"]),
+        "items": normalized,
+    }
+
+
+def prune_market_trade_journal(conn: sqlite3.Connection, before_ms: int, *, commit: bool = True) -> dict[str, int]:
+    cutoff = strict_integer(before_ms)
+    if cutoff is None or cutoff <= 0:
+        return {"trades_deleted": 0, "coverage_deleted": 0}
+    trades_deleted = conn.execute(
+        "DELETE FROM market_trade WHERE trade_ts_ms<?", (int(cutoff),)
+    ).rowcount
+    coverage_deleted = conn.execute(
+        "DELETE FROM market_trade_coverage WHERE coverage_end_ms<?", (int(cutoff),)
+    ).rowcount
+    if commit:
+        conn.commit()
+    return {
+        "trades_deleted": int(trades_deleted or 0),
+        "coverage_deleted": int(coverage_deleted or 0),
+    }
+
+
+def get_market_trade_journal_status(conn: sqlite3.Connection, *, now_ms: int | None = None) -> dict[str, Any]:
+    now_value = strict_integer(now_ms) if now_ms is not None else int(time.time() * 1000)
+    total = conn.execute("SELECT COUNT(*) AS c FROM market_trade").fetchone()
+    spans = conn.execute(
+        """SELECT venue, symbol, state, coverage_start_ms, coverage_end_ms, gap_reason
+             FROM market_trade_coverage ORDER BY symbol, coverage_end_ms DESC"""
+    ).fetchall()
+    latest: dict[str, dict[str, Any]] = {}
+    gaps = 0
+    for row in spans:
+        symbol = str(row["symbol"])
+        if row["gap_reason"]:
+            gaps += 1
+        if symbol not in latest:
+            end_ms = int(row["coverage_end_ms"])
+            latest[symbol] = {
+                "venue": str(row["venue"]),
+                "state": str(row["state"]),
+                "coverage_start_ms": int(row["coverage_start_ms"]),
+                "coverage_end_ms": end_ms,
+                "coverage_age_sec": max(0, (int(now_value) - end_ms) // 1000) if now_value is not None else None,
+            }
+    return {
+        "trade_rows_total": int(total["c"] if total is not None else 0),
+        "coverage_spans_total": len(spans),
+        "closed_gap_spans_total": gaps,
+        "symbols": latest,
+    }
+
 # ── open interest ─────────────────────────────────────────────────────────────
 
 def _normalize_open_interest_row(symbol: str, row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:

@@ -3799,6 +3799,8 @@ async function loadHealth() {
   const databaseContinuity = systemStatus.database_continuity || {};
   const outcomeIntegrity = databaseContinuity.outcome_semantic_integrity || {};
   const runtimeProvenance = systemStatus.runtime_provenance || {};
+  const fundingRepair = systemStatus.funding_settlement_repair || {};
+  const tradeJournal = systemStatus.market_trade_journal || {};
   const botCalibrator = systemStatus.bot_calibrators?.futures_grid || {};
   const trendCalibrator = systemStatus.bot_calibrators?.directional_trend || {};
   const trendFirstTouch = systemStatus.trend_first_touch_model || {};
@@ -3845,6 +3847,8 @@ async function loadHealth() {
     { name: "Ожидают созревания горизонта", value: `${outcomeWorker.scheduled_waiting_total ?? 0}; созревших ${outcomeWorker.matured_pending_total ?? 0}; worker=${healthStatusRu(outcomeWorker.state || "unknown")}` },
     { name: "Grid · ожидают горизонта", value: `${gridOutcomeQueue.scheduled_waiting_total ?? 0}; ближайший срок ${formatTs(gridOutcomeQueue.next_due_ts)}` },
     { name: "Trend · ожидают горизонта", value: `${trendOutcomeQueue.scheduled_waiting_total ?? 0}; ближайший срок ${formatTs(trendOutcomeQueue.next_due_ts)}` },
+    { name: "Funding settlement recovery", value: `ожидают ${fundingRepair.pending ?? 0}; восстановлено ${fundingRepair.resolved ?? 0}; следующая попытка ${formatTs(fundingRepair.next_due_ts)}` },
+    { name: "Intrabar trade journal", value: tradeJournal.enabled === false ? "Отключён" : `строк ${tradeJournal.trade_rows_total ?? 0}; инструментов ${Object.keys(tradeJournal.symbols || {}).length}; разрывов ${tradeJournal.closed_gap_spans_total ?? 0}; поток ${tradeJournal.stream_enabled === false ? "REST fallback" : "WebSocket + REST fallback"}` },
     { name: "Семантическая целостность исходов", value: outcomeIntegrity.ok === true ? "Норма" : (outcomeIntegrity.ok === false ? "Нарушена" : "—") },
     { name: "Схема / материализация БД", value: databaseSchema.migration_applied && Number(databaseSchema.materialization_pending || 0) === 0 ? "Норма" : `Требует внимания; pending=${databaseSchema.materialization_pending ?? "—"}` },
     { name: "Grid evidence", value: `${botCalibrator.fitted ? "калибратор обучен" : "калибратор не обучен"}; exact-policy n=${botCalibrator.policy_eligible_outcomes_total ?? 0}; expectancy=${empiricalStatusRu(botCalibrator.expectancy_status || "insufficient")}` },
@@ -3865,6 +3869,10 @@ async function loadHealth() {
     { name: "Grid temporal clusters", value: `${botCalibrator.temporal_cluster_count ?? 0}/${botCalibrator.minimum_temporal_clusters ?? 0}` },
     { name: "Trend first-touch classes", value: `TP ${trendFirstTouch.class_counts?.TP_FIRST ?? 0}; SL ${trendFirstTouch.class_counts?.SL_FIRST ?? 0}; horizon ${trendFirstTouch.class_counts?.HORIZON_EXIT ?? 0}` },
     { name: "Trend terminal holdout / log-loss", value: `${trendFirstTouch.holdout_status || "—"} / ${trendFirstTouch.holdout_log_loss ?? "—"}` },
+    { name: "Funding repair / next due", value: `${fundingRepair.pending ?? 0} pending; ${formatTs(fundingRepair.next_due_ts)}` },
+    { name: "Trade journal transport", value: tradeJournal.transport || tradeJournal.primary_source || "—" },
+    { name: "Trade journal retention / poll limit", value: `${tradeJournal.retention_hours ?? "—"}ч / ${tradeJournal.poll_limit ?? "—"}` },
+    { name: "Trade journal evidence boundary", value: tradeJournal.evidence_boundary || "—" },
   ];
 
   const runtimeRows = [

@@ -1,3 +1,19 @@
+## Settled funding recovery и intrabar chronology - v1.4.8
+
+### Funding outcome contract
+
+Исторический outcome использует только signed settled funding из `funding_settlement`. Forecast из ticker не заменяет settlement. При отсутствии обязательного события outcome остаётся `waiting`, создаёт durable repair request и повторяется после адресного backfill. Успешный regular refresh выполняется не чаще одного раза в час; failed attempt использует короткий bounded backoff. Recent overlap scan закрывает дырки, расположенные до уже сохранённого latest timestamp.
+
+### Intrabar observation contract
+
+Основной источник chronology — read-only Bybit `publicTrade.{symbol}` WebSocket. Каждая connection/session создаёт отдельный `market_trade_coverage` span; disconnect/restart закрывает его, и новая session не продолжает старый интервал. REST recent-trade используется только как source-isolated fallback/bootstrap и расширяет свой span при доказанном overlap trade ID.
+
+Grid ledger сначала ищет полное покрытие минуты в `market_trade_coverage`. Replay разрешён только когда сохранённые trades: (1) находятся внутри полностью покрытого окна, (2) имеют строгий chronological order, (3) воспроизводят OHLC open/high/low/close. Тогда price path проходит через существующую conservative grid ledger по фактической последовательности trades.
+
+Если coverage отсутствует, используется прежняя OHLC path-equivalence модель. Если coverage заявлено, но trade path пуст, malformed или противоречит OHLC, label не строится. Trade journal не превращает публичные prints в доказательство конкретных fills: queue priority, partial fills и replacement activation остаются отдельной границей наблюдаемости.
+
+`grid_label_v26` и model lineage не изменены, потому что success/ret/event target semantics не менялись; добавлен отдельный `grid_intrabar_observation_v2` provenance.
+
 ## Log-symmetric direction and sample observability - v1.4.7
 
 Directional score определяется в едином логарифмическом пространстве. Для исходного пути `p_t` зеркальный путь задаётся как `p'_t = p_0^2 / p_t`, то есть его log-return в каждый момент имеет противоположный знак. Канонический контракт требует:

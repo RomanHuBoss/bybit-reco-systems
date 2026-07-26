@@ -1,3 +1,16 @@
+## Module changes - v1.4.8
+
+- `app/collector.py`: short funding retry, recent overlap refresh, durable targeted repair worker, REST trade fallback/bootstrap, overlap/gap coverage и retention pruning.
+- `app/bybit_client.py`: strict public `/v5/market/recent-trade` fallback sanitizer.
+- `app/trade_stream.py`: strict read-only `publicTrade.{symbol}` WebSocket parser/session, runtime-heartbeat integration и disconnect-bounded coverage.
+- `app/db.py`: funding repair queue, market trade journal, coverage ledger, status и pruning API.
+- `app/outcomes.py`: funding repair scheduling и OHLC-consistent public-trade replay с observation provenance.
+- `app/settings.py` / `.env.example`: journal/repair limits and explicit public stream switch.
+- `app/main.py`: v1.4.8, hot collector + supervised public stream wiring и status diagnostics; model/outcome label identities сохранены.
+- `app/ui/static/app.js`: funding recovery и trade journal в Health.
+- `migrations/init.sql`, `migrations/init_postgres.sql`: additive dual-backend tables/indexes.
+- `tests/test_iteration278_funding_recovery_trade_journal.py`: RED->GREEN regression package.
+
 ## Module changes - v1.4.7
 
 - `app/direction.py`: log-price helpers; mirror-symmetric RSI/MACD/MA/Bollinger/ATR; `indicator_space=log_price_v1`; complete component diagnostics.
