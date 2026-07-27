@@ -1,3 +1,12 @@
+## Остаточные риски после v1.4.11 WebSocket resilience fix
+
+- Public WebSocket может разрываться по сети, прокси, локальной перегрузке или стороне Bybit. v1.4.11 переподключается штатно и закрывает coverage gap, но не может восстановить точную chronology неизвестного интервала.
+- `MARKET_TRADE_STREAM_MAX_QUEUE=256` и batched commits рассчитаны на кратковременное отставание writer. Устойчивое превышение DB throughput всё равно приведёт к reconnect/gaps; контролируйте `stream_runtime`, reconnect count и размер таблицы.
+- REST recent-trade остаётся fallback без доказательства полной chronology. Он не объединяется с WebSocket coverage и не заменяет отсутствующий session interval.
+- Existing `COLLECT_ERROR` и старые повторные `RECO_WARMUP_SKIP` остаются в audit history; релиз прекращает новые дубликаты, но не удаляет прошлые записи.
+- Startup handover может временно показывать «система запускается», пока новый process не завершил собственный collector+publication cycle. Это fail-closed состояние, а не ошибка Bybit.
+- Live long-duration soak под конкретным Windows/proxy/PostgreSQL окружением не выполнялся; offline deterministic tests не моделируют все сетевые задержки.
+
 ## Остаточные риски после v1.4.10 coverage-boundary fix
 
 - Первый WebSocket пакет может создать нулевой coverage span `[ts+1, ts+1]`, если `data[].T == envelope ts`. Это намеренно безопасное состояние: первый millisecond остаётся исключённым, а span не пригоден для минутного replay, пока последующие сообщения не расширят его до полного окна.

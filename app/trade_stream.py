@@ -2,18 +2,40 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 import uuid
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
+from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect as websocket_connect
 
 from . import db
 from .grid_math import strict_integer
 
 PUBLIC_TRADE_STREAM_SOURCE = "websocket_public_trade_v1"
+
+_PUBLIC_TRADE_STREAM_STATE_LOCK = threading.Lock()
+_PUBLIC_TRADE_STREAM_STATE: dict[str, Any] = {
+    "active": False,
+    "session_id": None,
+    "connected_ts": None,
+    "last_message_ts_ms": None,
+    "last_disconnect_ts": None,
+    "disconnect_reason": None,
+}
+
+
+def _set_public_trade_stream_runtime_state(**fields: Any) -> None:
+    with _PUBLIC_TRADE_STREAM_STATE_LOCK:
+        _PUBLIC_TRADE_STREAM_STATE.update(fields)
+
+
+def get_public_trade_stream_runtime_state() -> dict[str, Any]:
+    with _PUBLIC_TRADE_STREAM_STATE_LOCK:
+        return dict(_PUBLIC_TRADE_STREAM_STATE)
 
 
 def public_linear_trade_ws_url(bybit_http_base_url: str) -> str:
@@ -166,12 +188,19 @@ def run_public_trade_stream_session(
     heartbeat: Callable[[], bool] | None = None,
     connect_fn=websocket_connect,
     receive_timeout_sec: float = 1.0,
+    ping_interval_sec: float = 20.0,
+    ping_timeout_sec: float = 60.0,
+    close_timeout_sec: float = 2.0,
+    max_queue_messages: int = 256,
+    commit_batch_messages: int = 32,
+    commit_batch_sec: float = 0.5,
 ) -> dict[str, Any]:
     """Run one public-trade WebSocket session until stop or disconnect.
 
-    The supervising background wrapper is responsible for reconnect backoff. Each
-    session creates separate per-symbol coverage spans; every exit closes them so
-    no chronology is claimed across a reconnect.
+    Network closures and keepalive timeouts are normal transport events. They
+    close the current coverage spans and return session statistics so the
+    owning background loop can reconnect without reporting a crashed worker.
+    Malformed payloads and persistence errors still propagate fail-closed.
     """
     normalized_symbols = sorted({
         str(symbol or "").strip().upper()
@@ -183,83 +212,175 @@ def run_public_trade_stream_session(
     url = public_linear_trade_ws_url(bybit_http_base_url)
     session_id = uuid.uuid4().hex
     coverage_ids: dict[str, str] = {}
-    stats = {
+    stats: dict[str, Any] = {
         "session_id": session_id,
         "url_host": urlparse(url).hostname,
         "symbols": normalized_symbols,
         "messages": 0,
         "trades": 0,
         "inserted": 0,
+        "commits": 0,
+        "application_pings": 0,
         "started_ts": int(time.time()),
         "last_message_ts_ms": None,
+        "disconnect_reason": None,
+        "disconnect_error_type": None,
     }
     close_reason = "websocket_disconnect"
     message_index = 0
+    pending_messages = 0
+    last_commit_monotonic = time.monotonic()
+    last_application_ping_monotonic = time.monotonic()
+
+    def _commit_pending() -> None:
+        nonlocal pending_messages, last_commit_monotonic
+        if pending_messages <= 0:
+            return
+        conn.commit()
+        stats["commits"] = int(stats["commits"]) + 1
+        pending_messages = 0
+        last_commit_monotonic = time.monotonic()
+
     try:
-        with connect_fn(
-            url,
-            open_timeout=10,
-            close_timeout=5,
-            ping_interval=20,
-            ping_timeout=10,
-            max_size=16 * 1024 * 1024,
-        ) as websocket:
-            websocket.send(json.dumps({
-                "op": "subscribe",
-                "args": [f"publicTrade.{symbol}" for symbol in normalized_symbols],
-            }, separators=(",", ":")))
-            while not stop_requested():
-                if heartbeat is not None and not heartbeat():
-                    close_reason = "runtime_lock_lost"
-                    raise RuntimeError("market trade stream runtime lock lost")
-                try:
-                    raw = websocket.recv(timeout=max(0.1, float(receive_timeout_sec)))
-                except TimeoutError:
-                    continue
-                if raw is None:
-                    break
-                parsed = parse_public_trade_message(raw)
-                if parsed is None:
-                    continue
-                symbol = str(parsed["symbol"])
-                message_index += 1
-                stream_rows = []
-                for row in parsed["rows"]:
-                    enriched = dict(row)
-                    enriched["stream_session_id"] = session_id
-                    enriched["stream_message_index"] = int(message_index)
-                    enriched["stream_message_ts_ms"] = int(parsed["message_ts_ms"])
-                    stream_rows.append(enriched)
-                result = db.record_market_trade_stream_batch(
-                    conn,
-                    venue="linear",
-                    symbol=symbol,
-                    rows=stream_rows,
-                    message_ts_ms=int(parsed["message_ts_ms"]),
+        try:
+            with connect_fn(
+                url,
+                open_timeout=10,
+                close_timeout=max(0.1, float(close_timeout_sec)),
+                ping_interval=max(1.0, float(ping_interval_sec)),
+                ping_timeout=max(30.0, float(ping_timeout_sec)),
+                max_size=16 * 1024 * 1024,
+                max_queue=max(128, int(max_queue_messages)),
+            ) as websocket:
+                _set_public_trade_stream_runtime_state(
+                    active=True,
                     session_id=session_id,
-                    coverage_id=coverage_ids.get(symbol),
-                    commit=True,
+                    connected_ts=int(time.time()),
+                    last_message_ts_ms=None,
+                    disconnect_reason=None,
                 )
-                coverage_id = str(result.get("coverage_id") or "")
-                if coverage_id:
-                    coverage_ids[symbol] = coverage_id
-                stats["messages"] = int(stats["messages"]) + 1
-                stats["trades"] = int(stats["trades"]) + len(parsed["rows"])
-                stats["inserted"] = int(stats["inserted"]) + int(result.get("inserted") or 0)
-                prior_message_ts = stats.get("last_message_ts_ms")
-                stats["last_message_ts_ms"] = max(
-                    int(prior_message_ts) if prior_message_ts is not None else 0,
-                    int(parsed["message_ts_ms"]),
-                )
-            close_reason = "stream_shutdown" if stop_requested() else "websocket_disconnect"
+                websocket.send(json.dumps({
+                    "op": "subscribe",
+                    "args": [f"publicTrade.{symbol}" for symbol in normalized_symbols],
+                }, separators=(",", ":")))
+                while not stop_requested():
+                    if (
+                        time.monotonic() - last_application_ping_monotonic
+                        >= max(5.0, float(ping_interval_sec))
+                    ):
+                        websocket.send(json.dumps({"op": "ping"}, separators=(",", ":")))
+                        stats["application_pings"] = int(stats["application_pings"]) + 1
+                        last_application_ping_monotonic = time.monotonic()
+                    if heartbeat is not None and not heartbeat():
+                        close_reason = "runtime_lock_lost"
+                        stats["disconnect_reason"] = close_reason
+                        break
+                    try:
+                        raw = websocket.recv(timeout=max(0.1, float(receive_timeout_sec)))
+                    except TimeoutError:
+                        if pending_messages and (
+                            time.monotonic() - last_commit_monotonic
+                            >= max(0.05, float(commit_batch_sec))
+                        ):
+                            _commit_pending()
+                        continue
+                    if raw is None:
+                        close_reason = "websocket_disconnect"
+                        stats["disconnect_reason"] = close_reason
+                        break
+                    parsed = parse_public_trade_message(raw)
+                    if parsed is None:
+                        continue
+                    symbol = str(parsed["symbol"])
+                    message_index += 1
+                    stream_rows: list[dict[str, Any]] = []
+                    for row in parsed["rows"]:
+                        enriched = dict(row)
+                        enriched["stream_session_id"] = session_id
+                        enriched["stream_message_index"] = int(message_index)
+                        enriched["stream_message_ts_ms"] = int(parsed["message_ts_ms"])
+                        stream_rows.append(enriched)
+                    try:
+                        result = db.record_market_trade_stream_batch(
+                            conn,
+                            venue="linear",
+                            symbol=symbol,
+                            rows=stream_rows,
+                            message_ts_ms=int(parsed["message_ts_ms"]),
+                            session_id=session_id,
+                            coverage_id=coverage_ids.get(symbol),
+                            commit=False,
+                        )
+                    except Exception:
+                        conn.rollback()
+                        raise
+                    coverage_id = str(result.get("coverage_id") or "")
+                    if coverage_id:
+                        coverage_ids[symbol] = coverage_id
+                    stats["messages"] = int(stats["messages"]) + 1
+                    stats["trades"] = int(stats["trades"]) + len(parsed["rows"])
+                    stats["inserted"] = int(stats["inserted"]) + int(result.get("inserted") or 0)
+                    prior_message_ts = stats.get("last_message_ts_ms")
+                    stats["last_message_ts_ms"] = max(
+                        int(prior_message_ts) if prior_message_ts is not None else 0,
+                        int(parsed["message_ts_ms"]),
+                    )
+                    _set_public_trade_stream_runtime_state(
+                        active=True,
+                        session_id=session_id,
+                        last_message_ts_ms=int(stats["last_message_ts_ms"]),
+                    )
+                    pending_messages += 1
+                    if (
+                        pending_messages >= max(1, int(commit_batch_messages))
+                        or time.monotonic() - last_commit_monotonic
+                        >= max(0.05, float(commit_batch_sec))
+                    ):
+                        _commit_pending()
+                if stop_requested():
+                    close_reason = "stream_shutdown"
+                    stats["disconnect_reason"] = close_reason
+        except ConnectionClosed as exc:
+            close_reason = "connection_closed"
+            stats["disconnect_reason"] = close_reason
+            stats["disconnect_error_type"] = exc.__class__.__name__
+        except (TimeoutError, OSError) as exc:
+            close_reason = "transport_timeout" if isinstance(exc, TimeoutError) else "transport_error"
+            stats["disconnect_reason"] = close_reason
+            stats["disconnect_error_type"] = exc.__class__.__name__
     finally:
+        try:
+            _commit_pending()
+        except Exception:
+            conn.rollback()
+            raise
+        close_error: Exception | None = None
         for coverage_id in coverage_ids.values():
-            db.close_market_trade_coverage(
-                conn,
-                coverage_id,
-                gap_reason=close_reason,
-                commit=False,
-            )
+            try:
+                db.close_market_trade_coverage(
+                    conn,
+                    coverage_id,
+                    gap_reason=close_reason,
+                    commit=False,
+                )
+            except Exception as exc:
+                close_error = close_error or exc
         if coverage_ids:
-            conn.commit()
+            if close_error is None:
+                conn.commit()
+            else:
+                conn.rollback()
+        _set_public_trade_stream_runtime_state(
+            active=False,
+            session_id=None,
+            last_disconnect_ts=int(time.time()),
+            disconnect_reason=close_reason,
+        )
+        if close_error is not None:
+            raise close_error
+    if stats.get("disconnect_reason") is None:
+        stats["disconnect_reason"] = close_reason
+    stats["ended_ts"] = int(time.time())
+    stats["duration_sec"] = max(0, int(stats["ended_ts"]) - int(stats["started_ts"]))
     return stats
+

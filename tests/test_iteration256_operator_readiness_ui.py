@@ -169,8 +169,8 @@ def test_api_status_explains_zero_actionable_snapshot(tmp_path: Path, monkeypatc
 def test_release_version_and_static_cache_bust_are_updated() -> None:
     main_source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
     index = INDEX_HTML.read_text(encoding="utf-8")
-    assert 'version="1.4.10"' in main_source
-    assert "build=1.4.10" in index
+    assert 'version="1.4.11"' in main_source
+    assert "build=1.4.11" in index
 
 
 def test_operator_release_documents_match_the_v168_ui_contract() -> None:

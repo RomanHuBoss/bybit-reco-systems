@@ -584,6 +584,8 @@ function decisionActionRu(value) {
     OUTCOME_WORKER_STALLED: "Контур расчёта исходов не продвигает очередь",
     COLLECT_ERROR: "Ошибка сбора рыночных данных",
     DB_PRUNE: "Плановая очистка устаревших технических данных",
+    RECO_WARMUP_SKIP: "Рекомендации ожидают готовности рыночных данных",
+    RECO_WARMUP_RECOVERED: "Рыночные данные готовы; расчёт рекомендаций возобновлён",
   };
   const label = labels[code];
   return label ? `${label} (${code})` : `${humanizeOperatorText(code)} (${code})`;
@@ -2810,6 +2812,8 @@ function journalActionLabel(action) {
     SYMBOL_DISABLED: "Символ отключён",
     DB_PRUNE: "Очистка технических данных",
     STALE_DATA_SKIP: "Пропуск устаревших данных",
+    RECO_WARMUP_SKIP: "Рекомендации ожидают готовности данных",
+    RECO_WARMUP_RECOVERED: "Рыночные данные готовы",
   };
   return labels[code] || humanizeOperatorText(code || "—");
 }

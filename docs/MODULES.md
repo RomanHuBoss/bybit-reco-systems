@@ -1,3 +1,12 @@
+## Module changes - v1.4.11
+
+- `app/trade_stream.py`: graceful network-disconnect classification, process-local stream runtime state, Bybit heartbeat, wider keepalive queue/timeout and batched commits.
+- `app/main.py`: internal reconnect loop with bounded backoff, REST fallback suppression while stream is active, transition-based compact warm-up events, additive stream runtime status.
+- `app/settings.py` / `.env.example`: optional WebSocket ping, queue, batching and reconnect tuning.
+- `app/ui/static/app.js`: Russian labels for `RECO_WARMUP_SKIP` and `RECO_WARMUP_RECOVERED`.
+- `app/ui/static/index.html`: cache/version bump to 1.4.11.
+- `tests/test_iteration281_stream_resilience_warmup_noise.py`: transport, reconnect, REST fallback and warm-up dedup regressions.
+
 ## Module changes - v1.4.10
 
 - `app/db.py`: preserve the exclusive first-trade boundary and raise only the initial coverage end to that boundary when `T == ts`, producing a valid zero-width span.

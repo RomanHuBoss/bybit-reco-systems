@@ -27,7 +27,11 @@ from .shock_guard import (
 )
 from .bybit_client import BybitPublicClient
 from .collector import collect_once, collect_backfill_once, collect_futures_once, RuntimeLockLostError
-from .trade_stream import PUBLIC_TRADE_STREAM_SOURCE, run_public_trade_stream_session
+from .trade_stream import (
+    PUBLIC_TRADE_STREAM_SOURCE,
+    get_public_trade_stream_runtime_state,
+    run_public_trade_stream_session,
+)
 from .alerts import check_and_alert
 from .sentiment import collect_sentiment_once
 from .outcomes import BOT_HORIZONS, GRID_INTRABAR_OBSERVATION_VERSION, compute_outcomes_cycle
@@ -5440,6 +5444,14 @@ def _make_runtime_lock_heartbeat(lock_key: str, lock_conn_factory=None):
 
 
 def _collect_hot_once(conn, client: BybitPublicClient, venue: str, symbols: list[str], heartbeat, max_workers: int) -> dict[str, Any]:
+    journal_enabled = bool(getattr(settings, "market_trade_journal_enabled", True))
+    stream_enabled = bool(getattr(settings, "market_trade_stream_enabled", True))
+    stream_state = get_public_trade_stream_runtime_state() if stream_enabled else {"active": False}
+    # REST recent-trade is a bounded fallback, not a second always-on ingestion
+    # path. Polling 1000 trades for every symbol while publicTrade is healthy
+    # creates avoidable API and database pressure and can starve the OHLCV
+    # collector that gates recommendation readiness.
+    rest_fallback_required = journal_enabled and not bool(stream_state.get("active"))
     try:
         return collect_once(
             conn,
@@ -5450,7 +5462,7 @@ def _collect_hot_once(conn, client: BybitPublicClient, venue: str, symbols: list
             max_workers=max_workers,
             api_fetch_tfs=(60,),
             allow_derived_bootstrap=False,
-            market_trade_journal_enabled=bool(getattr(settings, "market_trade_journal_enabled", True)),
+            market_trade_journal_enabled=rest_fallback_required,
             market_trade_poll_limit=int(getattr(settings, "market_trade_poll_limit", 1000) or 1000),
             market_trade_retention_hours=int(getattr(settings, "market_trade_retention_hours", 72) or 72),
             funding_repair_max_per_cycle=int(getattr(settings, "funding_repair_max_per_cycle", 16) or 16),
@@ -5677,7 +5689,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.10", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.11", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -7335,15 +7347,19 @@ def api_sentiment_get(scope: str = "global", key: str = "crypto", limit: int = 1
 
 
 def _market_trade_stream_thread():
-    """Keep an immutable publicTrade stream for intrabar price chronology.
+    """Keep publicTrade chronology alive across expected network disconnects.
 
-    The stream is public/read-only. A runtime lease prevents two application
-    processes from claiming overlapping coverage for the same configured
-    universe. Any disconnect ends the current coverage spans; the supervisor
-    reconnects into a new session without bridging the gap.
+    Each transport disconnect closes the current coverage spans and starts a new
+    session after bounded backoff. It is not reported as a crashed background
+    worker; malformed payloads, database failures, and invariant violations still
+    propagate to the supervisor.
     """
     lock_key = "runtime:market_trade_stream"
     lock_ttl = max(120, int(getattr(settings, "collect_interval_sec", 20) or 20) * 20)
+    reconnect_min = max(1.0, float(getattr(settings, "market_trade_stream_reconnect_min_sec", 2) or 2))
+    reconnect_max = max(reconnect_min, float(getattr(settings, "market_trade_stream_reconnect_max_sec", 30) or 30))
+    reconnect_delay = reconnect_min
+    reconnect_count = 0
     while not _BACKGROUND_STOP_EVENT.is_set():
         with closing(_get_lock_conn()) as lock_conn:
             has_lock = db.acquire_runtime_lock(
@@ -7360,9 +7376,34 @@ def _market_trade_stream_thread():
                 symbols=list(settings.symbols_linear),
                 stop_requested=_BACKGROUND_STOP_EVENT.is_set,
                 heartbeat=heartbeat,
+                ping_interval_sec=float(getattr(settings, "market_trade_stream_ping_interval_sec", 20) or 20),
+                ping_timeout_sec=float(getattr(settings, "market_trade_stream_ping_timeout_sec", 60) or 60),
+                close_timeout_sec=float(getattr(settings, "market_trade_stream_close_timeout_sec", 2) or 2),
+                max_queue_messages=int(getattr(settings, "market_trade_stream_max_queue", 256) or 256),
+                commit_batch_messages=int(getattr(settings, "market_trade_stream_commit_batch_messages", 32) or 32),
+                commit_batch_sec=float(getattr(settings, "market_trade_stream_commit_batch_sec", 0.5) or 0.5),
             )
+            reconnect_count += 1
+            stats["reconnect_count"] = int(reconnect_count)
             db.set_app_config_json(conn, "market_trade_stream_last_session", stats)
-        return
+        if _BACKGROUND_STOP_EVENT.is_set():
+            return
+        duration_sec = int(stats.get("duration_sec") or 0)
+        if duration_sec >= 30 or int(stats.get("messages") or 0) > 0:
+            reconnect_delay = reconnect_min
+        else:
+            reconnect_delay = min(reconnect_max, max(reconnect_min, reconnect_delay * 2.0))
+        _set_background_thread_state(
+            "market_trade_stream",
+            "running",
+            restart_count=0,
+            consecutive_failures=0,
+            reconnect_count=int(reconnect_count),
+            last_disconnect_reason=str(stats.get("disconnect_reason") or "websocket_disconnect"),
+            last_disconnect_ts=int(time.time()),
+            owner=RUNTIME_OWNER,
+        )
+        _BACKGROUND_STOP_EVENT.wait(reconnect_delay)
 
 
 def _collector_thread():
@@ -7572,9 +7613,95 @@ def _sentiment_thread():
         next_run = _interval_loop_wait(next_run, settings.sentiment_interval_sec)
 
 
+def _warmup_decision_signature(status: dict[str, Any]) -> tuple[Any, ...]:
+    venues = status.get("venues") if isinstance(status.get("venues"), list) else []
+    venue_parts: list[tuple[Any, ...]] = []
+    for item in venues:
+        if not isinstance(item, dict):
+            continue
+        reasons = item.get("reason_counts") if isinstance(item.get("reason_counts"), dict) else {}
+        venue_parts.append((
+            str(item.get("venue") or ""),
+            int(item.get("symbols_total") or 0),
+            int(item.get("ready_symbols") or 0),
+            tuple(sorted((str(key), int(value or 0)) for key, value in reasons.items())),
+        ))
+    return (
+        bool(status.get("ready")),
+        int(status.get("symbols_total") or 0),
+        int(status.get("ready_symbols") or 0),
+        tuple(venue_parts),
+    )
+
+
+def _compact_warmup_decision_details(status: dict[str, Any]) -> dict[str, Any]:
+    venues = status.get("venues") if isinstance(status.get("venues"), list) else []
+    compact_venues: list[dict[str, Any]] = []
+    for item in venues:
+        if not isinstance(item, dict):
+            continue
+        samples = item.get("sample_not_ready") if isinstance(item.get("sample_not_ready"), list) else []
+        sample_symbols = [
+            str(sample.get("symbol") or "")
+            for sample in samples
+            if isinstance(sample, dict) and str(sample.get("symbol") or "")
+        ][:5]
+        compact_venues.append({
+            "venue": str(item.get("venue") or ""),
+            "symbols_total": int(item.get("symbols_total") or 0),
+            "ready_symbols": int(item.get("ready_symbols") or 0),
+            "ready_ratio": float(item.get("ready_ratio") or 0.0),
+            "reason_counts": dict(item.get("reason_counts") or {}),
+            "sample_symbols": sample_symbols,
+        })
+    return {
+        "ts": int(status.get("ts") or time.time()),
+        "ready": bool(status.get("ready")),
+        "symbols_total": int(status.get("symbols_total") or 0),
+        "ready_symbols": int(status.get("ready_symbols") or 0),
+        "ready_ratio": float(status.get("ready_ratio") or 0.0),
+        "min_ready_ratio": float(status.get("min_ready_ratio") or 0.0),
+        "min_ready_symbols": int(status.get("min_ready_symbols") or 0),
+        "venues": compact_venues,
+    }
+
+
+def _next_warmup_decision_event(
+    state: dict[str, Any] | None,
+    status: dict[str, Any],
+    *,
+    now_ts: int,
+    cooldown_sec: int,
+) -> tuple[dict[str, Any], tuple[str, dict[str, Any]] | None]:
+    previous = dict(state or {})
+    ready = bool(status.get("ready"))
+    signature = _warmup_decision_signature(status)
+    was_blocked = bool(previous.get("blocked"))
+    previous_signature = previous.get("signature")
+    last_log_ts = int(previous.get("last_log_ts") or 0)
+    event: tuple[str, dict[str, Any]] | None = None
+    if not ready:
+        changed = previous_signature != signature
+        if not was_blocked or (changed and int(now_ts) - last_log_ts >= max(1, int(cooldown_sec))):
+            event = ("RECO_WARMUP_SKIP", _compact_warmup_decision_details(status))
+            last_log_ts = int(now_ts)
+        return {
+            "blocked": True,
+            "signature": signature,
+            "last_log_ts": last_log_ts,
+        }, event
+    if was_blocked:
+        event = ("RECO_WARMUP_RECOVERED", _compact_warmup_decision_details(status))
+    return {
+        "blocked": False,
+        "signature": signature,
+        "last_log_ts": int(now_ts) if event is not None else last_log_ts,
+    }, event
+
+
 def _reco_thread():
     _last_prune = 0.0
-    _last_warmup_log = 0.0
+    warmup_event_state: dict[str, Any] | None = None
     PRUNE_INTERVAL = 3600
     lock_key = "runtime:reco"
     lock_ttl = max(60, settings.reco_interval_sec * 4)
@@ -7592,12 +7719,17 @@ def _reco_thread():
                 except Exception:
                     warmup_status = {"ready": False, "reason": "collector_warmup_unavailable"}
                 warmup_ready = bool(warmup_status.get("ready", False)) if isinstance(warmup_status, dict) else False
-                if not warmup_ready:
-                    now_ts = time.time()
-                    cooldown = max(30, int(getattr(settings, "reco_warmup_log_cooldown_sec", 120) or 120))
-                    if now_ts - _last_warmup_log >= cooldown:
-                        _last_warmup_log = now_ts
-                        _log_decision_fresh("RECO_WARMUP_SKIP", None, None, warmup_status if isinstance(warmup_status, dict) else {"ready": False})
+                now_ts = int(time.time())
+                cooldown = max(30, int(getattr(settings, "reco_warmup_log_cooldown_sec", 120) or 120))
+                warmup_event_state, warmup_event = _next_warmup_decision_event(
+                    warmup_event_state,
+                    warmup_status if isinstance(warmup_status, dict) else {"ready": False},
+                    now_ts=now_ts,
+                    cooldown_sec=cooldown,
+                )
+                if warmup_event is not None:
+                    action, details = warmup_event
+                    _log_decision_fresh(action, None, None, details)
             if warmup_ready:
                 heartbeat = _make_runtime_lock_heartbeat(lock_key)
                 leadership_ok = True
@@ -8457,9 +8589,12 @@ def api_status() -> dict[str, Any]:
         market_shock = _get_app_config_mapping(conn, MARKET_SHOCK_APP_KEY, default={"state": "normal", "title": "Нормальный режим", "severity": "normal", "entry_mode": "normal", "operator_note": "Новые входы разрешены в обычном режиме.", "reasons": [], "metrics": {}})
         funding_settlement_repair = db.get_funding_settlement_repair_status(conn)
         market_trade_journal = db.get_market_trade_journal_status(conn, now_ms=now_ts_int * 1000)
+        market_trade_stream_runtime = get_public_trade_stream_runtime_state()
         market_trade_journal.update({
             "enabled": bool(getattr(settings, "market_trade_journal_enabled", True)),
             "stream_enabled": bool(getattr(settings, "market_trade_stream_enabled", True)),
+            "stream_runtime": market_trade_stream_runtime,
+            "rest_fallback_active": bool(getattr(settings, "market_trade_journal_enabled", True)) and not bool(market_trade_stream_runtime.get("active")),
             "primary_source": PUBLIC_TRADE_STREAM_SOURCE,
             "transport": "Bybit public WebSocket with overlap-verified REST fallback",
             "poll_limit": int(getattr(settings, "market_trade_poll_limit", 1000) or 1000),

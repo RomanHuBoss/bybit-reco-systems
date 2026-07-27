@@ -205,6 +205,14 @@ class Settings:
     reco_warmup_log_cooldown_sec: int = 120
     market_trade_journal_enabled: bool = True
     market_trade_stream_enabled: bool = True
+    market_trade_stream_ping_interval_sec: int = 20
+    market_trade_stream_ping_timeout_sec: int = 60
+    market_trade_stream_close_timeout_sec: int = 2
+    market_trade_stream_max_queue: int = 256
+    market_trade_stream_commit_batch_messages: int = 32
+    market_trade_stream_commit_batch_sec: float = 0.5
+    market_trade_stream_reconnect_min_sec: int = 2
+    market_trade_stream_reconnect_max_sec: int = 30
     market_trade_poll_limit: int = 1000
     market_trade_retention_hours: int = 72
     funding_repair_max_per_cycle: int = 16
@@ -277,6 +285,16 @@ def load_settings() -> Settings:
     reco_warmup_log_cooldown_sec = _env_int("RECO_WARMUP_LOG_COOLDOWN_SEC", 120, minimum=10, maximum=3600)
     market_trade_journal_enabled = _env("MARKET_TRADE_JOURNAL_ENABLED", "1").strip().lower() in ("1", "true", "yes", "y")
     market_trade_stream_enabled = _env("MARKET_TRADE_STREAM_ENABLED", "1").strip().lower() in ("1", "true", "yes", "y")
+    market_trade_stream_ping_interval_sec = _env_int("MARKET_TRADE_STREAM_PING_INTERVAL_SEC", 20, minimum=5, maximum=120)
+    market_trade_stream_ping_timeout_sec = _env_int("MARKET_TRADE_STREAM_PING_TIMEOUT_SEC", 60, minimum=30, maximum=300)
+    market_trade_stream_close_timeout_sec = _env_int("MARKET_TRADE_STREAM_CLOSE_TIMEOUT_SEC", 2, minimum=1, maximum=30)
+    market_trade_stream_max_queue = _env_int("MARKET_TRADE_STREAM_MAX_QUEUE", 256, minimum=128, maximum=4096)
+    market_trade_stream_commit_batch_messages = _env_int("MARKET_TRADE_STREAM_COMMIT_BATCH_MESSAGES", 32, minimum=1, maximum=1000)
+    market_trade_stream_commit_batch_sec = _env_float("MARKET_TRADE_STREAM_COMMIT_BATCH_SEC", 0.5, minimum=0.05, maximum=10.0)
+    market_trade_stream_reconnect_min_sec = _env_int("MARKET_TRADE_STREAM_RECONNECT_MIN_SEC", 2, minimum=1, maximum=60)
+    market_trade_stream_reconnect_max_sec = _env_int("MARKET_TRADE_STREAM_RECONNECT_MAX_SEC", 30, minimum=2, maximum=600)
+    if market_trade_stream_reconnect_max_sec < market_trade_stream_reconnect_min_sec:
+        market_trade_stream_reconnect_max_sec = market_trade_stream_reconnect_min_sec
     market_trade_poll_limit = _env_int("MARKET_TRADE_POLL_LIMIT", 1000, minimum=1, maximum=1000)
     market_trade_retention_hours = _env_int("MARKET_TRADE_RETENTION_HOURS", 72, minimum=24, maximum=24 * 30)
     funding_repair_max_per_cycle = _env_int("FUNDING_REPAIR_MAX_PER_CYCLE", 16, minimum=1, maximum=200)
@@ -349,6 +367,14 @@ def load_settings() -> Settings:
         reco_warmup_log_cooldown_sec=reco_warmup_log_cooldown_sec,
         market_trade_journal_enabled=market_trade_journal_enabled,
         market_trade_stream_enabled=market_trade_stream_enabled,
+        market_trade_stream_ping_interval_sec=market_trade_stream_ping_interval_sec,
+        market_trade_stream_ping_timeout_sec=market_trade_stream_ping_timeout_sec,
+        market_trade_stream_close_timeout_sec=market_trade_stream_close_timeout_sec,
+        market_trade_stream_max_queue=market_trade_stream_max_queue,
+        market_trade_stream_commit_batch_messages=market_trade_stream_commit_batch_messages,
+        market_trade_stream_commit_batch_sec=market_trade_stream_commit_batch_sec,
+        market_trade_stream_reconnect_min_sec=market_trade_stream_reconnect_min_sec,
+        market_trade_stream_reconnect_max_sec=market_trade_stream_reconnect_max_sec,
         market_trade_poll_limit=market_trade_poll_limit,
         market_trade_retention_hours=market_trade_retention_hours,
         funding_repair_max_per_cycle=funding_repair_max_per_cycle,

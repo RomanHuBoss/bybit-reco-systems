@@ -1,3 +1,13 @@
+## Stream transport and fallback architecture - v1.4.11
+
+`market_trade_stream` теперь владеет reconnect lifecycle внутри supervised worker. Expected `ConnectionClosed`/transport timeout закрывает session coverage, сохраняет session stats и запускает новую connection после bounded backoff. Только malformed payload, DB/invariant error или иная неожиданная ошибка выходит в outer supervisor как crash.
+
+Network receive и persistence разделены bounded buffering semantics: `websockets` queue допускает краткий consumer lag, а DB commits объединяют до 32 сообщений или 0.5 секунды. Protocol Ping/Pong дополняется Bybit JSON heartbeat `{"op":"ping"}`.
+
+Модуль хранит process-local runtime state `active/session_id/last_message/disconnect_reason`. Hot collector использует его как переключатель источника: WebSocket active → REST trade polling disabled; stream inactive/disabled → REST fallback enabled. Ticker, funding и OHLCV collection не зависят от trade-journal transaction load.
+
+Warm-up decision logging является state machine: `not ready` transition создаёт один compact `RECO_WARMUP_SKIP`; material readiness signature change может создать новый event после cooldown; переход в ready создаёт `RECO_WARMUP_RECOVERED`. Health status остаётся полным source of truth.
+
 ## WebSocket coverage boundary persistence - v1.4.10
 
 `record_market_trade_stream_batch()` сохраняет trades и per-symbol session coverage в одной транзакции. Для первого сообщения start остаётся exclusive-границей `oldest_trade_ts_ms + 1`. Если она на 1 ms позже envelope timestamp, end поднимается до start и образует zero-width open span без ложного покрытия первого millisecond. Последующие сообщения расширяют только `coverage_end_ms` через monotonic max, а disconnect закрывает span без bridging следующей session.

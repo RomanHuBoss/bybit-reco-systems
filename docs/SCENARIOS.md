@@ -1,3 +1,14 @@
+## Stream resilience and warm-up journal scenarios - v1.4.11
+
+1. **Protocol keepalive ping timeout.** Current coverage spans close with `connection_closed`; worker reconnects after bounded backoff without `background thread crashed` or `COLLECT_ERROR`.
+2. **Closing handshake times out.** Session is classified as `transport_timeout`; coverage remains separated and reconnect continues.
+3. **WebSocket is active.** Hot collector skips 35×1000 REST recent-trade polling and prioritizes ticker/OHLCV/funding.
+4. **WebSocket disconnects or is disabled.** Process-local stream state becomes inactive; next hot collector cycle enables source-isolated REST fallback.
+5. **DB commit stalls briefly.** Incoming messages buffer up to configured queue and trade rows commit in bounded batches.
+6. **Warm-up remains unchanged for hours.** One `RECO_WARMUP_SKIP` exists for the episode; Health continues to show current details without repeated decision-log rows.
+7. **Readiness reason/count changes materially.** A new compact skip may be logged after cooldown.
+8. **Warm-up recovers.** One `RECO_WARMUP_RECOVERED` is logged and recommendation calculation resumes.
+
 ## PublicTrade coverage-boundary scenarios - v1.4.10
 
 1. **Первый trade имеет `T < ts`.** Coverage начинается с `oldest T + 1`, как и ранее.

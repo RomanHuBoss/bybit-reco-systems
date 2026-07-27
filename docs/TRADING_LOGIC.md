@@ -1,3 +1,9 @@
+## Market-data continuity and warm-up semantics - v1.4.11
+
+Trade chronology transport availability does not change strategy score, direction, grid/trend geometry, risk limits or outcome target semantics. A WebSocket disconnect creates an observational gap and triggers a new session; it does not fabricate continuity and does not reset model lineage. REST recent-trade is used only while the primary stream is unavailable and remains a separate, weaker source.
+
+Recommendation publishing remains fail-closed when ticker/closed-1m/history readiness is below the configured threshold. The journal now records readiness transitions rather than periodic duplicates. `RECO_WARMUP_SKIP` means «market inputs are not currently publishable», not «Bybit returned an API error» and not «the strategy rejected a trade». `RECO_WARMUP_RECOVERED` marks restoration of the deterministic data gate.
+
 ## Initial WebSocket coverage boundary - v1.4.10
 
 Для первого пакета сессии coverage начинается с консервативной exclusive-границы `oldest_trade_ts_ms + 1`. Если старейшая сделка имеет тот же timestamp, что и envelope, start не сдвигается назад: вместо этого `coverage_end_ms` поднимается до start, формируя нулевой span `[ts+1, ts+1]`. Первый наблюдаемый millisecond тем самым не объявляется полностью покрытым.

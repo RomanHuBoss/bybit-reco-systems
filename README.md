@@ -1,3 +1,13 @@
+## WebSocket reconnect resilience and warm-up journal coalescing (v1.4.11)
+
+Версия 1.4.11 устраняет два operational-дефекта контура `market_trade_stream`. Сетевой разрыв или `keepalive ping timeout` библиотеки `websockets` теперь завершает только текущую coverage-сессию и запускает новую с bounded backoff; это больше не считается падением фонового worker и не создаёт бесконечный поток `COLLECT_ERROR`. Соединение использует 20-секундный heartbeat, 60-секундный ping timeout, увеличенную входную очередь и batched DB commits.
+
+REST `recent-trade` теперь действительно является fallback: пока WebSocket активен, hot collector не запрашивает по 1000 последних сделок для каждого символа. Это снижает API/DB pressure и позволяет приоритетному ticker/OHLCV collector своевременно обновлять данные, от которых зависит `RECO WARMUP`. При разрыве или отключении WebSocket REST polling автоматически возобновляется.
+
+`RECO_WARMUP_SKIP` пишется один раз при входе в непрерывный blocked-эпизод и повторяется только при материальном изменении readiness signature; после восстановления создаётся `RECO_WARMUP_RECOVERED`. Полный readiness остаётся доступен в Health, но журнал решений больше не дублирует одинаковый payload каждые две минуты.
+
+Торговая модель, признаки, score, risk policy, outcome label и observation provenance не изменены. Recommendations, outcomes и calibrators не очищаются; схема БД не меняется. Для обновления достаточно остановить v1.4.10, заменить файлы и запустить v1.4.11. Новые `.env` параметры опциональны: безопасные defaults встроены.
+
 ## WebSocket coverage boundary fix (v1.4.10)
 
 Версия 1.4.10 исправляет падение `market_trade_stream` с `ValueError: invalid market trade coverage window`. В первом сообщении `publicTrade.{symbol}` время сделки `data[].T` законно может совпадать с envelope timestamp `ts`. Предыдущая формула начинала coverage с `oldest_trade_ts + 1`, поэтому при равенстве получался невозможный интервал `start=ts+1`, `end=ts`.

@@ -1,3 +1,28 @@
+## 2026-07-26 - v1.4.11 - WebSocket reconnect and warm-up noise control
+
+### Исправлено
+
+- `websockets.exceptions.ConnectionClosedError` и close-timeout после keepalive ping timeout трактуются как ожидаемый transport disconnect, а не как crash фонового worker.
+- `market_trade_stream` самостоятельно переподключается с bounded backoff 2–30 секунд; каждая сессия сохраняет отдельный coverage span и не мостит разрыв.
+- Ping timeout увеличен до 60 секунд, входная очередь — до 256 сообщений; добавлен Bybit application heartbeat каждые 20 секунд.
+- Trade writes коммитятся bounded batches (`32` сообщений или `0.5` секунды), уменьшая transaction pressure.
+- REST recent-trade polling выключается, пока publicTrade WebSocket активен, и автоматически возвращается как fallback при disconnect/disable.
+- `RECO_WARMUP_SKIP` переведён на transition-based logging; идентичный blocked-state больше не записывается каждые 120 секунд. Добавлен `RECO_WARMUP_RECOVERED`.
+- Журнал решений получает компактный warm-up payload вместо десятков flattened полей.
+
+### Совместимость
+
+- Patch-релиз без изменения DB schema, API, model/calibrator lineage, outcome label или observation provenance.
+- Existing recommendations, outcomes, coverage history и calibrator artifacts сохраняются. Ручной SQL не требуется.
+- Новые WebSocket tuning variables в `.env.example` опциональны и имеют безопасные defaults.
+
+### Проверки
+
+- Baseline: 1347 collected; exhaustive 20-batch union — 1347 passed.
+- RED: новый regression package — 5 failed на v1.4.10.
+- GREEN: 5 passed; related stream/funding/UI package — 54 passed.
+- Post-check: 1352 collected; exhaustive 20-batch union — 1352 passed, 0 failed.
+
 ## 2026-07-26 - v1.4.10 - publicTrade coverage boundary
 
 ### Исправлено
