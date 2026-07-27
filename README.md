@@ -1,3 +1,11 @@
+## Application heartbeat and PostgreSQL fallback recovery (v1.4.12)
+
+Версия 1.4.12 устраняет два связанных operational-дефекта контура публичных сделок. Встроенный protocol keepalive библиотеки `websockets` отключён: он работал в отдельном внутреннем потоке и мог печатать `keepalive ping failed` с traceback даже после того, как внешний reconnect-контур корректно классифицировал разрыв. Соединение теперь поддерживается только документированным Bybit application heartbeat `{"op":"ping"}` каждые 20 секунд; отсутствие любых входящих frames дольше `MARKET_TRADE_STREAM_PING_TIMEOUT_SEC` завершает сессию как обычный `application_heartbeat_timeout` и запускает bounded reconnect.
+
+REST recent-trade fallback получил ту же conservative exclusive-boundary семантику, что и WebSocket. Если единственная сделка имеет `trade_ts_ms == snapshot_ts_ms`, создаётся валидный zero-width span `[ts+1, ts+1]`, а не ошибочный `end < start`. Каждая REST snapshot-запись выполняется внутри savepoint: per-symbol SQL failure откатывает только этот unit, поэтому PostgreSQL transaction не остаётся в aborted state и collector может записать исходную ошибку вместо вторичной `current transaction is aborted`.
+
+Торговая модель, features, score, risk policy, outcome label и observation provenance не изменены. Recommendations, outcomes, calibrators и market-trade history не очищаются; DB schema и `.env` key set не меняются. Для обновления достаточно остановить v1.4.11, заменить файлы и запустить v1.4.12.
+
 ## WebSocket reconnect resilience and warm-up journal coalescing (v1.4.11)
 
 Версия 1.4.11 устраняет два operational-дефекта контура `market_trade_stream`. Сетевой разрыв или `keepalive ping timeout` библиотеки `websockets` теперь завершает только текущую coverage-сессию и запускает новую с bounded backoff; это больше не считается падением фонового worker и не создаёт бесконечный поток `COLLECT_ERROR`. Соединение использует 20-секундный heartbeat, 60-секундный ping timeout, увеличенную входную очередь и batched DB commits.

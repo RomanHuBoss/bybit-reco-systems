@@ -1,3 +1,11 @@
+## Module changes - v1.4.12
+
+- `app/trade_stream.py`: protocol keepalive disabled; Bybit application heartbeat and receive watchdog are the liveness contract.
+- `app/db.py`: REST coverage equal-timestamp boundary and savepoint-based PostgreSQL transaction recovery.
+- `app/main.py`, `app/ui/static/index.html`: patch version/cache bump to 1.4.12.
+- `tests/test_iteration282_ws_heartbeat_pg_recovery.py`: RED→GREEN coverage-boundary, transaction-rewind and heartbeat regressions.
+- No schema, API, model, outcome-label or observation-provenance changes.
+
 ## Module changes - v1.4.11
 
 - `app/trade_stream.py`: graceful network-disconnect classification, process-local stream runtime state, Bybit heartbeat, wider keepalive queue/timeout and batched commits.

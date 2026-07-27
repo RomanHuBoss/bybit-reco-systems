@@ -197,10 +197,12 @@ def run_public_trade_stream_session(
 ) -> dict[str, Any]:
     """Run one public-trade WebSocket session until stop or disconnect.
 
-    Network closures and keepalive timeouts are normal transport events. They
-    close the current coverage spans and return session statistics so the
-    owning background loop can reconnect without reporting a crashed worker.
-    Malformed payloads and persistence errors still propagate fail-closed.
+    Network closures and heartbeat timeouts are normal transport events. The
+    client disables the library's protocol keepalive and uses Bybit's documented
+    JSON ping/pong heartbeat with an explicit receive watchdog. Disconnects close
+    current coverage spans and return session statistics so the owning loop can
+    reconnect without reporting a crashed worker. Malformed payloads and
+    persistence errors still propagate fail-closed.
     """
     normalized_symbols = sorted({
         str(symbol or "").strip().upper()
@@ -231,6 +233,7 @@ def run_public_trade_stream_session(
     pending_messages = 0
     last_commit_monotonic = time.monotonic()
     last_application_ping_monotonic = time.monotonic()
+    last_receive_monotonic = time.monotonic()
 
     def _commit_pending() -> None:
         nonlocal pending_messages, last_commit_monotonic
@@ -247,8 +250,13 @@ def run_public_trade_stream_session(
                 url,
                 open_timeout=10,
                 close_timeout=max(0.1, float(close_timeout_sec)),
-                ping_interval=max(1.0, float(ping_interval_sec)),
-                ping_timeout=max(30.0, float(ping_timeout_sec)),
+                # Bybit requires its JSON application heartbeat. Running the
+                # websockets protocol keepalive in parallel creates a second
+                # timer thread that can emit noisy internal tracebacks during
+                # local DB stalls. Disable it and supervise the documented
+                # application ping/pong path below.
+                ping_interval=None,
+                ping_timeout=None,
                 max_size=16 * 1024 * 1024,
                 max_queue=max(128, int(max_queue_messages)),
             ) as websocket:
@@ -278,8 +286,17 @@ def run_public_trade_stream_session(
                     try:
                         raw = websocket.recv(timeout=max(0.1, float(receive_timeout_sec)))
                     except TimeoutError:
+                        now_monotonic = time.monotonic()
+                        if (
+                            now_monotonic - last_receive_monotonic
+                            >= max(5.0, float(ping_timeout_sec))
+                        ):
+                            close_reason = "application_heartbeat_timeout"
+                            stats["disconnect_reason"] = close_reason
+                            stats["disconnect_error_type"] = "TimeoutError"
+                            break
                         if pending_messages and (
-                            time.monotonic() - last_commit_monotonic
+                            now_monotonic - last_commit_monotonic
                             >= max(0.05, float(commit_batch_sec))
                         ):
                             _commit_pending()
@@ -288,6 +305,7 @@ def run_public_trade_stream_session(
                         close_reason = "websocket_disconnect"
                         stats["disconnect_reason"] = close_reason
                         break
+                    last_receive_monotonic = time.monotonic()
                     parsed = parse_public_trade_message(raw)
                     if parsed is None:
                         continue

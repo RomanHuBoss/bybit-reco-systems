@@ -160,4 +160,4 @@ def test_neutral_bridge_order_is_created_only_after_adjacent_buy_fill(tmp_path: 
 def test_outcome_contract_is_bumped_for_dynamic_bridge_topology() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.4.11"' in source
+    assert 'version="1.4.12"' in source

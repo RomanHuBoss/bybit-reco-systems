@@ -1,3 +1,9 @@
+## Heartbeat and transaction-isolation architecture - v1.4.12
+
+`app/trade_stream.py` отключает RFC-level auto-ping библиотеки и использует единственный source of truth для liveness: Bybit JSON heartbeat плюс receive watchdog. Normal disconnects возвращаются в `_market_trade_stream_thread()`, который закрывает session coverage и применяет bounded reconnect backoff.
+
+`app/db.py::record_market_trade_poll()` является atomic per-symbol unit внутри caller transaction. Функция открывает savepoint, пишет trade rows и coverage, затем release; при исключении выполняет rollback-to-savepoint/release и re-raise. Collector может безопасно продолжить и записать `COLLECT_ERROR` на той же PostgreSQL connection. DB schema не изменяется.
+
 ## Stream transport and fallback architecture - v1.4.11
 
 `market_trade_stream` теперь владеет reconnect lifecycle внутри supervised worker. Expected `ConnectionClosed`/transport timeout закрывает session coverage, сохраняет session stats и запускает новую connection после bounded backoff. Только malformed payload, DB/invariant error или иная неожиданная ошибка выходит в outer supervisor как crash.

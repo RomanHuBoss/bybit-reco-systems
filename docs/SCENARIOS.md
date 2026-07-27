@@ -1,3 +1,12 @@
+## Application heartbeat and REST fallback scenarios - v1.4.12
+
+1. **Protocol auto-ping would time out.** It is disabled, so the library no longer emits internal `keepalive ping failed` traceback.
+2. **Bybit heartbeat receives pong or any stream frame.** Receive watchdog refreshes and session continues.
+3. **No frame arrives within heartbeat timeout.** Session ends as `application_heartbeat_timeout`; coverage closes and reconnect starts without `background thread crashed`.
+4. **REST snapshot has one trade with `trade_ts == snapshot_ts`.** Coverage is `[ts+1, ts+1]`, preserving exclusive evidence without invalid window.
+5. **REST per-symbol SQL write fails on PostgreSQL.** Savepoint rewinds the failed unit; collector can log the original error and process later work without `current transaction is aborted`.
+6. **Existing recommendations/outcomes/calibrators.** They remain unchanged because transport and persistence recovery do not change trading or label semantics.
+
 ## Stream resilience and warm-up journal scenarios - v1.4.11
 
 1. **Protocol keepalive ping timeout.** Current coverage spans close with `connection_closed`; worker reconnects after bounded backoff without `background thread crashed` or `COLLECT_ERROR`.

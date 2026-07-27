@@ -449,7 +449,8 @@ def test_public_trade_stream_session_subscribes_ingests_and_closes_coverage(tmp_
 
     def fake_connect(url: str, **kwargs):
         assert url == "wss://stream.bybit.com/v5/public/linear"
-        assert kwargs["ping_interval"] == 20
+        assert kwargs["ping_interval"] is None
+        assert kwargs["ping_timeout"] is None
         return FakeWebSocket()
 
     stats = run_public_trade_stream_session(

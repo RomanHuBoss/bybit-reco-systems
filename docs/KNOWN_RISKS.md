@@ -1,3 +1,10 @@
+## Остаточные риски после v1.4.12 application-heartbeat fix
+
+- Public WebSocket всё ещё может разрываться из-за сети, прокси, Bybit или длительной локальной DB-паузы. v1.4.12 классифицирует это как session boundary и не мостит неизвестный chronology gap.
+- Application heartbeat выполняется в том же synchronous consumer loop. Если PostgreSQL блокирует поток дольше watchdog timeout, соединение будет безопасно переподключено; неизвестный интервал останется fail-closed.
+- REST fallback доказывает chronology только при overlap/coverage contract. Zero-width initial span не считается доказательством полной минуты.
+- Live long-duration Windows/PostgreSQL soak и disposable PostgreSQL integration требуют отдельного стенда; offline regression не доказывает отсутствие всех инфраструктурных disconnects.
+
 ## Остаточные риски после v1.4.11 WebSocket resilience fix
 
 - Public WebSocket может разрываться по сети, прокси, локальной перегрузке или стороне Bybit. v1.4.11 переподключается штатно и закрывает coverage gap, но не может восстановить точную chronology неизвестного интервала.

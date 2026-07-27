@@ -39,7 +39,7 @@ def test_public_trade_network_disconnect_is_a_normal_session_end(tmp_path) -> No
     conn.close()
 
 
-def test_public_trade_connection_uses_backpressure_tolerant_keepalive(tmp_path) -> None:
+def test_public_trade_connection_uses_application_heartbeat_without_protocol_keepalive(tmp_path) -> None:
     from app import db
 
     captured: dict = {}
@@ -70,8 +70,8 @@ def test_public_trade_connection_uses_backpressure_tolerant_keepalive(tmp_path) 
         stop_requested=lambda: False,
         connect_fn=connect_fn,
     )
-    assert captured["ping_interval"] == 20
-    assert captured["ping_timeout"] >= 30
+    assert captured["ping_interval"] is None
+    assert captured["ping_timeout"] is None
     assert captured["max_queue"] >= 128
     assert captured["close_timeout"] <= 5
     conn.close()

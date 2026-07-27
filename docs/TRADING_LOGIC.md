@@ -1,3 +1,9 @@
+## Public-trade transport semantics - v1.4.12
+
+`market_trade_stream` использует Bybit application-level `{"op":"ping"}` heartbeat. Protocol-level keepalive библиотеки `websockets` отключён, чтобы отдельный internal timer thread не создавал ложные crash tracebacks при краткой блокировке synchronous DB consumer. Любой входящий frame, включая pong/subscribe acknowledgement, обновляет receive watchdog. Если frames отсутствуют дольше configured timeout, session закрывается с `application_heartbeat_timeout`, coverage span закрывается и reconnect создаёт новую session без bridging gap.
+
+REST fallback сохраняет exclusive start `oldest_trade_ts_ms + 1`. При равенстве oldest trade и snapshot end поднимается до start, формируя zero-width span. Это предотвращает invalid window, не расширяя доказательность. REST persistence обёрнут в savepoint, поэтому локальная ошибка одного symbol не отравляет всю PostgreSQL transaction и не скрывает первичный diagnostic.
+
 ## Market-data continuity and warm-up semantics - v1.4.11
 
 Trade chronology transport availability does not change strategy score, direction, grid/trend geometry, risk limits or outcome target semantics. A WebSocket disconnect creates an observational gap and triggers a new session; it does not fabricate continuity and does not reset model lineage. REST recent-trade is used only while the primary stream is unavailable and remains a separate, weaker source.

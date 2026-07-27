@@ -120,4 +120,4 @@ def test_lower_kill_switch_uses_adverse_observed_extreme_for_long_inventory(tmp_
 def test_outcome_contract_is_bumped_for_kill_switch_fill_bound() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.4.11"' in source
+    assert 'version="1.4.12"' in source

@@ -1,3 +1,23 @@
+## 2026-07-27 - v1.4.12 - application heartbeat and PostgreSQL fallback recovery
+
+### Исправлено
+
+- Отключён внутренний WebSocket protocol keepalive (`ping_interval=None`, `ping_timeout=None`), который мог печатать `keepalive ping failed` и `timed out while closing connection` из фонового потока библиотеки.
+- Сохранён документированный Bybit JSON heartbeat каждые 20 секунд; добавлен receive watchdog с normal reconnect reason `application_heartbeat_timeout`.
+- REST recent-trade fallback теперь сохраняет валидный zero-width coverage span, когда `oldest_trade_ts_ms == snapshot_ts_ms`.
+- `record_market_trade_poll()` выполняется в savepoint и восстанавливает PostgreSQL transaction после per-symbol write failure; вторичная ошибка `current transaction is aborted` больше не маскирует первопричину.
+
+### Совместимость
+
+- Patch-релиз без изменения DB schema, API, model/calibrator lineage, outcome label или observation provenance.
+- Existing recommendations, outcomes, trade journal и calibrator artifacts сохраняются; ручной SQL и изменение `.env` не требуются.
+
+### Проверки
+
+- RED: 4 targeted failures на v1.4.11.
+- GREEN: новый regression package — 4 passed; related trade-stream package — 34 passed; PostgreSQL/savepoint + stream package — 60 passed.
+- Post-check: 1356 collected; exhaustive 12-batch union — 1356 passed, 0 failed, 0 skipped.
+
 ## 2026-07-26 - v1.4.11 - WebSocket reconnect and warm-up noise control
 
 ### Исправлено

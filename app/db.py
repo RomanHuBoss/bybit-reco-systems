@@ -5555,8 +5555,18 @@ def record_market_trade_poll(
     source: str = "rest_recent_trade_v1",
     commit: bool = True,
 ) -> dict[str, Any]:
+    """Persist one REST recent-trade snapshot without poisoning outer transactions.
+
+    The first observed millisecond remains an exclusive boundary. If the only
+    observed trade has the same timestamp as the REST snapshot, represent this
+    conservatively as a zero-width span at ``trade_ts + 1`` rather than creating
+    an invalid ``end < start`` window. A savepoint keeps PostgreSQL usable when
+    a per-symbol write fails and the collector needs to log the error on the
+    same connection.
+    """
     venue_norm = str(venue or "").strip().lower()
     symbol_norm = str(symbol or "").strip().upper()
+    source_norm = str(source or "").strip()
     snapshot = strict_integer(snapshot_ts_ms)
     normalized = [
         item
@@ -5564,83 +5574,103 @@ def record_market_trade_poll(
         if item is not None
         and item["venue"] == venue_norm
         and item["symbol"] == symbol_norm
-        and item["source"] == str(source or "").strip()
+        and item["source"] == source_norm
     ]
     if venue_norm != "linear" or not symbol_norm.endswith("USDT") or snapshot is None or snapshot <= 0:
         raise ValueError("invalid market trade poll")
     if normalized and max(int(row["trade_ts_ms"]) for row in normalized) > int(snapshot):
         raise ValueError("market trade poll contains a trade newer than the snapshot")
-    existing = _existing_market_trade_ids(
-        conn, venue_norm, symbol_norm, [str(row["trade_id"]) for row in normalized]
-    )
-    open_row = conn.execute(
-        """SELECT * FROM market_trade_coverage
-            WHERE venue=? AND symbol=? AND state='open' AND source=?
-            ORDER BY coverage_end_ms DESC LIMIT 1""",
-        (venue_norm, symbol_norm, str(source or "").strip()),
-    ).fetchone()
-    inserted = upsert_market_trades(conn, normalized, commit=False)
-    if not normalized:
-        if commit:
-            conn.commit()
-        return {"inserted": inserted, "coverage_extended": False, "gap_detected": False, "coverage_id": None}
-    oldest_ms = min(int(row["trade_ts_ms"]) for row in normalized)
-    start_ms = oldest_ms + 1
-    gap_detected = False
-    if open_row is not None and existing:
-        coverage_id = str(open_row["coverage_id"])
-        insert_market_trade_coverage(
-            conn,
-            coverage_id=coverage_id,
-            venue=venue_norm,
-            symbol=symbol_norm,
-            coverage_start_ms=int(open_row["coverage_start_ms"]),
-            coverage_end_ms=int(snapshot),
-            state="open",
-            source=source,
-            last_poll_ts_ms=int(snapshot),
-            details={"overlap_trade_count": len(existing), "batch_size": len(normalized)},
-            commit=False,
+
+    savepoint = _savepoint_name("market_trade_poll")
+    _begin_savepoint(conn, savepoint)
+    try:
+        existing = _existing_market_trade_ids(
+            conn, venue_norm, symbol_norm, [str(row["trade_id"]) for row in normalized]
         )
-    else:
-        if open_row is not None:
-            gap_detected = True
-            insert_market_trade_coverage(
-                conn,
-                coverage_id=str(open_row["coverage_id"]),
-                venue=venue_norm,
-                symbol=symbol_norm,
-                coverage_start_ms=int(open_row["coverage_start_ms"]),
-                coverage_end_ms=int(open_row["coverage_end_ms"]),
-                state="closed",
-                source=str(open_row["source"]),
-                last_poll_ts_ms=int(open_row["last_poll_ts_ms"] or open_row["coverage_end_ms"]),
-                gap_reason="poll_window_no_trade_id_overlap",
-                details={"next_window_oldest_trade_ts_ms": oldest_ms},
-                commit=False,
-            )
-        coverage_id = f"trade:{venue_norm}:{symbol_norm}:{start_ms}"
-        insert_market_trade_coverage(
-            conn,
-            coverage_id=coverage_id,
-            venue=venue_norm,
-            symbol=symbol_norm,
-            coverage_start_ms=start_ms,
-            coverage_end_ms=int(snapshot),
-            state="open",
-            source=source,
-            last_poll_ts_ms=int(snapshot),
-            details={"warmup": open_row is None, "batch_size": len(normalized)},
-            commit=False,
-        )
+        open_row = conn.execute(
+            """SELECT * FROM market_trade_coverage
+                WHERE venue=? AND symbol=? AND state='open' AND source=?
+                ORDER BY coverage_end_ms DESC LIMIT 1""",
+            (venue_norm, symbol_norm, source_norm),
+        ).fetchone()
+        inserted = upsert_market_trades(conn, normalized, commit=False)
+        if not normalized:
+            result = {
+                "inserted": inserted,
+                "coverage_extended": False,
+                "gap_detected": False,
+                "coverage_id": None,
+            }
+        else:
+            oldest_ms = min(int(row["trade_ts_ms"]) for row in normalized)
+            start_ms = oldest_ms + 1
+            gap_detected = False
+            if open_row is not None and existing:
+                coverage_id = str(open_row["coverage_id"])
+                effective_end_ms = max(
+                    int(snapshot),
+                    int(open_row["coverage_start_ms"]),
+                    int(open_row["coverage_end_ms"]),
+                )
+                insert_market_trade_coverage(
+                    conn,
+                    coverage_id=coverage_id,
+                    venue=venue_norm,
+                    symbol=symbol_norm,
+                    coverage_start_ms=int(open_row["coverage_start_ms"]),
+                    coverage_end_ms=int(effective_end_ms),
+                    state="open",
+                    source=source_norm,
+                    last_poll_ts_ms=int(effective_end_ms),
+                    details={"overlap_trade_count": len(existing), "batch_size": len(normalized)},
+                    commit=False,
+                )
+            else:
+                if open_row is not None:
+                    gap_detected = True
+                    insert_market_trade_coverage(
+                        conn,
+                        coverage_id=str(open_row["coverage_id"]),
+                        venue=venue_norm,
+                        symbol=symbol_norm,
+                        coverage_start_ms=int(open_row["coverage_start_ms"]),
+                        coverage_end_ms=int(open_row["coverage_end_ms"]),
+                        state="closed",
+                        source=str(open_row["source"]),
+                        last_poll_ts_ms=int(open_row["last_poll_ts_ms"] or open_row["coverage_end_ms"]),
+                        gap_reason="poll_window_no_trade_id_overlap",
+                        details={"next_window_oldest_trade_ts_ms": oldest_ms},
+                        commit=False,
+                    )
+                coverage_id = f"trade:{venue_norm}:{symbol_norm}:{start_ms}"
+                effective_end_ms = max(int(snapshot), int(start_ms))
+                insert_market_trade_coverage(
+                    conn,
+                    coverage_id=coverage_id,
+                    venue=venue_norm,
+                    symbol=symbol_norm,
+                    coverage_start_ms=int(start_ms),
+                    coverage_end_ms=int(effective_end_ms),
+                    state="open",
+                    source=source_norm,
+                    last_poll_ts_ms=int(effective_end_ms),
+                    details={"warmup": open_row is None, "batch_size": len(normalized)},
+                    commit=False,
+                )
+            result = {
+                "inserted": inserted,
+                "coverage_extended": bool(open_row is not None and existing),
+                "gap_detected": gap_detected,
+                "coverage_id": coverage_id,
+            }
+        _release_savepoint(conn, savepoint)
+    except Exception:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        raise
     if commit:
         conn.commit()
-    return {
-        "inserted": inserted,
-        "coverage_extended": bool(open_row is not None and existing),
-        "gap_detected": gap_detected,
-        "coverage_id": coverage_id,
-    }
+    return result
 
 
 
