@@ -1,3 +1,10 @@
+## Остаточные риски после v1.4.13
+
+- PostgreSQL advisory serialization intentionally permits only one market-trade writer transaction at a time. Under extreme DB latency this may increase queueing, but it prevents the observed deadlock and each transaction is bounded.
+- PID reuse can conservatively delay takeover: if an unrelated live process already owns the same PID, the lease is preserved until TTL. This is safer than stealing a possibly live owner.
+- Cross-host stale leases cannot be proven dead from this process and still require TTL expiry.
+- Live Windows/PostgreSQL soak testing remains environment-specific; offline tests cover lock ordering, per-symbol commits and owner-reclamation policy.
+
 ## Остаточные риски после v1.4.12 application-heartbeat fix
 
 - Public WebSocket всё ещё может разрываться из-за сети, прокси, Bybit или длительной локальной DB-паузы. v1.4.12 классифицирует это как session boundary и не мостит неизвестный chronology gap.

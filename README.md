@@ -1,3 +1,9 @@
+## PostgreSQL trade-ingest serialization and fast local restart takeover (v1.4.13)
+
+Версия 1.4.13 устраняет подтверждённую PostgreSQL-взаимоблокировку между WebSocket `publicTrade` и REST fallback. Все операции INSERT/UPSERT/DELETE журнала сделок теперь входят в один transaction-scoped advisory lock; REST fallback фиксирует каждый символ отдельной короткой транзакцией, а строки внутри batch сортируются по уникальному ключу. Это не меняет торговую модель, outcome label или calibration lineage.
+
+Дополнительно startup безопасно удаляет только runtime leases, принадлежащие уже завершившемуся PID на том же компьютере. Живые, удалённые и неопределённые owners не перехватываются. Поэтому после аварийного Windows-restart новый процесс не обязан ждать полный 400-секундный collector TTL. Периодическая очистка теперь всегда применяет `MARKET_TRADE_RETENTION_HOURS`, даже когда WebSocket работает непрерывно и REST fallback не запускается.
+
 ## Application heartbeat and PostgreSQL fallback recovery (v1.4.12)
 
 Версия 1.4.12 устраняет два связанных operational-дефекта контура публичных сделок. Встроенный protocol keepalive библиотеки `websockets` отключён: он работал в отдельном внутреннем потоке и мог печатать `keepalive ping failed` с traceback даже после того, как внешний reconnect-контур корректно классифицировал разрыв. Соединение теперь поддерживается только документированным Bybit application heartbeat `{"op":"ping"}` каждые 20 секунд; отсутствие любых входящих frames дольше `MARKET_TRADE_STREAM_PING_TIMEOUT_SEC` завершает сессию как обычный `application_heartbeat_timeout` и запускает bounded reconnect.

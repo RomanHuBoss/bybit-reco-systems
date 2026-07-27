@@ -1,3 +1,9 @@
+## Trade-ingest concurrency and restart-handover architecture - v1.4.13
+
+PostgreSQL market-trade writers share `pg_advisory_xact_lock(4259842013)`. The lock is acquired before any `market_trade` or `market_trade_coverage` access and is released automatically by commit/rollback. REST fallback commits per symbol, preventing an advisory lock from being held across HTTP calls. Hourly retention runs in a separate transaction after ordinary table pruning.
+
+At FastAPI lifespan startup, local runtime-lock owners are parsed as `hostname:pid`. A lease is reclaimed only when the hostname equals the current machine and OS-level PID inspection proves the process is no longer active. Remote hosts, malformed owners, access-denied checks and uncertain states remain untouched.
+
 ## Heartbeat and transaction-isolation architecture - v1.4.12
 
 `app/trade_stream.py` отключает RFC-level auto-ping библиотеки и использует единственный source of truth для liveness: Bybit JSON heartbeat плюс receive watchdog. Normal disconnects возвращаются в `_market_trade_stream_thread()`, который закрывает session coverage и применяет bounded reconnect backoff.

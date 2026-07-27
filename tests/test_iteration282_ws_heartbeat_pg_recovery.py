@@ -74,6 +74,8 @@ class _FakePgConnection:
         self.sql.append(normalized)
         if self.aborted and not normalized.startswith("rollback to savepoint") and not normalized.startswith("release savepoint"):
             raise RuntimeError("current transaction is aborted")
+        if normalized.startswith("select pg_advisory_xact_lock"):
+            return _Cursor({"market_trade_ingest_lock": None})
         if normalized.startswith("savepoint "):
             return _Cursor()
         if normalized.startswith("rollback to savepoint "):

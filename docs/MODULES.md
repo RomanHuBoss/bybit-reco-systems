@@ -1,3 +1,10 @@
+## Module changes - v1.4.13
+
+- `app/db.py`: transaction advisory lock, deterministic market-trade UPSERT order, serialized journal pruning.
+- `app/collector.py`: REST fallback commits per symbol and rolls back/logs failures independently.
+- `app/main.py`: dead local PID lease reclamation, always-on market-trade retention, version bump.
+- `tests/test_iteration283_market_trade_deadlock_restart_takeover.py`: regression coverage for concurrency, restart takeover and retention.
+
 ## Module changes - v1.4.12
 
 - `app/trade_stream.py`: protocol keepalive disabled; Bybit application heartbeat and receive watchdog are the liveness contract.

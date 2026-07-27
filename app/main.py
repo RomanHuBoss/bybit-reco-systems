@@ -5361,6 +5361,121 @@ def _runtime_handover_grace_sec() -> int:
     )
 
 
+def _runtime_owner_host_pid(owner: str) -> tuple[str, int] | None:
+    value = str(owner or "").strip()
+    host, separator, pid_text = value.rpartition(":")
+    if not separator or not host or not pid_text.isdigit():
+        return None
+    pid = int(pid_text)
+    if pid <= 0:
+        return None
+    return host, pid
+
+
+def _local_process_is_alive(pid: int) -> bool:
+    """Conservatively determine whether a local PID is still running.
+
+    Unknown/permission-denied states return ``True`` so a live owner is never
+    stolen merely because liveness could not be proved.
+    """
+    pid_value = int(pid)
+    if pid_value == os.getpid():
+        return True
+    if pid_value <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            process_query_limited_information = 0x1000
+            still_active = 259
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            handle = kernel32.OpenProcess(
+                process_query_limited_information, False, wintypes.DWORD(pid_value)
+            )
+            if not handle:
+                # Access denied means a process exists but cannot be inspected.
+                return ctypes.get_last_error() == 5
+            try:
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True
+                return int(exit_code.value) == still_active
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            logger.debug("Windows PID liveness check failed for %s", pid_value, exc_info=True)
+            return True
+    try:
+        os.kill(pid_value, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        logger.debug("PID liveness check failed for %s", pid_value, exc_info=True)
+        return True
+
+
+def _reclaim_dead_local_runtime_locks(
+    *,
+    process_alive_fn=None,
+    hostname: str | None = None,
+) -> list[str]:
+    """Delete leases owned by a dead process on this same host only.
+
+    Abrupt Windows restarts cannot execute the normal ``finally`` release path.
+    Waiting the full 400-second collector TTL then leaves every symbol stale even
+    though the previous PID no longer exists. Cross-host and uncertain owners are
+    preserved fail-closed; each delete is conditional on the exact owner string.
+    """
+    host = str(hostname or socket.gethostname()).strip().lower()
+    is_alive = process_alive_fn or _local_process_is_alive
+    reclaimed: list[str] = []
+    with closing(_get_lock_conn()) as lock_conn:
+        rows = lock_conn.execute(
+            "SELECT lock_key, owner FROM runtime_locks ORDER BY lock_key"
+        ).fetchall()
+        for row in rows:
+            lock_key = str(row["lock_key"] or "")
+            owner = str(row["owner"] or "")
+            parsed = _runtime_owner_host_pid(owner)
+            if parsed is None:
+                continue
+            owner_host, owner_pid = parsed
+            if owner_host.strip().lower() != host or owner == RUNTIME_OWNER:
+                continue
+            try:
+                alive = bool(is_alive(int(owner_pid)))
+            except Exception:
+                logger.debug("runtime owner liveness callback failed for %s", owner, exc_info=True)
+                alive = True
+            if alive:
+                continue
+            cur = lock_conn.execute(
+                "DELETE FROM runtime_locks WHERE lock_key=? AND owner=?",
+                (lock_key, owner),
+            )
+            if int(cur.rowcount or 0) > 0:
+                reclaimed.append(lock_key)
+        lock_conn.commit()
+    if reclaimed:
+        logger.warning(
+            "reclaimed dead local runtime locks owner_host=%s locks=%s",
+            host,
+            ",".join(reclaimed),
+        )
+    return reclaimed
+
+
 def _release_component_runtime_lock(name: str) -> None:
     lock_key = BACKGROUND_RUNTIME_LOCK_KEYS.get(str(name or "").strip().lower())
     if not lock_key:
@@ -5642,6 +5757,12 @@ def _load_symbol_health(conn) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _BACKGROUND_STOP_EVENT.clear()
+    try:
+        _reclaim_dead_local_runtime_locks()
+    except Exception:
+        # Failure to prove a stale owner is never a reason to steal its lease.
+        # Fall back to the normal TTL handover path and keep startup fail-closed.
+        logger.warning("dead local runtime lock reclamation failed", exc_info=True)
     _start_background_thread("collector", partial(_run_supervised_background_target, "collector", _collector_thread))
     _start_background_thread("backfill", partial(_run_supervised_background_target, "backfill", _backfill_thread))
     _start_background_thread("futures_meta", partial(_run_supervised_background_target, "futures_meta", _futures_meta_thread))
@@ -5689,7 +5810,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.12", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.13", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -7699,6 +7820,29 @@ def _next_warmup_decision_event(
     }, event
 
 
+def _prune_technical_data_once() -> dict[str, int]:
+    """Run ordinary retention and market-trade retention in separate transactions.
+
+    The public-trade WebSocket remains the primary source during healthy operation,
+    so retention cannot depend on the REST fallback collector being invoked. Keeping
+    the journal prune in its own transaction also lets the PostgreSQL advisory lock
+    serialize it with ingestion without holding unrelated table locks.
+    """
+    with closing(_get_conn()) as conn:
+        deleted = dict(db.prune_old_data(conn, retain_days=7))
+    cutoff_ms = (
+        int(time.time())
+        - max(24, int(getattr(settings, "market_trade_retention_hours", 72) or 72)) * 3600
+    ) * 1000
+    with closing(_get_conn()) as conn:
+        trade_deleted = db.prune_market_trade_journal(conn, cutoff_ms, commit=True)
+    deleted["market_trade"] = int(trade_deleted.get("trades_deleted") or 0)
+    deleted["market_trade_coverage"] = int(trade_deleted.get("coverage_deleted") or 0)
+    with closing(_get_conn()) as conn:
+        db.log_decision(conn, "DB_PRUNE", None, None, deleted)
+    return deleted
+
+
 def _reco_thread():
     _last_prune = 0.0
     warmup_event_state: dict[str, Any] | None = None
@@ -7760,14 +7904,11 @@ def _reco_thread():
                             logger.debug("expire_stale_recommendations error", exc_info=True)
 
                 if leadership_ok and heartbeat() and time.time() - _last_prune >= PRUNE_INTERVAL:
-                    with closing(_get_conn()) as conn:
-                        try:
-                            deleted = db.prune_old_data(conn, retain_days=7)
-                            db.log_decision(conn, "DB_PRUNE", None, None, deleted)
-                            _last_prune = time.time()
-                        except Exception:
-                            _rollback_quietly(conn)
-                            logger.debug("prune_old_data error", exc_info=True)
+                    try:
+                        _prune_technical_data_once()
+                        _last_prune = time.time()
+                    except Exception:
+                        logger.debug("prune_old_data error", exc_info=True)
 
                 if leadership_ok and heartbeat() and settings.telegram_token:
                     try:

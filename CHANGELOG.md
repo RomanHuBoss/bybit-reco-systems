@@ -1,3 +1,12 @@
+## 2026-07-27 - v1.4.13 - PostgreSQL trade-ingest deadlock and restart handover
+
+- Added a shared PostgreSQL transaction advisory lock for WebSocket, REST fallback and trade-journal pruning.
+- Sorted market-trade UPSERT batches by the unique key to keep tuple-lock acquisition deterministic.
+- Changed REST fallback to one short committed transaction per symbol instead of one universe-wide transaction.
+- Added conservative same-host dead-PID runtime lease reclamation before background workers start.
+- Enforced market-trade retention from the hourly technical-data prune even while WebSocket is primary.
+- Preserved recommender model, risk policy, outcome label, observation provenance and all persisted outcomes.
+
 ## 2026-07-27 - v1.4.12 - application heartbeat and PostgreSQL fallback recovery
 
 ### Исправлено

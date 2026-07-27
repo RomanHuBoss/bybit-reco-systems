@@ -681,9 +681,12 @@ def _collect_market_trade_journal(
             snapshot_ms = strict_integer(payload.get("snapshot_ts_ms")) if isinstance(payload, dict) else None
             if not isinstance(rows, list) or snapshot_ms is None or snapshot_ms <= 0:
                 raise ValueError("malformed recent public trade snapshot")
+            # Commit each fallback symbol independently. The PostgreSQL
+            # transaction-scoped ingest lock must not remain held while the
+            # collector performs HTTP requests for the rest of the universe.
             result = db.record_market_trade_poll(
                 conn, venue=venue, symbol=symbol, rows=rows,
-                snapshot_ts_ms=int(snapshot_ms), source="rest_recent_trade_v1", commit=False,
+                snapshot_ts_ms=int(snapshot_ms), source="rest_recent_trade_v1", commit=True,
             )
             stats["symbols_polled"] += 1
             stats["rows_received"] += len(rows)
@@ -692,14 +695,18 @@ def _collect_market_trade_journal(
             stats["gaps_detected"] += 1 if result.get("gap_detected") else 0
         except Exception as exc:
             stats["errors"] += 1
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             db.log_decision(
                 conn, "COLLECT_ERROR", None, None,
                 {"venue": venue, "symbol": symbol, "field": "market_trade_journal", "err": str(exc)},
-                commit=False,
+                commit=True,
             )
     if int(now_ts) - int(_MARKET_TRADE_PRUNE_LAST_TS or 0) >= 3600:
         cutoff_ms = (int(now_ts) - max(24, int(retention_hours)) * 3600) * 1000
-        pruned = db.prune_market_trade_journal(conn, cutoff_ms, commit=False)
+        pruned = db.prune_market_trade_journal(conn, cutoff_ms, commit=True)
         stats["trades_pruned"] = int(pruned.get("trades_deleted") or 0)
         stats["coverage_pruned"] = int(pruned.get("coverage_deleted") or 0)
         _MARKET_TRADE_PRUNE_LAST_TS = int(now_ts)

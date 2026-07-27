@@ -1,3 +1,7 @@
+## Operational-only patch - v1.4.13
+
+Signal generation, feature schema, score, grid/trend geometry, risk gates, outcome semantics and calibration policy are unchanged. The patch serializes public-trade persistence and shortens safe restart handover; it does not make any previously blocked recommendation actionable.
+
 ## Public-trade transport semantics - v1.4.12
 
 `market_trade_stream` использует Bybit application-level `{"op":"ping"}` heartbeat. Protocol-level keepalive библиотеки `websockets` отключён, чтобы отдельный internal timer thread не создавал ложные crash tracebacks при краткой блокировке synchronous DB consumer. Любой входящий frame, включая pong/subscribe acknowledgement, обновляет receive watchdog. Если frames отсутствуют дольше configured timeout, session закрывается с `application_heartbeat_timeout`, coverage span закрывается и reconnect создаёт новую session без bridging gap.

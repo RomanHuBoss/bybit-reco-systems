@@ -131,4 +131,4 @@ def test_replacement_becomes_labelable_on_the_next_candle(tmp_path: Path) -> Non
 def test_outcome_contract_is_bumped_for_intrabar_order_latency() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in source
-    assert 'version="1.4.12"' in source
+    assert 'version="1.4.13"' in source

@@ -1,3 +1,11 @@
+## PostgreSQL deadlock and Windows restart scenarios - v1.4.13
+
+1. WebSocket reconnects while REST fallback is still writing: both paths wait on the same transaction advisory lock; no unique-index deadlock occurs.
+2. REST fallback processes 35 symbols: each symbol commits before the next HTTP request, so WebSocket blocking is bounded to one short DB write.
+3. Previous local process was terminated without shutdown: its exact runtime-lock rows are removed after PID death is proven, and the new collector can start immediately.
+4. Previous owner is alive, remote or uncertain: no early takeover occurs; normal TTL handover remains fail-closed.
+5. WebSocket stays healthy for days: hourly DB prune still removes trade rows and coverage spans older than configured retention.
+
 ## Application heartbeat and REST fallback scenarios - v1.4.12
 
 1. **Protocol auto-ping would time out.** It is disabled, so the library no longer emits internal `keepalive ping failed` traceback.

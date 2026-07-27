@@ -46,6 +46,11 @@ LLM_OUTCOME_READY_STATUSES: frozenset[str] = frozenset({"ok"})
 DATABASE_INSTANCE_ID_APP_KEY = "database_instance_id_v1"
 STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS = 14
 EXACT_POLICY_EVIDENCE_RETENTION_DAYS = 90
+# One transaction-scoped PostgreSQL advisory lock serializes all writes to the
+# public-trade journal. REST fallback and WebSocket ingestion may overlap during
+# reconnects or process handover; without a common lock, overlapping UPSERTs can
+# acquire unique-index tuple locks in opposite order and deadlock.
+MARKET_TRADE_INGEST_ADVISORY_LOCK_ID = 4_259_842_013
 
 
 def is_actionable_recommendation_status(status: Any) -> bool:
@@ -1089,6 +1094,24 @@ def _execute_lock_write_with_retry(op, *, attempts: int = 6, sleep_sec: float = 
             time.sleep(float(sleep_sec) * (attempt + 1))
     if last_exc is not None:
         raise last_exc
+
+
+def acquire_market_trade_ingest_lock(conn: sqlite3.Connection) -> bool:
+    """Serialize PostgreSQL market-trade writers for the current transaction.
+
+    SQLite already serializes writers at the database level. PostgreSQL permits
+    the REST fallback and WebSocket stream to hold independent transactions; an
+    xact-scoped advisory lock prevents overlapping ``market_trade`` UPSERT/DELETE
+    statements from forming a unique-index deadlock. The lock is released by the
+    next commit or rollback and never survives a crashed process.
+    """
+    if getattr(conn, "db_engine", SQLITE) != POSTGRES:
+        return True
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(?) AS market_trade_ingest_lock",
+        (int(MARKET_TRADE_INGEST_ADVISORY_LOCK_ID),),
+    )
+    return True
 
 
 def now_ts() -> int:
@@ -5448,6 +5471,7 @@ def upsert_market_trades(conn: sqlite3.Connection, rows: list[dict[str, Any]], *
     normalized = [item for item in (_normalize_market_trade_row(row) for row in rows) if item is not None]
     if not normalized:
         return 0
+    normalized.sort(key=lambda row: (row["venue"], row["symbol"], row["trade_id"]))
     before_raw = getattr(conn, "total_changes", None)
     before = int(before_raw or 0) if before_raw is not None else None
     cursor = conn.executemany(
@@ -5581,6 +5605,7 @@ def record_market_trade_poll(
     if normalized and max(int(row["trade_ts_ms"]) for row in normalized) > int(snapshot):
         raise ValueError("market trade poll contains a trade newer than the snapshot")
 
+    acquire_market_trade_ingest_lock(conn)
     savepoint = _savepoint_name("market_trade_poll")
     _begin_savepoint(conn, savepoint)
     try:
@@ -5692,6 +5717,16 @@ def record_market_trade_stream_batch(
     session_norm = str(session_id or "").strip()
     message_ts = strict_integer(message_ts_ms)
     key = str(coverage_id or "").strip()
+    if (
+        venue_norm != "linear"
+        or not symbol_norm.endswith("USDT")
+        or not source_norm
+        or not session_norm
+        or message_ts is None
+        or message_ts <= 0
+    ):
+        raise ValueError("invalid market trade stream batch")
+    acquire_market_trade_ingest_lock(conn)
     existing_coverage = None
     prior_message_index = None
     if key:
@@ -5731,15 +5766,7 @@ def record_market_trade_stream_batch(
         and item["symbol"] == symbol_norm
         and item["source"] == source_norm
     ]
-    if (
-        venue_norm != "linear"
-        or not symbol_norm.endswith("USDT")
-        or not source_norm
-        or not session_norm
-        or message_ts is None
-        or message_ts <= 0
-        or not normalized
-    ):
+    if not normalized:
         raise ValueError("invalid market trade stream batch")
     if max(int(row["trade_ts_ms"]) for row in normalized) > int(message_ts):
         raise ValueError("market trade stream batch contains a trade newer than the message")
@@ -5920,6 +5947,7 @@ def prune_market_trade_journal(conn: sqlite3.Connection, before_ms: int, *, comm
     cutoff = strict_integer(before_ms)
     if cutoff is None or cutoff <= 0:
         return {"trades_deleted": 0, "coverage_deleted": 0}
+    acquire_market_trade_ingest_lock(conn)
     trades_deleted = conn.execute(
         "DELETE FROM market_trade WHERE trade_ts_ms<?", (int(cutoff),)
     ).rowcount
