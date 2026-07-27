@@ -59,13 +59,13 @@ BOT_TYPES_BYBIT = list(SUPPORTED_BOT_TYPES)
 MAX_FUNDING_STALENESS_SEC = 60 * 60
 MAX_OI_STALENESS_SEC = 3 * 60 * 60
 UNSUPPORTED_STATISTICAL_CALIBRATION_BOTS: frozenset[str] = frozenset()
-RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v13-log-symmetric-direction"
+RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v14-horizon-aligned-dual-strategy"
 DIRECTION_CALIBRATION_KEY = "platt_direction_v15"
 CALIBRATION_POLICY_SCHEMA_VERSION = "candidate-policy-v3"
 POLICY_OUTCOME_LABEL_VERSION = "grid_label_v26"
 TREND_STRATEGY_CONTRACT_VERSION = "directional_trend_v2"
 TREND_OUTCOME_LABEL_VERSION = "directional_trend_label_v2"
-TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v6"
+TREND_RECOMMENDER_MODEL_VERSION = RECOMMENDER_MODEL_VERSION + "+directional-trend-v7"
 TREND_EVALUATION_REJECTED_KIND = "trend_evaluation_rejected"
 TREND_STRATEGY_RECOMMENDATION_KIND = "strategy_recommendation"
 CALIBRATION_EVIDENCE_REASON_CODES: frozenset[str] = frozenset({
@@ -2121,10 +2121,10 @@ def _score(
             "ищется диапазонный рынок с контролируемой волатильностью, "
             "приемлемыми издержками и исполнимым bias по направлению."
         )
-        raw += 1.35 * range_score
-        raw += 0.22 * coherence
-        raw += 0.16 * regime_conf
-        raw -= 1.00 * trend_strength
+        raw += 1.45 * range_score
+        raw += 0.18 * coherence
+        raw += 0.12 * regime_conf
+        raw -= 0.45 * trend_strength
         raw -= 0.75 * atr_penalty
         raw -= 0.40 * cost_penalty
 
@@ -2140,11 +2140,11 @@ def _score(
             raw -= 0.05
 
         if range_score > 0.0:
-            add_pos("range_score", range_score, 1.35 * range_score, "диапазон подходит для futures grid")
+            add_pos("range_score", range_score, 1.45 * range_score, "диапазон подходит для futures grid")
         if coherence > 0.0:
-            add_pos("coherence", coherence, 0.22 * coherence, "таймфреймы согласованы")
+            add_pos("coherence", coherence, 0.18 * coherence, "таймфреймы согласованы")
         if regime_conf > 0.0:
-            add_pos("regime_confidence", regime_conf, 0.16 * regime_conf, "режим оценён с приемлемой уверенностью")
+            add_pos("regime_confidence", regime_conf, 0.12 * regime_conf, "режим оценён с приемлемой уверенностью")
         if direction in ("long", "short") and direction_strength > 0.0:
             add_pos("direction_strength", direction_strength, 0.10 * direction_strength, "есть исполнимый directional bias для futures grid")
         if direction == "long" and effective_sent > 0.0:
@@ -2161,7 +2161,7 @@ def _score(
             add_neg("sentiment_data_availability", 0, -0.05, "нет сентимент-данных — нейтральный futures bias менее надёжен")
 
         if trend_strength > 0.0:
-            add_neg("trend_strength", trend_strength, -1.00 * trend_strength, "сильный тренд ломает grid")
+            add_neg("trend_strength", trend_strength, -0.45 * trend_strength, "сильный тренд ломает grid")
         if atr_pct > 0.0:
             add_neg("atr_pct", atr_pct, -0.75 * atr_penalty, "высокая волатильность повышает риск range break")
         if economic_cost_bps > 0.0:
@@ -2181,11 +2181,14 @@ def _score(
         regime_is_trend = 1.0 if str(agg.get("regime") or "") == "trend" else 0.0
         range_penalty = _clamp((range_score - 0.55) / 0.45, 0.0, 1.0)
 
-        raw += 1.20 * trend_strength
-        raw += 0.72 * direction_strength
-        raw += 0.52 * coherence
-        raw += 0.30 * regime_conf
-        raw += 0.22 * regime_is_trend
+        # Direction strength is the main directional factor. Trendiness,
+        # coherence and regime confidence are correlated confirmations and receive
+        # smaller weights to avoid counting the same price trend four times.
+        raw += 0.38 * trend_strength
+        raw += 1.08 * direction_strength
+        raw += 0.38 * coherence
+        raw += 0.18 * regime_conf
+        raw += 0.12 * regime_is_trend
         raw += 0.12 * signed_sentiment
         raw -= 0.38 * atr_penalty
         raw -= 0.48 * cost_penalty
@@ -2194,15 +2197,15 @@ def _score(
             raw -= 1.25
 
         if trend_strength > 0.0:
-            add_pos("trend_strength", trend_strength, 1.20 * trend_strength, "сила тренда поддерживает directional strategy")
+            add_pos("trend_strength", trend_strength, 0.38 * trend_strength, "сила тренда поддерживает directional strategy")
         if direction_strength > 0.0:
-            add_pos("direction_strength", direction_strength, 0.72 * direction_strength, "направление выражено на агрегате таймфреймов")
+            add_pos("direction_strength", direction_strength, 1.08 * direction_strength, "направление выражено на агрегате таймфреймов")
         if coherence > 0.0:
-            add_pos("coherence", coherence, 0.52 * coherence, "таймфреймы подтверждают одно направление")
+            add_pos("coherence", coherence, 0.38 * coherence, "таймфреймы подтверждают одно направление")
         if regime_conf > 0.0:
-            add_pos("regime_confidence", regime_conf, 0.30 * regime_conf, "режим trend определён уверенно")
+            add_pos("regime_confidence", regime_conf, 0.18 * regime_conf, "режим trend определён уверенно")
         if regime_is_trend:
-            add_pos("trend_regime", regime_is_trend, 0.22, "агрегатор классифицирует рынок как trend")
+            add_pos("trend_regime", regime_is_trend, 0.12, "агрегатор классифицирует рынок как trend")
         if signed_sentiment > 0.0:
             add_pos("effective_sentiment", abs(effective_sent), 0.12 * signed_sentiment, "сентимент совпадает с направлением тренда")
         elif signed_sentiment < 0.0:
@@ -5346,7 +5349,7 @@ def _is_shadow_no_trade_outcome_candidate(rec: Any) -> bool:
     return bool(
         isinstance(policy, dict)
         and policy.get("eligible") is True
-        and str(policy.get("sample_role") or "").strip().lower() == "shadow_no_trade"
+        and str(policy.get("sample_role") or "").strip().lower() in {"shadow_no_trade", "shadow_competitor"}
     )
 
 
@@ -5360,7 +5363,7 @@ def _stored_row_is_shadow_no_trade_outcome_root(row: Any) -> bool:
     return bool(
         isinstance(policy, dict)
         and policy.get("eligible") is True
-        and str(policy.get("sample_role") or "").strip().lower() == "shadow_no_trade"
+        and str(policy.get("sample_role") or "").strip().lower() in {"shadow_no_trade", "shadow_competitor"}
     )
 
 
@@ -6920,6 +6923,15 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
                 params["risk_report"]["empirical_mean_return"] = empirical.get("mean_return")
                 params["risk_report"]["empirical_rr"] = empirical.get("empirical_rr")
 
+            params["ranking_score"] = float(score)
+            confidence_meta = reasons2.setdefault("confidence_model", {})
+            if isinstance(confidence_meta, dict):
+                confidence_meta.setdefault("probability_semantics", bool(confidence_meta.get("fitted")))
+                confidence_meta.setdefault(
+                    "raw_score_note",
+                    "Without a validated calibrator, confidence is an audit ranking diagnostic, not a probability.",
+                )
+
             recs.append({
                 "rec_id": rec_id,
                 "publication_root_rec_id": rec_id,
@@ -7025,52 +7037,69 @@ def run_recommender_once(conn, settings, *, heartbeat=None) -> dict[str, Any]:
             st = str(r.get("status") or "")
             if st in status_counts:
                 status_counts[st] += 1
-        db.insert_recommendations(conn, recs, commit=False)
-        db.log_decision(
-            conn,
-            "PUBLISH",
-            None,
-            None,
-            {
-                "count_all": len(recs),
-                "count_best": sum(
-                    1
-                    for r in recs
-                    if str((((r.get("reasons") or {}).get("strategy_router") or {}).get("winner_rec_id") or ""))
-                    == str(r.get("rec_id") or "")
-                ),
-                "count_recommended": status_counts["recommended"],
-                "count_active": status_counts["active"],
-                "count_pending": status_counts["pending"],
-                "count_actionable": status_counts["recommended"] + status_counts["active"],
-                "count_blocked": status_counts["blocked"],
-                "count_no_trade": status_counts["no_trade"],
-                "count_suppressed": status_counts["suppressed"],
-                "count_strategy_recommendations": sum(
-                    1 for r in recs
-                    if str(r.get("candidate_kind") or "") == TREND_STRATEGY_RECOMMENDATION_KIND
-                ),
-                "count_trend_evaluations_rejected": sum(
-                    1 for r in recs
-                    if str(r.get("candidate_kind") or "") == TREND_EVALUATION_REJECTED_KIND
-                ),
-                "model_version": model_version,
-                "model_versions": sorted({str(r.get("model_version") or "") for r in recs}),
-                "regime": regime,
-                "global_sentiment_6h": global_sent,
-                "sentiment_regime": sent_agg.get("regime"),
-                "sentiment_strength": sent_agg.get("strength"),
-                "calibrator_fitted": calibrator.fitted,
-                "llm_reviewer": {
-                    "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
-                    "mode": getattr(settings, "llm_reviewer_mode", "advisory"),
-                    "provider": getattr(settings, "llm_reviewer_provider", "ollama"),
-                    "model": getattr(settings, "llm_reviewer_model", None),
-                    **llm_review_stats,
-                },
-            },
-            commit=False,
+        persistence_stats = db.persist_recommendation_cycle(conn, recs, commit=False)
+        publish_signature = {
+            "status_counts": dict(status_counts),
+            "strategy_recommendations": sum(1 for r in recs if str(r.get("candidate_kind") or "") == TREND_STRATEGY_RECOMMENDATION_KIND),
+            "trend_evaluations_rejected": sum(1 for r in recs if str(r.get("candidate_kind") or "") == TREND_EVALUATION_REJECTED_KIND),
+            "model_versions": sorted({str(r.get("model_version") or "") for r in recs}),
+            "regime": {key: regime.get(key) for key in ("vol_state", "trend_state", "risk_state")},
+        }
+        previous_publish_signature = db.get_app_config_json(conn, "reco_publish_signature_v2", {})
+        should_log_publish = bool(
+            int(persistence_stats.get("audit_inserted") or 0) > 0
+            or previous_publish_signature != publish_signature
         )
+        db.set_app_config_json(conn, "reco_publish_signature_v2", publish_signature, commit=False)
+        if should_log_publish:
+            db.log_decision(
+                conn,
+                "PUBLISH",
+                None,
+                None,
+                {
+                    "count_all": len(recs),
+                    "latest_state_upserts": int(persistence_stats.get("latest_upserts") or 0),
+                    "audit_events_inserted": int(persistence_stats.get("audit_inserted") or 0),
+                    "audit_refreshes_suppressed": int(persistence_stats.get("audit_suppressed") or 0),
+                    "count_best": sum(
+                        1
+                        for r in recs
+                        if str((((r.get("reasons") or {}).get("strategy_router") or {}).get("winner_rec_id") or ""))
+                        == str(r.get("rec_id") or "")
+                    ),
+                    "count_recommended": status_counts["recommended"],
+                    "count_active": status_counts["active"],
+                    "count_pending": status_counts["pending"],
+                    "count_actionable": status_counts["recommended"] + status_counts["active"],
+                    "count_blocked": status_counts["blocked"],
+                    "count_no_trade": status_counts["no_trade"],
+                    "count_suppressed": status_counts["suppressed"],
+                    "count_strategy_recommendations": sum(
+                        1 for r in recs
+                        if str(r.get("candidate_kind") or "") == TREND_STRATEGY_RECOMMENDATION_KIND
+                    ),
+                    "count_trend_evaluations_rejected": sum(
+                        1 for r in recs
+                        if str(r.get("candidate_kind") or "") == TREND_EVALUATION_REJECTED_KIND
+                    ),
+                    "model_version": model_version,
+                    "model_versions": sorted({str(r.get("model_version") or "") for r in recs}),
+                    "regime": regime,
+                    "global_sentiment_6h": global_sent,
+                    "sentiment_regime": sent_agg.get("regime"),
+                    "sentiment_strength": sent_agg.get("strength"),
+                    "calibrator_fitted": calibrator.fitted,
+                    "llm_reviewer": {
+                        "enabled": bool(getattr(settings, "llm_reviewer_enabled", False)),
+                        "mode": getattr(settings, "llm_reviewer_mode", "advisory"),
+                        "provider": getattr(settings, "llm_reviewer_provider", "ollama"),
+                        "model": getattr(settings, "llm_reviewer_model", None),
+                        **llm_review_stats,
+                    },
+                },
+                commit=False,
+            )
         conn.commit()
 
     return {

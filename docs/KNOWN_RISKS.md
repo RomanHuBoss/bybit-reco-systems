@@ -1,3 +1,13 @@
+## Остаточные риски после v1.5.0
+
+- Изменение ranking semantics создаёт новую model/policy lineage. Исторические outcomes сохранены, но новая lineage начинает собственный набор calibration evidence; временное состояние `healthy_not_actionable` ожидаемо.
+- `recommendation_latest` резко ограничивает число строк, но её JSON payload обновляется каждый publication cycle; это bounded mutable workload, а не zero-write design.
+- Public trade journal остаётся proxy публичной chronology: он не доказывает queue priority, partial fills или фактическое исполнение grid orders. При неполном coverage grid outcome остаётся censored.
+- On-demand capture может одновременно охватывать несколько открытых grid windows. При широком universe и большом числе пригодных grid roots объём raw trades всё ещё может быть существенным; retention ограничивает окно, но не throughput.
+- PostgreSQL `DELETE` освобождает место для повторного использования, но не обязан уменьшать файл relation на диске. Автоматический `VACUUM FULL` намеренно не добавлен из-за exclusive lock; после backup оператор может выполнить обычный `VACUUM (ANALYZE)`.
+- Live PostgreSQL throughput и многосуточный Bybit WebSocket soak в пользовательском окружении не выполнялись.
+- Эвристический `confidence` без validated calibrator остаётся ranking diagnostic, а не вероятностью успеха.
+
 ## Остаточные риски после v1.4.13
 
 - PostgreSQL advisory serialization intentionally permits only one market-trade writer transaction at a time. Under extreme DB latency this may increase queueing, but it prevents the observed deadlock and each transaction is bounded.

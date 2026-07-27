@@ -90,6 +90,30 @@ CREATE INDEX IF NOT EXISTS idx_reco_outcome_root_ts ON recommendations(is_outcom
 CREATE INDEX IF NOT EXISTS idx_reco_model_outcome_scope ON recommendations(model_version, is_outcome_label_root, rec_id);
 CREATE INDEX IF NOT EXISTS idx_reco_candidate_kind_ts ON recommendations(candidate_kind, bot_type, ts DESC);
 
+
+-- Mutable operator state: one row per strategy family and symbol.
+-- Immutable recommendations remains an event/outcome-root audit ledger.
+CREATE TABLE IF NOT EXISTS recommendation_latest (
+  venue TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  bot_type TEXT NOT NULL,
+  rec_id TEXT NOT NULL,
+  evaluated_ts BIGINT NOT NULL,
+  state_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  confidence DOUBLE PRECISION NOT NULL,
+  score DOUBLE PRECISION NOT NULL,
+  candidate_kind TEXT NOT NULL,
+  model_version TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (venue, symbol, bot_type)
+);
+CREATE INDEX IF NOT EXISTS idx_recommendation_latest_status
+  ON recommendation_latest(venue, status, confidence DESC, score DESC);
+CREATE INDEX IF NOT EXISTS idx_recommendation_latest_rec_id
+  ON recommendation_latest(rec_id);
+
 CREATE TABLE IF NOT EXISTS decision_log (
   id BIGSERIAL PRIMARY KEY,
   ts BIGINT NOT NULL,

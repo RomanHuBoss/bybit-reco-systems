@@ -176,7 +176,7 @@ def test_observation_upgrade_does_not_change_model_or_outcome_label_lineage() ->
     main_source = Path("app/main.py").read_text(encoding="utf-8")
     recommender_source = Path("app/recommender.py").read_text(encoding="utf-8")
     assert 'OUTCOME_LABEL_VERSION = "grid_label_v26"' in main_source
-    assert 'RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v13-log-symmetric-direction"' in recommender_source
+    assert 'RECOMMENDER_MODEL_VERSION = "bybit-taxonomy-v14-horizon-aligned-dual-strategy"' in recommender_source
 
 
 def test_funding_repair_worker_persists_settlement_and_resolves_job(tmp_path: Path) -> None:

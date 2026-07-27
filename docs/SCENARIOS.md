@@ -1,3 +1,15 @@
+## Dual-strategy and database-efficiency scenarios - v1.5.0
+
+1. Один publication cycle оценивает 35 symbols: latest snapshot содержит максимум 70 current rows — отдельные grid и trend; одинаковые no-trade refreshes не добавляют 70 immutable rows.
+2. Grid и trend существуют для одного symbol/timestamp: latest keys разделены по `bot_type`; Details и outcome contracts не смешиваются.
+3. Router не находит победителя: обе стратегии остаются paired shadow competitors, но каждая переиспользует открытый 12h outcome root.
+4. Новый grid root ожидает label: publicTrade capture включает его symbol. После labeled/censored state symbol исключается, если нет другого открытого grid root. Trend root сам по себе capture не включает.
+5. OHLCV candle не изменилась: conditional UPSERT возвращает zero changed rows и не создаёт PostgreSQL row version.
+6. Fresh DB: bounded local/API bootstrap создаёт необходимую slow-TF history; после готовности steady state пересчитывает только последние buckets.
+7. Пользователь открывает latest recommendations: API читает `recommendation_latest`; historical timeline остаётся в immutable `recommendations`.
+8. Обновление с v1.4.13: новая таблица создаётся автоматически, old outcomes сохраняются как historical lineage, новый calibrator не переиспользует старые коэффициенты.
+9. Hourly prune: non-root refresh noise удаляется раньше outcome evidence; executed/ignored audit records не удаляются.
+
 ## PostgreSQL deadlock and Windows restart scenarios - v1.4.13
 
 1. WebSocket reconnects while REST fallback is still writing: both paths wait on the same transaction advisory lock; no unique-index deadlock occurs.

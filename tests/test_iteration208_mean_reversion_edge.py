@@ -111,7 +111,7 @@ def test_new_model_identity_and_calibrators_do_not_reuse_legacy_range_semantics(
     import app.calibration as calibration
     import app.recommender as recommender
 
-    assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v13-log-symmetric-direction"
+    assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v14-horizon-aligned-dual-strategy"
     assert calibration.GLOBAL_LOGREG_KEY.endswith("_v23")
     assert calibration.BOT_CALIB_KEYS["futures_grid"].endswith("_v23")
     assert recommender.DIRECTION_CALIBRATION_KEY == "platt_direction_v15"

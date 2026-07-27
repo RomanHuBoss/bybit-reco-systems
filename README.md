@@ -1,3 +1,21 @@
+## Dual-strategy data-efficiency and horizon-aligned model lineage (v1.5.0)
+
+Версия 1.5.0 **сохраняет обе штатные стратегии**: `futures_grid` и `directional_trend`. Grid не отключён и не заменён трендом. Изменены способ накопления доказательств, persistence и эвристическая ranking-модель, чтобы система не создавала 70 тяжёлых immutable refresh-строк каждую минуту и не переписывала неизменившиеся OHLCV-данные.
+
+Торговая lineage намеренно обновлена до `bybit-taxonomy-v14-horizon-aligned-dual-strategy`; trend contract использует суффикс `directional-trend-v7`. Причина — изменение относительных весов таймфреймов и смысла ranking score. Старые outcomes не удаляются, но остаются исторической lineage и не смешиваются с новой моделью. `grid_label_v26`, `directional_trend_label_v2` и `grid_intrabar_observation_v3` не изменены.
+
+Основные изменения:
+
+- `recommendation_latest` хранит по одной текущей строке на `venue + symbol + bot_type`; immutable `recommendations` теперь является журналом существенных событий и outcome roots;
+- router-generated `shadow_competitor` использует тот же 12-часовой pseudo-position root, а не создаёт новый root каждую минуту;
+- одинаковые OHLCV больше не создают PostgreSQL row versions; derived TF в steady state пересчитывает только последние два bucket, сохраняя bounded cold bootstrap;
+- backfill работает отдельно с cadence 300 секунд; ticker и funding forecast сохраняются в временных bucket без подмены реального event timestamp;
+- public trade chronology собирается только для открытых `futures_grid` label windows; trend не требует raw tape;
+- обычные outcome facts сохраняются 90 дней, exact/current lineage — до 365 дней, а высокочастотный non-root audit lane остаётся коротким;
+- raw public trades по умолчанию хранятся 24 часа.
+
+Это не доказательство прибыльности и не разрешение live-торговли. Новая lineage должна накопить собственные независимые outcomes и пройти прежние monetary, OOF, terminal-holdout и risk gates.
+
 ## PostgreSQL trade-ingest serialization and fast local restart takeover (v1.4.13)
 
 Версия 1.4.13 устраняет подтверждённую PostgreSQL-взаимоблокировку между WebSocket `publicTrade` и REST fallback. Все операции INSERT/UPSERT/DELETE журнала сделок теперь входят в один transaction-scoped advisory lock; REST fallback фиксирует каждый символ отдельной короткой транзакцией, а строки внутри batch сортируются по уникальному ключу. Это не меняет торговую модель, outcome label или calibration lineage.

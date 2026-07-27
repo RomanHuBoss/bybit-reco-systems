@@ -196,6 +196,6 @@ def test_runtime_feature_snapshot_contains_direction_aware_fields() -> None:
 
 def test_direction_feature_schema_starts_a_new_model_lineage() -> None:
     assert calibration.FEATURE_NAMES[-2:] == ["direction_sign", "sentiment_alignment"]
-    assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v13-log-symmetric-direction"
+    assert recommender.RECOMMENDER_MODEL_VERSION == "bybit-taxonomy-v14-horizon-aligned-dual-strategy"
     assert calibration.BOT_CALIB_KEYS["futures_grid"] == "logreg_futures_grid_v23"
     assert calibration.BOT_CALIB_KEYS["directional_trend"] == "logreg_directional_trend_v4"

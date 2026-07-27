@@ -194,6 +194,7 @@ def run_public_trade_stream_session(
     max_queue_messages: int = 256,
     commit_batch_messages: int = 32,
     commit_batch_sec: float = 0.5,
+    max_session_sec: float | None = None,
 ) -> dict[str, Any]:
     """Run one public-trade WebSocket session until stop or disconnect.
 
@@ -231,9 +232,10 @@ def run_public_trade_stream_session(
     close_reason = "websocket_disconnect"
     message_index = 0
     pending_messages = 0
-    last_commit_monotonic = time.monotonic()
-    last_application_ping_monotonic = time.monotonic()
-    last_receive_monotonic = time.monotonic()
+    session_started_monotonic = time.monotonic()
+    last_commit_monotonic = session_started_monotonic
+    last_application_ping_monotonic = session_started_monotonic
+    last_receive_monotonic = session_started_monotonic
 
     def _commit_pending() -> None:
         nonlocal pending_messages, last_commit_monotonic
@@ -272,6 +274,10 @@ def run_public_trade_stream_session(
                     "args": [f"publicTrade.{symbol}" for symbol in normalized_symbols],
                 }, separators=(",", ":")))
                 while not stop_requested():
+                    if max_session_sec is not None and time.monotonic() - session_started_monotonic >= max(10.0, float(max_session_sec)):
+                        close_reason = "capture_scope_refresh"
+                        stats["disconnect_reason"] = close_reason
+                        break
                     if (
                         time.monotonic() - last_application_ping_monotonic
                         >= max(5.0, float(ping_interval_sec))

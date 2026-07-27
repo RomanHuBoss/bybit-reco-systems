@@ -1,3 +1,22 @@
+## Data-efficient dual-strategy architecture - v1.5.0
+
+Persistence разделён на два слоя:
+
+1. `recommendation_latest` — mutable operator snapshot с одной строкой на `(venue, symbol, bot_type)`; здесь одновременно присутствуют и `futures_grid`, и `directional_trend`.
+2. `recommendations` — immutable material-event ledger: первые состояния, существенные transitions, actionable/pending publications и outcome roots. Exact rec identity и operator lifecycle сохраняются.
+
+Latest API читает mutable snapshot и накладывает более поздние audited LLM/operator mutations для того же `rec_id`. Historical API продолжает читать immutable ledger. Existing DB upgrade additive/idempotent для SQLite и PostgreSQL.
+
+Market-data write path:
+
+- OHLCV UPSERT обновляет conflict-row только при реальном изменении OHLCV;
+- steady-state derived TF читает два последних target buckets, а cold bootstrap bounded до 96 buckets;
+- backfill отделён от 20-секундного hot collector;
+- ticker/funding forecast bucket сохраняет первый фактический exchange timestamp и обновляет значения внутри bucket; settled funding остаётся отдельной immutable history;
+- WebSocket/REST public trades подписываются только на symbols с открытым waiting `futures_grid` outcome root. `directional_trend` не запускает raw-trade capture.
+
+Retention разделяет high-volume refresh data и scarce evidence. Non-root audit refreshes имеют короткое окно; outcomes/observability и связанные roots сохраняются дольше, особенно для current/exact policy lineage.
+
 ## Trade-ingest concurrency and restart-handover architecture - v1.4.13
 
 PostgreSQL market-trade writers share `pg_advisory_xact_lock(4259842013)`. The lock is acquired before any `market_trade` or `market_trade_coverage` access and is released automatically by commit/rollback. REST fallback commits per symbol, preventing an advisory lock from being held across HTTP calls. Hourly retention runs in a separate transaction after ordinary table pruning.

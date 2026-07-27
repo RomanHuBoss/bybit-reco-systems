@@ -5581,6 +5581,8 @@ def _collect_hot_once(conn, client: BybitPublicClient, venue: str, symbols: list
             market_trade_poll_limit=int(getattr(settings, "market_trade_poll_limit", 1000) or 1000),
             market_trade_retention_hours=int(getattr(settings, "market_trade_retention_hours", 72) or 72),
             funding_repair_max_per_cycle=int(getattr(settings, "funding_repair_max_per_cycle", 16) or 16),
+            ticker_snapshot_interval_sec=int(getattr(settings, "ticker_snapshot_interval_sec", 60) or 60),
+            funding_snapshot_interval_sec=int(getattr(settings, "funding_snapshot_interval_sec", 300) or 300),
         )
     except TypeError as exc:
         msg = str(exc)
@@ -5591,6 +5593,8 @@ def _collect_hot_once(conn, client: BybitPublicClient, venue: str, symbols: list
             "market_trade_poll_limit",
             "market_trade_retention_hours",
             "funding_repair_max_per_cycle",
+            "ticker_snapshot_interval_sec",
+            "funding_snapshot_interval_sec",
         )
         if not any(name in msg for name in compatibility_kwargs):
             raise
@@ -5810,7 +5814,7 @@ async def lifespan(app: FastAPI):
         _join_background_threads()
 
 
-app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.4.13", lifespan=lifespan)
+app = FastAPI(title="Bybit Recommender (Scenario B)", version="1.5.0", lifespan=lifespan)
 
 static_dir = Path(__file__).resolve().parent / "ui" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -6343,9 +6347,10 @@ def _resolve_recommendation_snapshot_ts(
     if not recent:
         return None
     if mode == "latest_operator":
-        # Always show the actual latest publication cycle. Filters are applied
-        # inside that cycle; they must never make the UI search backwards and
-        # silently resurrect an older recommendation as if it were current.
+        latest_state_ts = db.get_latest_recommendation_state_ts(conn, venue=venue)
+        if latest_state_ts is not None:
+            return latest_state_ts
+        # Upgrade fallback before the first 1.5.x recommender cycle.
         return recent[0]
 
     requested_statuses = list(dict.fromkeys(requested_statuses or []))
@@ -6438,16 +6443,26 @@ def api_recommendations(
             strict_min_conf=strict_min_conf,
             requested_statuses=fetch_statuses,
         )
-        raw_items, hidden_duplicates = _load_recommendations_for_operator_view(
-            conn,
-            venue=venue,
-            top_n=candidate_limit,
-            min_conf=effective_min_conf,
-            statuses=fetch_statuses,
-            snapshot_ts=snapshot_ts,
-            strict_min_conf=strict_min_conf,
-            collapse_chains=collapse_chains,
+        use_latest_state = (
+            str(snapshot or "latest_operator").strip().lower() == "latest_operator"
+            and db.get_latest_recommendation_state_ts(conn, venue=venue) is not None
         )
+        if use_latest_state:
+            raw_items = db.get_latest_recommendation_states(
+                conn, venue=venue, top_n=candidate_limit, min_conf=effective_min_conf, statuses=fetch_statuses
+            )
+            hidden_duplicates = 0
+        else:
+            raw_items, hidden_duplicates = _load_recommendations_for_operator_view(
+                conn,
+                venue=venue,
+                top_n=candidate_limit,
+                min_conf=effective_min_conf,
+                statuses=fetch_statuses,
+                snapshot_ts=snapshot_ts,
+                strict_min_conf=strict_min_conf,
+                collapse_chains=collapse_chains,
+            )
         snapshot_age_sec = None if snapshot_ts is None else max(0, int(time.time()) - int(snapshot_ts))
         snapshot_stale_after_sec = max(180, int(settings.reco_interval_sec) * 3)
         snapshot_is_stale = bool(snapshot_age_sec is not None and snapshot_age_sec > snapshot_stale_after_sec)
@@ -6479,7 +6494,11 @@ def api_recommendations(
                 effective_status_counts[effective] = effective_status_counts.get(effective, 0) + 1
         items = _filter_operator_items_by_effective_status(augmented_items, statuses, top_n)
 
-        status_counts = db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
+        status_counts = (
+            db.get_latest_recommendation_state_status_counts(conn, venue=venue)
+            if use_latest_state
+            else db.get_recommendation_status_counts(conn, venue=venue, snapshot_ts=snapshot_ts)
+        )
         no_trade = not any(str(item.get("effective_status") or item.get("status") or "").strip().lower() in {"recommended", "active"} for item in items)
 
         cur = conn.execute("SELECT regime_json FROM market_regime ORDER BY ts DESC LIMIT 1")
@@ -6496,13 +6515,17 @@ def api_recommendations(
             "confidence": 0.0,
         }
 
-        llm_status_counts = db.get_llm_status_counts(
-            conn,
-            venue=venue,
-            min_conf=effective_min_conf,
-            statuses=statuses,
-            snapshot_ts=snapshot_ts,
-            strict_min_conf=strict_min_conf,
+        llm_status_counts = (
+            db.get_latest_recommendation_llm_status_counts(conn, venue=venue)
+            if use_latest_state
+            else db.get_llm_status_counts(
+                conn,
+                venue=venue,
+                min_conf=effective_min_conf,
+                statuses=statuses,
+                snapshot_ts=snapshot_ts,
+                strict_min_conf=strict_min_conf,
+            )
         )
 
         return {
@@ -7491,10 +7514,18 @@ def _market_trade_stream_thread():
             continue
         heartbeat = _make_runtime_lock_heartbeat(lock_key)
         with closing(_get_conn()) as conn:
+            capture_symbols = db.list_market_trade_capture_symbols(conn, venue="linear", now_ts=int(time.time()))
+            if not capture_symbols:
+                _set_background_thread_state(
+                    "market_trade_stream", "running", restart_count=0, consecutive_failures=0,
+                    reconnect_count=int(reconnect_count), capture_mode="idle_no_open_grid_windows", owner=RUNTIME_OWNER,
+                )
+                _BACKGROUND_STOP_EVENT.wait(float(getattr(settings, "market_trade_capture_refresh_sec", 30) or 30))
+                continue
             stats = run_public_trade_stream_session(
                 conn,
                 bybit_http_base_url=settings.bybit_base_url,
-                symbols=list(settings.symbols_linear),
+                symbols=capture_symbols,
                 stop_requested=_BACKGROUND_STOP_EVENT.is_set,
                 heartbeat=heartbeat,
                 ping_interval_sec=float(getattr(settings, "market_trade_stream_ping_interval_sec", 20) or 20),
@@ -7503,6 +7534,7 @@ def _market_trade_stream_thread():
                 max_queue_messages=int(getattr(settings, "market_trade_stream_max_queue", 256) or 256),
                 commit_batch_messages=int(getattr(settings, "market_trade_stream_commit_batch_messages", 32) or 32),
                 commit_batch_sec=float(getattr(settings, "market_trade_stream_commit_batch_sec", 0.5) or 0.5),
+                max_session_sec=float(getattr(settings, "market_trade_capture_refresh_sec", 30) or 30),
             )
             reconnect_count += 1
             stats["reconnect_count"] = int(reconnect_count)
@@ -7642,7 +7674,7 @@ def _backfill_thread():
                         db.set_app_config_json(conn, "collector_warmup", _collector_warmup_status(conn))
                     except Exception:
                         logger.warning("collector warmup status update failed", exc_info=True)
-            next_run = _interval_loop_wait(next_run, settings.collect_interval_sec)
+            next_run = _interval_loop_wait(next_run, settings.backfill_interval_sec)
     finally:
         client.close()
 
@@ -7829,7 +7861,14 @@ def _prune_technical_data_once() -> dict[str, int]:
     serialize it with ingestion without holding unrelated table locks.
     """
     with closing(_get_conn()) as conn:
-        deleted = dict(db.prune_old_data(conn, retain_days=7))
+        deleted = dict(db.prune_old_data(
+            conn,
+            retain_days=7,
+            standard_outcome_retain_days=int(getattr(settings, "outcome_retention_days", 90) or 90),
+            exact_policy_retain_days=int(getattr(settings, "current_lineage_retention_days", 365) or 365),
+            current_model_version=RECOMMENDER_MODEL_VERSION,
+            current_lineage_retain_days=int(getattr(settings, "current_lineage_retention_days", 365) or 365),
+        ))
     cutoff_ms = (
         int(time.time())
         - max(24, int(getattr(settings, "market_trade_retention_hours", 72) or 72)) * 3600

@@ -171,6 +171,7 @@ class Settings:
     futures_collect_interval_sec: int
     backfill_full_sweep_on_warmup: bool = False
     backfill_per_tf_budget: int = 8
+    backfill_interval_sec: int = 300
     futures_meta_during_warmup: bool = False
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
@@ -214,8 +215,13 @@ class Settings:
     market_trade_stream_reconnect_min_sec: int = 2
     market_trade_stream_reconnect_max_sec: int = 30
     market_trade_poll_limit: int = 1000
-    market_trade_retention_hours: int = 72
+    market_trade_retention_hours: int = 24
+    market_trade_capture_refresh_sec: int = 30
     funding_repair_max_per_cycle: int = 16
+    ticker_snapshot_interval_sec: int = 60
+    funding_snapshot_interval_sec: int = 300
+    outcome_retention_days: int = 90
+    current_lineage_retention_days: int = 365
 
 
 def load_settings() -> Settings:
@@ -274,6 +280,7 @@ def load_settings() -> Settings:
     llm_reviewer_keep_alive = _env("LLM_REVIEWER_KEEP_ALIVE", "90s").strip() or "90s"
     backfill_full_sweep_on_warmup = _env("BACKFILL_FULL_SWEEP_ON_WARMUP", "0").strip().lower() in ("1", "true", "yes", "y")
     backfill_per_tf_budget = _env_int("BACKFILL_PER_TF_BUDGET", 8, minimum=1, maximum=10000)
+    backfill_interval_sec = _env_int("BACKFILL_INTERVAL_SEC", 300, minimum=60, maximum=24 * 3600)
     futures_meta_during_warmup = _env("FUTURES_META_DURING_WARMUP", "0").strip().lower() in ("1", "true", "yes", "y")
     reco_ttl_raw = os.getenv("RECO_TTL_SEC")
     reco_ttl_sec = None if reco_ttl_raw in (None, "") else _env_int("RECO_TTL_SEC", 180, minimum=180, maximum=7 * 24 * 3600)
@@ -296,8 +303,13 @@ def load_settings() -> Settings:
     if market_trade_stream_reconnect_max_sec < market_trade_stream_reconnect_min_sec:
         market_trade_stream_reconnect_max_sec = market_trade_stream_reconnect_min_sec
     market_trade_poll_limit = _env_int("MARKET_TRADE_POLL_LIMIT", 1000, minimum=1, maximum=1000)
-    market_trade_retention_hours = _env_int("MARKET_TRADE_RETENTION_HOURS", 72, minimum=24, maximum=24 * 30)
+    market_trade_retention_hours = _env_int("MARKET_TRADE_RETENTION_HOURS", 24, minimum=24, maximum=24 * 30)
+    market_trade_capture_refresh_sec = _env_int("MARKET_TRADE_CAPTURE_REFRESH_SEC", 30, minimum=10, maximum=300)
     funding_repair_max_per_cycle = _env_int("FUNDING_REPAIR_MAX_PER_CYCLE", 16, minimum=1, maximum=200)
+    ticker_snapshot_interval_sec = _env_int("TICKER_SNAPSHOT_INTERVAL_SEC", 60, minimum=20, maximum=3600)
+    funding_snapshot_interval_sec = _env_int("FUNDING_SNAPSHOT_INTERVAL_SEC", 300, minimum=60, maximum=8 * 3600)
+    outcome_retention_days = _env_int("OUTCOME_RETENTION_DAYS", 90, minimum=14, maximum=3650)
+    current_lineage_retention_days = _env_int("CURRENT_LINEAGE_RETENTION_DAYS", 365, minimum=90, maximum=3650)
 
     db_engine_raw = _env("DB_ENGINE", SQLITE).strip().lower()
     db_engine = POSTGRES if db_engine_raw in {"postgres", "postgresql"} else SQLITE
@@ -338,6 +350,7 @@ def load_settings() -> Settings:
         futures_collect_interval_sec=_env_int("FUTURES_COLLECT_INTERVAL_SEC", 900, minimum=60, maximum=24 * 3600),
         backfill_full_sweep_on_warmup=backfill_full_sweep_on_warmup,
         backfill_per_tf_budget=backfill_per_tf_budget,
+        backfill_interval_sec=backfill_interval_sec,
         futures_meta_during_warmup=futures_meta_during_warmup,
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
@@ -377,5 +390,10 @@ def load_settings() -> Settings:
         market_trade_stream_reconnect_max_sec=market_trade_stream_reconnect_max_sec,
         market_trade_poll_limit=market_trade_poll_limit,
         market_trade_retention_hours=market_trade_retention_hours,
+        market_trade_capture_refresh_sec=market_trade_capture_refresh_sec,
         funding_repair_max_per_cycle=funding_repair_max_per_cycle,
+        ticker_snapshot_interval_sec=ticker_snapshot_interval_sec,
+        funding_snapshot_interval_sec=funding_snapshot_interval_sec,
+        outcome_retention_days=outcome_retention_days,
+        current_lineage_retention_days=current_lineage_retention_days,
     )

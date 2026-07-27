@@ -171,7 +171,7 @@ def test_outcome_api_separates_fingerprint_scope_from_eligibility_cohorts(tmp_pa
         conn.close()
 
 
-def test_prune_keeps_exact_policy_candidate_evidence_for_90_days(
+def test_prune_preserves_compact_outcome_evidence_for_extended_windows(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -226,9 +226,9 @@ def test_prune_keeps_exact_policy_candidate_evidence_for_90_days(
             row["rec_id"]
             for row in conn.execute("SELECT rec_id FROM reco_outcome_observability")
         }
-        assert recommendation_ids == {"R-exact-20d"}
-        assert outcome_ids == {"R-exact-20d"}
-        assert observability_ids == {"R-exact-20d"}
+        assert recommendation_ids == {"R-exact-20d", "R-shadow-20d", "R-exact-100d"}
+        assert outcome_ids == {"R-exact-20d", "R-shadow-20d", "R-exact-100d"}
+        assert observability_ids == {"R-exact-20d", "R-shadow-20d", "R-exact-100d"}
     finally:
         conn.close()
 

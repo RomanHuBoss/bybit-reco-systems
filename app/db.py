@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import sqlite3
 import secrets
@@ -44,8 +45,8 @@ ACTIVE_PUBLICATION_STATUSES: frozenset[str] = frozenset({"recommended", "active"
 EXPIRABLE_RECOMMENDATION_STATUSES: frozenset[str] = frozenset({"recommended", "active", "pending"})
 LLM_OUTCOME_READY_STATUSES: frozenset[str] = frozenset({"ok"})
 DATABASE_INSTANCE_ID_APP_KEY = "database_instance_id_v1"
-STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS = 14
-EXACT_POLICY_EVIDENCE_RETENTION_DAYS = 90
+STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS = 90
+EXACT_POLICY_EVIDENCE_RETENTION_DAYS = 365
 # One transaction-scoped PostgreSQL advisory lock serializes all writes to the
 # public-trade journal. REST fallback and WebSocket ingestion may overlap during
 # reconnects or process handover; without a common lock, overlapping UPSERTs can
@@ -1334,11 +1335,19 @@ def ensure_database_instance_id(conn: sqlite3.Connection, *, commit: bool = True
     return generated
 
 
-def _table_count_and_range(conn: sqlite3.Connection, table: str) -> dict[str, int | None]:
-    if table not in {"recommendations", "reco_outcomes", "decision_log"}:
+def _table_count_and_range(
+    conn: sqlite3.Connection, table: str, *, ts_column: str = "ts"
+) -> dict[str, int | None]:
+    allowed = {
+        ("recommendations", "ts"),
+        ("reco_outcomes", "ts"),
+        ("decision_log", "ts"),
+        ("recommendation_latest", "evaluated_ts"),
+    }
+    if (table, ts_column) not in allowed:
         raise ValueError("unsupported continuity table")
     row = conn.execute(
-        f"SELECT COUNT(*) AS c, MIN(ts) AS first_ts, MAX(ts) AS latest_ts FROM {table}"
+        f"SELECT COUNT(*) AS c, MIN({ts_column}) AS first_ts, MAX({ts_column}) AS latest_ts FROM {table}"
     ).fetchone()
     return {
         "count": int(row["c"] or 0) if row else 0,
@@ -1406,10 +1415,17 @@ def get_database_continuity_status(conn: sqlite3.Connection) -> dict[str, Any]:
     recs = _table_count_and_range(conn, "recommendations")
     outcomes = _table_count_and_range(conn, "reco_outcomes")
     decisions = _table_count_and_range(conn, "decision_log")
+    latest_state = _table_count_and_range(conn, "recommendation_latest", ts_column="evaluated_ts")
+    root_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM recommendations WHERE COALESCE(is_outcome_label_root,0)=1"
+    ).fetchone()
     return {
         "database_instance_id": ensure_database_instance_id(conn),
         "engine": str(getattr(conn, "db_engine", SQLITE) or SQLITE),
         "recommendations_total": recs["count"],
+        "recommendation_latest_total": latest_state["count"],
+        "recommendation_outcome_root_total": int(root_row["c"] or 0) if root_row is not None else 0,
+        "recommendation_persistence_mode": "mutable_latest_plus_material_audit_v1",
         "recommendations_by_bot_type": _count_by_column(conn, "recommendations", "bot_type"),
         "recommendations_by_candidate_kind": _count_by_column(conn, "recommendations", "candidate_kind"),
         "first_recommendation_ts": recs["first_ts"],
@@ -1434,36 +1450,99 @@ def _canonical_ohlcv_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [deduped[key] for key in sorted(deduped)]
 
 
-def upsert_ohlcv(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
+def upsert_ohlcv(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> int:
+    """Insert new candles and update only rows whose OHLCV values changed.
+
+    PostgreSQL creates a new row version for every unconditional conflict update.
+    Avoiding no-op updates cuts WAL, dead tuples and index churn while preserving
+    the exact natural key and restart idempotency.
+    """
     valid_rows = _canonical_ohlcv_rows([dict(r) for r in rows if _is_valid_ohlcv_row(r)])
     if not valid_rows:
-        return
+        return 0
     params = [
         (r["venue"], r["symbol"], r["tf_sec"], r["ts"], r["open"], r["high"], r["low"], r["close"], r["volume"])
         for r in valid_rows
     ]
-    sql = """INSERT OR REPLACE INTO ohlcv(venue,symbol,tf_sec,ts,open,high,low,close,volume)
-           VALUES(?,?,?,?,?,?,?,?,?)"""
+    sql = """INSERT INTO ohlcv(venue,symbol,tf_sec,ts,open,high,low,close,volume)
+             VALUES(?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(venue,symbol,tf_sec,ts) DO UPDATE SET
+               open=excluded.open, high=excluded.high, low=excluded.low,
+               close=excluded.close, volume=excluded.volume
+             WHERE ohlcv.open<>excluded.open OR ohlcv.high<>excluded.high
+                OR ohlcv.low<>excluded.low OR ohlcv.close<>excluded.close
+                OR ohlcv.volume<>excluded.volume"""
 
     def _op():
         return conn.executemany(sql, params)
 
-    if commit:
-        _commit_write_with_retry(conn, _op)
-        return
-    _op()
+    cursor = _commit_write_with_retry(conn, _op) if commit else _op()
+    return max(0, int(getattr(cursor, "rowcount", 0) or 0))
 
-def insert_tickers(conn: sqlite3.Connection, rows: list[dict[str, Any]], *, commit: bool = True) -> None:
+
+def insert_tickers(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+    *,
+    commit: bool = True,
+    bucket_sec: int = 60,
+) -> int:
+    """Persist one canonical ticker row per bucket without falsifying event time.
+
+    The first real exchange timestamp is retained as the row key; later samples in
+    the same bucket update its values. This bounds row count while preserving the
+    exact timestamp semantics expected by freshness and future-row guards.
+    """
     valid_rows = [dict(r) for r in rows if _is_valid_ticker_row(r)]
     if not valid_rows:
-        return
-    conn.executemany(
-        """INSERT OR REPLACE INTO ticker_snap(venue,symbol,ts,last,bid,ask,vol24h,turnover24h)
-           VALUES(?,?,?,?,?,?,?,?)""",
-        [(r["venue"], r["symbol"], r["ts"], r.get("last"), r.get("bid"), r.get("ask"), r.get("vol24h"), r.get("turnover24h")) for r in valid_rows],
+        return 0
+    bucket = max(1, int(bucket_sec))
+    deduped: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for row in valid_rows:
+        ts_value = int(row["ts"])
+        key = (str(row["venue"]), str(row["symbol"]), ts_value - ts_value % bucket)
+        prior = deduped.get(key)
+        if prior is None or int(prior["ts"]) <= ts_value:
+            deduped[key] = row
+
+    bucket_starts = [key[2] for key in deduped]
+    existing: dict[tuple[str, str, int], int] = {}
+    if bucket_starts:
+        lower = min(bucket_starts)
+        upper = max(bucket_starts) + bucket
+        for stored in conn.execute(
+            "SELECT venue,symbol,ts FROM ticker_snap WHERE ts>=? AND ts<?",
+            (lower, upper),
+        ).fetchall():
+            stored_ts = int(stored["ts"])
+            key = (str(stored["venue"]), str(stored["symbol"]), stored_ts - stored_ts % bucket)
+            if key in deduped:
+                existing[key] = min(stored_ts, existing.get(key, stored_ts))
+
+    params: list[tuple[Any, ...]] = []
+    for key in sorted(deduped):
+        row = deduped[key]
+        persisted_ts = existing.get(key, int(row["ts"]))
+        params.append((
+            row["venue"], row["symbol"], persisted_ts, row.get("last"), row.get("bid"),
+            row.get("ask"), row.get("vol24h"), row.get("turnover24h"),
+        ))
+    cursor = conn.executemany(
+        """INSERT INTO ticker_snap(venue,symbol,ts,last,bid,ask,vol24h,turnover24h)
+             VALUES(?,?,?,?,?,?,?,?)
+             ON CONFLICT(venue,symbol,ts) DO UPDATE SET
+               last=excluded.last,bid=excluded.bid,ask=excluded.ask,
+               vol24h=excluded.vol24h,turnover24h=excluded.turnover24h
+             WHERE COALESCE(ticker_snap.last,-1)<>COALESCE(excluded.last,-1)
+                OR COALESCE(ticker_snap.bid,-1)<>COALESCE(excluded.bid,-1)
+                OR COALESCE(ticker_snap.ask,-1)<>COALESCE(excluded.ask,-1)
+                OR COALESCE(ticker_snap.vol24h,-1)<>COALESCE(excluded.vol24h,-1)
+                OR COALESCE(ticker_snap.turnover24h,-1)<>COALESCE(excluded.turnover24h,-1)""",
+        params,
     )
     if commit:
         conn.commit()
+    return max(0, int(getattr(cursor, "rowcount", 0) or 0))
 
 def insert_features(conn: sqlite3.Connection, venue: str, symbol: str, ts: int, features: dict[str, Any]) -> None:
     conn.execute(
@@ -1787,6 +1866,218 @@ def insert_recommendations(conn: sqlite3.Connection, rows: list[dict[str, Any]],
         raise
     if commit:
         conn.commit()
+
+
+
+def _recommendation_latest_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("venue") or "").strip().lower(),
+        str(row.get("symbol") or "").strip().upper(),
+        str(row.get("bot_type") or "").strip(),
+    )
+
+
+def _recommendation_state_hash(row: dict[str, Any]) -> str:
+    reasons = row.get("reasons") if isinstance(row.get("reasons"), dict) else {}
+    blocks = row.get("blocks") if isinstance(row.get("blocks"), list) else []
+    outcome_policy = reasons.get("outcome_policy") if isinstance(reasons.get("outcome_policy"), dict) else {}
+    block_codes = sorted({str(item.get("code") or "") for item in blocks if isinstance(item, dict) and item.get("code")})
+    reason_codes: list[str] = []
+    for key in ("decision_codes", "no_trade_reasons", "guard_reasons"):
+        value = reasons.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict) and item.get("code"):
+                    reason_codes.append(str(item["code"]))
+                elif isinstance(item, str):
+                    reason_codes.append(item)
+    state = {
+        "venue": _recommendation_latest_key(row)[0],
+        "symbol": _recommendation_latest_key(row)[1],
+        "bot_type": _recommendation_latest_key(row)[2],
+        "direction": str(row.get("direction") or "neutral"),
+        "status": str(row.get("status") or ""),
+        "candidate_kind": str(row.get("candidate_kind") or "strategy_recommendation"),
+        "model_version": str(row.get("model_version") or ""),
+        "score_q": round(float(row.get("score") or 0.0), 2),
+        "confidence_q": round(float(row.get("confidence") or 0.0), 2),
+        "risk_score_q": round(float(row.get("risk_score") or 0.0), 2),
+        "block_codes": block_codes,
+        "reason_codes": sorted(set(reason_codes)),
+        "outcome_eligible": bool(outcome_policy.get("eligible") is True),
+        "policy_evaluation_eligible": bool(outcome_policy.get("policy_evaluation_eligible") is True),
+        "sample_role": str(outcome_policy.get("sample_role") or ""),
+    }
+    return hashlib.sha256(_json_dumps_safe(state, canonical=True).encode("utf-8")).hexdigest()
+
+
+def _latest_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    payload["params"] = dict(row.get("params") or {})
+    payload["reasons"] = dict(row.get("reasons") or {})
+    payload["blocks"] = [dict(item) for item in (row.get("blocks") or []) if isinstance(item, dict)]
+    return payload
+
+
+def persist_recommendation_cycle(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+    *,
+    commit: bool = True,
+) -> dict[str, int]:
+    """Persist current state compactly and append only material audit events.
+
+    Both strategy families remain present in ``recommendation_latest``. The
+    immutable ledger receives first observations, new outcome roots, actionable
+    publications and material decision-state changes, not every 60-second refresh.
+    """
+    normalized_rows = [dict(row) for row in rows]
+    if not normalized_rows:
+        return {"latest_upserts": 0, "audit_inserted": 0, "audit_suppressed": 0}
+    keys = [_recommendation_latest_key(row) for row in normalized_rows]
+    previous: dict[tuple[str, str, str], str] = {}
+    for venue, symbol, bot_type in keys:
+        prior = conn.execute(
+            "SELECT state_hash FROM recommendation_latest WHERE venue=? AND symbol=? AND bot_type=?",
+            (venue, symbol, bot_type),
+        ).fetchone()
+        if prior is not None:
+            previous[(venue, symbol, bot_type)] = str(prior["state_hash"] or "")
+
+    audit_rows: list[dict[str, Any]] = []
+    latest_params: list[tuple[Any, ...]] = []
+    for row in normalized_rows:
+        key = _recommendation_latest_key(row)
+        state_hash = _recommendation_state_hash(row)
+        status = str(row.get("status") or "").strip().lower()
+        first_seen = key not in previous
+        material_change = previous.get(key) != state_hash
+        must_audit = bool(
+            first_seen
+            or material_change
+            or row.get("is_outcome_label_root") is True
+            or status in {"recommended", "active", "pending", "executed", "ignored"}
+        )
+        if must_audit:
+            audit_rows.append(row)
+        payload = _latest_payload(row)
+        latest_params.append((
+            key[0], key[1], key[2], str(row.get("rec_id") or ""), int(row.get("ts") or now_ts()),
+            state_hash, str(row.get("status") or ""), str(row.get("direction") or "neutral"),
+            float(row.get("confidence") or 0.0), float(row.get("score") or 0.0),
+            str(row.get("candidate_kind") or "strategy_recommendation"), str(row.get("model_version") or ""),
+            _json_dumps_safe(payload),
+        ))
+
+    savepoint = _savepoint_name("persist_recommendation_cycle")
+    _begin_savepoint(conn, savepoint)
+    try:
+        if audit_rows:
+            insert_recommendations(conn, audit_rows, commit=False)
+        conn.executemany(
+            """INSERT INTO recommendation_latest(
+                   venue,symbol,bot_type,rec_id,evaluated_ts,state_hash,status,direction,
+                   confidence,score,candidate_kind,model_version,payload_json
+                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT(venue,symbol,bot_type) DO UPDATE SET
+                   rec_id=excluded.rec_id,evaluated_ts=excluded.evaluated_ts,state_hash=excluded.state_hash,
+                   status=excluded.status,direction=excluded.direction,confidence=excluded.confidence,
+                   score=excluded.score,candidate_kind=excluded.candidate_kind,
+                   model_version=excluded.model_version,payload_json=excluded.payload_json""",
+            latest_params,
+        )
+        _release_savepoint(conn, savepoint)
+    except Exception:
+        _rollback_to_savepoint(conn, savepoint)
+        _release_savepoint(conn, savepoint)
+        raise
+    if commit:
+        conn.commit()
+    return {
+        "latest_upserts": len(latest_params),
+        "audit_inserted": len(audit_rows),
+        "audit_suppressed": len(normalized_rows) - len(audit_rows),
+    }
+
+
+def get_latest_recommendation_states(
+    conn: sqlite3.Connection,
+    *,
+    venue: str | None,
+    top_n: int,
+    min_conf: float,
+    statuses: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return the mutable operator snapshot with audited mutations overlaid.
+
+    Actionable rows are also immutable audit events and may be changed by the LLM
+    reviewer or operator lifecycle after publication. Overlaying that row prevents
+    the compact latest-state table from displaying stale pending/executed status.
+    """
+    q = "SELECT payload_json FROM recommendation_latest WHERE 1=1"
+    params: list[Any] = []
+    if venue:
+        q += " AND venue=?"
+        params.append(str(venue).strip().lower())
+    requested_statuses = set(statuses) if statuses is not None else None
+    out: list[dict[str, Any]] = []
+    for stored in conn.execute(q, params).fetchall():
+        payload = _json_loads_mapping_or_default(stored["payload_json"], {})
+        if not payload:
+            continue
+        rec_id = str(payload.get("rec_id") or "").strip()
+        if rec_id:
+            audit_row = conn.execute("SELECT 1 FROM recommendations WHERE rec_id=?", (rec_id,)).fetchone()
+            if audit_row is not None:
+                audited = get_recommendation_by_id(conn, rec_id)
+                if audited:
+                    payload.update(audited)
+        status = str(payload.get("status") or "").strip().lower()
+        if requested_statuses is not None and status not in requested_statuses:
+            continue
+        if is_actionable_recommendation_status(status) and float(payload.get("confidence") or 0.0) < float(min_conf):
+            continue
+        out.append(payload)
+
+    status_rank = {"recommended": 0, "active": 1, "pending": 2, "blocked": 3, "no_trade": 4}
+    out.sort(
+        key=lambda row: (
+            status_rank.get(str(row.get("status") or "").strip().lower(), 5),
+            -float(row.get("confidence") or 0.0),
+            -float(row.get("score") or 0.0),
+            -int(row.get("ts") or 0),
+        )
+    )
+    return out[: max(1, int(top_n))]
+
+
+def get_latest_recommendation_state_ts(conn: sqlite3.Connection, venue: str | None = None) -> int | None:
+    if venue:
+        row = conn.execute("SELECT MAX(evaluated_ts) AS m FROM recommendation_latest WHERE venue=?", (venue,)).fetchone()
+    else:
+        row = conn.execute("SELECT MAX(evaluated_ts) AS m FROM recommendation_latest").fetchone()
+    return int(row["m"]) if row is not None and row["m"] is not None else None
+
+
+def get_latest_recommendation_state_status_counts(conn: sqlite3.Connection, venue: str | None = None) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    rows = get_latest_recommendation_states(conn, venue=venue, top_n=10000, min_conf=0.0, statuses=None)
+    for row in rows:
+        status = str(row.get("status") or "unknown").strip().lower() or "unknown"
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def get_latest_recommendation_llm_status_counts(conn: sqlite3.Connection, venue: str | None = None) -> dict[str, int]:
+    counts = {"ok": 0, "pending": 0, "error": 0, "skipped": 0, "none": 0, "other": 0}
+    rows = get_latest_recommendation_states(conn, venue=venue, top_n=10000, min_conf=0.0, statuses=None)
+    for payload in rows:
+        reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
+        review = reasons.get("llm_review") if isinstance(reasons.get("llm_review"), dict) else {}
+        status = str(review.get("status") or "none").strip().lower() or "none"
+        counts[status if status in counts else "other"] += 1
+    return counts
+
 
 def log_decision(
     conn: sqlite3.Connection,
@@ -3518,7 +3809,16 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str, *, for_updat
         sql += " FOR UPDATE"
     cur = conn.execute(sql, (rec_id,))
     r = cur.fetchone()
-    if not r or not is_supported_bot_type(r["bot_type"]):
+    if r is None:
+        if for_update:
+            return None
+        latest = conn.execute(
+            "SELECT payload_json FROM recommendation_latest WHERE rec_id=?",
+            (rec_id,),
+        ).fetchone()
+        payload = _json_loads_mapping_or_default(latest["payload_json"], {}) if latest is not None else {}
+        return payload if payload and is_supported_bot_type(payload.get("bot_type")) else None
+    if not is_supported_bot_type(r["bot_type"]):
         return None
     params_mapping = _json_loads_mapping_or_default(r["params_json"], {})
     reasons_mapping = _json_loads_mapping_or_default(r["reasons_json"], {})
@@ -5107,24 +5407,66 @@ def _normalize_funding_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str
     }
 
 
-def upsert_funding_rate(conn: sqlite3.Connection, rows: list[dict], *, commit: bool = True) -> None:
-    valid_rows = []
+def upsert_funding_rate(
+    conn: sqlite3.Connection,
+    rows: list[dict],
+    *,
+    commit: bool = True,
+    bucket_sec: int = 300,
+) -> int:
+    """Persist one bounded forecast row per symbol/bucket with real event time."""
+    valid_rows: list[dict[str, Any]] = []
+    bucket = max(60, int(bucket_sec))
     for row in rows:
         normalized = _normalize_funding_row(row)
         if normalized is not None and normalized["symbol"]:
             valid_rows.append(normalized)
     if not valid_rows:
-        return
-    conn.executemany(
-        """INSERT OR REPLACE INTO funding_rate(symbol, ts, funding_rate, next_funding_ts, funding_interval_min)
-           VALUES(?,?,?,?,?)""",
-        [
-            (r["symbol"], r["ts"], r["funding_rate"], r.get("next_funding_ts"), r.get("funding_interval_min"))
-            for r in valid_rows
-        ],
+        return 0
+    deduped: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in valid_rows:
+        ts_value = int(row["ts"])
+        key = (str(row["symbol"]), ts_value - ts_value % bucket)
+        prior = deduped.get(key)
+        if prior is None or int(prior["ts"]) <= ts_value:
+            deduped[key] = row
+
+    starts = [key[1] for key in deduped]
+    existing: dict[tuple[str, int], int] = {}
+    if starts:
+        lower = min(starts)
+        upper = max(starts) + bucket
+        for stored in conn.execute(
+            "SELECT symbol,ts FROM funding_rate WHERE ts>=? AND ts<?",
+            (lower, upper),
+        ).fetchall():
+            stored_ts = int(stored["ts"])
+            key = (str(stored["symbol"]), stored_ts - stored_ts % bucket)
+            if key in deduped:
+                existing[key] = min(stored_ts, existing.get(key, stored_ts))
+
+    params: list[tuple[Any, ...]] = []
+    for key in sorted(deduped):
+        row = deduped[key]
+        params.append((
+            row["symbol"], existing.get(key, int(row["ts"])), row["funding_rate"],
+            row.get("next_funding_ts"), row.get("funding_interval_min"),
+        ))
+    cursor = conn.executemany(
+        """INSERT INTO funding_rate(symbol, ts, funding_rate, next_funding_ts, funding_interval_min)
+             VALUES(?,?,?,?,?)
+             ON CONFLICT(symbol,ts) DO UPDATE SET
+               funding_rate=excluded.funding_rate,
+               next_funding_ts=excluded.next_funding_ts,
+               funding_interval_min=excluded.funding_interval_min
+             WHERE funding_rate.funding_rate<>excluded.funding_rate
+                OR COALESCE(funding_rate.next_funding_ts,-1)<>COALESCE(excluded.next_funding_ts,-1)
+                OR COALESCE(funding_rate.funding_interval_min,-1)<>COALESCE(excluded.funding_interval_min,-1)""",
+        params,
     )
     if commit:
         conn.commit()
+    return max(0, int(getattr(cursor, "rowcount", 0) or 0))
 
 def get_latest_funding_rate(conn: sqlite3.Connection, symbol: str) -> dict | None:
     cur = conn.execute(
@@ -5941,6 +6283,33 @@ def get_market_trade_path(
         "coverage_end_ms": int(coverage["coverage_end_ms"]),
         "items": normalized,
     }
+
+
+def list_market_trade_capture_symbols(
+    conn: sqlite3.Connection,
+    *,
+    venue: str,
+    now_ts: int | None = None,
+) -> list[str]:
+    """Return only symbols with an open grid label window.
+
+    Public trades are evidence for ambiguous grid chronology; trend outcomes do
+    not need the raw tape. Unknown or closed windows are excluded fail-closed.
+    """
+    now_value = int(now_ts if now_ts is not None else globals()["now_ts"]())
+    rows = conn.execute(
+        """SELECT DISTINCT r.symbol
+             FROM recommendations r
+             JOIN reco_outcome_observability o ON o.rec_id=r.rec_id
+            WHERE r.venue=? AND r.bot_type='futures_grid'
+              AND COALESCE(r.is_outcome_label_root,1)=1
+              AND o.state='waiting'
+              AND o.recommendation_ts<=?
+              AND (o.label_due_ts IS NULL OR o.label_due_ts>=?)
+            ORDER BY r.symbol""",
+        (str(venue).strip().lower(), now_value, now_value),
+    ).fetchall()
+    return [str(row["symbol"]).strip().upper() for row in rows if str(row["symbol"] or "").strip()]
 
 
 def prune_market_trade_journal(conn: sqlite3.Connection, before_ms: int, *, commit: bool = True) -> dict[str, int]:
@@ -7868,12 +8237,17 @@ def prune_old_data(
     retain_days: int = 7,
     *,
     exact_policy_retain_days: int = EXACT_POLICY_EVIDENCE_RETENTION_DAYS,
+    standard_outcome_retain_days: int = STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS,
+    current_model_version: str | None = None,
+    current_lineage_retain_days: int = 365,
 ) -> dict[str, int]:
-    """Prune old rows from high-growth tables. Call periodically (e.g. once per hour).
-    Ordinary outcome evidence is bounded at 14 days.  Materialized exact-policy
-    candidate roots are retained longer so calibration can accumulate independent
-    cohorts across restarts without keeping the full exploratory archive hot.
-    Returns count of deleted rows per table.
+    """Prune high-volume state while preserving compact outcome evidence.
+
+    Non-root recommendation refresh events remain a short audit lane. Outcome roots,
+    labels and observability are retained for the configured evidence windows; exact
+    policy and current-lineage roots receive the longer lane. This reverses the old
+    storage priority where large refresh payloads survived while scarce labels were
+    discarded. Returns deleted row counts per table.
     """
     now = now_ts()
     exact_policy_days = max(
@@ -7881,7 +8255,10 @@ def prune_old_data(
         int(exact_policy_retain_days),
     )
     cutoff = now - retain_days * 86400
-    cutoff_14d = now - STANDARD_OUTCOME_EVIDENCE_RETENTION_DAYS * 86400
+    cutoff_14d = now - 14 * 86400
+    cutoff_recommendation_audit = now - max(14, int(retain_days)) * 86400
+    cutoff_standard_outcome = now - max(14, int(standard_outcome_retain_days)) * 86400
+    cutoff_current_lineage = now - max(int(current_lineage_retain_days), int(standard_outcome_retain_days)) * 86400
     cutoff_exact_policy = now - exact_policy_days * 86400
     deleted = {}
 
@@ -7901,58 +8278,94 @@ def prune_old_data(
     cur = conn.execute("DELETE FROM sentiment WHERE ts < ?", (cutoff_14d,))
     deleted["sentiment"] = cur.rowcount
 
-    # recommendations: keep 14 days by default — MUST match outcomes retention.
-    # get_outcomes_with_recs() uses an INNER JOIN on rec_id.
-    # If recs are pruned at 7d but outcomes live 14d, the JOIN silently drops
-    # all outcomes whose rec was already pruned → calibrator loses half its training data.
-    # Exact-policy candidate roots form a sparse, bounded 90-day evidence lane.
-    # The full JSON contract is still re-verified by calibration/read paths; the
-    # materialized flag is only a conservative retention selector.
+    # Recommendation refresh events are the high-volume lane: retain only a short
+    # audit window. Outcome roots are sparse evidence and follow the longer label
+    # windows below. Executed/ignored operator audit records remain immutable.
     cur = conn.execute(
         """DELETE FROM recommendations
               WHERE ts < ?
                 AND status NOT IN ('executed','ignored')
                 AND NOT (
-                    ts >= ?
+                    COALESCE(is_outcome_label_root, 0)=1 AND ts>=?
+                )
+                AND NOT (
+                    COALESCE(is_outcome_label_root, 0)=1 AND ts>=?
                     AND COALESCE(policy_evaluation_eligible, 0)=1
-                    AND COALESCE(is_outcome_label_root, 1)=1
+                )
+                AND NOT (
+                    COALESCE(is_outcome_label_root, 0)=1 AND ? IS NOT NULL AND ts>=?
+                    AND (model_version=? OR model_version LIKE ?)
                 )""",
-        (cutoff_14d, cutoff_exact_policy),
+        (
+            cutoff_recommendation_audit,
+            cutoff_standard_outcome,
+            cutoff_exact_policy,
+            current_model_version,
+            cutoff_current_lineage,
+            current_model_version,
+            str(current_model_version or "") + "+%",
+        ),
     )
     deleted["recommendations"] = cur.rowcount
 
-    # reco_outcomes: ordinary rows keep 14 days; matching exact-policy roots keep
-    # the extended bounded window together with their immutable recommendation.
+    # Outcome facts are compact and expensive to reproduce. Keep all ordinary
+    # labels for the standard window, exact-policy labels for the extended window,
+    # and current-lineage labels for the longest frozen experiment window.
     cur = conn.execute(
         """DELETE FROM reco_outcomes
               WHERE ts < ?
                 AND NOT EXISTS (
-                    SELECT 1
-                      FROM recommendations r
+                    SELECT 1 FROM recommendations r
                      WHERE r.rec_id=reco_outcomes.rec_id
-                       AND r.ts >= ?
+                       AND r.ts>=?
                        AND COALESCE(r.policy_evaluation_eligible, 0)=1
-                       AND COALESCE(r.is_outcome_label_root, 1)=1
+                       AND COALESCE(r.is_outcome_label_root, 0)=1
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM recommendations r2
+                     WHERE r2.rec_id=reco_outcomes.rec_id
+                       AND ? IS NOT NULL AND r2.ts>=?
+                       AND (r2.model_version=? OR r2.model_version LIKE ?)
+                       AND COALESCE(r2.is_outcome_label_root, 0)=1
                 )""",
-        (cutoff_14d, cutoff_exact_policy),
+        (
+            cutoff_standard_outcome,
+            cutoff_exact_policy,
+            current_model_version,
+            cutoff_current_lineage,
+            current_model_version,
+            str(current_model_version or "") + "+%",
+        ),
     )
     deleted["reco_outcomes"] = cur.rowcount
 
-    # Keep the independent denominator for exactly the same retained window as
-    # recommendations/outcomes.  Otherwise censored roots disappear earlier and
-    # can make the monetary gate fail open.
+    # Preserve the denominator for exactly the same windows; deleting censored
+    # roots earlier can make expectancy/observability gates fail open.
     cur = conn.execute(
         """DELETE FROM reco_outcome_observability
               WHERE recommendation_ts < ?
                 AND NOT EXISTS (
-                    SELECT 1
-                      FROM recommendations r
+                    SELECT 1 FROM recommendations r
                      WHERE r.rec_id=reco_outcome_observability.rec_id
-                       AND r.ts >= ?
+                       AND r.ts>=?
                        AND COALESCE(r.policy_evaluation_eligible, 0)=1
-                       AND COALESCE(r.is_outcome_label_root, 1)=1
+                       AND COALESCE(r.is_outcome_label_root, 0)=1
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM recommendations r2
+                     WHERE r2.rec_id=reco_outcome_observability.rec_id
+                       AND ? IS NOT NULL AND r2.ts>=?
+                       AND (r2.model_version=? OR r2.model_version LIKE ?)
+                       AND COALESCE(r2.is_outcome_label_root, 0)=1
                 )""",
-        (cutoff_14d, cutoff_exact_policy),
+        (
+            cutoff_standard_outcome,
+            cutoff_exact_policy,
+            current_model_version,
+            cutoff_current_lineage,
+            current_model_version,
+            str(current_model_version or "") + "+%",
+        ),
     )
     deleted["reco_outcome_observability"] = cur.rowcount
 

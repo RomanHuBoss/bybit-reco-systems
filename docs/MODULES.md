@@ -1,3 +1,15 @@
+## Module changes - v1.5.0
+
+- `app/recommender.py`: новая horizon-aligned dual-strategy lineage, уменьшение correlated trend double-counting, явный `ranking_score`, event-driven recommendation persistence, dedupe `shadow_competitor`.
+- `app/direction.py`: 12h-aligned MTF weights без доминирования 1d.
+- `app/db.py`: `recommendation_latest`, material-event ledger, conditional OHLCV updates, bucketed ticker/funding, grid capture scope, evidence-first retention и storage diagnostics.
+- `app/collector.py`: bounded derived recomputation, separate backfill cadence, actual changed-row counters, on-demand REST trade fallback.
+- `app/trade_stream.py`: bounded session refresh для изменения active grid capture scope.
+- `app/main.py`: latest-state API, on-demand trade subscriptions, 300s backfill cadence, v1.5.0.
+- `app/settings.py` / `.env.example`: storage cadence and retention controls.
+- `migrations/init.sql`, `migrations/init_postgres.sql`: additive `recommendation_latest` schema.
+- `tests/test_iteration284_dual_strategy_data_efficiency.py`: RED→GREEN contract for both strategies, storage, market data and retention.
+
 ## Module changes - v1.4.13
 
 - `app/db.py`: transaction advisory lock, deterministic market-trade UPSERT order, serialized journal pruning.

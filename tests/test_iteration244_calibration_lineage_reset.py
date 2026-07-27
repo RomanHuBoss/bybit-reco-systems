@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app import calibration, db, recommender
 
-CURRENT_MODEL = "bybit-taxonomy-v13-log-symmetric-direction"
+CURRENT_MODEL = "bybit-taxonomy-v14-horizon-aligned-dual-strategy"
 
 
 def _recommendation(

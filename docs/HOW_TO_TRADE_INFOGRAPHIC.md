@@ -1,3 +1,16 @@
+## v1.5.0 - обе стратегии и новая model lineage
+
+Оператор по-прежнему видит две независимые идеи по каждому symbol: **фьючерсную сетку** и **направленный тренд**. Grid не отключён. Переключение на v1.5.0 не делает идеи автоматически торговыми: изменён ranking contract, поэтому новая lineage должна накопить собственные outcomes.
+
+В Health контролируйте отдельно:
+
+- `recommendation_latest_total` — bounded current snapshot, обычно до `symbols × 2`;
+- `recommendation_outcome_root_total` — sparse immutable evidence roots;
+- `market_trade_journal` — chronology только для открытых grid windows;
+- `calibrator_fitted`, bot-specific sample counts и monetary/terminal gates.
+
+`ranking_score` служит для сортировки. Пока bot-specific calibrator не validated, поле confidence нельзя читать как вероятность выигрыша. Порядок ручного запуска, sizing, preflight и отсутствие автоматической отправки Bybit orders не изменены; бинарная инфографика поэтому сохранена без перерисовки.
+
 ## v1.4.8 - как читать funding recovery и intrabar journal
 
 В окне «Здоровье системы» появились два диагностических контура:

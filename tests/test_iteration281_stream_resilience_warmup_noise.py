@@ -174,6 +174,7 @@ def test_market_trade_background_loop_reconnects_without_supervisor_crash(monkey
     monkeypatch.setattr(main_module, "_get_lock_conn", lambda: FakeConn())
     monkeypatch.setattr(main_module, "_get_conn", lambda: FakeConn())
     monkeypatch.setattr(main_module.db, "acquire_runtime_lock", lambda *a, **k: True)
+    monkeypatch.setattr(main_module.db, "list_market_trade_capture_symbols", lambda *a, **k: ["BTCUSDT"])
     monkeypatch.setattr(main_module.db, "set_app_config_json", lambda *a, **k: None)
     monkeypatch.setattr(main_module, "_make_runtime_lock_heartbeat", lambda *a, **k: (lambda: True))
     monkeypatch.setattr(main_module, "_set_background_thread_state", lambda *a, **k: None)

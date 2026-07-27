@@ -189,11 +189,14 @@ def mean_reversion_diagnostics(closes: list[float], *, max_returns: int = 160) -
 
 # TF weights: structural TFs dominate
 TF_WEIGHTS = {
-    15*60: 0.8,
-    30*60: 1.0,
-    60*60: 1.5,
-    240*60: 2.0,
-    24*60*60: 3.0,
+    # The outcome horizon is 12h. Tactical 15m-1h data therefore carries most
+    # of the directional information, 4h confirms structure, and the 1d bar is
+    # only a slow context/veto input rather than the dominant vote.
+    15*60: 1.0,
+    30*60: 1.25,
+    60*60: 2.0,
+    240*60: 2.25,
+    24*60*60: 0.75,
 }
 
 

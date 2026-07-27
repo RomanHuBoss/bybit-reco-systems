@@ -1,3 +1,19 @@
+## Dual-strategy scoring contract - v1.5.0
+
+Обе strategy families сохранены. `futures_grid` продолжает использовать arithmetic grid geometry и neutral/long/short bias; `directional_trend` остаётся одной long/short позицией с TP/SL и без усреднения. Router сравнивает их только по bot-specific monetary evidence и не выбирает победителя по raw score.
+
+Новая lineage `bybit-taxonomy-v14-horizon-aligned-dual-strategy` введена потому, что изменена ranking semantics:
+
+- для 12-часового label horizon веса direction vote теперь: 15m=1.0, 30m=1.25, 1h=2.0, 4h=2.25, 1d=0.75; суточный сигнал больше не доминирует над 1h;
+- trend score делает direction strength основным фактором, а коррелированные trendiness/coherence/regime confidence — меньшими подтверждениями;
+- grid score сильнее опирается на range score и меньше повторно штрафует один и тот же trend factor;
+- `params.ranking_score` отделяет эвристический ranking от probability semantics; без fitted/validated calibrator `confidence` остаётся audit-only;
+- explainability weights синхронизированы с фактической формулой score.
+
+Outcome labels, long/short payoff, funding signs, grid ledger, TP/SL first-touch и fail-closed intrabar semantics не менялись. Старые v13 outcomes не используются как v14 training rows.
+
+Router shadow competitors остаются полноценными paired observations, но один symbol/strategy использует один открытый 12-часовой outcome root. Это устраняет перекрывающиеся minute-by-minute pseudo-samples без удаления grid learning.
+
 ## Operational-only patch - v1.4.13
 
 Signal generation, feature schema, score, grid/trend geometry, risk gates, outcome semantics and calibration policy are unchanged. The patch serializes public-trade persistence and shortens safe restart handover; it does not make any previously blocked recommendation actionable.

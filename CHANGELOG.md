@@ -1,3 +1,35 @@
+## 2026-07-28 - v1.5.0 - dual-strategy data efficiency and horizon-aligned lineage
+
+### Торговая модель
+
+- Обе штатные strategy families сохранены: `futures_grid` и `directional_trend`.
+- Введена новая model lineage `bybit-taxonomy-v14-horizon-aligned-dual-strategy`; trend suffix обновлён до `directional-trend-v7`.
+- Multi-timeframe weights согласованы с 12-часовым outcome horizon; уменьшен повторный учёт коррелированных trend-факторов.
+- Эвристический score явно сохранён как `params.ranking_score`; без validated calibrator confidence остаётся audit-only, а не вероятностью.
+- Router `shadow_competitor` теперь переиспользует один открытый 12h outcome root вместо minute-by-minute overlapping roots.
+- Outcome label/observation versions не менялись; старые outcomes сохранены как historical lineage и не смешиваются с v14.
+
+### Persistence и market data
+
+- Добавлена additive/idempotent таблица `recommendation_latest` для bounded current state обеих стратегий; immutable `recommendations` переведена на material-event/outcome-root ledger.
+- Latest API читает mutable snapshot и накладывает audited LLM/operator mutations того же `rec_id`.
+- OHLCV conflict update выполняется только при реальном изменении значений; steady-state derived TF пересчитывает два последних bucket с bounded cold bootstrap.
+- Backfill отделён от hot collector cadence (`BACKFILL_INTERVAL_SEC=300`).
+- Ticker и funding forecast bucketed без подмены реального event timestamp.
+- Public trade chronology собирается только для открытых `futures_grid` label windows; trend не запускает raw-tape capture.
+- Default raw-trade retention уменьшен до 24h; outcome evidence retention — 90d, current/exact lineage — 365d; high-volume non-root recommendation refreshes имеют короткий audit lane.
+- Collector diagnostics показывают фактически изменённые OHLCV/ticker/funding rows, а не размер входного batch.
+
+### Release/QA
+
+- Добавлен отсутствовавший `requirements-dev.txt` с pinned `pytest`, `pytest-cov`, `ruff`.
+- RED на исходной v1.4.13: новый iteration267 package — 10 failed.
+- GREEN: iteration284 package — 12 passed.
+- Post-check: 1376 tests collected; exhaustive 16-batch union — 1376 passed, 0 failed, 0 skipped.
+- `compileall` и `node --check` passed.
+- `ruff` unavailable в текущем окружении; `pip check` сохраняет внешний конфликт MoviePy/Pillow, не созданный этой итерацией.
+- Live PostgreSQL integration и многосуточный Bybit WebSocket soak не выполнялись.
+
 ## 2026-07-27 - v1.4.13 - PostgreSQL trade-ingest deadlock and restart handover
 
 - Added a shared PostgreSQL transaction advisory lock for WebSocket, REST fallback and trade-journal pruning.
