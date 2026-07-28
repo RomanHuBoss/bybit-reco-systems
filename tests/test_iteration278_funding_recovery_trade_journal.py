@@ -144,11 +144,12 @@ def test_complete_trade_journal_resolves_two_sided_intrabar_order(tmp_path: Path
     db.init_db(conn)
     base_ts = 1_709_200_000
     _seed_ambiguous_candle(conn, base_ts)
+    session_id = "session-a"
     rows = [
-        {"venue": "linear", "symbol": "BTCUSDT", "trade_id": "a", "trade_ts_ms": base_ts * 1000 + 1_000, "seq": 1, "side": "Sell", "price": 99.0, "qty": 1.0, "received_ts_ms": base_ts * 1000 + 59_900, "source": "rest_recent_trade_v1", "is_block_trade": False, "is_rpi_trade": False},
-        {"venue": "linear", "symbol": "BTCUSDT", "trade_id": "b", "trade_ts_ms": base_ts * 1000 + 10_000, "seq": 2, "side": "Sell", "price": 96.0, "qty": 1.0, "received_ts_ms": base_ts * 1000 + 59_900, "source": "rest_recent_trade_v1", "is_block_trade": False, "is_rpi_trade": False},
-        {"venue": "linear", "symbol": "BTCUSDT", "trade_id": "c", "trade_ts_ms": base_ts * 1000 + 30_000, "seq": 3, "side": "Buy", "price": 104.0, "qty": 1.0, "received_ts_ms": base_ts * 1000 + 59_900, "source": "rest_recent_trade_v1", "is_block_trade": False, "is_rpi_trade": False},
-        {"venue": "linear", "symbol": "BTCUSDT", "trade_id": "d", "trade_ts_ms": base_ts * 1000 + 50_000, "seq": 4, "side": "Sell", "price": 98.5, "qty": 1.0, "received_ts_ms": base_ts * 1000 + 59_900, "source": "rest_recent_trade_v1", "is_block_trade": False, "is_rpi_trade": False},
+        {"venue": "linear", "symbol": "BTCUSDT", "trade_id": "a", "trade_ts_ms": base_ts * 1000 + 1_000, "seq": 1, "side": "Sell", "price": 99.0, "qty": 1.0, "received_ts_ms": base_ts * 1000 + 59_900, "source": "websocket_public_trade_v1", "is_block_trade": False, "is_rpi_trade": False, "stream_session_id": session_id, "stream_message_index": 1, "stream_row_index": 0, "stream_message_ts_ms": base_ts * 1000 + 59_900},
+        {"venue": "linear", "symbol": "BTCUSDT", "trade_id": "b", "trade_ts_ms": base_ts * 1000 + 10_000, "seq": 2, "side": "Sell", "price": 96.0, "qty": 1.0, "received_ts_ms": base_ts * 1000 + 59_900, "source": "websocket_public_trade_v1", "is_block_trade": False, "is_rpi_trade": False, "stream_session_id": session_id, "stream_message_index": 1, "stream_row_index": 1, "stream_message_ts_ms": base_ts * 1000 + 59_900},
+        {"venue": "linear", "symbol": "BTCUSDT", "trade_id": "c", "trade_ts_ms": base_ts * 1000 + 30_000, "seq": 3, "side": "Buy", "price": 104.0, "qty": 1.0, "received_ts_ms": base_ts * 1000 + 59_900, "source": "websocket_public_trade_v1", "is_block_trade": False, "is_rpi_trade": False, "stream_session_id": session_id, "stream_message_index": 1, "stream_row_index": 2, "stream_message_ts_ms": base_ts * 1000 + 59_900},
+        {"venue": "linear", "symbol": "BTCUSDT", "trade_id": "d", "trade_ts_ms": base_ts * 1000 + 50_000, "seq": 4, "side": "Sell", "price": 98.5, "qty": 1.0, "received_ts_ms": base_ts * 1000 + 59_900, "source": "websocket_public_trade_v1", "is_block_trade": False, "is_rpi_trade": False, "stream_session_id": session_id, "stream_message_index": 1, "stream_row_index": 3, "stream_message_ts_ms": base_ts * 1000 + 59_900},
     ]
     db.upsert_market_trades(conn, rows)
     db.insert_market_trade_coverage(
@@ -159,7 +160,8 @@ def test_complete_trade_journal_resolves_two_sided_intrabar_order(tmp_path: Path
         coverage_start_ms=base_ts * 1000,
         coverage_end_ms=(base_ts + 60) * 1000,
         state="closed",
-        source="rest_recent_trade_v1",
+        source="websocket_public_trade_v1",
+        details={"session_id": session_id, "ordering_basis": "websocket_delivery_order_v1"},
     )
     diagnostics: dict[str, object] = {}
     result = _grid_outcome(

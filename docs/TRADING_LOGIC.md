@@ -1,3 +1,7 @@
+## Trade-journal evidence contract - v1.5.1
+
+Grid outcome chronology has two evidence grades. `websocket_public_trade_v1` may be used for exact replay only when one session covers the entire minute and its first/high/low/last prices match the finalized OHLC candle. `rest_recent_trade_v1` may establish poll overlap and detect gaps, but it does not prove ordering among equal-timestamp/equal-sequence rows; therefore it cannot be used as an exact open/close chronology. REST-covered candles use the normal OHLC path-equivalence fallback. Persistent WebSocket/OHLC disagreement remains a final fail-closed censorship and now records the observed trade OHLC and mismatching fields. Observation provenance is `grid_intrabar_observation_v4`; model and target-label lineages are unchanged.
+
 ## Dual-strategy scoring contract - v1.5.0
 
 Обе strategy families сохранены. `futures_grid` продолжает использовать arithmetic grid geometry и neutral/long/short bias; `directional_trend` остаётся одной long/short позицией с TP/SL и без усреднения. Router сравнивает их только по bot-specific monetary evidence и не выбирает победителя по raw score.

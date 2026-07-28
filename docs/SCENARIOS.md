@@ -1,3 +1,10 @@
+## Grid chronology scenarios - v1.5.1
+
+1. Full WebSocket candle coverage + matching OHLC -> exact chronological replay.
+2. REST overlap coverage -> no exact replay; use OHLC path-equivalence.
+3. WebSocket coverage + OHLC mismatch -> fail-closed censored outcome with observed/expected OHLC diagnostics.
+4. No exact coverage + order-sensitive OHLC paths -> `intrabar_extreme_order_unobservable`.
+
 ## Dual-strategy and database-efficiency scenarios - v1.5.0
 
 1. Один publication cycle оценивает 35 symbols: latest snapshot содержит максимум 70 current rows — отдельные grid и trend; одинаковые no-trade refreshes не добавляют 70 immutable rows.

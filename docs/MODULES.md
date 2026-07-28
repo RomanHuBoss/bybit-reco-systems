@@ -1,3 +1,9 @@
+## Module changes - v1.5.1
+
+- `app/outcomes.py`: REST coverage is excluded from exact intrabar replay; WebSocket mismatches include observed OHLC diagnostics; observation provenance is `grid_intrabar_observation_v4`.
+- `app/db.py`: no schema change; existing source and ordering metadata are used as evidence-grade inputs.
+- `app/main.py` / frontend cache: version `1.5.1`.
+
 ## Module changes - v1.5.0
 
 - `app/recommender.py`: новая horizon-aligned dual-strategy lineage, уменьшение correlated trend double-counting, явный `ranking_score`, event-driven recommendation persistence, dedupe `shadow_competitor`.

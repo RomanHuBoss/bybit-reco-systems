@@ -1,3 +1,7 @@
+## v1.5.1 - grid and trend remain active
+
+Both strategies remain available. A journal entry about `trade_journal_ohlcv_mismatch` is an evidence-quality outcome event, not a Bybit order error. From v1.5.1, REST recent trades cannot create that exact-replay mismatch; only complete WebSocket evidence is compared to OHLC.
+
 ## v1.5.0 - обе стратегии и новая model lineage
 
 Оператор по-прежнему видит две независимые идеи по каждому symbol: **фьючерсную сетку** и **направленный тренд**. Grid не отключён. Переключение на v1.5.0 не делает идеи автоматически торговыми: изменён ranking contract, поэтому новая lineage должна накопить собственные outcomes.

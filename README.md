@@ -1,3 +1,9 @@
+## REST trade evidence grading and grid outcome repair (v1.5.1)
+
+Version 1.5.1 keeps both `futures_grid` and `directional_trend`. It fixes an observation-layer defect: REST `/v5/market/recent-trade` overlap is retained for bootstrap and gap diagnostics, but is no longer treated as proof of exact intrabar delivery order. Exact grid replay now requires uninterrupted `publicTrade.{symbol}` WebSocket coverage. This prevents occasional false `trade_journal_ohlcv_mismatch` censorship caused by equal-timestamp/equal-sequence REST rows whose final order cannot be proven.
+
+Trading model lineage remains `bybit-taxonomy-v14-horizon-aligned-dual-strategy`; target labels remain `grid_label_v26` and `directional_trend_label_v2`. Only observation provenance changes to `grid_intrabar_observation_v4`. Existing recommendations and outcomes are preserved.
+
 ## Dual-strategy data-efficiency and horizon-aligned model lineage (v1.5.0)
 
 Версия 1.5.0 **сохраняет обе штатные стратегии**: `futures_grid` и `directional_trend`. Grid не отключён и не заменён трендом. Изменены способ накопления доказательств, persistence и эвристическая ranking-модель, чтобы система не создавала 70 тяжёлых immutable refresh-строк каждую минуту и не переписывала неизменившиеся OHLCV-данные.

@@ -4553,6 +4553,62 @@ def upsert_outcome_observability(
         conn.commit()
 
 
+def requeue_rest_trade_ohlcv_mismatches(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 500,
+    commit: bool = True,
+) -> int:
+    """Re-open legacy REST-derived OHLC mismatch censorship after v4.
+
+    Before observation contract v4, an overlap-verified REST snapshot could be
+    treated as exact intrabar chronology. Equal-time/equal-sequence rows have no
+    documented REST delivery order, so lexical trade-id ordering could create a
+    false candle open/close mismatch. Requeue only rows whose persisted coverage
+    provenance identifies the REST lane; true WebSocket mismatches remain final.
+    """
+    rows = conn.execute(
+        """SELECT obs.rec_id, obs.details_json
+             FROM reco_outcome_observability obs
+             LEFT JOIN reco_outcomes outcome ON outcome.rec_id=obs.rec_id
+            WHERE obs.state='censored'
+              AND obs.reason='trade_journal_ohlcv_mismatch'
+              AND outcome.rec_id IS NULL
+            ORDER BY obs.last_attempt_ts ASC
+            LIMIT ?""",
+        (max(1, min(int(limit), 5000)),),
+    ).fetchall()
+    requeued = 0
+    for row in rows:
+        details = _json_loads_mapping_or_default(row["details_json"], {})
+        coverage_id = str(details.get("coverage_id") or "").strip()
+        source = str(details.get("trade_journal_source") or "").strip()
+        if source != "rest_recent_trade_v1" and not coverage_id.startswith("trade:"):
+            continue
+        updated_details = dict(details)
+        updated_details.update({
+            "prior_reason": "trade_journal_ohlcv_mismatch",
+            "observation_contract_upgrade": "grid_intrabar_observation_v4",
+            "requeued_for_ohlcv_fallback": True,
+        })
+        cursor = conn.execute(
+            """UPDATE reco_outcome_observability
+                  SET state='waiting',
+                      reason='observation_contract_upgrade_v4_retry',
+                      last_attempt_ts=0,
+                      details_json=?
+                WHERE rec_id=?
+                  AND state='censored'
+                  AND reason='trade_journal_ohlcv_mismatch'""",
+            (_json_dumps_safe(updated_details), str(row["rec_id"])),
+        )
+        if int(getattr(cursor, "rowcount", 0) or 0) > 0:
+            requeued += 1
+    if commit and requeued:
+        conn.commit()
+    return int(requeued)
+
+
 def get_policy_outcome_observability(
     conn: sqlite3.Connection,
     *,

@@ -1,3 +1,12 @@
+## 2026-07-28 - v1.5.1 - trade-journal evidence grading
+
+- Kept both `futures_grid` and `directional_trend`.
+- Prevented REST recent-trade overlap from being used as exact intrabar ordering evidence.
+- Preserved exact replay for uninterrupted session-isolated `publicTrade` WebSocket coverage.
+- Added observed trade OHLC, source, ordering basis and mismatch fields to persistent diagnostics.
+- Bumped observation provenance to `grid_intrabar_observation_v4`; model and target-label lineages are unchanged.
+- Added iteration 285 RED->GREEN regression coverage.
+
 ## 2026-07-28 - v1.5.0 - dual-strategy data efficiency and horizon-aligned lineage
 
 ### Торговая модель

@@ -1,3 +1,7 @@
+## Observation evidence grading - v1.5.1
+
+The market-trade journal now separates transport coverage from replay authority. REST overlap spans are diagnostic/bootstrap artifacts. Only session-isolated WebSocket spans are eligible for exact grid replay. The outcome layer records ignored non-exact coverage IDs and detailed WebSocket/OHLC deltas without changing strategy generation, risk gates or persistence schema.
+
 ## Data-efficient dual-strategy architecture - v1.5.0
 
 Persistence разделён на два слоя:

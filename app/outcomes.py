@@ -21,7 +21,7 @@ BOT_HORIZONS: dict[str, int] = {
 }
 HORIZON_SEC_DEFAULT = 30 * 60
 OUTCOME_MAX_ROWS_EXAMINED_PER_CYCLE = 2000
-GRID_INTRABAR_OBSERVATION_VERSION = "grid_intrabar_observation_v3"
+GRID_INTRABAR_OBSERVATION_VERSION = "grid_intrabar_observation_v4"
 PUBLIC_TRADE_JOURNAL_METHOD = "public_trade_journal_v1"
 OHLCV_PATH_EQUIVALENCE_METHOD = "ohlcv_path_equivalence_v1"
 
@@ -1285,6 +1285,7 @@ def _grid_outcome(
     trade_journal_replayed_candles = 0
     trade_journal_replayed_trades = 0
     trade_journal_coverage_ids: set[str] = set()
+    trade_journal_non_exact_coverage_ids: set[str] = set()
 
     def current_position_slots() -> int:
         return int(position_slots)
@@ -1656,43 +1657,72 @@ def _grid_outcome(
         row_high: float,
         row_low: float,
         row_close: float,
-    ) -> tuple[list[float] | None, str | None, str | None]:
+    ) -> tuple[list[float] | None, str | None, str | None, dict[str, object]]:
         """Return an exact trade chronology only for a fully covered OHLC-consistent minute."""
         payload = db.get_market_trade_path(conn, venue, symbol, row_ts, row_ts + 60)
         if payload is None:
-            return None, None, None
+            return None, None, None, {}
         coverage_id = str(payload.get("coverage_id") or "").strip() or None
+        source = str(payload.get("source") or "").strip()
+
+        # REST recent-trade snapshots can prove bounded overlap between polls,
+        # but Bybit does not publish a delivery-order contract for rows sharing
+        # the same execution timestamp / sequence.  Sorting such rows by opaque
+        # trade id fabricates an open/close order and can create false OHLC
+        # mismatches.  Keep REST as a gap/bootstrap source only; exact intrabar
+        # replay requires one uninterrupted publicTrade WebSocket session.
+        if source != "websocket_public_trade_v1":
+            if coverage_id:
+                trade_journal_non_exact_coverage_ids.add(coverage_id)
+            return None, None, coverage_id, {
+                "trade_journal_source": source or None,
+                "trade_journal_exact_replay_eligible": False,
+            }
         items = payload.get("items")
         if not isinstance(items, list) or not items:
-            return None, "trade_journal_empty_covered_window", coverage_id
+            return None, "trade_journal_empty_covered_window", coverage_id, {
+                "trade_journal_source": source,
+            }
         prices: list[float] = []
         ordering_basis = str(payload.get("ordering_basis") or "").strip()
         prior_key: tuple[int, int, str] | tuple[int, int] | None = None
         prior_trade_ts_ms: int | None = None
         for item in items:
             if not isinstance(item, dict):
-                return None, "trade_journal_malformed_row", coverage_id
+                return None, "trade_journal_malformed_row", coverage_id, {
+                    "trade_journal_source": source,
+                }
             trade_ts_ms = strict_integer(item.get("trade_ts_ms"))
             seq = strict_integer(item.get("seq")) if item.get("seq") is not None else -1
             trade_id = str(item.get("trade_id") or "")
             price = _finite_positive_or_none(item.get("price"))
             if trade_ts_ms is None or price is None:
-                return None, "trade_journal_malformed_row", coverage_id
+                return None, "trade_journal_malformed_row", coverage_id, {
+                    "trade_journal_source": source,
+                }
             if ordering_basis == "websocket_delivery_order_v1":
                 message_index = strict_integer(item.get("stream_message_index"))
                 row_index = strict_integer(item.get("stream_row_index"))
                 if message_index is None or row_index is None:
-                    return None, "trade_journal_missing_delivery_order", coverage_id
+                    return None, "trade_journal_missing_delivery_order", coverage_id, {
+                        "trade_journal_source": source,
+                    }
                 key = (int(message_index), int(row_index))
                 if prior_key is not None and key <= prior_key:
-                    return None, "trade_journal_non_monotonic_order", coverage_id
+                    return None, "trade_journal_non_monotonic_order", coverage_id, {
+                        "trade_journal_source": source,
+                    }
                 if prior_trade_ts_ms is not None and int(trade_ts_ms) < prior_trade_ts_ms:
-                    return None, "trade_journal_non_monotonic_trade_time", coverage_id
+                    return None, "trade_journal_non_monotonic_trade_time", coverage_id, {
+                        "trade_journal_source": source,
+                    }
                 prior_trade_ts_ms = int(trade_ts_ms)
             else:
                 key = (int(trade_ts_ms), int(seq if seq is not None else -1), trade_id)
                 if prior_key is not None and key < prior_key:
-                    return None, "trade_journal_non_monotonic_order", coverage_id
+                    return None, "trade_journal_non_monotonic_order", coverage_id, {
+                        "trade_journal_source": source,
+                    }
             prior_key = key
             prices.append(float(price))
         price_tolerance = max(
@@ -1706,8 +1736,26 @@ def _grid_outcome(
             not math.isclose(left, right, rel_tol=1e-10, abs_tol=price_tolerance)
             for left, right in zip(observed, expected)
         ):
-            return None, "trade_journal_ohlcv_mismatch", coverage_id
-        return prices, None, coverage_id
+            names = ("open", "high", "low", "close")
+            mismatch_fields = [
+                name
+                for name, left, right in zip(names, observed, expected)
+                if not math.isclose(left, right, rel_tol=1e-10, abs_tol=price_tolerance)
+            ]
+            return None, "trade_journal_ohlcv_mismatch", coverage_id, {
+                "trade_journal_source": source,
+                "trade_journal_ordering_basis": ordering_basis,
+                "observed_trade_open": float(observed[0]),
+                "observed_trade_high": float(observed[1]),
+                "observed_trade_low": float(observed[2]),
+                "observed_trade_close": float(observed[3]),
+                "ohlcv_mismatch_fields": mismatch_fields,
+            }
+        return prices, None, coverage_id, {
+            "trade_journal_source": source,
+            "trade_journal_ordering_basis": ordering_basis,
+            "trade_journal_exact_replay_eligible": True,
+        }
 
     for row_index, row in enumerate(rows):
         row_ts = strict_integer(row["ts"])
@@ -1785,7 +1833,7 @@ def _grid_outcome(
         if stopped:
             break
 
-        trade_prices, trade_path_error, coverage_id = observed_trade_path(
+        trade_prices, trade_path_error, coverage_id, trade_path_details = observed_trade_path(
             row_ts=int(row_ts),
             row_open=float(row_open),
             row_high=float(row_high),
@@ -1802,6 +1850,7 @@ def _grid_outcome(
                 candle_high=float(row_high),
                 candle_low=float(row_low),
                 candle_close=float(row_close),
+                **trade_path_details,
             )
             return None
         if trade_prices is not None:
@@ -2027,6 +2076,7 @@ def _grid_outcome(
             "trade_journal_replayed_candles": int(trade_journal_replayed_candles),
             "trade_journal_replayed_trades": int(trade_journal_replayed_trades),
             "trade_journal_coverage_ids": sorted(trade_journal_coverage_ids),
+            "trade_journal_non_exact_coverage_ids": sorted(trade_journal_non_exact_coverage_ids),
             "signed_settled_funding_pnl": float(signed_funding_pnl),
             "conservative_funding_pnl": float(conservative_funding_pnl),
             "funding_benefit_excluded": float(max(0.0, signed_funding_pnl - conservative_funding_pnl)),
@@ -2180,9 +2230,16 @@ def compute_outcomes_cycle(
         "rows_waiting": 0,
         "rows_censored": 0,
         "rows_failed": 0,
+        "rows_requeued_observation_upgrade": 0,
         "last_processed_rec_id": None,
         "duration_ms": 0,
     }
+
+    stats["rows_requeued_observation_upgrade"] = db.requeue_rest_trade_ohlcv_mismatches(
+        conn,
+        limit=process_limit,
+        commit=True,
+    )
 
     def record_observability(_conn, **kwargs: object) -> None:
         _record_outcome_observability_attempt(_conn, **kwargs)

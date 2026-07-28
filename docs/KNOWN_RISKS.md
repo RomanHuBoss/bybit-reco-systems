@@ -1,3 +1,10 @@
+## Residual risks after v1.5.1
+
+- REST recent-trade snapshots are not exact execution-order evidence. They remain useful for bounded overlap and gap diagnostics only.
+- Exact grid intrabar replay requires one uninterrupted WebSocket session covering the full candle and OHLC consistency.
+- If WebSocket evidence is absent, the system falls back to OHLC path-equivalence; genuinely order-sensitive candles remain censored fail-closed.
+- Public trades still do not prove queue priority, partial fills, latency or replacement-order activation.
+
 ## Остаточные риски после v1.5.0
 
 - Изменение ranking semantics создаёт новую model/policy lineage. Исторические outcomes сохранены, но новая lineage начинает собственный набор calibration evidence; временное состояние `healthy_not_actionable` ожидаемо.
